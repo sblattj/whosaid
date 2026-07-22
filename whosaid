@@ -1,0 +1,422 @@
+#!/usr/bin/env bash
+# ==============================================================================
+# whosaid — local, GPU-accelerated, speaker-attributed transcription (Apple Silicon)
+#
+# Usage:
+#   whosaid setup                 Run bootstrap.sh (deps, models, disk check).
+#   whosaid enroll [Name]         Record a voice sample and name a speaker cluster.
+#   whosaid record [--label L]    Record from the mic, then transcribe it.
+#   whosaid doctor                Read-only environment/model/device report.
+#   whosaid <audio> [...]         Transcribe (and, by default, diarize) audio file(s).
+#   whosaid help                  This message.
+#
+# See `whosaid help` for the full flag reference.
+# ==============================================================================
+set -euo pipefail
+
+# Make Homebrew tools (ffmpeg, uv) visible even under a minimal PATH.
+export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+
+REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+HELPER="$REPO_DIR/lib/transcribe_mlx.py"
+DIARIZER="$REPO_DIR/lib/diarize_sherpa.py"
+VOICE_REFS="${WHOSAID_VOICE_REFS:-$REPO_DIR/voices}"
+RECORDINGS_DIR="$REPO_DIR/recordings"
+LANG_CODE_DEFAULT="${WHOSAID_LANG:-en}"
+REC_DEVICE="${WHOSAID_REC_DEVICE:-0}"
+
+log() { echo "whosaid: $*" >&2; }
+
+# ---- shared environment guards (mirrors the transcribe flow's own checks) --
+warn_if_not_arm64() {
+  if [[ "$(uname -m)" != "arm64" ]]; then
+    log "WARNING — MLX is Apple-Silicon only; on $(uname -m) this will be slow or fail."
+  fi
+}
+
+ensure_uv_and_ffmpeg() {
+  if ! command -v uv >/dev/null 2>&1; then
+    log "'uv' not found. Installing via Homebrew..."
+    command -v brew >/dev/null 2>&1 || { log "Homebrew required to bootstrap uv. See https://brew.sh"; exit 1; }
+    brew install uv
+  fi
+  if ! command -v ffmpeg >/dev/null 2>&1; then
+    log "'ffmpeg' not found (needed to decode/capture audio). Installing via Homebrew..."
+    command -v brew >/dev/null 2>&1 || { log "Homebrew required to bootstrap ffmpeg. See https://brew.sh"; exit 1; }
+    brew install ffmpeg
+  fi
+}
+
+# ---- help --------------------------------------------------------------------
+cmd_help() {
+  cat <<'EOF'
+whosaid — local, GPU-accelerated, speaker-attributed transcription (Apple Silicon)
+
+USAGE
+  whosaid setup                        Install dependencies, pre-download models.
+  whosaid enroll [Name]                Record a voice sample, name a speaker cluster.
+  whosaid record [--label L] [flags]   Record from the mic, then transcribe it.
+  whosaid doctor                       Read-only environment/model/device report.
+  whosaid <audio> [<audio> ...] [flags]
+                                        Transcribe (and by default diarize) file(s).
+  whosaid help | -h | --help           This message.
+
+TRANSCRIBE FLAGS
+  -o, --outdir DIR    Output directory (default: alongside each input file).
+  -m, --model REPO    HuggingFace mlx-community Whisper repo (default: turbo).
+      --accurate       Shorthand for mlx-community/whisper-large-v3-mlx (full
+                       large-v3; slower, best fidelity on names/numbers).
+  -l, --lang CODE     Language code (default: en; use "auto" to auto-detect).
+  -f, --format FMT    txt | srt | vtt | tsv | json | all (default: all).
+  -n, --name NAME     Output base name (single input only; default: input basename).
+      --speakers N     Speaker-count hint for diarization (e.g. 2 for a 1:1 call).
+      --no-diarize     Skip speaker diarization.
+      --diarize        Force diarization on (default already on).
+  -h, --help          This message.
+
+RECORD FLAGS
+  --label L           Suffix the recording filename with -L.
+  Any transcribe flag above is also accepted and passed through after recording.
+
+ENV OVERRIDES
+  WHOSAID_MODEL        Default Whisper model repo.
+  WHOSAID_LANG         Default language code.
+  WHOSAID_VOICE_REFS   Directory of enrollment clips (default: ./voices).
+  WHOSAID_REC_DEVICE   avfoundation audio device index (default: 0).
+  HF_HOME               Hugging Face cache location (Whisper model cache).
+  SHERPA_DIARIZE_CACHE  sherpa-onnx diarization model cache location.
+
+Diarization writes <base>.rttm and merges with the Whisper output into
+<base>.speakers.txt (the speaker-labeled transcript). Diarization failure never
+loses the plain transcript — it warns and the transcript stands on its own.
+
+Nothing — audio, text, or embeddings — ever leaves the machine.
+EOF
+}
+
+# ---- doctor --------------------------------------------------------------------
+cmd_doctor() {
+  echo "whosaid doctor"
+  echo "=============="
+
+  local arch os_ver
+  arch="$(uname -m)"
+  os_ver="$(sw_vers -productVersion 2>/dev/null || echo unknown)"
+  if [[ "$arch" == "arm64" ]]; then
+    echo "✓ architecture: $arch (Apple Silicon) — macOS $os_ver"
+  else
+    echo "✗ architecture: $arch — whosaid requires Apple Silicon (arm64) for MLX/Metal"
+  fi
+
+  if command -v brew >/dev/null 2>&1; then
+    echo "✓ Homebrew: $(brew --version 2>/dev/null | head -1)"
+  else
+    echo "✗ Homebrew not found — fix: install from https://brew.sh"
+  fi
+
+  if command -v ffmpeg >/dev/null 2>&1; then
+    echo "✓ ffmpeg: $(ffmpeg -version 2>/dev/null | head -1)"
+  else
+    echo "✗ ffmpeg not found — fix: brew install ffmpeg"
+  fi
+
+  if command -v uv >/dev/null 2>&1; then
+    echo "✓ uv: $(uv --version 2>/dev/null)"
+  else
+    echo "✗ uv not found — fix: brew install uv"
+  fi
+
+  local hf_home
+  hf_home="${HF_HOME:-$HOME/.cache/huggingface}"
+  if ls -d "$hf_home"/hub/models--mlx-community--whisper-large-v3-turbo* >/dev/null 2>&1; then
+    echo "✓ Whisper model cached (turbo) under $hf_home/hub"
+  else
+    echo "✗ Whisper model not cached — fix: ./whosaid setup"
+  fi
+
+  local sherpa_cache
+  sherpa_cache="${SHERPA_DIARIZE_CACHE:-$HOME/.cache/sherpa-diarization}"
+  if [[ -f "$sherpa_cache/sherpa-onnx-pyannote-segmentation-3-0/model.onnx" ]]; then
+    echo "✓ sherpa diarization models cached under $sherpa_cache"
+  else
+    echo "✗ sherpa diarization models not cached — fix: ./whosaid setup"
+  fi
+
+  local voices_found=0
+  for f in "$VOICE_REFS"/*.wav; do
+    [[ -f "$f" ]] || continue
+    voices_found=$((voices_found + 1))
+    echo "  voice: $(basename "${f%.wav}")"
+  done
+  if [[ "$voices_found" -eq 0 ]]; then
+    echo "✗ no enrolled voices — fix: ./whosaid enroll"
+  else
+    echo "✓ $voices_found enrolled voice(s) in $VOICE_REFS"
+  fi
+
+  echo "--- avfoundation audio devices ---"
+  ffmpeg -f avfoundation -list_devices true -i "" 2>&1 | awk '/AVFoundation audio devices:/{show=1} show' || true
+}
+
+# ---- enroll --------------------------------------------------------------------
+RAINBOW_PASSAGE="When the sunlight strikes raindrops in the air, they act as a prism and form a rainbow. The rainbow is a division of white light into many beautiful colors. These take the shape of a long round arch, with its path high above, and its two ends apparently beyond the horizon. There is, according to legend, a boiling pot of gold at one end. People look, but no one ever finds it. When a man looks for something beyond his reach, his friends say he is looking for the pot of gold at the end of the rainbow."
+
+cmd_enroll() {
+  warn_if_not_arm64
+  ensure_uv_and_ffmpeg
+
+  local name="${1:-}"
+  if [[ -z "$name" ]]; then
+    read -r -p "whosaid: name for this voice (e.g. Alice): " name
+  fi
+  if [[ ! "$name" =~ ^[A-Za-z0-9_-]+$ ]]; then
+    log "invalid name '$name' — use only letters, numbers, underscore, hyphen."
+    exit 1
+  fi
+
+  mkdir -p "$VOICE_REFS"
+
+  echo "============================================================================" >&2
+  echo "$RAINBOW_PASSAGE" | fold -s -w 76 >&2
+  echo "============================================================================" >&2
+  echo "Press Enter to start recording; read the passage aloud at a normal pace." >&2
+  echo "Recording stops automatically after 45s — or press Ctrl-C once you finish the paragraph." >&2
+  read -r _ || true
+
+  local tmpdir tmp
+  tmpdir="$(mktemp -d -t whosaid-enroll)"
+  tmp="$tmpdir/capture.m4a"
+  trap 'rm -rf "$tmpdir"' EXIT
+
+  log "recording... (up to 45s)"
+  # Ctrl-C must stop ffmpeg (which finalizes the file) WITHOUT killing this
+  # script — a no-op INT trap keeps bash alive so verification still runs.
+  set +e
+  trap ':' INT
+  ffmpeg -hide_banner -loglevel warning -f avfoundation -i ":$REC_DEVICE" \
+    -ac 1 -c:a aac -b:a 96k -t 45 -y "$tmp" </dev/null
+  rc=$?
+  trap - INT
+  set -e
+  if [[ "$rc" -ne 0 && "$rc" -ne 255 ]]; then
+    log "ffmpeg exited with an unexpected error (code $rc)."
+  fi
+
+  if [[ ! -s "$tmp" ]]; then
+    log "recording failed — no audio was captured (ffmpeg exit $rc)."
+    exit 1
+  fi
+
+  local dur
+  dur="$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$tmp" 2>/dev/null || echo 0)"
+  if ! awk -v d="$dur" 'BEGIN{exit !((d+0) >= 15)}'; then
+    log "recording too short (${dur}s) — need at least 15s of speech. Try again and read the whole passage."
+    exit 1
+  fi
+
+  local ffout meandb
+  ffout="$(ffmpeg -hide_banner -i "$tmp" -af volumedetect -f null - 2>&1)" || true
+  meandb=""
+  if [[ "$ffout" =~ mean_volume:\ (-?[0-9.]+)\ dB ]]; then
+    meandb="${BASH_REMATCH[1]}"
+  fi
+  if [[ -n "$meandb" ]] && awk -v m="$meandb" 'BEGIN{exit !((m+0) <= -85)}'; then
+    log "recording is SILENT (mean volume ${meandb} dB)."
+    log "macOS denies an unauthorized app's microphone by feeding it silent zeros — no error is raised."
+    log "Fix: System Settings -> Privacy & Security -> Microphone -> enable your terminal app, then re-run 'whosaid enroll'."
+    exit 1
+  fi
+
+  local dest="$VOICE_REFS/$name.wav"
+  ffmpeg -hide_banner -loglevel warning -y -i "$tmp" -ac 1 -ar 16000 "$dest"
+
+  log "✓ enrolled '$name' -> $dest"
+  log "future transcripts will label this voice '$name'."
+}
+
+# ---- record --------------------------------------------------------------------
+cmd_record() {
+  warn_if_not_arm64
+  ensure_uv_and_ffmpeg
+
+  local label=""
+  local extra_args=()
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --label) label="$2"; shift 2 ;;
+      *) extra_args+=("$1"); shift ;;
+    esac
+  done
+
+  mkdir -p "$RECORDINGS_DIR"
+  local ts out
+  ts="$(date -u +%Y%m%dT%H%M%SZ)"
+  if [[ -n "$label" ]]; then
+    local slug
+    slug="$(printf '%s' "$label" | tr -c 'A-Za-z0-9_-' '-')"
+    out="$RECORDINGS_DIR/${ts}-${slug}.m4a"
+  else
+    out="$RECORDINGS_DIR/${ts}.m4a"
+  fi
+
+  log "recording to $out — press Ctrl-C to stop (auto-stops after 3h)."
+  # Ctrl-C must stop ffmpeg (which finalizes the m4a) WITHOUT killing this
+  # script — a no-op INT trap keeps bash alive so verify + transcribe still run.
+  set +e
+  trap ':' INT
+  ffmpeg -hide_banner -loglevel warning -f avfoundation -i ":$REC_DEVICE" \
+    -ac 1 -c:a aac -b:a 96k -t 10800 -y "$out" </dev/null
+  rc=$?
+  trap - INT
+  set -e
+  if [[ "$rc" -ne 0 && "$rc" -ne 255 ]]; then
+    log "ffmpeg exited with an unexpected error (code $rc)."
+  fi
+
+  if [[ ! -s "$out" ]]; then
+    log "recording failed — no audio was captured (ffmpeg exit $rc)."
+    exit 1
+  fi
+
+  local dur
+  dur="$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$out" 2>/dev/null || echo "?")"
+  log "captured ${dur}s -> $out"
+
+  local ffout meandb
+  ffout="$(ffmpeg -hide_banner -i "$out" -af volumedetect -f null - 2>&1)" || true
+  meandb=""
+  if [[ "$ffout" =~ mean_volume:\ (-?[0-9.]+)\ dB ]]; then
+    meandb="${BASH_REMATCH[1]}"
+  fi
+  if [[ -n "$meandb" ]] && awk -v m="$meandb" 'BEGIN{exit !((m+0) <= -85)}'; then
+    log "recording saved at $out but it is SILENT (mean volume ${meandb} dB)."
+    log "macOS denies an unauthorized app's microphone by feeding it silent zeros — no error is raised."
+    log "Fix: System Settings -> Privacy & Security -> Microphone -> enable your terminal app, then re-run."
+    exit 4
+  fi
+
+  # ${arr[@]+...} guard: expanding an EMPTY array errs under set -u on bash 3.2
+  # (macOS system bash), which would crash a plain `whosaid record`.
+  cmd_transcribe "$out" ${extra_args[@]+"${extra_args[@]}"}
+}
+
+# ---- transcribe (default flow) --------------------------------------------------
+cmd_transcribe() {
+  [[ -f "$HELPER" ]] || { log "helper not found at $HELPER"; exit 1; }
+
+  local MODEL="${WHOSAID_MODEL:-mlx-community/whisper-large-v3-turbo}"
+  local LANG_CODE="$LANG_CODE_DEFAULT"
+  local FORMAT="all"
+  local OUTDIR=""
+  local NAME=""
+  local DIARIZE=1
+  local SPEAKERS=""
+  local AUDIO=()
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      -o|--outdir)  OUTDIR="$2"; shift 2 ;;
+      -m|--model)   MODEL="$2"; shift 2 ;;
+      --accurate)   MODEL="mlx-community/whisper-large-v3-mlx"; shift ;;
+      -l|--lang)    LANG_CODE="$2"; shift 2 ;;
+      -f|--format)  FORMAT="$2"; shift 2 ;;
+      -n|--name)    NAME="$2"; shift 2 ;;
+      --no-diarize) DIARIZE=0; shift ;;
+      --diarize)    DIARIZE=1; shift ;;
+      --speakers)   SPEAKERS="$2"; shift 2 ;;
+      -h|--help)    cmd_help; exit 0 ;;
+      --)           shift; while [[ $# -gt 0 ]]; do AUDIO+=("$1"); shift; done ;;
+      -*)           log "unknown option: $1"; cmd_help; exit 1 ;;
+      *)            AUDIO+=("$1"); shift ;;
+    esac
+  done
+
+  [[ ${#AUDIO[@]} -eq 0 ]] && { log "no audio file given."; cmd_help; exit 1; }
+  [[ -n "$NAME" && ${#AUDIO[@]} -gt 1 ]] && { log "--name only works with a single input."; exit 1; }
+
+  warn_if_not_arm64
+  ensure_uv_and_ffmpeg
+
+  log "model=$MODEL  lang=$LANG_CODE  format=$FORMAT  diarize=$DIARIZE  (GPU/Metal via MLX)"
+  SECONDS=0
+  for audio in "${AUDIO[@]}"; do
+    [[ -f "$audio" ]] || { log "file not found: $audio"; exit 1; }
+    local out="${OUTDIR:-$(dirname "$audio")}"
+    mkdir -p "$out"
+    local dur
+    dur="$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$audio" 2>/dev/null || echo "?")"
+    log "→ $audio  (${dur}s)  →  $out/"
+
+    local helper_args=("$audio" --model "$MODEL" --outdir "$out" --lang "$LANG_CODE" --format "$FORMAT")
+    [[ -n "$NAME" ]] && helper_args+=(--name "$NAME")
+
+    uv run --quiet --with mlx-whisper python "$HELPER" "${helper_args[@]}"
+
+    local base="${NAME:-$(basename "${audio%.*}")}"
+    local txt="$out/$base.txt"
+    if [[ ! -s "$txt" ]]; then
+      log "ERROR expected transcript not found or empty: $txt"
+      exit 1
+    fi
+    log "✓ $txt"
+    echo "----- first lines -----" >&2
+    head -c 600 "$txt" >&2; echo >&2
+
+    # --- speaker diarization (local; never fatal to the transcript) -------------
+    # Only the .json output feeds the diarizer merge, so this whole block — and the
+    # exit-3 gate below — only applies when --format actually produced one.
+    if [[ "$DIARIZE" == "1" && -f "$out/$base.json" ]]; then
+      if [[ -f "$DIARIZER" ]]; then
+        local dargs=("$audio" --whisper-json "$out/$base.json" --outdir "$out" --name "$base")
+        [[ -n "$SPEAKERS" ]] && dargs+=(--num-speakers "$SPEAKERS")
+        if [[ -d "$VOICE_REFS" ]]; then
+          for ref in "$VOICE_REFS"/*.wav "$VOICE_REFS"/*.m4a; do
+            [[ -f "$ref" ]] || continue
+            local refname
+            refname="$(basename "${ref%.*}")"
+            dargs+=(--ref "$refname=$ref")
+          done
+        fi
+        if uv run --quiet --with sherpa-onnx --with numpy python "$DIARIZER" "${dargs[@]}"; then
+          :
+        else
+          log "WARN diarization failed; plain transcript is unaffected."
+        fi
+      else
+        log "WARN diarizer script not found at $DIARIZER; skipping diarization for $audio."
+      fi
+
+      local speakers_txt="$out/$base.speakers.txt"
+      if [[ ! -s "$speakers_txt" ]]; then
+        log "plain transcript saved at $txt; diarization failed (see warnings above)"
+        exit 3
+      fi
+      log "✓ $speakers_txt (speaker-labeled)"
+    elif [[ "$DIARIZE" == "1" ]]; then
+      log "WARN Whisper json output not found (format=$FORMAT); skipping diarization for $audio."
+    fi
+  done
+  log "done in ${SECONDS}s."
+}
+
+# ---- dispatch --------------------------------------------------------------------
+case "${1:-}" in
+  setup)
+    exec "$REPO_DIR/bootstrap.sh" "${@:2}"
+    ;;
+  enroll)
+    cmd_enroll "${@:2}"
+    ;;
+  record)
+    cmd_record "${@:2}"
+    ;;
+  doctor)
+    cmd_doctor
+    ;;
+  help|-h|--help|"")
+    cmd_help
+    ;;
+  *)
+    cmd_transcribe "$@"
+    ;;
+esac

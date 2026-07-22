@@ -1,0 +1,7 @@
+voices/*
+recordings/*
+!voices/.gitkeep
+!recordings/.gitkeep
+.DS_Store
+*.log
+__pycache__/
