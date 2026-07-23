@@ -42,22 +42,28 @@ leaves the machine.
 
 ```bash
 git clone https://github.com/sblattj/whosaid && cd whosaid   # get the code
-./bootstrap.sh                                                # check deps + download models (one time: ~1.5 GB Whisper, ~30 MB diarization)
-./whosaid enroll                                               # ~45s reading a printed passage — teaches whosaid your voice
-./whosaid path/to/meeting.m4a                                  # transcribe + diarize + label -> meeting.speakers.txt (and friends)
+./bootstrap.sh                                                # check deps, download models, install ~/.local/bin/whosaid
+whosaid enroll                                                # ~45s reading a printed passage — teaches whosaid your voice
+whosaid path/to/meeting.m4a                                   # transcribe + diarize + label -> meeting.speakers.txt (and friends)
 ```
+
+If `~/.local/bin` is not on your shell's `PATH`, add it or invoke the installed command by its
+absolute path. `WHOSAID_INSTALL_DIR=/another/bin ./whosaid install` selects another install
+directory. The installed command is a symlink to the checkout, so updating the checkout updates the
+command without copying or duplicating the implementation.
 
 ## Commands
 
 | Command | What it does |
 |---|---|
-| `./bootstrap.sh [--yes]` (also `./whosaid setup`) | Capability check, dependency install, model pre-download. Idempotent — safe to re-run. |
-| `./whosaid enroll [Name]` | Records ~45s from the mic reading a printed passage, saves `voices/<Name>.wav`. |
-| `./whosaid record [--label L]` | Foreground mic capture to `recordings/<timestamp>[-label].m4a`, then transcribes automatically. |
-| `./whosaid <audio>… [flags]` | The default command: transcribe + diarize + label one or more audio files. |
-| `./whosaid doctor` | Read-only environment report. |
+| `./bootstrap.sh [--yes]` (also `whosaid setup`) | Capability check, dependency install, model pre-download, and command installation. Idempotent — safe to re-run. |
+| `whosaid install` | Install/update the command symlink in `~/.local/bin` (or `WHOSAID_INSTALL_DIR`). Refuses to replace an unrelated command. |
+| `whosaid enroll [Name]` | Records ~45s from the mic reading a printed passage, saves `voices/<Name>.wav`. |
+| `whosaid record [--label L]` | Foreground mic capture to `recordings/<timestamp>[-label].m4a`, then transcribes automatically. |
+| `whosaid <audio>… [flags]` | The default command: transcribe + diarize + label one or more audio files. |
+| `whosaid doctor` | Read-only environment report. |
 
-### Key flags (on `./whosaid <audio>…`)
+### Key flags (on `whosaid <audio>…`)
 
 | Flag | Meaning |
 |---|---|
@@ -78,6 +84,7 @@ git clone https://github.com/sblattj/whosaid && cd whosaid   # get the code
 | `WHOSAID_LANG` | Default transcription language, overridden by `-l`. |
 | `WHOSAID_VOICE_REFS` | Override the directory of enrollment voice clips (default: `voices/`). |
 | `WHOSAID_REC_DEVICE` | avfoundation input device used by `record` and `enroll`. |
+| `WHOSAID_INSTALL_DIR` | Command install directory used by `whosaid install` (default: `~/.local/bin`). |
 | `HF_HOME` | Hugging Face cache location (where the Whisper model lands). |
 | `SHERPA_DIARIZE_CACHE` | Diarization model cache location (default: `~/.cache/sherpa-diarization`). |
 
@@ -139,7 +146,7 @@ there's no persistent Python install left behind on your machine.
   whereas the library call keeps the temperature-fallback ladder, disables conditioning on previous
   text, and applies a hallucination-silence threshold.
 - **Speakers show up as `SPEAKER_00` / `SPEAKER_01` instead of a name.** No enrolled voice matched
-  closely enough. Enroll the missing person (`./whosaid enroll <Name>`), or check that
+  closely enough. Enroll the missing person (`whosaid enroll <Name>`), or check that
   `WHOSAID_VOICE_REFS` (or `voices/`) points at the clip you expect — naming uses a cosine-similarity
   threshold (0.40), so a short or noisy enrollment clip can fall just short of it.
 

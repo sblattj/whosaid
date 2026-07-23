@@ -59,7 +59,42 @@ python3 -m py_compile "$REPO/lib/transcribe_mlx.py" "$REPO/lib/diarize_sherpa.py
 echo "static checks OK"
 
 # ---------------------------------------------------------------------------
-# 2. Pick two distinct `say` voices, in preference order.
+# 2. Install contract: the command must work through a symlink outside the
+#    checkout, because consumers depend on the executable rather than repo
+#    internals. This is local and does not touch the user's real ~/.local/bin.
+# ---------------------------------------------------------------------------
+echo "-- checking install contract --"
+
+mkdir -p "$TMP/bin"
+WHOSAID_INSTALL_DIR="$TMP/bin" "$REPO/whosaid" install \
+  || fail "whosaid install failed"
+[ -L "$TMP/bin/whosaid" ] || fail "install did not create a command symlink"
+WHOSAID_INSTALL_DIR="$TMP/bin" "$REPO/whosaid" install \
+  || fail "re-running whosaid install was not idempotent"
+"$TMP/bin/whosaid" help >/dev/null \
+  || fail "installed command could not resolve its checkout through the symlink"
+
+mkdir -p "$TMP/update-bin"
+ln -s "/old/checkout/whosaid" "$TMP/update-bin/whosaid"
+WHOSAID_INSTALL_DIR="$TMP/update-bin" "$REPO/whosaid" install \
+  || fail "install could not update an existing command symlink"
+[ "$(readlink "$TMP/update-bin/whosaid")" = "$REPO/whosaid" ] \
+  || fail "install did not repoint an existing command symlink"
+
+mkdir -p "$TMP/occupied-bin"
+printf 'unrelated-command\n' > "$TMP/occupied-bin/whosaid"
+set +e
+WHOSAID_INSTALL_DIR="$TMP/occupied-bin" "$REPO/whosaid" install >/dev/null 2>&1
+INSTALL_RC=$?
+set -e
+[ "$INSTALL_RC" -ne 0 ] || fail "install replaced an unrelated existing command"
+grep -qx 'unrelated-command' "$TMP/occupied-bin/whosaid" \
+  || fail "install mutated an unrelated existing command"
+
+echo "install contract OK"
+
+# ---------------------------------------------------------------------------
+# 3. Pick two distinct `say` voices, in preference order.
 # ---------------------------------------------------------------------------
 echo "-- selecting say voices --"
 
@@ -89,7 +124,7 @@ echo "voice A (will be enrolled as Alice): $VOICE_A"
 echo "voice B (left unenrolled):           $VOICE_B"
 
 # ---------------------------------------------------------------------------
-# 3. Synthesize a 2-speaker dialog: 6 alternating utterances, 0.8s gaps.
+# 4. Synthesize a 2-speaker dialog: 6 alternating utterances, 0.8s gaps.
 # ---------------------------------------------------------------------------
 echo "-- synthesizing dialog --"
 
@@ -137,7 +172,7 @@ ffmpeg -y -v error -f concat -safe 0 -i "$LIST" -c copy "$TMP/dialog.wav" \
 echo "dialog synthesized: $TMP/dialog.wav"
 
 # ---------------------------------------------------------------------------
-# 4. Build the enrollment reference: ~20s of different text, voice A, saved
+# 5. Build the enrollment reference: ~20s of different text, voice A, saved
 #    as Alice.wav in a temp voice-refs dir (never the repo's real voices/).
 # ---------------------------------------------------------------------------
 echo "-- building enrollment reference --"
@@ -154,7 +189,7 @@ ffmpeg -y -v error -i "$TMP/enroll_raw.aiff" -ar 16000 -ac 1 -c:a pcm_s16le "$TM
 echo "enrollment reference: $TMP/refs/Alice.wav"
 
 # ---------------------------------------------------------------------------
-# 5. Run the pipeline against the temp voice-refs dir. The repo's real
+# 6. Run the pipeline against the temp voice-refs dir. The repo's real
 #    voices/ directory must never be touched.
 # ---------------------------------------------------------------------------
 echo "-- running whosaid --"
@@ -186,7 +221,7 @@ if [ -d "$REPO/voices" ]; then
 fi
 
 # ---------------------------------------------------------------------------
-# 6. Assertions on the output.
+# 7. Assertions on the output.
 # ---------------------------------------------------------------------------
 echo "-- checking output --"
 

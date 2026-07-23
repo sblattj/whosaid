@@ -4,6 +4,7 @@
 #
 # Usage:
 #   whosaid setup                 Run bootstrap.sh (deps, models, disk check).
+#   whosaid install               Install a stable command in ~/.local/bin.
 #   whosaid enroll [Name]         Record a voice sample and name a speaker cluster.
 #   whosaid record [--label L]    Record from the mic, then transcribe it.
 #   whosaid doctor                Read-only environment/model/device report.
@@ -17,7 +18,15 @@ set -euo pipefail
 # Make Homebrew tools (ffmpeg, uv) visible even under a minimal PATH.
 export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
 
-REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Follow symlinks so an installed ~/.local/bin/whosaid command still finds the
+# implementation and model helpers in this checkout.
+SOURCE="${BASH_SOURCE[0]}"
+while [[ -L "$SOURCE" ]]; do
+  SOURCE_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+  SOURCE="$(readlink "$SOURCE")"
+  [[ "$SOURCE" != /* ]] && SOURCE="$SOURCE_DIR/$SOURCE"
+done
+REPO_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
 HELPER="$REPO_DIR/lib/transcribe_mlx.py"
 DIARIZER="$REPO_DIR/lib/diarize_sherpa.py"
 VOICE_REFS="${WHOSAID_VOICE_REFS:-$REPO_DIR/voices}"
@@ -54,6 +63,7 @@ whosaid — local, GPU-accelerated, speaker-attributed transcription (Apple Sili
 
 USAGE
   whosaid setup                        Install dependencies, pre-download models.
+  whosaid install                      Install/update ~/.local/bin/whosaid.
   whosaid enroll [Name]                Record a voice sample, name a speaker cluster.
   whosaid record [--label L] [flags]   Record from the mic, then transcribe it.
   whosaid doctor                       Read-only environment/model/device report.
@@ -83,6 +93,7 @@ ENV OVERRIDES
   WHOSAID_LANG         Default language code.
   WHOSAID_VOICE_REFS   Directory of enrollment clips (default: ./voices).
   WHOSAID_REC_DEVICE   avfoundation audio device index (default: 0).
+  WHOSAID_INSTALL_DIR  Command install directory (default: ~/.local/bin).
   HF_HOME               Hugging Face cache location (Whisper model cache).
   SHERPA_DIARIZE_CACHE  sherpa-onnx diarization model cache location.
 
@@ -92,6 +103,39 @@ loses the plain transcript — it warns and the transcript stands on its own.
 
 Nothing — audio, text, or embeddings — ever leaves the machine.
 EOF
+}
+
+# ---- install -----------------------------------------------------------------
+cmd_install() {
+  local install_dir="${WHOSAID_INSTALL_DIR:-$HOME/.local/bin}"
+  local destination="$install_dir/whosaid"
+  local source="$REPO_DIR/whosaid"
+
+  mkdir -p "$install_dir"
+  if [[ -L "$destination" ]]; then
+    local existing=""
+    existing="$(readlink "$destination" 2>/dev/null || true)"
+    if [[ "$existing" == "$source" ]]; then
+      log "✓ command already installed at $destination"
+    else
+      ln -sfn "$source" "$destination"
+      log "✓ updated command symlink at $destination"
+    fi
+  elif [[ -e "$destination" ]]; then
+    log "FATAL refusing to replace existing non-symlink command at $destination"
+    log "remove or relocate it explicitly, then run 'whosaid install' again"
+    exit 1
+  else
+    ln -s "$source" "$destination"
+    log "✓ installed command at $destination"
+  fi
+
+  case ":${PATH:-}:" in
+    *":$install_dir:"*) ;;
+    *)
+      log "NOTE add $install_dir to PATH to run 'whosaid' by name"
+      ;;
+  esac
 }
 
 # ---- doctor --------------------------------------------------------------------
@@ -403,6 +447,9 @@ cmd_transcribe() {
 case "${1:-}" in
   setup)
     exec "$REPO_DIR/bootstrap.sh" "${@:2}"
+    ;;
+  install)
+    cmd_install
     ;;
   enroll)
     cmd_enroll "${@:2}"

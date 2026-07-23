@@ -19,7 +19,7 @@ for a in "$@"; do
 done
 
 log() { echo "whosaid: $*" >&2; }
-step() { echo "" >&2; log "[$1/7] $2"; }
+step() { echo "" >&2; log "[$1/8] $2"; }
 
 # confirm "question" -> 0 (proceed) when --yes was given or the user answers y/Y.
 confirm() {
@@ -119,8 +119,12 @@ step 7 "downloading sherpa diarization models"
 uv run --quiet --with sherpa-onnx --with numpy python "$REPO_DIR/lib/diarize_sherpa.py" --ensure-models-only
 log "✓ sherpa diarization models ready"
 
+# ---- 8. install the command -------------------------------------------------------
+step 8 "installing the whosaid command"
+"$REPO_DIR/whosaid" install
+
 echo "" >&2
 log "bootstrap complete."
 log "macOS will ask for Microphone permission the first time you run 'enroll' or 'record'"
 log "— bootstrap cannot pre-grant it; approve it when prompted."
-log "Next: ./whosaid enroll"
+log "Next: whosaid enroll"
