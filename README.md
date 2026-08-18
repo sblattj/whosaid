@@ -8,6 +8,12 @@ leaves the machine.
 
 ![whosaid demo — speaker-attributed transcription on the terminal](docs/demo.gif)
 
+**whosaid** pairs **Whisper** speech-to-text with **speaker diarization** to turn a meeting,
+interview, call, or podcast recording into a transcript that says *who spoke when* — running fully
+**offline and on-device** on an Apple Silicon Mac, with no cloud service, no API keys, and no Hugging
+Face token. Think of it as `whisper` + speaker labels + voice-based speaker recognition, in one
+command.
+
 **Example output** (`meeting.speakers.txt`):
 
 ```text
@@ -19,8 +25,8 @@ leaves the machine.
 
 ## Why whosaid
 
-- **Meetings, interviews, calls** — get a transcript where turns are attributed to a person, not
-  just a wall of text.
+- **Meetings, interviews, calls, podcasts** — get a transcript where every turn is attributed to a
+  person, not just a wall of text.
 - **Privacy by construction** — audio, text, and voice embeddings never leave your Mac. There's no
   cloud step to opt out of, because there isn't one.
 - **Your name on your own lines** — a one-time ~45s voice enrollment teaches whosaid your voice, so
