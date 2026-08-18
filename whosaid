@@ -69,6 +69,9 @@ USAGE
   whosaid doctor                       Read-only environment/model/device report.
   whosaid <audio> [<audio> ...] [flags]
                                         Transcribe (and by default diarize) file(s).
+  whosaid relabel <base> SPEAKER_02=Jane [SPEAKER_03=Bob ...] [-o DIR]
+                                        Name clusters from the speaker cards and
+                                        remember them for future transcripts.
   whosaid help | -h | --help           This message.
 
 TRANSCRIBE FLAGS
@@ -79,10 +82,20 @@ TRANSCRIBE FLAGS
   -l, --lang CODE     Language code (default: en; use "auto" to auto-detect).
   -f, --format FMT    txt | srt | vtt | tsv | json | all (default: all).
   -n, --name NAME     Output base name (single input only; default: input basename).
-      --speakers N     Speaker-count hint for diarization (e.g. 2 for a 1:1 call).
+      --speakers N     Speaker-count hint for diarization (e.g. 2 for a 1:1 call;
+                       omit to auto-detect the number of speakers).
+  -j, --jobs N         Parallel diarization workers for long audio (default: auto).
+      --chunk-seconds S Window length for parallel diarization (default: auto).
+      --no-chunk       Diarize the whole file in one pass (disable parallel chunking).
       --no-diarize     Skip speaker diarization.
       --diarize        Force diarization on (default already on).
   -h, --help          This message.
+
+  Diarization auto-detects the speaker count, writes <base>.speaker-cards.txt with
+  a few representative snippets per speaker (so you can tell who each one is), and
+  auto-names anyone already in your local speaker registry. Name the rest with
+  'whosaid relabel'. Long recordings (>15 min) are diarized in parallel windows and
+  stitched back into consistent speakers automatically — much faster, same result.
 
 RECORD FLAGS
   --label L           Suffix the recording filename with -L.
@@ -92,6 +105,9 @@ ENV OVERRIDES
   WHOSAID_MODEL        Default Whisper model repo.
   WHOSAID_LANG         Default language code.
   WHOSAID_VOICE_REFS   Directory of enrollment clips (default: ./voices).
+  WHOSAID_SPEAKER_DB   Local speaker registry (default: ~/.config/whosaid/speakers.json).
+  DIARIZE_EMB_NAME     Speaker-embedding model (default: English VoxCeleb ERes2Net;
+                       set the zh-cn model for Mandarin audio).
   WHOSAID_REC_DEVICE   avfoundation audio device index (default: 0).
   WHOSAID_INSTALL_DIR  Command install directory (default: ~/.local/bin).
   HF_HOME               Hugging Face cache location (Whisper model cache).
@@ -355,6 +371,9 @@ cmd_transcribe() {
   local NAME=""
   local DIARIZE=1
   local SPEAKERS=""
+  local JOBS=""
+  local CHUNK_SECONDS=""
+  local NO_CHUNK=0
   local AUDIO=()
 
   while [[ $# -gt 0 ]]; do
@@ -368,6 +387,9 @@ cmd_transcribe() {
       --no-diarize) DIARIZE=0; shift ;;
       --diarize)    DIARIZE=1; shift ;;
       --speakers)   SPEAKERS="$2"; shift 2 ;;
+      -j|--jobs)    JOBS="$2"; shift 2 ;;
+      --chunk-seconds) CHUNK_SECONDS="$2"; shift 2 ;;
+      --no-chunk)   NO_CHUNK=1; shift ;;
       -h|--help)    cmd_help; exit 0 ;;
       --)           shift; while [[ $# -gt 0 ]]; do AUDIO+=("$1"); shift; done ;;
       -*)           log "unknown option: $1"; cmd_help; exit 1 ;;
@@ -391,12 +413,17 @@ cmd_transcribe() {
     dur="$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$audio" 2>/dev/null || echo "?")"
     log "→ $audio  (${dur}s)  →  $out/"
 
-    local helper_args=("$audio" --model "$MODEL" --outdir "$out" --lang "$LANG_CODE" --format "$FORMAT")
-    [[ -n "$NAME" ]] && helper_args+=(--name "$NAME")
+    # Derive a dot-safe output base. mlx-whisper's writer runs its own
+    # os.path.splitext on the base, so any '.' in the name (e.g. "v1.2") would
+    # truncate every output file. Map anything but [A-Za-z0-9_-] to '_' and pass
+    # this base explicitly so the CLI and both helpers agree on the filenames.
+    local base="${NAME:-$(basename "${audio%.*}")}"
+    base="$(printf '%s' "$base" | tr -c 'A-Za-z0-9_-' '_')"
+
+    local helper_args=("$audio" --model "$MODEL" --outdir "$out" --lang "$LANG_CODE" --format "$FORMAT" --name "$base")
 
     uv run --quiet --with mlx-whisper python "$HELPER" "${helper_args[@]}"
 
-    local base="${NAME:-$(basename "${audio%.*}")}"
     local txt="$out/$base.txt"
     if [[ ! -s "$txt" ]]; then
       log "ERROR expected transcript not found or empty: $txt"
@@ -413,6 +440,9 @@ cmd_transcribe() {
       if [[ -f "$DIARIZER" ]]; then
         local dargs=("$audio" --whisper-json "$out/$base.json" --outdir "$out" --name "$base")
         [[ -n "$SPEAKERS" ]] && dargs+=(--num-speakers "$SPEAKERS")
+        [[ -n "$JOBS" ]] && dargs+=(--jobs "$JOBS")
+        [[ -n "$CHUNK_SECONDS" ]] && dargs+=(--chunk-seconds "$CHUNK_SECONDS")
+        [[ "$NO_CHUNK" == "1" ]] && dargs+=(--no-chunk)
         if [[ -d "$VOICE_REFS" ]]; then
           for ref in "$VOICE_REFS"/*.wav "$VOICE_REFS"/*.m4a; do
             [[ -f "$ref" ]] || continue
@@ -443,6 +473,44 @@ cmd_transcribe() {
   log "done in ${SECONDS}s."
 }
 
+# ---- relabel -----------------------------------------------------------------
+# After reading the speaker cards, put real names on clusters and remember them.
+#   whosaid relabel <base|sidecar.diarization.json> SPEAKER_02=Jane SPEAKER_03=Bob [-o DIR]
+# Applies names to the cached diarization sidecar (no re-transcription), persists
+# each named voiceprint to the local registry (~/.config/whosaid/speakers.json by
+# default) so the person is auto-named in future transcripts, and rewrites the
+# speaker-labeled transcript + cards.
+cmd_relabel() {
+  local target="" outdir="" specs=()
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      -o|--outdir) outdir="$2"; shift 2 ;;
+      *=*)         specs+=(--save-speaker "$1"); shift ;;
+      *)           if [[ -z "$target" ]]; then target="$1"; else log "relabel: unexpected arg '$1'"; exit 1; fi; shift ;;
+    esac
+  done
+  [[ -z "$target" ]] && { log "relabel: need a base name or sidecar path. e.g. whosaid relabel meeting SPEAKER_02=Jane"; exit 1; }
+  [[ ${#specs[@]} -eq 0 ]] && { log "relabel: need at least one SPEAKER_XX=Name assignment"; exit 1; }
+
+  # Resolve the sidecar path.
+  local sidecar=""
+  if [[ -f "$target" ]]; then
+    sidecar="$target"
+  elif [[ -f "$target.diarization.json" ]]; then
+    sidecar="$target.diarization.json"
+  elif [[ -n "$outdir" && -f "$outdir/$target.diarization.json" ]]; then
+    sidecar="$outdir/$target.diarization.json"
+  else
+    log "relabel: could not find a diarization sidecar for '$target'"
+    log "  looked for: $target, ./$target.diarization.json${outdir:+, $outdir/$target.diarization.json}"
+    exit 1
+  fi
+  local sdir; sdir="$(cd -P "$(dirname "$sidecar")" && pwd)"
+  log "relabel: using sidecar $sidecar"
+  uv run --quiet --with sherpa-onnx --with numpy python "$DIARIZER" \
+    --relabel "$sidecar" --outdir "$sdir" "${specs[@]}"
+}
+
 # ---- dispatch --------------------------------------------------------------------
 case "${1:-}" in
   setup)
@@ -456,6 +524,9 @@ case "${1:-}" in
     ;;
   record)
     cmd_record "${@:2}"
+    ;;
+  relabel)
+    cmd_relabel "${@:2}"
     ;;
   doctor)
     cmd_doctor

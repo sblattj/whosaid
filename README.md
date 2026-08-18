@@ -25,6 +25,15 @@ leaves the machine.
   cloud step to opt out of, because there isn't one.
 - **Your name on your own lines** — a one-time ~45s voice enrollment teaches whosaid your voice, so
   your turns read as your name instead of `SPEAKER_00`.
+- **Tells you how many people spoke** — the number of distinct speakers is auto-detected and
+  reported up front, with per-speaker turn counts and talk time.
+- **Speaker cards to identify who's who** — for every speaker, whosaid writes a card of that voice's
+  most representative snippets, so you can read a few lines and know who was talking.
+- **Remembers people you name** — identify a speaker once with `whosaid relabel`, and their
+  voiceprint is saved to a private local registry so they're auto-named in every future transcript.
+- **Fast on long recordings** — recordings over ~15 min are diarized in parallel windows and
+  stitched back into consistent speakers by voiceprint, so an 80-minute meeting is minutes, not
+  tens of minutes, with the same result as a single-pass run.
 - **No accounts, no API keys, no Hugging Face token** — every model comes from an open, ungated
   source.
 
@@ -61,6 +70,7 @@ command without copying or duplicating the implementation.
 | `whosaid enroll [Name]` | Records ~45s from the mic reading a printed passage, saves `voices/<Name>.wav`. |
 | `whosaid record [--label L]` | Foreground mic capture to `recordings/<timestamp>[-label].m4a`, then transcribes automatically. |
 | `whosaid <audio>… [flags]` | The default command: transcribe + diarize + label one or more audio files. |
+| `whosaid relabel <base> SPEAKER_02=Jane …` | Put real names on clusters after reading the speaker cards. Rewrites the transcript + cards and saves each named voiceprint to the local registry for future transcripts. No re-transcription. |
 | `whosaid doctor` | Read-only environment report. |
 
 ### Key flags (on `whosaid <audio>…`)
@@ -73,7 +83,10 @@ command without copying or duplicating the implementation.
 | `-l, --lang LANG` | Force the transcription language. |
 | `-f, --format FMT` | Output format: `txt`, `srt`, `vtt`, `tsv`, `json`, or `all`. |
 | `-n, --name NAME` | Override the output base name (single input only; default: derived from the input filename). |
-| `--speakers N` | Hint the expected number of speakers to the diarization clustering step. |
+| `--speakers N` | Hint the expected number of speakers. On long recordings this is recommended — auto-detect can over-segment. |
+| `-j, --jobs N` | Parallel diarization workers for long audio (default: auto, ~cores−2, capped at 8). |
+| `--chunk-seconds S` | Window length for parallel diarization (default: auto — about `--jobs` windows, min 300s). |
+| `--no-chunk` | Diarize the whole file in a single pass (disable parallel chunking). |
 | `--no-diarize` | Skip diarization; write the plain transcript only. |
 
 ### Environment variables
@@ -83,6 +96,8 @@ command without copying or duplicating the implementation.
 | `WHOSAID_MODEL` | Default Whisper model, overridden by `-m`. |
 | `WHOSAID_LANG` | Default transcription language, overridden by `-l`. |
 | `WHOSAID_VOICE_REFS` | Override the directory of enrollment voice clips (default: `voices/`). |
+| `WHOSAID_SPEAKER_DB` | Local speaker registry of named voiceprints (default: `~/.config/whosaid/speakers.json`). Private, never pushed. |
+| `DIARIZE_EMB_NAME` | Speaker-embedding model. Default is NeMo `nemo_en_titanet_small.onnx` (English-native, ~2.5× faster than ERes2Net in sherpa's benchmark). Alternatives from the same release: `3dspeaker_speech_eres2net_sv_en_voxceleb_16k.onnx` (English ERes2Net) or `…_zh-cn_…` for Mandarin. Registry voiceprints are keyed by model, so switching re-enrolls speakers. |
 | `WHOSAID_REC_DEVICE` | avfoundation input device used by `record` and `enroll`. |
 | `WHOSAID_INSTALL_DIR` | Command install directory used by `whosaid install` (default: `~/.local/bin`). |
 | `HF_HOME` | Hugging Face cache location (where the Whisper model lands). |
@@ -112,10 +127,18 @@ runs on the CPU via sherpa-onnx offline diarization: pyannote's `segmentation-3.
 who's speaking when, 3D-Speaker's ERes2Net embeds each turn, and clustering (optionally hinted by
 `--speakers N`) groups turns into speakers. Both diarization models are small (~30 MB total), ungated
 GitHub releases — no Hugging Face token required — cached locally in `~/.cache/sherpa-diarization/`.
-Finally, every clip in `voices/` is embedded the same way and matched to a cluster by cosine
-similarity (a match at or above 0.40 names the cluster); unmatched clusters keep a `SPEAKER_00`-style
-label. Aside from the one-time model downloads, everything runs in ephemeral `uv` environments, so
-there's no persistent Python install left behind on your machine.
+Finally, every clip in `voices/` — plus every voiceprint in your local registry — is embedded the
+same way and matched to a cluster by cosine similarity (a match at or above 0.40 names the cluster);
+unmatched clusters keep a `SPEAKER_00`-style label. Aside from the one-time model downloads,
+everything runs in ephemeral `uv` environments, so there's no persistent Python install left behind
+on your machine.
+
+**Long recordings run in parallel.** For audio over ~15 minutes, diarization splits into
+non-overlapping time windows that are segmented and embedded concurrently across CPU workers, then a
+single global clustering pass over every turn's voiceprint recovers speakers that stay consistent
+across window boundaries. Because the clustering sees all turns at once, the result matches a
+single-pass run while finishing several times faster. Pass `--no-chunk` to force a single pass, or
+`--jobs`/`--chunk-seconds` to tune it.
 
 ## Output files
 
@@ -128,6 +151,8 @@ there's no persistent Python install left behind on your machine.
 | `<base>.json` | Full Whisper segment output. |
 | `<base>.rttm` | Raw diarization turns, standard RTTM format. |
 | `<base>.speakers.txt` | Speaker-labeled transcript: Whisper text merged with diarization turns and enrollment names. |
+| `<base>.speaker-cards.txt` | One card per speaker with turn count, talk time, and representative snippets — read it to identify who each `SPEAKER_NN` is, then name them with `whosaid relabel`. |
+| `<base>.diarization.json` | Cached segments + per-cluster voiceprints, so `whosaid relabel` can rename and persist speakers without re-diarizing. |
 
 ## Troubleshooting
 
@@ -145,10 +170,18 @@ there's no persistent Python install left behind on your machine.
   CLI: the bare CLI's single-temperature default is exactly the configuration that lets this happen,
   whereas the library call keeps the temperature-fallback ladder, disables conditioning on previous
   text, and applies a hallucination-silence threshold.
-- **Speakers show up as `SPEAKER_00` / `SPEAKER_01` instead of a name.** No enrolled voice matched
-  closely enough. Enroll the missing person (`whosaid enroll <Name>`), or check that
-  `WHOSAID_VOICE_REFS` (or `voices/`) points at the clip you expect — naming uses a cosine-similarity
-  threshold (0.40), so a short or noisy enrollment clip can fall just short of it.
+- **Speakers show up as `SPEAKER_00` / `SPEAKER_01` instead of a name.** No enrolled voice or
+  registry entry matched closely enough. Read `<base>.speaker-cards.txt` to tell who each cluster is,
+  then run `whosaid relabel <base> SPEAKER_01=Name` — this labels them and remembers them for next
+  time. (Enrollment via `whosaid enroll <Name>` still works too.) Naming uses a cosine-similarity
+  threshold (0.40), so a short or noisy sample can fall just short of it.
+- **Distinct people get merged into one speaker (or the count is too low).** The speaker-embedding
+  model must match the spoken language. whosaid defaults to an English (VoxCeleb) model; on English
+  audio the Mandarin-trained model cannot tell similar voices apart and collapses them. For
+  predominantly Mandarin audio, set `DIARIZE_EMB_NAME` to the `…zh-cn…` model from the same release.
+- **The speaker count looks one too high, with a cluster that has ~1 second of speech.** Forcing
+  `--speakers N` too high can carve a phantom cluster out of crosstalk. Omit `--speakers` to
+  auto-detect, which is usually more accurate.
 
 ## Testing
 
