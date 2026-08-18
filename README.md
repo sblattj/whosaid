@@ -45,6 +45,10 @@ command.
 
 ## How it compares
 
+**Looking for a MacWhisper, whisperX, or aTrain alternative?** If you want speaker-attributed
+transcription that runs fully offline on Apple Silicon and can put real *names* on voices — not just
+`SPEAKER_00` labels — that's the gap whosaid fills. Here's how it stacks up:
+
 | | whosaid | whisperX | plain mlx-whisper | cloud transcription APIs |
 |---|---|---|---|---|
 | Speaker labels | Yes | Yes | No | Varies by provider |

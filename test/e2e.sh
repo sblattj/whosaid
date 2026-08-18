@@ -359,7 +359,86 @@ CH_N="$(nspk "$TMP/chunk.out")"
 echo "parallel vs single-pass OK ($CH_N speakers each)"
 
 # ---------------------------------------------------------------------------
-# 10. Isolation proof: the user's REAL registry was never touched.
+# 10. Output-artifact + format coverage. Zero extra cost: assert on the
+#     section-6 run's outputs already sitting in "$TMP/out/$BASE.*". Every
+#     documented format must exist and be non-empty, the human-facing speaker
+#     cards must carry a real per-card header, and the diarization sidecar that
+#     `relabel` reloads must be present.
+# ---------------------------------------------------------------------------
+echo "-- checking output artifacts + formats --"
+
+for ext in srt vtt tsv json rttm; do
+  [ -s "$TMP/out/$BASE.$ext" ] \
+    || fail "missing or empty .$ext output: $TMP/out/$BASE.$ext (--format all + diarize must emit every format)"
+done
+
+CARDS="$TMP/out/$BASE.speaker-cards.txt"
+[ -s "$CARDS" ] || fail "missing or empty speaker cards file: $CARDS"
+grep -q 'talk time' "$CARDS" \
+  || fail "speaker cards $CARDS carry no per-card 'N turns, HH:MM:SS talk time' header (card renderer regressed)"
+grep -qE '(Alice|SPEAKER_[0-9]+).*talk time' "$CARDS" \
+  || fail "speaker cards $CARDS have no card for a named or SPEAKER_NN cluster"
+
+SIDECAR="$TMP/out/$BASE.diarization.json"
+[ -s "$SIDECAR" ] \
+  || fail "missing or empty diarization sidecar: $SIDECAR (relabel reloads this cached sidecar)"
+
+echo "output artifacts + formats OK"
+
+# ---------------------------------------------------------------------------
+# 11. `whosaid doctor` smoke — no audio, fast. Guards the v1.0.0 doctor
+#     surface: it must still report BOTH the active speaker-embedding model
+#     line AND the speaker-registry line, and the registry line must reflect
+#     the exported temp WHOSAID_SPEAKER_DB (never the user's real registry).
+#     rc is not decisive on its own — doctor legitimately prints '✗' lines for
+#     optional/missing deps — but it is reported in any failure message.
+# ---------------------------------------------------------------------------
+echo "-- checking doctor report --"
+
+set +e
+DOCTOR_OUT="$("$REPO/whosaid" doctor 2>&1)"
+DOCTOR_RC=$?
+set -e
+
+printf '%s\n' "$DOCTOR_OUT" | grep -q 'speaker-embedding model' \
+  || { printf '%s\n' "$DOCTOR_OUT" >&2; fail "doctor (rc=$DOCTOR_RC) did not report the speaker-embedding model line"; }
+printf '%s\n' "$DOCTOR_OUT" | grep -q 'speaker registry:' \
+  || { printf '%s\n' "$DOCTOR_OUT" >&2; fail "doctor (rc=$DOCTOR_RC) did not report the speaker-registry line"; }
+printf '%s\n' "$DOCTOR_OUT" | grep -qF "$SPEAKER_DB" \
+  || { printf '%s\n' "$DOCTOR_OUT" >&2; fail "doctor (rc=$DOCTOR_RC) registry line did not reflect the temp WHOSAID_SPEAKER_DB ($SPEAKER_DB)"; }
+
+echo "doctor report OK (rc=$DOCTOR_RC)"
+
+# ---------------------------------------------------------------------------
+# 12. `--no-diarize` path — plain transcript only, no speaker attribution.
+#     Proves diarization is actually skipped (not merely empty): the plain
+#     transcript must be written, and NO .speakers.txt may exist. Fresh outdir
+#     so it can't inherit section 6's outputs. Costs one extra Whisper pass on
+#     the ~30s clip (acceptable).
+# ---------------------------------------------------------------------------
+echo "-- checking --no-diarize path --"
+
+mkdir -p "$TMP/plain"
+PLAIN_LOG="$TMP/plain.log"
+set +e
+WHOSAID_VOICE_REFS="$TMP/refs" "$REPO/whosaid" "$TMP/dialog.wav" -n plain --no-diarize -o "$TMP/plain" > "$PLAIN_LOG" 2>&1
+RC=$?
+set -e
+if [ "$RC" -ne 0 ]; then
+  echo "---- whosaid --no-diarize run log ----" >&2
+  cat "$PLAIN_LOG" >&2
+  fail "whosaid --no-diarize exited $RC (expected 0)"
+fi
+
+[ -s "$TMP/plain/plain.txt" ] \
+  || fail "missing or empty plain transcript under --no-diarize: $TMP/plain/plain.txt"
+[ ! -e "$TMP/plain/plain.speakers.txt" ] \
+  || fail "--no-diarize still produced a speaker-labeled transcript ($TMP/plain/plain.speakers.txt) — diarization was NOT skipped"
+
+echo "--no-diarize path OK"
+
+# ---------------------------------------------------------------------------
+# 13. Isolation proof: the user's REAL registry was never touched.
 # ---------------------------------------------------------------------------
 REAL_DB_AFTER=""
 [ -f "$REAL_DB" ] && REAL_DB_AFTER="$(shasum "$REAL_DB" | awk '{print $1}')"

@@ -4,6 +4,27 @@ All notable changes to whosaid are documented here. This project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html) and the format of
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.0.1] — 2026-08-17
+
+Documentation and test-coverage patch — no change to the transcription or
+diarization pipeline.
+
+### Documentation
+
+- **README tuned for discoverability.** An above-the-fold summary now names the
+  terms people search for — speaker diarization, Whisper speech-to-text, "who
+  spoke when," offline/on-device, voice-based speaker recognition — and the
+  comparison section opens with a "MacWhisper / whisperX / aTrain alternative"
+  framing.
+
+### Tests
+
+- **Expanded `test/e2e.sh` coverage.** Asserts every output format and artifact
+  from a run (`.srt`, `.vtt`, `.tsv`, `.json`, `.rttm`, the speaker-cards file,
+  and the `.diarization.json` sidecar); smoke-tests `whosaid doctor`'s
+  embedding-model and registry report; and exercises `--no-diarize` (plain
+  transcript, no `.speakers.txt`).
+
 ## [1.0.0] — 2026-08-17
 
 First stable release. whosaid is local, speaker-attributed transcription for
@@ -72,4 +93,5 @@ attributed to a person — who said what — with nothing ever leaving your Mac.
 - `ffmpeg` and `uv` (Homebrew). Python is used only through ephemeral `uv`
   environments — no persistent install is left behind.
 
+[1.0.1]: https://github.com/sblattj/whosaid/releases/tag/v1.0.1
 [1.0.0]: https://github.com/sblattj/whosaid/releases/tag/v1.0.0
