@@ -4,6 +4,31 @@ All notable changes to whosaid are documented here. This project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html) and the format of
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.0.2] — 2026-08-18
+
+Documentation-accuracy patch — no change to the transcription or diarization
+pipeline. A `/cbm-atlas` architecture audit confirmed the README already matches
+the code; the drift was in the design doc, now corrected.
+
+### Documentation
+
+- **`docs/design.md` refreshed to the current architecture.** The default
+  speaker-embedding model is corrected to NeMo TitaNet-small (it had named
+  3D-Speaker ERes2Net, now listed only as an opt-in `DIARIZE_EMB_NAME`
+  alternative). Added the `install` and `relabel` subcommands, the persistent
+  local speaker registry, `.speaker-cards.txt`, the `.diarization.json` sidecar,
+  and the parallel long-audio path so the doc matches the implementation.
+- **README wording tightened.** The long-audio parallel path now says it
+  "recovers the same speakers" as a single-pass run rather than "the same
+  result" — the whole-file and chunked paths use different clustering algorithms,
+  so bit-identical output isn't guaranteed.
+
+### Build
+
+- `bootstrap.sh`'s disk-space check now distinguishes the ~4 GB recommended free
+  space from the ~1.5 GB Whisper model download.
+- The generated `/cbm-atlas` output directory (`.cbm-atlas/`) is now gitignored.
+
 ## [1.0.1] — 2026-08-17
 
 Documentation and test-coverage patch — no change to the transcription or
@@ -93,5 +118,6 @@ attributed to a person — who said what — with nothing ever leaving your Mac.
 - `ffmpeg` and `uv` (Homebrew). Python is used only through ephemeral `uv`
   environments — no persistent install is left behind.
 
+[1.0.2]: https://github.com/sblattj/whosaid/releases/tag/v1.0.2
 [1.0.1]: https://github.com/sblattj/whosaid/releases/tag/v1.0.1
 [1.0.0]: https://github.com/sblattj/whosaid/releases/tag/v1.0.0
