@@ -6,7 +6,7 @@ leaves the machine.
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 ![Platform: macOS Apple Silicon](https://img.shields.io/badge/platform-macOS%20Apple%20Silicon-lightgrey.svg)
 
-<!-- demo -->
+![whosaid demo — speaker-attributed transcription on the terminal](docs/demo.gif)
 
 **Example output** (`meeting.speakers.txt`):
 
@@ -43,7 +43,9 @@ leaves the machine.
 |---|---|---|---|---|
 | Speaker labels | Yes | Yes | No | Varies by provider |
 | Names speakers by voice | Yes (enrollment) | No | No | No |
+| Remembers speakers across meetings | Yes — persistent local voiceprint registry | No | No | No |
 | Runs fully offline | Yes | Partial — needs a gated model download | Yes | No |
+| Parallel diarization on long audio | Yes | No | — (no diarization) | Varies by provider |
 | Needs an account / token | No | Yes — Hugging Face token for gated pyannote models | No | Yes — API key |
 | Install weight | `ffmpeg` + `uv`, ephemeral environments | `torch` + `pyannote` + the full HF stack | `mlx-whisper` only | None (network client only) |
 
@@ -124,7 +126,8 @@ Transcription uses MLX Whisper (`mlx-community/whisper-large-v3-turbo` by defaul
 path: the temperature-fallback ladder stays enabled, `condition_on_previous_text` is turned off, and
 a hallucination-silence threshold keeps dead air from turning into repeated-token filler. Diarization
 runs on the CPU via sherpa-onnx offline diarization: pyannote's `segmentation-3.0` ONNX model finds
-who's speaking when, 3D-Speaker's ERes2Net embeds each turn, and clustering (optionally hinted by
+who's speaking when, a speaker-embedding model (NeMo TitaNet-small by default, configurable via
+`DIARIZE_EMB_NAME`) embeds each turn, and clustering (optionally hinted by
 `--speakers N`) groups turns into speakers. Both diarization models are small (~30 MB total), ungated
 GitHub releases — no Hugging Face token required — cached locally in `~/.cache/sherpa-diarization/`.
 Finally, every clip in `voices/` — plus every voiceprint in your local registry — is embedded the
@@ -176,8 +179,9 @@ single-pass run while finishing several times faster. Pass `--no-chunk` to force
   time. (Enrollment via `whosaid enroll <Name>` still works too.) Naming uses a cosine-similarity
   threshold (0.40), so a short or noisy sample can fall just short of it.
 - **Distinct people get merged into one speaker (or the count is too low).** The speaker-embedding
-  model must match the spoken language. whosaid defaults to an English (VoxCeleb) model; on English
-  audio the Mandarin-trained model cannot tell similar voices apart and collapses them. For
+  model must match the spoken language. whosaid defaults to an English-native model (NeMo
+  TitaNet-small); on English audio the Mandarin-trained model cannot tell similar voices apart and
+  collapses them. For
   predominantly Mandarin audio, set `DIARIZE_EMB_NAME` to the `…zh-cn…` model from the same release.
 - **The speaker count looks one too high, with a cluster that has ~1 second of speech.** Forcing
   `--speakers N` too high can carve a phantom cluster out of crosstalk. Omit `--speakers` to

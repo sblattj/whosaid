@@ -6,3 +6,4 @@ recordings/*
 *.log
 __pycache__/
 .codex/
+.claude/

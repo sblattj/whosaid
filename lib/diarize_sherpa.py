@@ -3,7 +3,8 @@
 diarize_sherpa.py: fully local speaker diarization + speaker-labeled transcripts.
 
 Runs sherpa-onnx offline speaker diarization (pyannote segmentation-3.0 ONNX +
-3D-Speaker ERes2Net embeddings, ungated GitHub-release models, CPU) over an audio
+a configurable speaker-embedding model — NeMo TitaNet-small by default, see the
+DIARIZE_EMB_NAME env var; ungated GitHub-release models, CPU) over an audio
 file, optionally names the anonymous clusters by matching them against reference
 voice clips (enrollment), and merges the result with an MLX-Whisper .json transcript
 into a speaker-labeled transcript (<base>.speakers.txt) plus an RTTM file.
@@ -68,6 +69,16 @@ SPEAKER_DB = Path(
 
 def log(msg: str) -> None:
     print(f"diarize: {msg}", file=sys.stderr)
+
+
+def emb_friendly(name: str) -> str:
+    """Human-readable label for the active speaker-embedding model (transcript headers)."""
+    known = {
+        "nemo_en_titanet_small.onnx": "NeMo TitaNet-small",
+        "3dspeaker_speech_eres2net_sv_en_voxceleb_16k.onnx": "3D-Speaker ERes2Net (en)",
+        "3dspeaker_speech_eres2net_base_sv_zh-cn_3dspeaker_16k.onnx": "3D-Speaker ERes2Net (zh-cn)",
+    }
+    return known.get(name, name)
 
 
 def load_registry() -> dict:
@@ -372,7 +383,8 @@ def build_turns(segs: list, whisper_json: str | None) -> list:
 
 
 def render_outputs(outdir: Path, base: str, segs: list, speakers: list, names: dict,
-                   turns: list, snippets_n: int, detect_mode: str) -> None:
+                   turns: list, snippets_n: int, detect_mode: str,
+                   emb_name: str = EMB_NAME) -> None:
     """Write RTTM, the speaker-labeled transcript, and the human-facing speaker cards."""
     talk = {sp: 0.0 for sp in speakers}
     nturns = {sp: 0 for sp in speakers}
@@ -391,7 +403,8 @@ def render_outputs(outdir: Path, base: str, segs: list, speakers: list, names: d
         out_path = outdir / f"{base}.speakers.txt"
         with open(out_path, "w") as f:
             f.write(f"# Speaker-labeled transcript: {base}\n")
-            f.write(f"# Diarization: sherpa-onnx (pyannote segmentation-3.0 + ERes2Net), local.\n")
+            f.write(f"# Diarization: sherpa-onnx (pyannote segmentation-3.0 + "
+                    f"{emb_friendly(emb_name)}), local.\n")
             f.write(f"# Speakers ({len(speakers)}): {', '.join(sorted(set(names.values())))}\n\n")
             for sp, start, texts in turns:
                 f.write(f"[{hms(start)}] {names[sp]}: {' '.join(texts)}\n\n")
@@ -463,7 +476,7 @@ def do_relabel(args) -> None:
     sidecar.write_text(json.dumps(data, indent=2))
     turns = build_turns(segs, data.get("whisper_json"))
     render_outputs(outdir, base, segs, speakers, names, turns, args.snippets,
-                   f"{len(speakers)} speakers (relabel)")
+                   f"{len(speakers)} speakers (relabel)", emb_name=emb_model)
     print(json.dumps({"num_speakers": len(speakers), "clusters": names, "relabeled": True}))
 
 
@@ -529,7 +542,10 @@ def main() -> None:
         chunk_seconds = args.chunk_seconds
     else:  # auto: ~`jobs` windows, but never shorter than 300s (keeps enough voice per chunk)
         chunk_seconds = max(300.0, float(math.ceil(total_dur / jobs))) if total_dur else 0.0
-    use_chunk = (not args.no_chunk) and total_dur > 900.0 and jobs > 1 and 0 < chunk_seconds < total_dur
+    # Auto-chunk only long audio (>15 min), but honor an EXPLICIT --chunk-seconds at any length.
+    explicit_chunk = bool(args.chunk_seconds and args.chunk_seconds > 0)
+    use_chunk = ((not args.no_chunk) and jobs > 1 and 0 < chunk_seconds < total_dur
+                 and (total_dur > 900.0 or explicit_chunk))
 
     # Lazy embedder for --ref clip matching (the chunked path builds no in-main extractor).
     _ref_ex = {}

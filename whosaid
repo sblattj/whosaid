@@ -106,8 +106,8 @@ ENV OVERRIDES
   WHOSAID_LANG         Default language code.
   WHOSAID_VOICE_REFS   Directory of enrollment clips (default: ./voices).
   WHOSAID_SPEAKER_DB   Local speaker registry (default: ~/.config/whosaid/speakers.json).
-  DIARIZE_EMB_NAME     Speaker-embedding model (default: English VoxCeleb ERes2Net;
-                       set the zh-cn model for Mandarin audio).
+  DIARIZE_EMB_NAME     Speaker-embedding model (default: NeMo TitaNet-small,
+                       English-native; set the zh-cn model for Mandarin audio).
   WHOSAID_REC_DEVICE   avfoundation audio device index (default: 0).
   WHOSAID_INSTALL_DIR  Command install directory (default: ~/.local/bin).
   HF_HOME               Hugging Face cache location (Whisper model cache).
@@ -200,6 +200,26 @@ cmd_doctor() {
     echo "✓ sherpa diarization models cached under $sherpa_cache"
   else
     echo "✗ sherpa diarization models not cached — fix: ./whosaid setup"
+  fi
+
+  local emb_name="${DIARIZE_EMB_NAME:-nemo_en_titanet_small.onnx}"
+  if [[ -f "$sherpa_cache/$emb_name" ]]; then
+    echo "✓ speaker-embedding model cached: $emb_name"
+  else
+    echo "✗ speaker-embedding model not cached ($emb_name) — fix: ./whosaid setup"
+  fi
+
+  local speaker_db="${WHOSAID_SPEAKER_DB:-$HOME/.config/whosaid/speakers.json}"
+  if [[ -f "$speaker_db" ]]; then
+    local nvoiceprints=""
+    if command -v python3 >/dev/null 2>&1; then
+      nvoiceprints="$(python3 -c 'import json,sys;print(len(json.load(open(sys.argv[1])).get("speakers",[])))' "$speaker_db" 2>/dev/null || echo '?')"
+    else
+      nvoiceprints="$(grep -c '"name"' "$speaker_db" 2>/dev/null || echo '?')"
+    fi
+    echo "✓ speaker registry: $speaker_db ($nvoiceprints voiceprint(s))"
+  else
+    echo "  speaker registry: none yet — name speakers with 'whosaid relabel' (default: $speaker_db)"
   fi
 
   local voices_found=0
