@@ -11,9 +11,10 @@ gated models.
 - **Whisper is local and excellent, but it doesn't know who spoke.** Diarization tooling that does
   (pyannote on torch) typically needs a HF token for gated models and a heavy Python environment.
 - **whosaid composes two fully-open pieces**: MLX Whisper (Apple's MLX framework — transcription on
-  the Mac GPU via Metal) and sherpa-onnx offline diarization (pyannote segmentation-3.0 ONNX +
-  3D-Speaker ERes2Net embeddings — ungated GitHub-release models, CPU). Ephemeral `uv` environments
-  mean no persistent Python install.
+  the Mac GPU via Metal) and sherpa-onnx offline diarization (pyannote segmentation-3.0 ONNX + a
+  NeMo TitaNet-small speaker embedding by default — ungated GitHub-release models, CPU; the
+  embedding is configurable via `DIARIZE_EMB_NAME`, with 3D-Speaker ERes2Net (English) and a zh-cn
+  model as opt-in alternatives). Ephemeral `uv` environments mean no persistent Python install.
 - **Enrollment names the clusters.** Diarization alone yields `SPEAKER_00/01`. whosaid matches each
   cluster's voice embedding against reference clips in `voices/` by cosine similarity, so
   `Alice.wav` makes the transcript read `Alice: …`.
@@ -21,7 +22,7 @@ gated models.
 ## Components
 
 ```
-whosaid              # CLI dispatcher (bash): setup | enroll | record | doctor | <audio files>
+whosaid              # CLI dispatcher (bash): setup | install | enroll | record | relabel | doctor | <audio files>
 bootstrap.sh         # capability check, dependency install, model pre-download
 lib/transcribe_mlx.py  # MLX Whisper runner (hallucination-hardened)
 lib/diarize_sherpa.py  # diarization + voice-ref cluster naming
@@ -66,14 +67,35 @@ The pipeline, per file:
    tuple, sets `condition_on_previous_text=False`, and uses `hallucination_silence_threshold` so
    dead air doesn't spawn repeated-token filler. Writes `.txt/.srt/.vtt/.tsv/.json` per `--format`.
 2. **Diarize** — `uv run --with sherpa-onnx --with numpy` invokes `lib/diarize_sherpa.py`:
-   pyannote segmentation-3.0 finds speech turns, ERes2Net embeds them, clustering groups them
-   (`--speakers N` hints the count), every `voices/*.wav` is embedded and matched to clusters by
-   cosine similarity (≥ 0.40 names the cluster). Writes `<base>.rttm` and merges with the Whisper
-   segments into `<base>.speakers.txt` — the speaker-labeled transcript.
+   pyannote segmentation-3.0 finds speech turns, a NeMo TitaNet-small embedding (the default —
+   configurable via `DIARIZE_EMB_NAME`, with 3D-Speaker ERes2Net (English) or a zh-cn model as
+   opt-in alternatives) embeds them, clustering groups them (`--speakers N` hints the count), then
+   every `voices/*.wav` — plus every voiceprint in the persistent local speaker registry
+   (`~/.config/whosaid/speakers.json`, overridable via `WHOSAID_SPEAKER_DB`; voiceprints are keyed
+   by embedding model, so switching models re-enrolls) — is embedded and matched to clusters by
+   cosine similarity (≥ 0.40 names the cluster). Writes `<base>.rttm`, merges with the Whisper
+   segments into `<base>.speakers.txt` (the speaker-labeled transcript), and emits a
+   `<base>.speaker-cards.txt` (one card per speaker — turn count, talk time, representative
+   snippets — to tell who each `SPEAKER_NN` is) plus a `<base>.diarization.json` sidecar (cached
+   segments + per-cluster voiceprints).
 3. Flags: `-o/--outdir`, `-m/--model`, `--accurate` (full large-v3 instead of turbo),
-   `-l/--lang`, `-f/--format`, `-n/--name`, `--speakers N`, `--no-diarize`.
-   Env: `WHOSAID_MODEL`, `WHOSAID_LANG`, `WHOSAID_VOICE_REFS`, `WHOSAID_REC_DEVICE`; the model
-   cache locations honor `HF_HOME` (Whisper) and `SHERPA_DIARIZE_CACHE` (diarization).
+   `-l/--lang`, `-f/--format`, `-n/--name`, `--speakers N`, `--no-diarize`, and the long-audio
+   controls `--no-chunk`, `-j/--jobs`, `--chunk-seconds`.
+   Env: `WHOSAID_MODEL`, `WHOSAID_LANG`, `WHOSAID_VOICE_REFS`, `WHOSAID_SPEAKER_DB`,
+   `DIARIZE_EMB_NAME`, `WHOSAID_REC_DEVICE`, `WHOSAID_INSTALL_DIR`; the model cache locations honor
+   `HF_HOME` (Whisper) and `SHERPA_DIARIZE_CACHE` (diarization).
+
+**Long recordings run in parallel.** Audio over ~15 min (900 s) auto-chunks: the file is split into
+non-overlapping time windows that are segmented and embedded concurrently across a process pool,
+then a single global clustering pass over every window's voiceprints recovers speakers that stay
+consistent across window boundaries — in practice the same speakers as a single-pass run, finishing
+several times faster. `--no-chunk` forces a single pass; `-j/--jobs` and `--chunk-seconds` tune the
+worker count and window length.
+
+**Relabel without re-diarizing.** `whosaid relabel <base> SPEAKER_02=Jane …` reads the
+`<base>.diarization.json` sidecar, rewrites `<base>.speakers.txt` and `<base>.speaker-cards.txt`
+with the new names, and saves each named voiceprint to the local registry — so that person is
+auto-named in future transcripts. No re-transcription, no re-diarization.
 
 ### `whosaid doctor`
 
@@ -93,8 +115,8 @@ sherpa model cache state, enrolled voices, and the avfoundation audio device lis
 `test/e2e.sh` is fully offline and self-contained: it synthesizes a two-speaker dialog with two
 macOS `say` voices, builds an enrollment clip for one of them ("Alice") into a temp voices dir
 (`WHOSAID_VOICE_REFS` override — the repo's `voices/` is never touched), runs `./whosaid` on the
-dialog with `--speakers 2`, and asserts the `.speakers.txt` exists, contains `Alice:` plus exactly
-one other speaker label, and has a plausible number of turns. Also runs `bash -n` /
+dialog with `--speakers 2`, and asserts the `.speakers.txt` exists, contains `Alice:` plus at least
+one other `SPEAKER_NN` label, and has a plausible number of turns. Also runs `bash -n` /
 `python3 -m py_compile` syntax checks over the sources.
 
 ## Non-goals (v1)

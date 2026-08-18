@@ -39,7 +39,7 @@ command.
   voiceprint is saved to a private local registry so they're auto-named in every future transcript.
 - **Fast on long recordings** — recordings over ~15 min are diarized in parallel windows and
   stitched back into consistent speakers by voiceprint, so an 80-minute meeting is minutes, not
-  tens of minutes, with the same result as a single-pass run.
+  tens of minutes, recovering the same speakers as a single-pass run.
 - **No accounts, no API keys, no Hugging Face token** — every model comes from an open, ungated
   source.
 
@@ -149,8 +149,8 @@ on your machine.
 **Long recordings run in parallel.** For audio over ~15 minutes, diarization splits into
 non-overlapping time windows that are segmented and embedded concurrently across CPU workers, then a
 single global clustering pass over every turn's voiceprint recovers speakers that stay consistent
-across window boundaries. Because the clustering sees all turns at once, the result matches a
-single-pass run while finishing several times faster. Pass `--no-chunk` to force a single pass, or
+across window boundaries. Because the clustering sees all turns at once, it recovers the same
+speakers as a single-pass run while finishing several times faster. Pass `--no-chunk` to force a single pass, or
 `--jobs`/`--chunk-seconds` to tune it.
 
 ## Output files

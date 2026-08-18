@@ -86,7 +86,7 @@ else
   avail_kb="$(df -k "$HOME" | awk 'NR==2{print $4}')"
   avail_gb=$(( avail_kb / 1024 / 1024 ))
   if [[ "$avail_gb" -lt 4 ]]; then
-    log "WARNING: only ~${avail_gb} GB free on \$HOME; the Whisper model needs ~4 GB."
+    log "WARNING: only ~${avail_gb} GB free on \$HOME; ~4 GB free disk is recommended (the Whisper model download is ~1.5 GB, plus working headroom)."
     if ! confirm "continue anyway?"; then
       log "aborted — free up disk space and re-run."
       exit 1
