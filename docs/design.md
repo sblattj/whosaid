@@ -26,6 +26,7 @@ whosaid              # CLI dispatcher (bash): setup | install | enroll | record 
 bootstrap.sh         # capability check, dependency install, model pre-download
 lib/transcribe_mlx.py  # MLX Whisper runner (hallucination-hardened)
 lib/diarize_sherpa.py  # diarization + voice-ref cluster naming
+lib/mcp_server.py    # MCP stdio server: exposes transcribe/relabel/list/doctor/enroll to AI agents (whosaid mcp)
 voices/              # enrollment clips: <Name>.wav (16 kHz mono; contents gitignored)
 recordings/          # `whosaid record` output (gitignored)
 test/e2e.sh          # offline end-to-end smoke test (synthesizes a 2-voice dialog with `say`)
@@ -101,6 +102,33 @@ auto-named in future transcripts. No re-transcription, no re-diarization.
 
 Re-runs the capability checks read-only and reports: arch/OS, brew/ffmpeg/uv versions, Whisper and
 sherpa model cache state, enrolled voices, and the avfoundation audio device list.
+
+### MCP server (`whosaid mcp`)
+
+`whosaid mcp` runs a stdio MCP (Model Context Protocol) server — `lib/mcp_server.py`, built on the
+official `mcp` Python SDK's `FastMCP` — so AI agents can drive whosaid directly, launched the same
+ephemeral way as everything else in whosaid: `uv run --with "mcp[cli]"`, no persistent install. The
+server never reimplements the pipeline — every tool **shells the existing `whosaid` CLI** as a
+subprocess, so the MCP surface and the CLI can't drift apart.
+
+Five tools, all prefixed `whosaid_`:
+
+- **`whosaid_transcribe`** — runs the transcribe + diarize pipeline on a file and returns the output
+  paths, speaker cards, and a `next_step` pointing the agent at whichever speakers still need naming.
+- **`whosaid_relabel`** — maps `SPEAKER_NN` clusters to names from the cached diarization sidecar (no
+  re-transcription, no re-diarization) and persists them to the speaker registry.
+- **`whosaid_list_speakers`** *(read-only)* — lists enrolled voice clips and registry-known speakers.
+- **`whosaid_doctor`** *(read-only)* — the same environment/model-cache readiness report as
+  `whosaid doctor`, for an agent to run before attempting a transcribe that might fail.
+- **`whosaid_enroll_from_file`** — enrolls a named voice from an existing audio clip (no mic).
+
+Cross-cutting behavior — the local-only guarantee, the output-file contract, the
+transcribe-then-relabel workflow — lives once in the server's `instructions`, loaded up front rather
+than repeated in every tool description; deeper reference (the full flag/env list, the long-audio
+parallel path, the cosine-match threshold) is a `whosaid://guide` resource an agent reads on demand.
+The interactive `enroll` and `record` commands are deliberately **not** exposed as tools — both need
+a live terminal and microphone access, which an MCP client doesn't have. Same guarantee as the CLI:
+audio, text, and voice embeddings never leave the machine.
 
 ## Error handling
 

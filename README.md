@@ -42,6 +42,9 @@ command.
   tens of minutes, recovering the same speakers as a single-pass run.
 - **No accounts, no API keys, no Hugging Face token** — every model comes from an open, ungated
   source.
+- **Usable from an AI agent, too** — `whosaid mcp` exposes transcribe, relabel, and doctor (among
+  others) as MCP tools for Claude Code, Claude Desktop, and other MCP clients, with the same
+  local-only guarantee as the CLI.
 
 ## How it compares
 
@@ -84,6 +87,38 @@ command without copying or duplicating the implementation.
 | `whosaid <audio>… [flags]` | The default command: transcribe + diarize + label one or more audio files. |
 | `whosaid relabel <base> SPEAKER_02=Jane …` | Put real names on clusters after reading the speaker cards. Rewrites the transcript + cards and saves each named voiceprint to the local registry for future transcripts. No re-transcription. |
 | `whosaid doctor` | Read-only environment report. |
+
+## Use it from an AI agent (MCP)
+
+whosaid's local, private, GPU transcription and speaker diarization are also exposed as MCP tools,
+so any MCP client — Claude Code, Claude Desktop, and others — can call them directly instead of
+shelling out to the CLI. Launch is `whosaid mcp`, a stdio server that needs only `uv`, which whosaid
+already requires; audio never leaves the machine, exactly as with the CLI.
+
+Add it to your MCP client config:
+
+```json
+{
+  "mcpServers": {
+    "whosaid": { "command": "/ABSOLUTE/PATH/TO/whosaid", "args": ["mcp"] }
+  }
+}
+```
+
+`command` is the path to the `whosaid` script itself — the checkout's `./whosaid`, or the installed
+`~/.local/bin/whosaid` symlink.
+
+| Tool | What it does |
+|---|---|
+| `whosaid_transcribe` | Transcribes + diarizes an audio file and writes the labeled transcript, speaker cards, and a sidecar for relabeling. |
+| `whosaid_relabel` | Names `SPEAKER_NN` clusters and remembers them — saved to the local registry and auto-applied to every future transcript. |
+| `whosaid_list_speakers` | Read-only: lists enrolled voices and registry names already known. |
+| `whosaid_doctor` | Read-only readiness check — models cached, deps present, mic/audio devices — run this first when a transcribe fails. |
+| `whosaid_enroll_from_file` | Enrolls a named voice from an existing audio clip, no mic needed. |
+
+`enroll` and `record` (microphone capture) stay CLI-only — they need an interactive terminal and
+Microphone permission. The first `whosaid_transcribe` call downloads ~1.5 GB of models; call
+`whosaid_doctor` first to check readiness.
 
 ### Key flags (on `whosaid <audio>…`)
 

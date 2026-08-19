@@ -8,6 +8,7 @@
 #   whosaid enroll [Name]         Record a voice sample and name a speaker cluster.
 #   whosaid record [--label L]    Record from the mic, then transcribe it.
 #   whosaid doctor                Read-only environment/model/device report.
+#   whosaid mcp                   Run the MCP server (stdio) for AI agents / Claude.
 #   whosaid <audio> [...]         Transcribe (and, by default, diarize) audio file(s).
 #   whosaid help                  This message.
 #
@@ -67,6 +68,7 @@ USAGE
   whosaid enroll [Name]                Record a voice sample, name a speaker cluster.
   whosaid record [--label L] [flags]   Record from the mic, then transcribe it.
   whosaid doctor                       Read-only environment/model/device report.
+  whosaid mcp                          Run the MCP server (stdio) for AI agents / Claude.
   whosaid <audio> [<audio> ...] [flags]
                                         Transcribe (and by default diarize) file(s).
   whosaid relabel <base> SPEAKER_02=Jane [SPEAKER_03=Bob ...] [-o DIR]
@@ -550,6 +552,11 @@ case "${1:-}" in
     ;;
   doctor)
     cmd_doctor
+    ;;
+  mcp)
+    # Pin to the tested SDK major: mcp 2.x uses MCPServer; a future 3.0 could
+    # break the API, so cap it rather than silently pull an untested major.
+    exec uv run --quiet --with "mcp[cli]>=2,<3" python "$REPO_DIR/lib/mcp_server.py"
     ;;
   help|-h|--help|"")
     cmd_help

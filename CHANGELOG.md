@@ -4,6 +4,22 @@ All notable changes to whosaid are documented here. This project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html) and the format of
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.1.0] — 2026-08-18
+
+### Added
+
+- **MCP server (`whosaid mcp`).** A stdio MCP (Model Context Protocol) server (`lib/mcp_server.py`,
+  built on the official `mcp` Python SDK's `FastMCP`) exposes whosaid to AI agents. Launched via
+  `whosaid mcp`, using the same ephemeral `uv run --with "mcp[cli]"` pattern as the rest of
+  whosaid — no persistent install.
+- **Five tools**, all prefixed `whosaid_`: `whosaid_transcribe`, `whosaid_relabel`,
+  `whosaid_list_speakers` (read-only), `whosaid_doctor` (read-only), and
+  `whosaid_enroll_from_file`. Every tool shells the existing `whosaid` CLI rather than
+  reimplementing the pipeline, so the MCP surface and the CLI can't drift apart.
+- **`whosaid://guide` resource** — an on-demand deep reference (full flag/env list, the long-audio
+  parallel path, the cosine-match threshold) an agent can read without it bloating every tool's
+  always-loaded description.
+
 ## [1.0.2] — 2026-08-18
 
 Documentation-accuracy patch — no change to the transcription or diarization
@@ -118,6 +134,7 @@ attributed to a person — who said what — with nothing ever leaving your Mac.
 - `ffmpeg` and `uv` (Homebrew). Python is used only through ephemeral `uv`
   environments — no persistent install is left behind.
 
+[1.1.0]: https://github.com/sblattj/whosaid/releases/tag/v1.1.0
 [1.0.2]: https://github.com/sblattj/whosaid/releases/tag/v1.0.2
 [1.0.1]: https://github.com/sblattj/whosaid/releases/tag/v1.0.1
 [1.0.0]: https://github.com/sblattj/whosaid/releases/tag/v1.0.0
