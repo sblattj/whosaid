@@ -1,0 +1,43 @@
+name: prxref review
+
+# pull_request_target runs in the BASE repository context, so it has access to
+# secrets and a write token even for fork PRs. This workflow never checks out
+# or executes the pull request's code: prxref fetches the diff over the GitHub
+# API from the PR URL alone, running from PyPI.
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  review:
+    name: prxref review
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # prxref is non-blocking by design (exits 0 on all network/LLM/forge errors),
+    # but continue-on-error provides belt-and-braces protection for CI continuity.
+    continue-on-error: true
+
+    steps:
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+
+      - name: Run prxref review
+        env:
+          PRXREF_GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PRXREF_LLM_BACKEND: http
+          PRXREF_LLM_BASE_URL: ${{ vars.PRXREF_LLM_BASE_URL }}
+          PRXREF_LLM_API_KEY: ${{ secrets.PRXREF_LLM_API_KEY }}
+          PRXREF_LLM_MODELS: ${{ vars.PRXREF_LLM_MODELS }}
+          PRXREF_LLM_REASONING_EFFORT: ${{ vars.PRXREF_LLM_REASONING_EFFORT }}
+          # Per-WORKER-CHUNK completion budget, not a per-run one. Needs the
+          # literal fallback because an unset repository variable renders as
+          # the empty string and prxref falls back to 4096, which truncates
+          # reasoning models before the findings JSON is emitted.
+          PRXREF_LLM_MAX_TOKENS: ${{ vars.PRXREF_LLM_MAX_TOKENS || '32000' }}
+        run: uvx prxref review --pr-url "${{ github.event.pull_request.html_url }}" -v
