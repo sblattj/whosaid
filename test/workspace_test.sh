@@ -13,6 +13,13 @@
 # Skips (exit 0, clear message) when python3/ffmpeg/ffprobe/shasum are
 # missing. macOS/BSD only: BSD grep/awk, bash 3.2 (no associative
 # arrays, no bash-4-isms).
+#
+# Sections 9-16 cover issue #3 (the living roll-up): human edits to
+# _ACTION-ITEMS.md surviving re-runs (status, retitle, hand-merge),
+# --similarity-threshold on rollup, the "Possible duplicates (review)"
+# section, the per-item type field, and --rebuild dropping curated
+# state. Each section builds its own fresh workspace under $TMP so a
+# missing feature fails loudly without corrupting earlier state.
 
 set -euo pipefail
 
@@ -442,6 +449,410 @@ mkdir "$WS2/random"
 run_ws rollup "$WS2" --action-items
 assert_eq "$RC" 0 "rollup after adding an orphan dir exit code"
 assert_grep 'ORPHAN random/' "$WS2/_INDEX.md" "_INDEX.md audit reports ORPHAN random/"
+
+# ---------------------------------------------------------------------------
+# 9. Issue #3 — human status edit in _ACTION-ITEMS.md survives a re-run:
+#    sed [open] -> [resolved] on AI-001's md line, re-run, and the edit
+#    persists in BOTH _ACTION-ITEMS.md and _action-items.json, with ids
+#    and next_id unchanged.
+# ---------------------------------------------------------------------------
+echo "-- rollup survives human status edit --"
+
+WS3="$TMP/ws-status"
+make_meeting "$WS3" "2026-09-16-0703" "2026-09-16T14:03:17Z"
+cat > "$WS3/2026-09-16-0703/action-items.md" <<'EOF'
+# Action items — 2026-09-16-0703
+
+- **Alice:** send the draft out to the team today
+EOF
+make_meeting "$WS3" "2026-09-17-0715" "2026-09-17T14:15:00Z"
+cat > "$WS3/2026-09-17-0715/action-items.md" <<'EOF'
+# Action items — 2026-09-17-0715
+
+- **Bob:** order the new laptops
+EOF
+
+run_ws rollup "$WS3" --action-items
+assert_eq "$RC" 0 "rollup (status-edit workspace) exit code"
+assert_grep '\*\*AI-001\*\* \[open\]' "$WS3/_ACTION-ITEMS.md" "AI-001 renders [open] before the hand edit"
+
+sed -i '' 's/\*\*AI-001\*\* \[open\]/\*\*AI-001\*\* [resolved]/' "$WS3/_ACTION-ITEMS.md" \
+  || fail "sed failed to hand-edit the status in _ACTION-ITEMS.md"
+PASS=$((PASS + 1))
+
+run_ws rollup "$WS3" --action-items
+assert_eq "$RC" 0 "rollup after status hand-edit exit code"
+assert_grep '\*\*AI-001\*\* \[resolved\]' "$WS3/_ACTION-ITEMS.md" \
+  "human [resolved] status survives the re-run (_ACTION-ITEMS.md)"
+
+STATUSEDITCHECK="$(python3 - "$WS3" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1] + "/_action-items.json"))
+items = d["items"]
+assert [it["id"] for it in items] == ["AI-001", "AI-002"], items
+ai1 = items[0]
+assert ai1["status"] == "resolved", ai1
+assert ai1["text"] == "send the draft out to the team today", ai1
+assert d["next_id"] == 3, d["next_id"]
+print("ok")
+PY
+)" || fail "status-edit JSON check crashed"
+assert_eq "$STATUSEDITCHECK" "ok" \
+  "hand-edited [resolved] persists in _action-items.json; id unchanged, next_id=3"
+
+# ---------------------------------------------------------------------------
+# 10. Issue #3 — human retitle: editing an item's text after the "): "
+#     survives the re-run (md + JSON), without touching ids.
+# ---------------------------------------------------------------------------
+echo "-- rollup survives human retitle --"
+
+WS4="$TMP/ws-retitle"
+make_meeting "$WS4" "2026-09-16-0703" "2026-09-16T14:03:17Z"
+cat > "$WS4/2026-09-16-0703/action-items.md" <<'EOF'
+# Action items — 2026-09-16-0703
+
+- **Alice:** send the draft out to the team today
+EOF
+
+run_ws rollup "$WS4" --action-items
+assert_eq "$RC" 0 "rollup (retitle workspace) exit code"
+
+sed -i '' 's/: send the draft out to the team today$/: circulate the final deck to the whole team/' \
+  "$WS4/_ACTION-ITEMS.md" || fail "sed failed to hand-retitle AI-001 in _ACTION-ITEMS.md"
+PASS=$((PASS + 1))
+
+run_ws rollup "$WS4" --action-items
+assert_eq "$RC" 0 "rollup after retitle exit code"
+assert_grep ': circulate the final deck to the whole team$' "$WS4/_ACTION-ITEMS.md" \
+  "retitled text survives the re-run (_ACTION-ITEMS.md)"
+if grep -q 'send the draft out to the team today' "$WS4/_ACTION-ITEMS.md"; then
+  fail "old title reappeared in _ACTION-ITEMS.md after the retitle survived a re-run"
+fi
+PASS=$((PASS + 1))
+
+RETITLECHECK="$(python3 - "$WS4" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1] + "/_action-items.json"))
+items = d["items"]
+assert [it["id"] for it in items] == ["AI-001"], items
+ai1 = items[0]
+assert ai1["text"] == "circulate the final deck to the whole team", ai1
+assert len(ai1["occurrences"]) == 1, ai1
+assert d["next_id"] == 2, d["next_id"]
+print("ok")
+PY
+)" || fail "retitle JSON check crashed"
+assert_eq "$RETITLECHECK" "ok" "retitled text persists in _action-items.json; id still AI-001"
+
+# ---------------------------------------------------------------------------
+# 11. Issue #3 — hand-merge: the human appends "(merged AI-002)" to
+#     AI-001's line and deletes AI-002's line. After a re-run, AI-002's
+#     status is "merged", its occurrences folded into AI-001, ids are
+#     NOT renumbered, and the merged line renders as
+#     "- **AI-002** [merged → AI-001] (N×): original text".
+# ---------------------------------------------------------------------------
+echo "-- rollup hand-merge --"
+
+WS5="$TMP/ws-merge"
+make_meeting "$WS5" "2026-09-16-0703" "2026-09-16T14:03:17Z"
+cat > "$WS5/2026-09-16-0703/action-items.md" <<'EOF'
+# Action items — 2026-09-16-0703
+
+- **Alice:** send the draft out to the team today
+EOF
+make_meeting "$WS5" "2026-09-17-0715" "2026-09-17T14:15:00Z"
+cat > "$WS5/2026-09-17-0715/action-items.md" <<'EOF'
+# Action items — 2026-09-17-0715
+
+- **Bob:** order the new laptops
+EOF
+
+run_ws rollup "$WS5" --action-items
+assert_eq "$RC" 0 "rollup (hand-merge workspace) exit code"
+
+sed -i '' 's/: send the draft out to the team today$/: send the draft out to the team today (merged AI-002)/' \
+  "$WS5/_ACTION-ITEMS.md" || fail "sed failed to append the (merged AI-002) notation"
+PASS=$((PASS + 1))
+sed -i '' '/^- \*\*AI-002\*\*/d' "$WS5/_ACTION-ITEMS.md" \
+  || fail "sed failed to delete AI-002's line"
+PASS=$((PASS + 1))
+
+run_ws rollup "$WS5" --action-items
+assert_eq "$RC" 0 "rollup after hand-merge exit code"
+
+MERGECHECK="$(python3 - "$WS5" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1] + "/_action-items.json"))
+items = d["items"]
+assert [it["id"] for it in items] == ["AI-001", "AI-002"], items  # no renumbering
+assert d["next_id"] == 3, d["next_id"]
+ai1, ai2 = items
+assert ai2["status"] == "merged", ai2
+assert ai2["text"] == "order the new laptops", ai2
+assert ai1["status"] == "open", ai1  # survivor keeps its own status
+assert len(ai1["occurrences"]) == 2, ai1
+assert {o["meeting"] for o in ai1["occurrences"]} == {"2026-09-16-0703", "2026-09-17-0715"}, ai1
+print("ok")
+PY
+)" || fail "hand-merge JSON check crashed"
+assert_eq "$MERGECHECK" "ok" \
+  "AI-002 status=merged with occurrences folded into AI-001; ids not renumbered"
+assert_grep '^- \*\*AI-002\*\* \[merged → AI-001\] .*: order the new laptops$' \
+  "$WS5/_ACTION-ITEMS.md" "merged item renders as [merged → AI-001] with its original text"
+assert_grep '^- \*\*AI-001\*\* .*\[open\].*\(2×\)' "$WS5/_ACTION-ITEMS.md" \
+  "survivor AI-001 renders with the folded occurrences (2×)"
+
+# ---------------------------------------------------------------------------
+# 12. Issue #3 — a NEW meeting after human edits still folds: fresh items
+#     get the next sequential id while the hand-edited status persists.
+#     Continues the section-9 workspace (AI-001 was set to [resolved]).
+# ---------------------------------------------------------------------------
+echo "-- rollup new meeting folds after human edits --"
+
+make_meeting "$WS3" "2026-09-18-0900" "2026-09-18T16:00:00Z"
+cat > "$WS3/2026-09-18-0900/action-items.md" <<'EOF'
+# Action items — 2026-09-18-0900
+
+- **Carol:** update the onboarding checklist
+EOF
+
+run_ws rollup "$WS3" --action-items
+assert_eq "$RC" 0 "rollup after adding a third meeting exit code"
+assert_grep '\*\*AI-003\*\*' "$WS3/_ACTION-ITEMS.md" "new meeting's item gets the next id (AI-003)"
+assert_grep '\*\*AI-001\*\* \[resolved\]' "$WS3/_ACTION-ITEMS.md" \
+  "[resolved] from the hand edit still survives after folding the new meeting"
+
+NEWFOLDCHECK="$(python3 - "$WS3" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1] + "/_action-items.json"))
+items = d["items"]
+assert [it["id"] for it in items] == ["AI-001", "AI-002", "AI-003"], items
+assert d["next_id"] == 4, d["next_id"]
+ai1 = items[0]
+assert ai1["status"] == "resolved", ai1
+ai3 = items[2]
+assert ai3["text"] == "update the onboarding checklist", ai3
+assert ai3["owner"] == "Carol", ai3
+assert [o["meeting"] for o in ai3["occurrences"]] == ["2026-09-18-0900"], ai3
+assert "2026-09-18-0900" in d["folded_meetings"], d["folded_meetings"]
+print("ok")
+PY
+)" || fail "new-meeting-after-edits JSON check crashed"
+assert_eq "$NEWFOLDCHECK" "ok" \
+  "third meeting folds as AI-003 (next_id=4) while AI-001 stays resolved in JSON"
+
+# ---------------------------------------------------------------------------
+# 13. Issue #3 — --similarity-threshold: the 0.941 paraphrase pair must
+#     NOT merge at 0.99 but MUST merge at 0.5 (--rebuild between runs);
+#     out-of-range 0.2 exits non-zero.
+# ---------------------------------------------------------------------------
+echo "-- rollup similarity-threshold flag --"
+
+WS6="$TMP/ws-threshold"
+make_meeting "$WS6" "2026-09-16-0703" "2026-09-16T14:03:17Z"
+cat > "$WS6/2026-09-16-0703/action-items.md" <<'EOF'
+# Action items — 2026-09-16-0703
+
+- **Alice:** send the draft out to the team today
+EOF
+make_meeting "$WS6" "2026-09-17-0715" "2026-09-17T14:15:00Z"
+cat > "$WS6/2026-09-17-0715/action-items.md" <<'EOF'
+# Action items — 2026-09-17-0715
+
+- **Alice:** send the draft to the team today
+EOF
+
+SIMCHECK2="$(python3 - <<'PY'
+import difflib, re
+norm = lambda t: " ".join(re.sub(r"[^0-9a-z\s]", " ", t.lower()).split())
+r = difflib.SequenceMatcher(None, norm("send the draft out to the team today"),
+                                   norm("send the draft to the team today")).ratio()
+assert 0.82 <= r < 0.99, f"fixture pair scores {r}; expected in [0.82, 0.99)"
+print("ok")
+PY
+)" || fail "threshold fixture sanity check failed"
+assert_eq "$SIMCHECK2" "ok" "fixture pair scores in [0.82, 0.99): merges at default, not at 0.99"
+
+run_ws rollup "$WS6" --action-items --similarity-threshold 0.99
+assert_eq "$RC" 0 "rollup --similarity-threshold 0.99 exit code"
+THR99CHECK="$(python3 - "$WS6" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1] + "/_action-items.json"))
+items = d["items"]
+assert [it["id"] for it in items] == ["AI-001", "AI-002"], items
+assert all("draft" in it["text"] for it in items), items
+assert all(len(it["occurrences"]) == 1 for it in items), items
+assert d["next_id"] == 3, d["next_id"]
+print("ok")
+PY
+)" || fail "threshold 0.99 JSON check crashed"
+assert_eq "$THR99CHECK" "ok" "at --similarity-threshold 0.99 the near-identical pair does NOT merge"
+
+run_ws rollup "$WS6" --action-items --rebuild --similarity-threshold 0.5
+assert_eq "$RC" 0 "rollup --rebuild --similarity-threshold 0.5 exit code"
+THR50CHECK="$(python3 - "$WS6" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1] + "/_action-items.json"))
+items = d["items"]
+assert len(items) == 1, [it["text"] for it in items]
+ai1 = items[0]
+assert ai1["id"] == "AI-001", ai1
+assert len(ai1["occurrences"]) == 2, ai1
+assert ai1["first_seen"] != ai1["last_seen"], ai1
+assert d["next_id"] == 2, d["next_id"]
+print("ok")
+PY
+)" || fail "threshold 0.5 JSON check crashed"
+assert_eq "$THR50CHECK" "ok" "at --similarity-threshold 0.5 (with --rebuild) the pair DOES merge"
+
+run_ws rollup "$WS6" --action-items --similarity-threshold 0.2
+if [ "$RC" -eq 0 ]; then
+  fail "--similarity-threshold 0.2 must exit non-zero (valid range 0.5-1.0), got 0"
+fi
+PASS=$((PASS + 1))
+
+# ---------------------------------------------------------------------------
+# 14. Issue #3 — "Possible duplicates (review)": a pair landing just
+#     under the default 0.82 threshold stays as two distinct items and
+#     is surfaced together in a "## Possible duplicates" md section.
+#     Fixture pair scores 0.800 ("schedule the design review" vs
+#     "schedule the design sync").
+# ---------------------------------------------------------------------------
+echo "-- rollup possible duplicates section --"
+
+WS7="$TMP/ws-dups"
+make_meeting "$WS7" "2026-09-16-0703" "2026-09-16T14:03:17Z"
+cat > "$WS7/2026-09-16-0703/action-items.md" <<'EOF'
+# Action items — 2026-09-16-0703
+
+- **Alice:** schedule the design review
+EOF
+make_meeting "$WS7" "2026-09-17-0715" "2026-09-17T14:15:00Z"
+cat > "$WS7/2026-09-17-0715/action-items.md" <<'EOF'
+# Action items — 2026-09-17-0715
+
+- **Bob:** schedule the design sync
+EOF
+
+SIMCHECK3="$(python3 - <<'PY'
+import difflib, re
+norm = lambda t: " ".join(re.sub(r"[^0-9a-z\s]", " ", t.lower()).split())
+r = difflib.SequenceMatcher(None, norm("schedule the design review"),
+                                   norm("schedule the design sync")).ratio()
+assert 0.70 <= r < 0.82, f"fixture pair scores {r}; expected in [0.70, 0.82)"
+print("ok")
+PY
+)" || fail "duplicates fixture sanity check failed"
+assert_eq "$SIMCHECK3" "ok" "near-miss fixture pair scores in [0.70, 0.82): under the default threshold"
+
+run_ws rollup "$WS7" --action-items
+assert_eq "$RC" 0 "rollup (duplicates workspace) exit code"
+DUPCHECK="$(python3 - "$WS7" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1] + "/_action-items.json"))
+items = d["items"]
+assert [it["id"] for it in items] == ["AI-001", "AI-002"], items
+assert all(len(it["occurrences"]) == 1 for it in items), items
+assert d["next_id"] == 3, d["next_id"]
+print("ok")
+PY
+)" || fail "duplicates JSON check crashed"
+assert_eq "$DUPCHECK" "ok" "the near-miss pair stays two distinct items at the default threshold"
+
+assert_grep '^## Possible duplicates' "$WS7/_ACTION-ITEMS.md" \
+  "_ACTION-ITEMS.md carries a '## Possible duplicates' section"
+DUPSECTION="$(awk '/^## /{p=0} /^## Possible duplicates/{p=1} p' "$WS7/_ACTION-ITEMS.md")"
+assert_text 'AI-001' "$DUPSECTION" "duplicates section names AI-001"
+assert_text 'AI-002' "$DUPSECTION" "duplicates section names AI-002"
+
+# ---------------------------------------------------------------------------
+# 15. Issue #3 — per-item type field: a human adding "(my commitment)"
+#     after the status bracket survives the re-run in md AND JSON.
+# ---------------------------------------------------------------------------
+echo "-- rollup type field survives --"
+
+WS8="$TMP/ws-type"
+make_meeting "$WS8" "2026-09-16-0703" "2026-09-16T14:03:17Z"
+cat > "$WS8/2026-09-16-0703/action-items.md" <<'EOF'
+# Action items — 2026-09-16-0703
+
+- **Alice:** send the draft out to the team today
+EOF
+
+run_ws rollup "$WS8" --action-items
+assert_eq "$RC" 0 "rollup (type workspace) exit code"
+
+sed -i '' 's/\*\*AI-001\*\* \[open\] /\*\*AI-001\*\* [open] (my commitment) /' \
+  "$WS8/_ACTION-ITEMS.md" || fail "sed failed to add the (my commitment) type"
+PASS=$((PASS + 1))
+
+run_ws rollup "$WS8" --action-items
+assert_eq "$RC" 0 "rollup after type hand-edit exit code"
+assert_grep '\*\*AI-001\*\* \[open\] \(my commitment\) ' "$WS8/_ACTION-ITEMS.md" \
+  "type parenthetical survives the re-run (_ACTION-ITEMS.md)"
+
+TYPECHECK="$(python3 - "$WS8" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1] + "/_action-items.json"))
+ai1 = d["items"][0]
+assert ai1["id"] == "AI-001", ai1
+assert ai1.get("type") == "my commitment", ai1
+assert ai1["status"] == "open", ai1
+print("ok")
+PY
+)" || fail "type-field JSON check crashed"
+assert_eq "$TYPECHECK" "ok" "type persists as \"my commitment\" in _action-items.json"
+
+# ---------------------------------------------------------------------------
+# 16. Issue #3 — --rebuild drops curated state: after the section-15
+#     type edit plus a status edit (both verified surviving first), a
+#     --rebuild resets every status to open and clears every type.
+# ---------------------------------------------------------------------------
+echo "-- rollup rebuild drops curated state --"
+
+sed -i '' 's/\*\*AI-001\*\* \[open\] (my commitment)/\*\*AI-001\*\* [resolved] (my commitment)/' \
+  "$WS8/_ACTION-ITEMS.md" || fail "sed failed to hand-edit status + type together"
+PASS=$((PASS + 1))
+
+run_ws rollup "$WS8" --action-items
+assert_eq "$RC" 0 "rollup after status+type hand-edit exit code"
+assert_grep '\*\*AI-001\*\* \[resolved\] \(my commitment\)' "$WS8/_ACTION-ITEMS.md" \
+  "status and type edits persist together before the rebuild"
+CURATEDCHECK="$(python3 - "$WS8" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1] + "/_action-items.json"))
+ai1 = d["items"][0]
+assert ai1["status"] == "resolved", ai1
+assert ai1.get("type") == "my commitment", ai1
+print("ok")
+PY
+)" || fail "curated-state JSON check crashed"
+assert_eq "$CURATEDCHECK" "ok" "resolved status + my-commitment type persist together in JSON"
+
+run_ws rollup "$WS8" --action-items --rebuild
+assert_eq "$RC" 0 "rollup --rebuild (curated workspace) exit code"
+REBUILDCURATEDCHECK="$(python3 - "$WS8" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1] + "/_action-items.json"))
+items = d["items"]
+assert [it["id"] for it in items] == ["AI-001"], items
+assert all(it["status"] == "open" for it in items), items
+assert all(not it.get("type") for it in items), items
+assert d["next_id"] == 2, d["next_id"]
+print("ok")
+PY
+)" || fail "rebuild-curated JSON check crashed"
+assert_eq "$REBUILDCURATEDCHECK" "ok" "--rebuild resets statuses to open and clears types"
+assert_grep '^- \*\*AI-001\*\* \[open\] 2026' "$WS8/_ACTION-ITEMS.md" \
+  "rebuilt line renders bare [open] with no type parenthetical"
+if grep -q '\[resolved\]' "$WS8/_ACTION-ITEMS.md"; then
+  fail "[resolved] survived --rebuild in _ACTION-ITEMS.md"
+fi
+PASS=$((PASS + 1))
+if grep -q 'my commitment' "$WS8/_ACTION-ITEMS.md"; then
+  fail "type parenthetical survived --rebuild in _ACTION-ITEMS.md"
+fi
+PASS=$((PASS + 1))
 
 # ---------------------------------------------------------------------------
 echo ""
