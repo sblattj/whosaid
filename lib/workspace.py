@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-workspace.py: meeting-workspace layer for whosaid (GitHub issue #2).
+workspace.py: meeting-workspace layer for whosaid (GitHub issues #2, #3).
 
 Turns loose transcription outputs into a dated, auditable meeting workspace:
 
@@ -36,16 +36,29 @@ Subcommands (the `whosaid` bash CLI shells out to this module via
       hook a skeleton is emitted instead. Exits 0 either way — the offline
       default stays intact.
 
-  rollup <workspace-dir> [--action-items] [-o INDEX.md] [--action-items-out F] [--rebuild]
+  rollup <workspace-dir> [--action-items] [-o INDEX.md] [--action-items-out F]
+         [--similarity-threshold F] [--rebuild]
       The workspace aggregate. Two JSON state files live in the workspace dir:
         _workspace.json    manifest: one entry per dated meeting folder
         _action-items.json living deduplicated action-item corpus
       Rendering: _INDEX.md (one row per meeting — date, duration, transcribed?,
       diarized?, action-items? — plus a nothing-missing audit and a recurring-
       topics section) and, with --action-items, _ACTION-ITEMS.md (corpus
-      grouped by owner then status). Corpus ids are AI-001... and NEVER
-      renumber; dedupe is difflib similarity >= 0.82 on normalized text;
-      statuses survive re-runs; folding is append-only unless --rebuild.
+      grouped by owner then status, plus a possible-duplicates review section).
+      Corpus ids are AI-001... and NEVER renumber; folding is append-only
+      unless --rebuild. Items carry an optional free-form type ("leadership
+      ask", "peer ask", ...) rendered in parens after the status. Dedupe is
+      difflib similarity on normalized text >= --similarity-threshold (0.5–1.0,
+      default 0.82, recorded in _action-items.json as similarity_threshold);
+      pairs within 0.10 below the threshold are listed under
+      "## Possible duplicates (review)" — informational only, never auto-merged.
+      _ACTION-ITEMS.md is living: on every non-rebuild run its hand edits are
+      folded back into the corpus before extraction — hand-edited statuses,
+      types, and titles win over the hook output, "(merged AI-NNN[, ...])"
+      annotations fold the merged-away item's occurrences into the survivor
+      (the merged item stays, never renumbered, status "merged", rendered
+      collapsed as "[merged → AI-XXX]"), and new occurrences keep appending.
+      Only edits visible in the md apply — direct JSON edits also survive.
       Incremental by default: re-running with nothing new writes nothing.
 
 Everything stays LOCAL: stdlib only, no third-party imports, no network.
@@ -80,7 +93,19 @@ BULLET_RE = re.compile(
     r"^\s*[-*]\s+(?:[-x]\s+)?(?:\*\*(?P<owner>[^*]+?)\s*:?\*\*\s*:?\s+)?(?P<text>\S.*)$"
 )
 SIMILARITY_THRESHOLD = 0.82
+# Pairs scoring within this band below the threshold are surfaced (never
+# merged) under "## Possible duplicates (review)".
+NEAR_MISS_BAND = 0.10
 STATUSES = ("open", "ongoing", "resolved")
+# Rendered _ACTION-ITEMS.md item lines: "- **AI-001** [status] (type) span
+# (n×): text", optionally carrying "(merged AI-NNN, ...)" hand-merge notes
+# (before the ": " or trailing the text) and the collapsed merged rendering
+# "- **AI-005** [merged → AI-002] (n×): text".
+MD_ITEM_RE = re.compile(r"^- \*\*(?P<id>AI-\d{3,})\*\* \[(?P<status>[^\]]*)\](?P<rest>.*)$")
+MD_MERGE_NOTE_RE = re.compile(r"\((?P<ids>merged AI-\d{3,}(?:, ?AI-\d{3,})*)\)")
+MD_MERGED_STATUS_RE = re.compile(r"^merged → (AI-\d{3,})$")
+MD_COUNT_RE = re.compile(r"^\d+×$")
+MD_PAREN_RE = re.compile(r"\(([^()]*)\)")
 
 STOPWORDS = frozenset(
     """
@@ -219,8 +244,12 @@ def normalize_text(text: str) -> str:
     return " ".join(stripped.split())
 
 
-def similar(a: str, b: str) -> bool:
-    return difflib.SequenceMatcher(None, a, b).ratio() >= SIMILARITY_THRESHOLD
+def similarity(a: str, b: str) -> float:
+    return difflib.SequenceMatcher(None, a, b).ratio()
+
+
+def similar(a: str, b: str, threshold: float = SIMILARITY_THRESHOLD) -> bool:
+    return similarity(a, b) >= threshold
 
 
 # ---- folder-name / hash ----------------------------------------------------------
@@ -487,8 +516,13 @@ class ActionItem:
     text: str
     owner: str = ""
     status: str = "open"
+    type: str = ""
     first_seen: str = ""
     last_seen: str = ""
+    merged_into: str = ""
+    md_status: str = ""
+    md_text: str = ""
+    md_type: str = ""
     occurrences: list[Occurrence] = field(default_factory=list)
 
 
@@ -501,6 +535,8 @@ def load_corpus(ws: Path) -> dict:
             for item in data["items"]:
                 item["occurrences"] = [Occurrence(**o) for o in item.get("occurrences", [])]
                 item.setdefault("status", "open")
+                for key in ("type", "merged_into", "md_status", "md_text", "md_type"):
+                    item.setdefault(key, "")
             return data
     except FileNotFoundError:
         pass
@@ -513,18 +549,115 @@ def corpus_to_items(data: dict) -> list[ActionItem]:
     return [ActionItem(**item) for item in data.get("items", [])]
 
 
+def parse_action_items_md(md_text: str) -> dict[str, dict]:
+    """Rendered _ACTION-ITEMS.md item lines -> {id: {status, type, text,
+    merged_into, merged_ids}}. Count/span parens are skipped; hand-merge
+    notes '(merged AI-NNN, ...)' are honored both before the ': ' and
+    trailing the item text."""
+    out: dict[str, dict] = {}
+    for line in md_text.splitlines():
+        m = MD_ITEM_RE.match(line)
+        if not m:
+            continue
+        meta, _, text = m.group("rest").partition(": ")
+        merged_ids: list[str] = []
+        note = MD_MERGE_NOTE_RE.search(text)
+        if note and not text[note.end():].strip():
+            merged_ids = re.findall(r"AI-\d{3,}", note.group("ids"))
+            text = text[:note.start()].rstrip()
+        item_type = ""
+        for group in MD_PAREN_RE.findall(meta):
+            if MD_COUNT_RE.match(group):
+                continue
+            if MD_MERGE_NOTE_RE.fullmatch(f"({group})"):
+                merged_ids = re.findall(r"AI-\d{3,}", group) + merged_ids
+                continue
+            item_type = group
+        status = m.group("status")
+        merged_into = ""
+        ms = MD_MERGED_STATUS_RE.match(status)
+        if ms:
+            status, merged_into = "merged", ms.group(1)
+        out[m.group("id")] = {"status": status, "type": item_type, "text": text,
+                              "merged_into": merged_into, "merged_ids": merged_ids}
+    return out
+
+
+def reconcile_from_md(items: list[ActionItem], md_text: str) -> None:
+    """Fold hand edits from the rendered _ACTION-ITEMS.md back onto the corpus:
+    statuses, types, retitles, and '(merged AI-NNN)' merge notes win over the
+    extracted fields. Each curated field is applied only when it changed in
+    the md since the last render (item.md_*), so direct JSON edits — and the
+    collapsed '[merged → AI-XXX]' re-render — reconcile to no-ops."""
+    parsed = parse_action_items_md(md_text)
+    by_id = {it.id: it for it in items}
+
+    def merge_into(survivor: ActionItem | None, merged_id: str) -> None:
+        merged = by_id.get(merged_id)
+        if merged is None:
+            log(f"WARN _ACTION-ITEMS.md names unknown id {merged_id}; ignored")
+            return
+        if survivor is None or merged is survivor:
+            return
+        if merged.status == "merged":
+            if merged.merged_into != survivor.id:
+                log(f"WARN {merged_id} already merged into {merged.merged_into}; "
+                    f"not re-merging into {survivor.id}")
+            return
+        have = {(o.meeting, o.line) for o in survivor.occurrences}
+        survivor.occurrences += [o for o in merged.occurrences if (o.meeting, o.line) not in have]
+        survivor.first_seen = min(survivor.first_seen, merged.first_seen)
+        survivor.last_seen = max(survivor.last_seen, merged.last_seen)
+        merged.status, merged.merged_into = "merged", survivor.id
+        log(f"  ~ {merged_id} merged into {survivor.id} (hand edit)")
+
+    for line_id in sorted(parsed):
+        entry = parsed[line_id]
+        it = by_id.get(line_id)
+        if it is None:
+            log(f"WARN _ACTION-ITEMS.md lists unknown id {line_id}; ignored")
+            continue
+        for merged_id in entry["merged_ids"]:
+            merge_into(it, merged_id)
+        if entry["merged_into"]:
+            merge_into(by_id.get(entry["merged_into"]), line_id)
+
+    for it in items:
+        entry = parsed.get(it.id)
+        if entry is None:
+            log(f"NOTE {it.id} absent from _ACTION-ITEMS.md; kept")
+            continue
+        if it.status != "merged" and entry["status"] and entry["status"] != it.status \
+                and entry["status"] != it.md_status:
+            log(f"  ~ {it.id} status {it.status!r} -> {entry['status']!r} (hand edit)")
+            it.status = entry["status"]
+        if entry["text"] and entry["text"] != it.text and entry["text"] != it.md_text:
+            log(f"  ~ {it.id} retitled (hand edit): {entry['text']}")
+            it.text = entry["text"]
+        if it.status != "merged" and entry["type"] != it.type and entry["type"] != it.md_type:
+            log(f"  ~ {it.id} type -> {entry['type']!r} (hand edit)")
+            it.type = entry["type"]
+
+
 def fold_meeting(meeting_folder: str, bullets: list[tuple[int, str, str]],
-                 items: list[ActionItem], next_id: list[int]) -> list[ActionItem]:
+                 items: list[ActionItem], next_id: list[int],
+                 threshold: float = SIMILARITY_THRESHOLD,
+                 near_misses: list[tuple[str, str, float]] | None = None) -> list[ActionItem]:
     for line_no, owner, text in bullets:
         norm = normalize_text(text)
         if not norm:
             continue
-        match = next(
-            (it for it in items
-             if similar(norm, normalize_text(it.text))),
-            None,
-        )
-        if match is None:
+        match: ActionItem | None = None
+        best_below: tuple[float, ActionItem] | None = None
+        for it in items:
+            ratio = similarity(norm, normalize_text(it.text))
+            if ratio >= threshold and match is None:
+                match = it
+            elif it.status != "merged" and threshold - NEAR_MISS_BAND <= ratio < threshold:
+                if best_below is None or ratio > best_below[0]:
+                    best_below = (ratio, it)
+        target = match
+        if target is None:
             item = ActionItem(
                 id=f"AI-{next_id[0]:03d}", text=text, owner=owner,
                 first_seen=meeting_folder, last_seen=meeting_folder,
@@ -532,21 +665,50 @@ def fold_meeting(meeting_folder: str, bullets: list[tuple[int, str, str]],
             )
             next_id[0] += 1
             items.append(item)
+            target = item
             log(f"  + {item.id} (new): {text}")
         else:
-            if not match.owner and owner:
-                match.owner = owner
-            match.last_seen = max(match.last_seen, meeting_folder)
-            if not any(o.meeting == meeting_folder for o in match.occurrences):
-                match.occurrences.append(Occurrence(meeting=meeting_folder, line=line_no))
-            log(f"  = {match.id} (dedup, {len(match.occurrences)}×): {text}")
+            if not target.owner and owner:
+                target.owner = owner
+            target.last_seen = max(target.last_seen, meeting_folder)
+            if not any(o.meeting == meeting_folder for o in target.occurrences):
+                target.occurrences.append(Occurrence(meeting=meeting_folder, line=line_no))
+            log(f"  = {target.id} (dedup, {len(target.occurrences)}×): {text}")
+        if best_below is not None and near_misses is not None:
+            near_misses.append((target.id, best_below[1].id, best_below[0]))
     return items
 
 
-def render_action_items_md(ws: Path, items: list[ActionItem]) -> str:
+def possible_duplicates(items: list[ActionItem],
+                        near_misses: list[tuple[str, str, float]],
+                        threshold: float) -> list[tuple[str, str, float]]:
+    """Distinct corpus-item pairs scoring in [threshold - 0.10, threshold),
+    deduped by id pair, most similar first. Merged items are skipped."""
+    best: dict[tuple[str, str], float] = {}
+
+    def add(id_a: str, id_b: str, ratio: float) -> None:
+        key = tuple(sorted((id_a, id_b)))
+        best[key] = max(best.get(key, 0.0), ratio)
+
+    for id_a, id_b, ratio in near_misses:
+        add(id_a, id_b, ratio)
+    live = [it for it in items if it.status != "merged"]
+    norms = [normalize_text(it.text) for it in live]
+    for i in range(len(live)):
+        for j in range(i + 1, len(live)):
+            ratio = similarity(norms[i], norms[j])
+            if threshold - NEAR_MISS_BAND <= ratio < threshold:
+                add(live[i].id, live[j].id, ratio)
+    return sorted(((a, b, r) for (a, b), r in best.items()),
+                  key=lambda x: (-x[2], x[0], x[1]))
+
+
+def render_action_items_md(ws: Path, items: list[ActionItem],
+                           dupes: list[tuple[str, str, float]] | None = None) -> str:
     lines = [f"# Action items — {ws.resolve()}", "",
              "Living corpus, deduplicated across meetings. Ids are stable and never "
-             "renumber; status survives re-runs. Grouped by owner, then status.", ""]
+             "renumber; hand edits (status, type, retitle, merges) survive re-runs. "
+             "Grouped by owner, then status.", ""]
     if not items:
         lines += ["_No action items yet._", ""]
         return "\n".join(lines)
@@ -563,13 +725,31 @@ def render_action_items_md(ws: Path, items: list[ActionItem]) -> str:
             lines.append(f"### {status}")
             lines.append("")
             for it in bucket:
-                span = it.first_seen if it.first_seen == it.last_seen else f"{it.first_seen} → {it.last_seen}"
-                lines.append(f"- **{it.id}** [{it.status}] {span} ({len(it.occurrences)}×): {it.text}")
+                if it.status == "merged":
+                    lines.append(f"- **{it.id}** [merged → {it.merged_into}] "
+                                 f"({len(it.occurrences)}×): {it.text}")
+                else:
+                    span = it.first_seen if it.first_seen == it.last_seen else f"{it.first_seen} → {it.last_seen}"
+                    type_part = f" ({it.type})" if it.type else ""
+                    lines.append(f"- **{it.id}** [{it.status}]{type_part} {span} "
+                                 f"({len(it.occurrences)}×): {it.text}")
             lines.append("")
+    if dupes:
+        texts = {it.id: it.text for it in items}
+        lines += ["## Possible duplicates (review)", "",
+                  "_Pairs scoring within 0.10 below the similarity threshold — "
+                  "merge by hand if truly alike._", ""]
+        for a, b, ratio in dupes:
+            lines.append(f"- {a} ↔ {b} ({ratio:.2f}): \"{texts[b]}\"")
+        lines.append("")
     return "\n".join(lines)
 
 
 def cmd_rollup(args: argparse.Namespace) -> int:
+    if not 0.5 <= args.similarity_threshold <= 1.0:
+        log(f"rollup: --similarity-threshold must be between 0.5 and 1.0 "
+            f"(got {args.similarity_threshold})")
+        return 1
     ws = Path(args.workspace_dir)
     if not ws.is_dir():
         log(f"rollup: workspace dir not found: {ws}")
@@ -605,7 +785,13 @@ def cmd_rollup(args: argparse.Namespace) -> int:
     items = corpus_to_items(corpus_data)
     next_id = [int(corpus_data.get("next_id", 1))]
     folded: set[str] = set(corpus_data.get("folded_meetings", []))
+    ai_out = Path(args.action_items_out) if args.action_items_out else ws / "_ACTION-ITEMS.md"
 
+    if not args.rebuild and ai_out.is_file():
+        log(f"reconciling hand edits from {ai_out.name}")
+        reconcile_from_md(items, ai_out.read_text())
+
+    near_misses: list[tuple[str, str, float]] = []
     if args.action_items:
         for folder in dated:
             md_path = folder / "action-items.md"
@@ -616,16 +802,25 @@ def cmd_rollup(args: argparse.Namespace) -> int:
                 continue
             bullets = parse_bullets(md_path.read_text())
             log(f"folding {folder.name}/action-items.md ({len(bullets)} item(s))")
-            fold_meeting(folder.name, bullets, items, next_id)
+            fold_meeting(folder.name, bullets, items, next_id,
+                         args.similarity_threshold, near_misses)
             folded.add(folder.name)
+    dupes = possible_duplicates(items, near_misses, args.similarity_threshold)
+    ai_md = render_action_items_md(ws, items, dupes)
+    for it in items:
+        it.md_status, it.md_text = it.status, it.text
+        it.md_type = it.type if it.status != "merged" else ""
     corpus_data = {
         "next_id": next_id[0],
+        "similarity_threshold": args.similarity_threshold,
         "folded_meetings": sorted(folded),
         "items": [
             {
-                "id": it.id, "text": it.text, "owner": it.owner, "status": it.status,
-                "first_seen": it.first_seen, "last_seen": it.last_seen,
+                "id": it.id, "text": it.text, "type": it.type, "owner": it.owner,
+                "status": it.status, "first_seen": it.first_seen, "last_seen": it.last_seen,
+                "merged_into": it.merged_into,
                 "occurrences": [vars(o) for o in it.occurrences],
+                "md_status": it.md_status, "md_text": it.md_text, "md_type": it.md_type,
             }
             for it in items
         ],
@@ -650,8 +845,7 @@ def cmd_rollup(args: argparse.Namespace) -> int:
         changed_corpus = write_if_changed(
             corpus_out, json.dumps(corpus_data, indent=2) + "\n"
         )
-        ai_out = Path(args.action_items_out) if args.action_items_out else ws / "_ACTION-ITEMS.md"
-        changed_ai = write_if_changed(ai_out, render_action_items_md(ws, items))
+        changed_ai = write_if_changed(ai_out, ai_md)
     else:
         changed_corpus = changed_ai = False
 
@@ -673,7 +867,7 @@ def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="workspace.py",
         description="whosaid meeting-workspace layer: dated folders, action items, "
-                    "and the coverage/corpus roll-up (issue #2).",
+                    "and the coverage/corpus roll-up (issues #2, #3).",
     )
     sub = p.add_subparsers(dest="command", required=True)
 
@@ -711,6 +905,10 @@ def build_parser() -> argparse.ArgumentParser:
                     help="index markdown path (default: <workspace>/_INDEX.md)")
     pr.add_argument("--action-items-out", default=None,
                     help="corpus markdown path (default: <workspace>/_ACTION-ITEMS.md)")
+    pr.add_argument("--similarity-threshold", type=float, default=SIMILARITY_THRESHOLD,
+                    help="difflib ratio at or above which two items fold together "
+                         "(0.5-1.0, default: %(default)s); pairs within 0.10 below it "
+                         "are listed as possible duplicates")
     pr.add_argument("--rebuild", action="store_true",
                     help="reset manifest + corpus and rebuild from folders")
     pr.set_defaults(func=cmd_rollup)
