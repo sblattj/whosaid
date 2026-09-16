@@ -134,18 +134,25 @@ whosaid roll-up ./meetings --action-items
   themes appearing across meetings. Both output paths are overridable with `-o` and
   `--action-items-out`.
 - **Action-item corpus** — with `--action-items`, `_ACTION-ITEMS.md` deduplicates items across
-  meetings (by text similarity) and groups them by owner, then status. Ids are stable (`AI-001`…
-  and never renumber), each item carries `first_seen`/`last_seen` dates and its occurrence list,
-  and open/ongoing/resolved statuses survive re-runs — so the corpus reads as living history
-  across the series, not a per-meeting snapshot.
+  meetings (by text similarity; threshold `--similarity-threshold`, 0.5–1.0, default 0.82) and
+  groups them by owner, then status. Ids are stable (`AI-001`… and never renumber), each item
+  carries `first_seen`/`last_seen` dates and its occurrence list, and open/ongoing/resolved
+  statuses survive re-runs — so the corpus reads as living history across the series, not a
+  per-meeting snapshot. Items can carry a free-form type, rendered in parens after the status,
+  and pairs scoring just under the threshold are surfaced in a _Possible duplicates (review)_
+  section at the end.
 
 Roll-up is incremental and append-only by default: re-running with nothing new writes nothing.
 `--rebuild` is the escape hatch — it resets the manifest and corpus and regenerates both from the
 folders on disk.
 
 State is two plain JSON files in the workspace directory, `_workspace.json` (the manifest) and
-`_action-items.json` (the corpus). Both are safe to read and hand-edit — marking an item
-`resolved` by hand is the intended way to close one the extractor phrased wrong.
+`_action-items.json` (the corpus; it also records the `similarity_threshold` in effect). Both are
+safe to read and hand-edit — marking an item `resolved` by hand is the intended way to close one
+the extractor phrased wrong. Hand edits made directly in `_ACTION-ITEMS.md` are folded back on
+the next roll-up and survive re-runs: statuses, types, retitles, and `(merged AI-NNN)` merge
+annotations (the merged item stays at its id, rendered collapsed as `[merged → AI-NNN]`). Only
+`--rebuild` discards them.
 
 ## Use it from an AI agent (MCP)
 

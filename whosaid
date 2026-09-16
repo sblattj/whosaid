@@ -82,7 +82,7 @@ USAGE
                                         Transcribe each file into its own dated
                                         meeting folder (idempotent by content
                                         hash; skips anything already ingested).
-  whosaid roll-up <dir> [--action-items] [--rebuild]
+  whosaid roll-up <dir> [--action-items] [--similarity-threshold F] [--rebuild]
                                         Rebuild the workspace index, audit, and
                                         action-item corpus.
   whosaid help | -h | --help           This message.
@@ -127,10 +127,14 @@ INGEST FLAGS
 
 ROLL-UP FLAGS
   --action-items      Fold each meeting's action-items.md into the deduplicated
-                      corpus (_ACTION-ITEMS.md).
+                      corpus (_ACTION-ITEMS.md). Hand edits there (status, type,
+                      retitle, "(merged AI-NNN)") survive re-runs.
   -o, --out FILE      Index markdown path (default: <workspace>/_INDEX.md).
   --action-items-out FILE
                       Corpus markdown path (default: <workspace>/_ACTION-ITEMS.md).
+  --similarity-threshold F
+                      Dedupe similarity threshold, 0.5–1.0 (default: 0.82).
+                      Pairs within 0.10 below it are listed for review.
   --rebuild           Reset manifest + corpus, rebuild from folders on disk.
 
 ENV OVERRIDES
@@ -767,7 +771,8 @@ except BaseException:
   log "next: whosaid roll-up $into --action-items"
 }
 
-# whosaid roll-up <workspace-dir> [--action-items] [-o OUT] [--action-items-out OUT] [--rebuild]
+# whosaid roll-up <workspace-dir> [--action-items] [-o OUT] [--action-items-out OUT]
+#                 [--similarity-threshold F] [--rebuild]
 # Thin bash front for `python3 lib/workspace.py rollup`: rebuilds _INDEX.md, the
 # _workspace.json manifest, and (with --action-items) the deduplicated corpus.
 cmd_rollup() {
@@ -778,6 +783,7 @@ cmd_rollup() {
       --rebuild)          py_args+=("$1"); shift ;;
       -o|--out)           py_args+=("$1" "$2"); shift 2 ;;
       --action-items-out) py_args+=("$1" "$2"); shift 2 ;;
+      --similarity-threshold) py_args+=("$1" "$2"); shift 2 ;;
       -h|--help)          cmd_help; exit 0 ;;
       -*)                 log "unknown option: $1"; cmd_help; exit 1 ;;
       *)                  if [[ -z "$wsdir" ]]; then wsdir="$1"; else log "roll-up: unexpected arg '$1'"; exit 1; fi; shift ;;
