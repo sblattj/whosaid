@@ -88,6 +88,65 @@ command without copying or duplicating the implementation.
 | `whosaid relabel <base> SPEAKER_02=Jane …` | Put real names on clusters after reading the speaker cards. Rewrites the transcript + cards and saves each named voiceprint to the local registry for future transcripts. No re-transcription. |
 | `whosaid doctor` | Read-only environment report. |
 
+## Meeting workspaces
+
+One-off transcriptions are files; a recurring meeting series is a corpus. The meeting-workspace
+layer gives that corpus a home: every recording is transcribed into a dated folder, each meeting
+can carry generated action items, and one roll-up produces the index, the audit, and a living
+action-item list across all of them — still entirely offline.
+
+### `whosaid ingest` — a batch into dated folders
+
+```bash
+whosaid ingest weekly/*.m4a --into ./meetings --folder-by created \
+  --tz America/Los_Angeles --action-items
+```
+
+Every file is transcribed with the full set of `whosaid <audio>…` flags passed through, into
+`meetings/YYYY-MM-DD-HHMM/`. The timestamp comes from the recording's own container
+`creation_time` rendered in `--tz` (default UTC), falling back to the file's mtime — so folder
+order reflects when meetings actually happened, not when you got around to copying the files.
+Ingest is idempotent by source sha256: re-running a batch never re-transcribes or duplicates a
+recording.
+
+With `--action-items`, each meeting also gets an `action-items.md`. Generation is pluggable: the
+hook command receives the speaker-labeled transcript on stdin, plus `WHOSAID_SPEAKERS` and
+`WHOSAID_TRANSCRIPT_PATH` in its environment, and whatever it writes to stdout becomes the
+markdown. Pass it per-run with `--hook CMD`, or set `WHOSAID_ACTION_ITEMS_HOOK` once. With no
+hook, a skeleton is written instead and everything stays offline. Example hook — illustrative
+only; any command that turns stdin into markdown works:
+
+```bash
+#!/bin/sh
+# Drafts action items with a local Ollama model.
+ollama run llama3.2 "List this meeting's action items as markdown bullets (Owner: task):"
+```
+
+### `whosaid roll-up` — index, audit, and the action-item corpus
+
+```bash
+whosaid roll-up ./meetings --action-items
+```
+
+- **Coverage index** — `_INDEX.md` holds one row per meeting (created date, duration, and whether
+  it is transcribed, diarized, and has action items), plus a nothing-missing audit that flags
+  orphan directories and stale manifest entries, and a recurring-topics section that surfaces
+  themes appearing across meetings. Both output paths are overridable with `-o` and
+  `--action-items-out`.
+- **Action-item corpus** — with `--action-items`, `_ACTION-ITEMS.md` deduplicates items across
+  meetings (by text similarity) and groups them by owner, then status. Ids are stable (`AI-001`…
+  and never renumber), each item carries `first_seen`/`last_seen` dates and its occurrence list,
+  and open/ongoing/resolved statuses survive re-runs — so the corpus reads as living history
+  across the series, not a per-meeting snapshot.
+
+Roll-up is incremental and append-only by default: re-running with nothing new writes nothing.
+`--rebuild` is the escape hatch — it resets the manifest and corpus and regenerates both from the
+folders on disk.
+
+State is two plain JSON files in the workspace directory, `_workspace.json` (the manifest) and
+`_action-items.json` (the corpus). Both are safe to read and hand-edit — marking an item
+`resolved` by hand is the intended way to close one the extractor phrased wrong.
+
 ## Use it from an AI agent (MCP)
 
 whosaid's local, private, GPU transcription and speaker diarization are also exposed as MCP tools,

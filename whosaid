@@ -10,6 +10,8 @@
 #   whosaid doctor                Read-only environment/model/device report.
 #   whosaid mcp                   Run the MCP server (stdio) for AI agents / Claude.
 #   whosaid <audio> [...]         Transcribe (and, by default, diarize) audio file(s).
+#   whosaid ingest <a...> --into D  Transcribe into a dated meeting workspace.
+#   whosaid roll-up <dir>           Rebuild the meeting-workspace index and audit.
 #   whosaid help                  This message.
 #
 # See `whosaid help` for the full flag reference.
@@ -74,6 +76,15 @@ USAGE
   whosaid relabel <base> SPEAKER_02=Jane [SPEAKER_03=Bob ...] [-o DIR]
                                         Name clusters from the speaker cards and
                                         remember them for future transcripts.
+  whosaid ingest <audio> [<audio> ...] --into DIR [--folder-by created|mtime]
+                                        [--tz ZONE] [--action-items] [--hook CMD]
+                                        [flags]
+                                        Transcribe each file into its own dated
+                                        meeting folder (idempotent by content
+                                        hash; skips anything already ingested).
+  whosaid roll-up <dir> [--action-items] [--rebuild]
+                                        Rebuild the workspace index, audit, and
+                                        action-item corpus.
   whosaid help | -h | --help           This message.
 
 TRANSCRIBE FLAGS
@@ -103,6 +114,25 @@ RECORD FLAGS
   --label L           Suffix the recording filename with -L.
   Any transcribe flag above is also accepted and passed through after recording.
 
+INGEST FLAGS
+  --into DIR          Meeting workspace root (required; created if missing).
+  --folder-by WHEN    Timestamp source for the dated folder: created (container
+                      creation_time; default) or mtime (file modification time).
+  --tz ZONE           IANA zone for the dated folder name (default: system local
+                      zone via /etc/localtime, else UTC).
+  --action-items      Also extract action items for each ingested meeting.
+  --hook CMD          Action-items hook for this run (default: $WHOSAID_ACTION_ITEMS_HOOK).
+  Any transcribe flag above (except -o/--outdir and -n/--name, which ingest
+  controls) is accepted and passed through to the transcriber.
+
+ROLL-UP FLAGS
+  --action-items      Fold each meeting's action-items.md into the deduplicated
+                      corpus (_ACTION-ITEMS.md).
+  -o, --out FILE      Index markdown path (default: <workspace>/_INDEX.md).
+  --action-items-out FILE
+                      Corpus markdown path (default: <workspace>/_ACTION-ITEMS.md).
+  --rebuild           Reset manifest + corpus, rebuild from folders on disk.
+
 ENV OVERRIDES
   WHOSAID_MODEL        Default Whisper model repo.
   WHOSAID_LANG         Default language code.
@@ -112,6 +142,8 @@ ENV OVERRIDES
                        English-native; set the zh-cn model for Mandarin audio).
   WHOSAID_REC_DEVICE   avfoundation audio device index (default: 0).
   WHOSAID_INSTALL_DIR  Command install directory (default: ~/.local/bin).
+  WHOSAID_ACTION_ITEMS_HOOK  Default action-items summarizer hook: gets the
+                      transcript on stdin, prints markdown on stdout.
   HF_HOME               Hugging Face cache location (Whisper model cache).
   SHERPA_DIARIZE_CACHE  sherpa-onnx diarization model cache location.
 
@@ -533,6 +565,228 @@ cmd_relabel() {
     --relabel "$sidecar" --outdir "$sdir" "${specs[@]}"
 }
 
+# ---- ingest / roll-up (issue #2: meeting workspace) ----------------------------
+# whosaid ingest <audio...> --into DIR [--folder-by created|mtime] [--tz ZONE]
+#                [--action-items] [--hook CMD] [transcribe flags...]
+# Transcribe each file into <into>/<YYYY-MM-DD-HHMM>/ with base name "transcript"
+# and keep the source audio beside it so roll-up's audit can hash it. Idempotent:
+# a file whose sha256 already appears in <into>/_workspace.json (written by
+# roll-up) is skipped BEFORE any transcription. Folder naming, hashing, and
+# action items live in lib/workspace.py (stdlib-only; plain python3 runs it).
+cmd_ingest() {
+  local into="" folder_by="created" tz_arg="" want_action_items=0 hook=""
+  local passthrough=() AUDIO=()
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --into)         into="$2"; shift 2 ;;
+      --folder-by)    folder_by="$2"; shift 2 ;;
+      --tz)           tz_arg="$2"; shift 2 ;;
+      --action-items) want_action_items=1; shift ;;
+      --hook)         hook="$2"; shift 2 ;;
+      # ingest owns the output layout and base name
+      -o|--outdir) log "ingest: -o/--outdir is not allowed — ingest places each meeting itself"; exit 1 ;;
+      -n|--name)   log "ingest: -n/--name is not allowed — ingest names its outputs 'transcript'"; exit 1 ;;
+      # transcribe flags that pass straight through
+      -m|--model|-l|--lang|-f|--format|--speakers|-j|--jobs|--chunk-seconds)
+                      passthrough+=("$1" "$2"); shift 2 ;;
+      --accurate|--diarize|--no-diarize|--no-chunk)
+                      passthrough+=("$1"); shift ;;
+      --)            shift; while [[ $# -gt 0 ]]; do AUDIO+=("$1"); shift; done ;;
+      -h|--help)     cmd_help; exit 0 ;;
+      -*)            log "unknown option: $1"; cmd_help; exit 1 ;;
+      *)             AUDIO+=("$1"); shift ;;
+    esac
+  done
+
+  [[ -z "$into" ]] && { log "ingest: --into DIR is required (the meeting workspace root)"; exit 1; }
+  [[ ${#AUDIO[@]} -eq 0 ]] && { log "no audio file given."; cmd_help; exit 1; }
+  case "$folder_by" in
+    created|mtime) ;;
+    *) log "ingest: --folder-by must be 'created' or 'mtime' (got '$folder_by')"; exit 1 ;;
+  esac
+
+  mkdir -p "$into"
+
+  # Local zone for the dated folder name: explicit --tz wins, else the system's
+  # IANA zone from /etc/localtime; if neither resolves, leave --tz off and let
+  # workspace.py default to UTC.
+  local tz=""
+  if [[ -n "$tz_arg" ]]; then
+    tz="$tz_arg"
+  else
+    local localtime_link=""
+    localtime_link="$(readlink /etc/localtime 2>/dev/null || true)"
+    if [[ "$localtime_link" == *zoneinfo/* ]]; then
+      tz="${localtime_link##*zoneinfo/}"
+    else
+      log "NOTE could not detect the local timezone; folder names default to UTC (pass --tz ZONE to override)"
+    fi
+  fi
+  if [[ -n "$tz" ]]; then
+    python3 -c 'import sys; from zoneinfo import ZoneInfo; ZoneInfo(sys.argv[1])' "$tz" 2>/dev/null \
+      || { log "ingest: unknown timezone '$tz'"; exit 1; }
+  fi
+
+  local audio sha existing fname
+  for audio in "${AUDIO[@]}"; do
+    [[ -f "$audio" ]] || { log "file not found: $audio"; exit 1; }
+
+    # identity + idempotence: skip BEFORE any transcription work
+    sha="$(python3 "$REPO_DIR/lib/workspace.py" hash "$audio")" \
+      || { log "ingest: hash failed for $audio"; exit 1; }
+    existing="$(python3 -c '
+import json, sys
+sha, manifest = sys.argv[1], sys.argv[2]
+try:
+    meetings = json.load(open(manifest)).get("meetings", [])
+except Exception:
+    sys.exit(0)
+for m in meetings:
+    if isinstance(m, dict) and m.get("source_sha256") == sha:
+        print(m.get("folder", ""))
+        break
+' "$sha" "$into/_workspace.json")"
+    if [[ -n "$existing" ]]; then
+      log "already ingested as $existing (skipping) — $audio"
+      continue
+    fi
+
+    # dated folder name
+    if [[ "$folder_by" == "mtime" ]]; then
+      # workspace.py's folder-name always prefers the creation_time tag, so the
+      # mtime mode is computed here from the filesystem stamp directly.
+      local epoch date_tz="$tz"
+      [[ -z "$date_tz" ]] && date_tz="UTC"
+      epoch="$(stat -f %m "$audio")"
+      fname="$(TZ="$date_tz" date -r "$epoch" +%Y-%m-%d-%H%M)"
+    else
+      local fn_args=(folder-name "$audio")
+      if [[ -n "$tz" ]]; then fn_args+=(--tz "$tz"); fi
+      fname="$(python3 "$REPO_DIR/lib/workspace.py" "${fn_args[@]}")" \
+        || { log "ingest: could not derive a folder name for $audio"; exit 1; }
+    fi
+
+    # a same-named folder already holding another meeting gets -2, -3, ... suffixes
+    local base_fname="$fname" n=2
+    while [[ -d "$into/$fname" ]] && [[ -n "$(ls -A "$into/$fname")" ]]; do
+      fname="$base_fname-$n"
+      n=$((n + 1))
+    done
+    [[ "$fname" != "$base_fname" ]] && log "folder $base_fname already occupied; using $fname"
+
+    local folder="$into/$fname"
+    mkdir -p "$folder"
+    log "→ $audio  →  $folder/"
+
+    # WHOSAID_INGEST_DRYRUN (undocumented test hook): skip the model call but
+    # leave a stub transcript so the rest of the ingest plumbing can be checked.
+    if [[ -n "${WHOSAID_INGEST_DRYRUN:-}" ]]; then
+      log "(dryrun) transcription skipped; would run: transcribe $audio -o $folder -n transcript"
+      printf '[dryrun stub transcript]\n' > "$folder/transcript.txt"
+    else
+      # Subshell: cmd_transcribe signals "transcript ok, diarization failed"
+      # with exit 3 — that must warn here, not abort the ingest loop.
+      local rc=0
+      ( cmd_transcribe "$audio" -o "$folder" -n transcript ${passthrough[@]+"${passthrough[@]}"} ) || rc=$?
+      if [[ "$rc" -ne 0 ]]; then
+        if [[ "$rc" -eq 3 ]]; then
+          log "WARN diarization incomplete for $fname; plain transcript stands"
+        else
+          log "ERROR transcription failed (exit $rc): $audio"
+          exit "$rc"
+        fi
+      fi
+    fi
+
+    # keep the source beside the transcript so roll-up's audit can hash it
+    local copied=1
+    cp -n "$audio" "$folder/" || { copied=0; log "WARN source copy skipped for $fname"; }
+
+    # upsert a minimal manifest entry so ingest alone is idempotent: without it an
+    # immediate re-ingest (no roll-up in between) sees no sha in _workspace.json
+    # and duplicates the meeting into a -2 folder. roll-up's scan_meeting keeps
+    # ingested_at and recomputes every other field from the folder contents.
+    if [[ "$copied" == "1" ]]; then
+      python3 -c '
+import json, os, sys, tempfile
+from datetime import datetime, timezone
+
+path, folder, src, sha = sys.argv[1:5]
+try:
+    with open(path) as f:
+        data = json.load(f)
+    if not (isinstance(data, dict) and isinstance(data.get("meetings"), list)):
+        raise ValueError("unexpected manifest shape")
+except Exception:
+    data = {"meetings": []}
+data["meetings"] = [
+    m for m in data["meetings"]
+    if not (isinstance(m, dict) and m.get("folder") == folder)
+]
+data["meetings"].append({
+    "folder": folder,
+    "source_name": src,
+    "source_sha256": sha,
+    "ingested_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+})
+d = os.path.dirname(path) or "."
+fd, tmp = tempfile.mkstemp(dir=d, prefix=".workspace-", suffix=".tmp")
+try:
+    with os.fdopen(fd, "w") as f:
+        f.write(json.dumps(data, indent=2) + "\n")
+    os.replace(tmp, path)
+except BaseException:
+    try:
+        os.unlink(tmp)
+    except OSError:
+        pass
+    raise
+' "$into/_workspace.json" "$fname" "$(basename "$audio")" "$sha" \
+        || log "WARN could not update manifest; roll-up will rebuild it"
+    fi
+
+    if [[ "$want_action_items" == "1" ]]; then
+      local transcript="$folder/transcript.speakers.txt"
+      if [[ ! -s "$transcript" ]]; then
+        transcript="$folder/transcript.txt"
+        log "NOTE no speaker-labeled transcript in $fname; using the plain transcript for action items"
+      fi
+      if [[ -s "$transcript" ]]; then
+        local ai_args=(action-items --transcript "$transcript" --json-out "$folder/action-items.json")
+        if [[ -n "$hook" ]]; then ai_args+=(--hook "$hook"); fi
+        python3 "$REPO_DIR/lib/workspace.py" "${ai_args[@]}" \
+          || log "WARN action items failed for $fname (continuing)"
+      else
+        log "WARN no transcript found in $fname; skipping action items"
+      fi
+    fi
+    log "✓ ingested $fname/"
+  done
+
+  log "next: whosaid roll-up $into --action-items"
+}
+
+# whosaid roll-up <workspace-dir> [--action-items] [-o OUT] [--action-items-out OUT] [--rebuild]
+# Thin bash front for `python3 lib/workspace.py rollup`: rebuilds _INDEX.md, the
+# _workspace.json manifest, and (with --action-items) the deduplicated corpus.
+cmd_rollup() {
+  local wsdir="" py_args=()
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --action-items)     py_args+=("$1"); shift ;;
+      --rebuild)          py_args+=("$1"); shift ;;
+      -o|--out)           py_args+=("$1" "$2"); shift 2 ;;
+      --action-items-out) py_args+=("$1" "$2"); shift 2 ;;
+      -h|--help)          cmd_help; exit 0 ;;
+      -*)                 log "unknown option: $1"; cmd_help; exit 1 ;;
+      *)                  if [[ -z "$wsdir" ]]; then wsdir="$1"; else log "roll-up: unexpected arg '$1'"; exit 1; fi; shift ;;
+    esac
+  done
+  [[ -z "$wsdir" ]] && { log "roll-up: need a workspace directory. e.g. whosaid roll-up meetings/"; exit 1; }
+  exec python3 "$REPO_DIR/lib/workspace.py" rollup "$wsdir" ${py_args[@]+"${py_args[@]}"}
+}
+
 # ---- dispatch --------------------------------------------------------------------
 case "${1:-}" in
   setup)
@@ -549,6 +803,12 @@ case "${1:-}" in
     ;;
   relabel)
     cmd_relabel "${@:2}"
+    ;;
+  ingest)
+    cmd_ingest "${@:2}"
+    ;;
+  roll-up|rollup)
+    cmd_rollup "${@:2}"
     ;;
   doctor)
     cmd_doctor

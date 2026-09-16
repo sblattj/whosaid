@@ -4,6 +4,29 @@ All notable changes to whosaid are documented here. This project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html) and the format of
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Added
+
+- **Meeting workspaces (GitHub issue #2).** A dated, auditable home for a recurring meeting
+  series (`lib/workspace.py`): every recording transcribed into a `YYYY-MM-DD-HHMM` folder,
+  per-meeting action items, and one roll-up across the whole workspace — still entirely offline.
+- **`whosaid ingest` — dated, idempotent batch folders.** Transcribes a batch into folders named
+  from each recording's container `creation_time` (rendered in `--tz`, mtime fallback),
+  idempotent by source sha256, passing through all transcribe flags.
+- **Pluggable action-items hook.** `--hook CMD` (or the `WHOSAID_ACTION_ITEMS_HOOK` environment
+  variable) receives the speaker-labeled transcript on stdin plus `WHOSAID_SPEAKERS` /
+  `WHOSAID_TRANSCRIPT_PATH`, and its stdout becomes the meeting's `action-items.md`. With no hook
+  a skeleton is written instead, so the default stays fully offline.
+- **`whosaid roll-up` — coverage index with a nothing-missing audit.** `_INDEX.md` lists one row
+  per meeting (created, duration, transcribed/diarized/action-items) and flags orphan directories
+  and stale manifest entries, alongside a recurring-topics section.
+- **Living, deduplicated action-item corpus.** With `--action-items`, `_ACTION-ITEMS.md` folds
+  every meeting's items into stable `AI-001` ids (never renumbered) with `first_seen` /
+  `last_seen`, occurrence lists, and open/ongoing/resolved statuses that survive re-runs.
+  Incremental and append-only by default (`--rebuild` to reset); state is plain JSON
+  (`_workspace.json`, `_action-items.json`) that is safe to hand-edit.
+
 ## [1.1.0] — 2026-08-18
 
 ### Added
@@ -134,6 +157,7 @@ attributed to a person — who said what — with nothing ever leaving your Mac.
 - `ffmpeg` and `uv` (Homebrew). Python is used only through ephemeral `uv`
   environments — no persistent install is left behind.
 
+[Unreleased]: https://github.com/sblattj/whosaid/compare/v1.1.0...HEAD
 [1.1.0]: https://github.com/sblattj/whosaid/releases/tag/v1.1.0
 [1.0.2]: https://github.com/sblattj/whosaid/releases/tag/v1.0.2
 [1.0.1]: https://github.com/sblattj/whosaid/releases/tag/v1.0.1
