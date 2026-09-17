@@ -26,6 +26,9 @@ All notable changes to whosaid are documented here. This project adheres to
   `last_seen`, occurrence lists, and open/ongoing/resolved statuses that survive re-runs.
   Incremental and append-only by default (`--rebuild` to reset); state is plain JSON
   (`_workspace.json`, `_action-items.json`) that is safe to hand-edit.
+- **`whosaid version` / `--version` (GitHub issue #9).** Prints the installed version (and, from
+  a git checkout, a `git describe` suffix); also exposed as the `version` field in the MCP
+  `whosaid_doctor` tool's report.
 
 ### Fixed
 

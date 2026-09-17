@@ -8,6 +8,7 @@
 #   whosaid enroll [Name]         Record a voice sample and name a speaker cluster.
 #   whosaid record [--label L]    Record from the mic, then transcribe it.
 #   whosaid doctor                Read-only environment/model/device report.
+#   whosaid version | --version   Print the installed version.
 #   whosaid mcp                   Run the MCP server (stdio) for AI agents / Claude.
 #   whosaid <audio> [...]         Transcribe (and, by default, diarize) audio file(s).
 #   whosaid ingest <a...> --into D  Transcribe into a dated meeting workspace.
@@ -30,6 +31,11 @@ while [[ -L "$SOURCE" ]]; do
   [[ "$SOURCE" != /* ]] && SOURCE="$SOURCE_DIR/$SOURCE"
 done
 REPO_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+
+# Single source of truth for the released version. Bump this alongside the
+# CHANGELOG.md entry and git tag at release time.
+WHOSAID_VERSION="1.1.0"
+
 HELPER="$REPO_DIR/lib/transcribe_mlx.py"
 DIARIZER="$REPO_DIR/lib/diarize_sherpa.py"
 VOICE_REFS="${WHOSAID_VOICE_REFS:-$REPO_DIR/voices}"
@@ -70,6 +76,7 @@ USAGE
   whosaid enroll [Name]                Record a voice sample, name a speaker cluster.
   whosaid record [--label L] [flags]   Record from the mic, then transcribe it.
   whosaid doctor                       Read-only environment/model/device report.
+  whosaid version | --version | -V     Print the installed version.
   whosaid mcp                          Run the MCP server (stdio) for AI agents / Claude.
   whosaid <audio> [<audio> ...] [flags]
                                         Transcribe (and by default diarize) file(s).
@@ -177,6 +184,17 @@ loses the plain transcript — it warns and the transcript stands on its own.
 
 Nothing — audio, text, or embeddings — ever leaves the machine.
 EOF
+}
+
+# ---- version -----------------------------------------------------------------
+cmd_version() {
+  local git_suffix=""
+  if command -v git >/dev/null 2>&1; then
+    local described=""
+    described="$(git -C "$REPO_DIR" describe --tags --always --dirty 2>/dev/null || true)"
+    [[ -n "$described" ]] && git_suffix=" (git $described)"
+  fi
+  echo "whosaid ${WHOSAID_VERSION}${git_suffix}"
 }
 
 # ---- install -----------------------------------------------------------------
@@ -471,6 +489,7 @@ cmd_transcribe() {
       --absorb-threshold) ABSORB="$2"; shift 2 ;;
       --no-chunk)   NO_CHUNK=1; shift ;;
       -h|--help)    cmd_help; exit 0 ;;
+      --version|-V) cmd_version; exit 0 ;;
       --)           shift; while [[ $# -gt 0 ]]; do AUDIO+=("$1"); shift; done ;;
       -*)           log "unknown option: $1"; cmd_help; exit 1 ;;
       *)            AUDIO+=("$1"); shift ;;
@@ -847,6 +866,9 @@ case "${1:-}" in
     ;;
   doctor)
     cmd_doctor
+    ;;
+  version|--version|-V)
+    cmd_version
     ;;
   mcp)
     # Pin to the tested SDK major: mcp 2.x uses MCPServer; a future 3.0 could
