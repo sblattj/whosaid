@@ -39,6 +39,34 @@ REC_DEVICE="${WHOSAID_REC_DEVICE:-0}"
 
 log() { echo "whosaid: $*" >&2; }
 
+# ---- temp-directory checkout guard --------------------------------------------
+# True (0) when the resolved path is under a system temp directory: /tmp,
+# /private/tmp, /var/tmp, /private/var/tmp, or the resolved $TMPDIR (macOS's
+# per-user/per-process temp dir, e.g. /var/folders/.../T/). A checkout there
+# gets purged by the OS, leaving `whosaid install`'s symlink dangling with no
+# diagnostic pointing at the real cause — see `cmd_install`, `cmd_doctor`, and
+# GitHub issue #10.
+is_temp_path() {
+  local target="$1"
+  local resolved
+  resolved="$(cd -P "$target" 2>/dev/null && pwd)" || resolved="$target"
+  local roots=(/tmp /private/tmp /var/tmp /private/var/tmp)
+  if [[ -n "${TMPDIR:-}" ]]; then
+    local resolved_tmpdir
+    resolved_tmpdir="$(cd -P "$TMPDIR" 2>/dev/null && pwd)" || resolved_tmpdir="${TMPDIR%/}"
+    roots+=("$resolved_tmpdir")
+  fi
+  local root
+  for root in "${roots[@]}"; do
+    root="${root%/}"
+    [[ -z "$root" ]] && continue
+    if [[ "$resolved" == "$root" || "$resolved" == "$root"/* ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
 # ---- shared environment guards (mirrors the transcribe flow's own checks) --
 warn_if_not_arm64() {
   if [[ "$(uname -m)" != "arm64" ]]; then
@@ -66,7 +94,9 @@ whosaid — local, GPU-accelerated, speaker-attributed transcription (Apple Sili
 
 USAGE
   whosaid setup                        Install dependencies, pre-download models.
-  whosaid install                      Install/update ~/.local/bin/whosaid.
+  whosaid install [--force]            Install/update ~/.local/bin/whosaid. Refuses (unless
+                                        --force) when this checkout is under a temp directory,
+                                        since the symlink would dangle once it's cleaned up.
   whosaid enroll [Name]                Record a voice sample, name a speaker cluster.
   whosaid record [--label L] [flags]   Record from the mic, then transcribe it.
   whosaid doctor                       Read-only environment/model/device report.
@@ -180,10 +210,47 @@ EOF
 }
 
 # ---- install -----------------------------------------------------------------
+# whosaid install [--force] [--check-only]
+#   --force        Install even if this checkout is under a temp directory.
+#   --check-only   INTERNAL (not documented in --help): run only the
+#                  temp-directory guard and exit 0/1 without touching the
+#                  filesystem. Used by bootstrap.sh to fail fast, before its
+#                  multi-minute model downloads, using the same is_temp_path
+#                  definition as the real install.
 cmd_install() {
+  local force=0 check_only=0
+  local arg
+  for arg in "$@"; do
+    case "$arg" in
+      --force) force=1 ;;
+      --check-only) check_only=1 ;;
+      -h|--help) cmd_help; exit 0 ;;
+      *) log "install: unknown option: $arg"; exit 1 ;;
+    esac
+  done
+
   local install_dir="${WHOSAID_INSTALL_DIR:-$HOME/.local/bin}"
   local destination="$install_dir/whosaid"
   local source="$REPO_DIR/whosaid"
+
+  if is_temp_path "$REPO_DIR"; then
+    if [[ "$force" -eq 0 ]]; then
+      log "FATAL this checkout lives in a temporary directory:"
+      log "FATAL   $REPO_DIR"
+      log "FATAL installing from here would create a symlink at $destination that dangles"
+      log "FATAL as soon as the OS cleans up this temp directory — the usual symptom is a"
+      log "FATAL plain 'command not found' later, with nothing pointing at the real cause."
+      log "FATAL move or clone this checkout to a stable location (e.g. ~/code/whosaid) and"
+      log "FATAL re-run 'whosaid install' there, or pass --force to install anyway."
+      exit 1
+    fi
+    log "WARNING installing from a temp-directory checkout ($REPO_DIR) — continuing because --force was given."
+    log "WARNING the installed symlink at $destination will dangle once this temp directory is cleaned up."
+  fi
+
+  if [[ "$check_only" -eq 1 ]]; then
+    exit 0
+  fi
 
   mkdir -p "$install_dir"
   if [[ -L "$destination" ]]; then
@@ -242,6 +309,31 @@ cmd_doctor() {
     echo "✓ uv: $(uv --version 2>/dev/null)"
   else
     echo "✗ uv not found — fix: brew install uv"
+  fi
+
+  # Note: this check runs from whichever `whosaid` was invoked. If your
+  # installed ~/.local/bin/whosaid symlink is itself dangling, `whosaid doctor`
+  # by name won't run at all — that's exactly the "command not found" case in
+  # GitHub issue #10. Run `./whosaid doctor` from a fresh clone instead.
+  local install_dir="${WHOSAID_INSTALL_DIR:-$HOME/.local/bin}"
+  local destination="$install_dir/whosaid"
+  if [[ -L "$destination" ]]; then
+    local install_target=""
+    install_target="$(readlink "$destination" 2>/dev/null || true)"
+    if [[ ! -e "$destination" ]]; then
+      echo "✗ install: $destination -> $install_target is DANGLING (the checkout it pointed at no longer exists — was it in a temporary directory?) — fix: clone/move whosaid to a stable path and run 'whosaid install'"
+    elif [[ "$install_target" == "$REPO_DIR/whosaid" ]]; then
+      echo "✓ install: $destination -> $REPO_DIR/whosaid"
+    else
+      echo "  install: $destination -> $install_target (a different checkout than $REPO_DIR)"
+    fi
+  elif [[ -e "$destination" ]]; then
+    echo "  install: $destination exists but is not a symlink — fix: remove it, then run 'whosaid install'"
+  else
+    echo "  install: no $destination yet — fix: whosaid install"
+  fi
+  if is_temp_path "$REPO_DIR"; then
+    echo "✗ checkout lives in a temp directory ($REPO_DIR) — move it to a stable location"
   fi
 
   local hf_home
@@ -828,7 +920,7 @@ case "${1:-}" in
     exec "$REPO_DIR/bootstrap.sh" "${@:2}"
     ;;
   install)
-    cmd_install
+    cmd_install "${@:2}"
     ;;
   enroll)
     cmd_enroll "${@:2}"
