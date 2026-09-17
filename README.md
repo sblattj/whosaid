@@ -201,6 +201,8 @@ Microphone permission. The first `whosaid_transcribe` call downloads ~1.5 GB of 
 | `-j, --jobs N` | Parallel diarization workers for long audio (default: auto, ~cores−2, capped at 8). |
 | `--chunk-seconds S` | Window length for parallel diarization (default: auto — about `--jobs` windows, min 300s). |
 | `--no-chunk` | Diarize the whole file in a single pass (disable parallel chunking). |
+| `--match-threshold F` | Cosine similarity a known voice must reach before it may claim a cluster (alias `--ref-threshold`). Default `0.50`; a cluster whose best candidate scores below `F` keeps its anonymous `SPEAKER_NN` label rather than taking a low-confidence name. Raise it (e.g. `0.6`) if you see wrong names, lower it to catch more. |
+| `--absorb-threshold F` | Cosine similarity at which a *still-unnamed* cluster is folded into a known voice, merging phantom splits of one person. Default `0.85`. |
 | `--no-diarize` | Skip diarization; write the plain transcript only. |
 
 ### Environment variables
@@ -211,6 +213,8 @@ Microphone permission. The first `whosaid_transcribe` call downloads ~1.5 GB of 
 | `WHOSAID_LANG` | Default transcription language, overridden by `-l`. |
 | `WHOSAID_VOICE_REFS` | Override the directory of enrollment voice clips (default: `voices/`). |
 | `WHOSAID_SPEAKER_DB` | Local speaker registry of named voiceprints (default: `~/.config/whosaid/speakers.json`). Private, never pushed. |
+| `WHOSAID_MATCH_THRESHOLD` | Default registry/reference match threshold, overridden by `--match-threshold` (default: `0.50`). |
+| `WHOSAID_ABSORB_THRESHOLD` | Default absorb-pass threshold, overridden by `--absorb-threshold` (default: `0.85`). |
 | `DIARIZE_EMB_NAME` | Speaker-embedding model. Default is NeMo `nemo_en_titanet_small.onnx` (English-native, ~2.5× faster than ERes2Net in sherpa's benchmark). Alternatives from the same release: `3dspeaker_speech_eres2net_sv_en_voxceleb_16k.onnx` (English ERes2Net) or `…_zh-cn_…` for Mandarin. Registry voiceprints are keyed by model, so switching re-enrolls speakers. |
 | `WHOSAID_REC_DEVICE` | avfoundation input device used by `record` and `enroll`. |
 | `WHOSAID_INSTALL_DIR` | Command install directory used by `whosaid install` (default: `~/.local/bin`). |
@@ -243,7 +247,8 @@ who's speaking when, a speaker-embedding model (NeMo TitaNet-small by default, c
 `--speakers N`) groups turns into speakers. Both diarization models are small (~30 MB total), ungated
 GitHub releases — no Hugging Face token required — cached locally in `~/.cache/sherpa-diarization/`.
 Finally, every clip in `voices/` — plus every voiceprint in your local registry — is embedded the
-same way and matched to a cluster by cosine similarity (a match at or above 0.40 names the cluster);
+same way and matched to a cluster by cosine similarity (a match at or above `--match-threshold`,
+default 0.50, names the cluster);
 unmatched clusters keep a `SPEAKER_00`-style label. Aside from the one-time model downloads,
 everything runs in ephemeral `uv` environments, so there's no persistent Python install left behind
 on your machine.
@@ -267,7 +272,25 @@ speakers as a single-pass run while finishing several times faster. Pass `--no-c
 | `<base>.rttm` | Raw diarization turns, standard RTTM format. |
 | `<base>.speakers.txt` | Speaker-labeled transcript: Whisper text merged with diarization turns and enrollment names. |
 | `<base>.speaker-cards.txt` | One card per speaker with turn count, talk time, and representative snippets — read it to identify who each `SPEAKER_NN` is, then name them with `whosaid relabel`. |
-| `<base>.diarization.json` | Cached segments + per-cluster voiceprints, so `whosaid relabel` can rename and persist speakers without re-diarizing. |
+| `<base>.diarization.json` | Cached segments + per-cluster voiceprints, so `whosaid relabel` can rename and persist speakers without re-diarizing. Also carries `registry_matches` and `source` (below). |
+
+The sidecar's two machine-readable extras, so a consumer never has to scrape stderr or shell out to
+`ffprobe`:
+
+| Sidecar key | Contents |
+|---|---|
+| `registry_matches` | One record per naming decision, **including near-misses**: `{"cluster": "SPEAKER_03", "name": "Alice", "similarity": 0.919, "threshold": 0.5, "matched": true, "pass": "registry"}`. `pass` is `registry`, `ref`, or `absorb`; `matched: false` means the cluster stayed `SPEAKER_NN` because `similarity < threshold`. Refreshed by `whosaid relabel --auto`, and also printed in the transcribe JSON line. |
+| `source` | Recording provenance: `{"path": "/abs/path.m4a", "duration_seconds": 1834.2, "creation_time": "2026-09-14T18:02:11.000000Z"}`. `creation_time` is the container tag, or `null` when the file carries none. |
+
+**Match confidence and the threshold.** Auto-naming only asserts a name when the cluster's cosine
+similarity to a known voiceprint reaches `--match-threshold` (default `0.50`); below it the cluster
+keeps its `SPEAKER_NN` label — see the `>= ref_threshold` guards in `name_clusters()`
+(`lib/diarize_sherpa.py`). The default was raised from `0.40` to `0.50` because on real meeting
+audio TitaNet-small produced wrong assertions in the 0.40–0.53 band, while genuine same-speaker
+matches score far higher — in the end-to-end test the enrolled reference matches its cluster at
+**0.986**, against **0.194** for the nearest stranger, so 0.50 sits in a wide empty gap. Use
+`registry_matches` to see exactly how close every near-miss came, then lower the threshold
+deliberately if a real speaker is being missed.
 
 ## Troubleshooting
 
@@ -289,7 +312,9 @@ speakers as a single-pass run while finishing several times faster. Pass `--no-c
   registry entry matched closely enough. Read `<base>.speaker-cards.txt` to tell who each cluster is,
   then run `whosaid relabel <base> SPEAKER_01=Name` — this labels them and remembers them for next
   time. (Enrollment via `whosaid enroll <Name>` still works too.) Naming uses a cosine-similarity
-  threshold (0.40), so a short or noisy sample can fall just short of it.
+  threshold (`--match-threshold`, default 0.50), so a short or noisy sample can fall just short of
+  it. Check `registry_matches` in `<base>.diarization.json` for the exact similarity of every
+  near-miss, then lower the threshold deliberately if a real speaker is being missed.
 - **The same person shows up as two speakers (phantom split), or a known voice stays
   `UNIDENTIFIED`.** On long recordings the diarizer can split one voice across several clusters.
   A registry/enrolled voice names its single closest cluster, so the extra clusters used to stay

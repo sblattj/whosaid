@@ -14,7 +14,7 @@ Everything stays LOCAL: no audio, text, or embeddings leave the machine.
 Invoked by the `whosaid` CLI via:
   uv run --with sherpa-onnx --with numpy python diarize_sherpa.py <audio> \
       [--whisper-json X.json] [--outdir DIR] [--name BASE] [--num-speakers N] \
-      [--ref Name=clip.m4a ...] [--ref-threshold 0.40]
+      [--ref Name=clip.m4a ...] [--match-threshold 0.50]
 
 Or, to pre-download/verify the models without any audio (used by `whosaid setup`):
   uv run --quiet --with sherpa-onnx --with numpy python diarize_sherpa.py --ensure-models-only
@@ -163,6 +163,36 @@ def probe_duration(path: str) -> float:
         return float(out)
     except Exception:  # noqa: BLE001
         return 0.0
+
+
+def probe_creation_time(path: str) -> str | None:
+    """Container creation_time tag via ffprobe, as an ISO-8601 string (None if absent).
+
+    Same ffprobe invocation as lib/workspace.py's probe_creation_time(), which owns
+    the parsing/normalisation used for folder naming; here the raw tag is enough.
+    """
+    try:
+        out = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "format_tags=creation_time",
+             "-of", "default=noprint_wrappers=1:nokey=1", path],
+            capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if out.returncode != 0:
+        return None
+    return out.stdout.strip() or None
+
+
+def source_metadata(path: str) -> dict:
+    """Recording provenance for the sidecar: absolute path, duration, creation time.
+
+    Saves consumers an out-of-band ffprobe call to derive per-meeting timestamps.
+    """
+    return {
+        "path": str(Path(path).resolve()),
+        "duration_seconds": round(probe_duration(path), 3) or None,
+        "creation_time": probe_creation_time(path),
+    }
 
 
 def make_diar_config(num_speakers: int):
@@ -499,16 +529,32 @@ def render_outputs(outdir: Path, base: str, segs: list, speakers: list, names: d
         print(ln, file=sys.stderr)
 
 
+DEFAULT_REF_THRESHOLD = 0.50
+
+
+def default_ref_threshold() -> float:
+    """argparse default for --ref-threshold: env WHOSAID_MATCH_THRESHOLD wins.
+
+    Read through a function (not at import time) so tests can flip the env var
+    and observe the new default without reloading the module.
+    """
+    raw = os.environ.get("WHOSAID_MATCH_THRESHOLD", "")
+    try:
+        return float(raw) if raw.strip() else DEFAULT_REF_THRESHOLD
+    except ValueError:
+        return DEFAULT_REF_THRESHOLD
+
+
 def name_clusters(cluster_emb: dict, ref_threshold: float, absorb_threshold: float,
                   registry_entries: list, ref_voices: list | None = None,
-                  names: dict | None = None) -> dict:
+                  names: dict | None = None, report: list | None = None) -> dict:
     """Assign real names to anonymous clusters in three passes and return the
     {SPEAKER_NN: name-or-self} map. Shared by the transcribe path and
     `relabel --auto` so both name clusters identically.
 
     Passes (each only touches STILL-UNNAMED clusters, so earlier/explicit names win):
       1. registry one-best — each known voiceprint claims its single best cluster
-         when cosine >= ref_threshold (default 0.40).
+         when cosine >= ref_threshold (default 0.50).
       2. --ref clips — each reference voice claims its best cluster (>= ref_threshold),
          but a ref whose name the registry already assigned is skipped, so one
          person never lands on two cards.
@@ -516,14 +562,37 @@ def name_clusters(cluster_emb: dict, ref_threshold: float, absorb_threshold: flo
          voice (registry entries AND --ref voices) is >= absorb_threshold takes
          that name. Multiple clusters may share a name; the cards merge them.
 
+    Ref-threshold rationale (0.50 default, raised from 0.40 for GitHub issue #1):
+    on real meeting audio TitaNet-small asserted wrong names in the 0.40-0.53 band,
+    while a genuine same-speaker match scores far higher -- the end-to-end test's
+    enrolled reference matches its cluster at 0.986, against 0.194 for the nearest
+    stranger, so 0.50 sits in a wide empty gap rather than near a real match.
+
     Absorb-threshold rationale (0.85 default): same-speaker TitaNet-small centroids
     measured 0.90-0.95 across window splits, while distinct speakers stayed <= 0.73,
     so 0.85 folds phantom splits back together without swallowing real strangers.
 
+    Clusters whose best candidate stays BELOW the gate keep their anonymous
+    SPEAKER_NN label (see the `>= ref_threshold` guards below) — a low-confidence
+    voiceprint never takes a real name.
+
     `registry_entries` : list of {"name","embedding"} for the active model.
     `ref_voices`       : list of (name, embedding) already-embedded --ref clips.
+    `report`           : optional list; every candidate decision (matched AND
+                         near-miss) is appended as a dict with keys
+                         cluster/name/similarity/threshold/matched/pass, so the
+                         caller can persist machine-readable match confidence.
+                         Passing it is optional, keeping positional callers working.
     """
     ref_voices = ref_voices or []
+    if report is None:
+        report = []
+
+    def record(cluster, name, similarity, threshold, matched, which):
+        report.append({"cluster": cluster, "name": name,
+                       "similarity": round(float(similarity), 6),
+                       "threshold": float(threshold),
+                       "matched": bool(matched), "pass": which})
     if names is None:
         names = {sp: sp for sp in cluster_emb}
 
@@ -537,7 +606,7 @@ def name_clusters(cluster_emb: dict, ref_threshold: float, absorb_threshold: flo
     # A voice that ALREADY owns a cluster (an explicit relabel spec, or a name kept
     # from a prior run in relabel --auto) is skipped here: extending one person onto
     # extra clusters is the absorb pass's job, gated at the far stricter
-    # absorb_threshold, so the loose 0.40 gate can't annex a second, low-confidence
+    # absorb_threshold, so the looser ref gate can't annex a second, low-confidence
     # cluster to someone who is already placed.
     assigned = {names[sp] for sp in names if names.get(sp, sp) != sp}
     registry_named = set()
@@ -549,11 +618,16 @@ def name_clusters(cluster_emb: dict, ref_threshold: float, absorb_threshold: flo
         if not sims:
             continue
         best = max(sims, key=sims.get)
-        if sims[best] >= ref_threshold:
+        matched = sims[best] >= ref_threshold
+        record(best, entry_name, sims[best], ref_threshold, matched, "registry")
+        if matched:
             names[best] = entry_name
             assigned.add(entry_name)
             registry_named.add(entry_name)
             log(f"  registry: {best} -> {entry_name} (sim {sims[best]:.3f})")
+        else:
+            log(f"  registry: {entry_name} best {best} sim {sims[best]:.3f} "
+                f"< {ref_threshold}, left unnamed")
 
     # Pass 2: --ref clips (still-unnamed only; skip a name the registry already used).
     for ref_name, remb in ref_voices:
@@ -567,6 +641,8 @@ def name_clusters(cluster_emb: dict, ref_threshold: float, absorb_threshold: flo
         if not sims:
             continue
         best = max(sims, key=sims.get)
+        record(best, ref_name, sims[best], ref_threshold,
+               sims[best] >= ref_threshold, "ref")
         if sims[best] >= ref_threshold:
             names[best] = ref_name
             log(f"  ref: {best} -> {ref_name} (sim {sims[best]:.3f})")
@@ -584,7 +660,9 @@ def name_clusters(cluster_emb: dict, ref_threshold: float, absorb_threshold: flo
         if not cands:
             continue
         bn = max(cands, key=cands.get)
-        if cands[bn] >= absorb_threshold:
+        matched = cands[bn] >= absorb_threshold
+        record(sp, bn, cands[bn], absorb_threshold, matched, "absorb")
+        if matched:
             names[sp] = bn
             log(f"  absorb: {sp} -> {bn} (sim {cands[bn]:.3f})")
     return names
@@ -634,8 +712,10 @@ def do_relabel(args) -> None:
             if s.get("model") == emb_model and s.get("embedding")]
         if registry_entries:
             log(f"registry: matching against {len(registry_entries)} known voice(s) [{emb_model}]")
+        registry_matches: list = []
         name_clusters(cluster_emb, args.ref_threshold, args.absorb_threshold,
-                      registry_entries, [], names)
+                      registry_entries, [], names, report=registry_matches)
+        data["registry_matches"] = registry_matches
 
     data["names"] = names
     sidecar.write_text(json.dumps(data, indent=2))
@@ -654,8 +734,12 @@ def main() -> None:
     ap.add_argument("--num-speakers", type=int, default=-1, help="-1 = auto-detect")
     ap.add_argument("--ref", action="append", default=[], metavar="NAME=CLIP",
                     help="reference voice clip for naming a cluster (repeatable)")
-    ap.add_argument("--ref-threshold", type=float, default=0.40,
-                    help="min cosine similarity to accept a reference match")
+    ap.add_argument("--ref-threshold", "--match-threshold", dest="ref_threshold",
+                    type=float, default=default_ref_threshold(),
+                    help="min cosine similarity to accept a registry/--ref match. "
+                         "A cluster whose best candidate scores below it keeps its "
+                         "anonymous SPEAKER_NN label. Default 0.50; "
+                         "env WHOSAID_MATCH_THRESHOLD.")
     ap.add_argument("--absorb-threshold", type=float,
                     default=float(os.environ.get("WHOSAID_ABSORB_THRESHOLD", "0.85")),
                     help="min cosine similarity for a still-unnamed cluster to be absorbed "
@@ -791,8 +875,9 @@ def main() -> None:
         ref_name, ref_path = spec.split("=", 1)
         ref_voices.append((ref_name, ref_embed(load_audio(ref_path))))
 
+    registry_matches: list = []
     name_clusters(cluster_emb, args.ref_threshold, args.absorb_threshold,
-                  registry_entries, ref_voices, names)
+                  registry_entries, ref_voices, names, report=registry_matches)
 
     # ---- persist identified speakers to the local registry (--save-speaker) ----
     if args.save_speaker:
@@ -825,6 +910,8 @@ def main() -> None:
         "emb_model": EMB_NAME,
         "num_speakers": len(speakers),
         "names": names,
+        "registry_matches": registry_matches,
+        "source": source_metadata(args.audio),
         "segments": segs,
         "cluster_emb": {sp: cluster_emb[sp].tolist() for sp in cluster_emb},
         "whisper_json": str(Path(args.whisper_json).resolve()) if args.whisper_json else None,
@@ -835,6 +922,8 @@ def main() -> None:
         "detect_mode": detect_mode,
         "speakers": [names[sp] for sp in speakers],
         "clusters": {sp: names[sp] for sp in speakers},
+        "registry_matches": registry_matches,
+        "source": source_metadata(args.audio),
         "turns": len(segs),
     }))
 

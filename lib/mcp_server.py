@@ -206,6 +206,7 @@ def whosaid_transcribe(
     lang: str = "en",
     speakers: Optional[int] = None,
     diarize: bool = True,
+    match_threshold: Optional[float] = None,
 ) -> dict:
     """Transcribe + diarize by shelling the CLI, then read the output files."""
     if not Path(audio).exists():
@@ -230,6 +231,8 @@ def whosaid_transcribe(
         args += ["--speakers", str(speakers)]
     if not diarize:
         args.append("--no-diarize")
+    if match_threshold is not None:
+        args += ["--match-threshold", str(match_threshold)]
 
     proc = _run_cli(args)
 
@@ -261,10 +264,14 @@ def whosaid_transcribe(
     # Authoritative cluster list + names come from the sidecar; regex is a fallback.
     names: dict = {}
     num_speakers: Optional[int] = None
+    registry_matches: list = []
+    source_meta: Optional[dict] = None
     if sidecar_path.exists():
         try:
             data = json.loads(sidecar_path.read_text())
             names = dict(data.get("names") or {})
+            registry_matches = data.get("registry_matches") or []
+            source_meta = data.get("source")
             num_speakers = data.get("num_speakers")
             if num_speakers is None:
                 num_speakers = len({s["speaker"] for s in data.get("segments", [])}) or None
@@ -303,6 +310,8 @@ def whosaid_transcribe(
         "speakers_txt": str(speakers_txt) if speakers_text is not None else None,
         "speaker_cards_txt": str(speaker_cards_path) if speaker_cards is not None else None,
         "sidecar_json": str(sidecar_path) if sidecar_path.exists() else None,
+        "registry_matches": registry_matches,
+        "source": source_meta,
         "duration_seconds": _probe_duration(audio),
         "num_speakers": num_speakers,
         "named_speakers": named_speakers,
@@ -349,6 +358,7 @@ def whosaid_relabel(
     assignments: dict,
     outdir: Optional[str] = None,
     auto: bool = False,
+    match_threshold: Optional[float] = None,
 ) -> dict:
     """Name SPEAKER_NN clusters and persist them, by shelling `whosaid relabel`.
 
@@ -379,6 +389,8 @@ def whosaid_relabel(
     args = ["relabel", base, *specs]
     if auto:
         args.append("--auto")
+    if match_threshold is not None:
+        args += ["--match-threshold", str(match_threshold)]
     if outdir:
         args += ["-o", outdir]
 
@@ -612,6 +624,9 @@ Nothing — audio, text, or voice embeddings — ever leaves the machine.
 - `speakers` → `--speakers N`: speaker-count hint (e.g. 2 for a 1:1 call). Omit to
   auto-detect the number of speakers.
 - `diarize=False` → `--no-diarize`: plain transcript only, no speaker labels.
+- `match_threshold` → `--match-threshold F`: cosine a known voice must reach to
+  claim a cluster (default `0.50`, env `WHOSAID_MATCH_THRESHOLD`). Omit it to use
+  the default. Also accepted by whosaid_relabel (applies to `auto=True`).
 
 CLI-only transcribe flags (not surfaced as MCP params; use the resource/CLI):
 `-m/--model REPO`, `-n/--name NAME`, and the long-audio controls below.
@@ -632,9 +647,17 @@ CLI-only transcribe flags (not surfaced as MCP params; use the resource/CLI):
   (`~/.config/whosaid/speakers.json`, override `WHOSAID_SPEAKER_DB`), keyed by the
   embedding model. A voice you name once is auto-named in every later transcript.
 - Auto-naming matches a cluster's voiceprint to a known voice by **cosine
-  similarity ≥ 0.40** (the `--ref-threshold`). Below that, the cluster is left
-  unnamed. Enrolled clips in `voices/` (or `WHOSAID_VOICE_REFS`) are matched the
-  same way.
+  similarity ≥ 0.50** (the `match_threshold` param / `--match-threshold` flag,
+  alias `--ref-threshold`). Below that, the cluster keeps its `SPEAKER_NN` label
+  rather than taking a low-confidence name. Enrolled clips in `voices/` (or
+  `WHOSAID_VOICE_REFS`) are matched the same way. Raise it (e.g. 0.6) if you see
+  wrong names; lower it to catch more.
+- Every match decision — including near-misses — is machine-readable in
+  `<base>.diarization.json` under `registry_matches`
+  (`{cluster, name, similarity, threshold, matched, pass}`; `pass` is
+  `registry`/`ref`/`absorb`), and is returned by whosaid_transcribe.
+- The sidecar also carries `source` (`path`, `duration_seconds`, `creation_time`
+  from the container tag), so no separate `ffprobe` is needed for meeting timestamps.
 - whosaid_list_speakers shows enrolled clips + registered voiceprints.
 
 ## Long audio runs in parallel
@@ -652,6 +675,9 @@ times faster with the same result. Tuning (CLI flags):
 - `WHOSAID_VOICE_REFS` — enrollment-clip directory (default `./voices`).
 - `WHOSAID_SPEAKER_DB` — speaker registry path (default
   `~/.config/whosaid/speakers.json`).
+- `WHOSAID_MATCH_THRESHOLD` — registry/reference match cosine threshold (default
+  `0.50`); clusters below it stay `SPEAKER_NN`.
+- `WHOSAID_ABSORB_THRESHOLD` — absorb-pass cosine threshold (default `0.85`).
 - `DIARIZE_EMB_NAME` — speaker-embedding model (default NeMo TitaNet-small,
   English-native; set the zh-cn 3D-Speaker model for Mandarin audio). Voiceprints
   are keyed by this model, so switching it re-enrolls speakers.

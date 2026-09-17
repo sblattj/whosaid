@@ -383,6 +383,15 @@ SIDECAR="$TMP/out/$BASE.diarization.json"
 [ -s "$SIDECAR" ] \
   || fail "missing or empty diarization sidecar: $SIDECAR (relabel reloads this cached sidecar)"
 
+# Issue #1 parts 2-3: the sidecar must carry machine-readable per-cluster match
+# confidence and the source recording metadata, so a consumer needs no ffprobe.
+grep -q '"registry_matches"' "$SIDECAR" \
+  || fail "sidecar $SIDECAR has no registry_matches key (per-cluster match confidence regressed)"
+grep -q '"source"' "$SIDECAR" \
+  || fail "sidecar $SIDECAR has no source key (recording metadata regressed)"
+python3 "$REPO/test/check_sidecar_schema.py" "$SIDECAR" \
+  || fail "sidecar $SIDECAR failed the registry_matches/source schema check"
+
 echo "output artifacts + formats OK"
 
 # ---------------------------------------------------------------------------
