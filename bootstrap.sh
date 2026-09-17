@@ -4,8 +4,11 @@
 # pre-download. Idempotent — safe to re-run any time; each step detects
 # already-done and says so.
 #
-# Usage: ./bootstrap.sh [--yes]
-#   --yes   Skip confirmation prompts (installs/continues automatically).
+# Usage: ./bootstrap.sh [--yes] [--force]
+#   --yes     Skip confirmation prompts (installs/continues automatically).
+#   --force   Install even if this checkout lives in a temp directory (see
+#             the temp-directory guard below). Passed through to `whosaid
+#             install --force` at step 8.
 # ==============================================================================
 set -euo pipefail
 
@@ -14,9 +17,24 @@ export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 YES=0
+FORCE=0
 for a in "$@"; do
   [[ "$a" == "--yes" ]] && YES=1
+  [[ "$a" == "--force" ]] && FORCE=1
 done
+
+# ---- temp-directory checkout guard (before the multi-minute downloads below) ------
+# Refuse fast, before steps 5-7 pull ~1.5 GB of models, if this checkout lives
+# under a temp directory (e.g. bootstrapped from /private/tmp/whosaid-latest/):
+# once the OS cleans that directory up, step 8's install symlink would dangle
+# with no diagnostic pointing at the real cause (GitHub issue #10). Delegates
+# to `whosaid install --check-only` — an internal-only mode (not documented in
+# `whosaid --help`) that runs just the is_temp_path guard and exits 0/1
+# without touching the filesystem — so both scripts agree on one definition
+# of "temp directory".
+if [[ "$FORCE" -eq 0 ]] && ! "$REPO_DIR/whosaid" install --check-only; then
+  exit 1
+fi
 
 log() { echo "whosaid: $*" >&2; }
 step() { echo "" >&2; log "[$1/8] $2"; }
@@ -121,7 +139,11 @@ log "✓ sherpa diarization models ready"
 
 # ---- 8. install the command -------------------------------------------------------
 step 8 "installing the whosaid command"
-"$REPO_DIR/whosaid" install
+if [[ "$FORCE" -eq 1 ]]; then
+  "$REPO_DIR/whosaid" install --force
+else
+  "$REPO_DIR/whosaid" install
+fi
 
 echo "" >&2
 log "bootstrap complete."

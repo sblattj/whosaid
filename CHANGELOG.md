@@ -8,6 +8,11 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ### Added
 
+- **Temp-directory install guard (GitHub issue #10).** `whosaid install` (and `./bootstrap.sh`,
+  before its multi-minute model downloads) now refuse to install from a checkout under `/tmp`,
+  `/private/tmp`, `/var/tmp`, or `$TMPDIR` unless `--force` is given, since the installed symlink
+  would silently dangle once the OS cleans that directory up. `whosaid doctor` now also reports a
+  dangling or foreign install symlink so a "command not found" regression points at the real cause.
 - **Meeting workspaces (GitHub issue #2).** A dated, auditable home for a recurring meeting
   series (`lib/workspace.py`): every recording transcribed into a `YYYY-MM-DD-HHMM` folder,
   per-meeting action items, and one roll-up across the whole workspace — still entirely offline.
