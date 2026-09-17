@@ -82,12 +82,13 @@ command without copying or duplicating the implementation.
 |---|---|
 | `./bootstrap.sh [--yes]` (also `whosaid setup`) | Capability check, dependency install, model pre-download, and command installation. Idempotent — safe to re-run. |
 | `whosaid install [--force]` | Install/update the command symlink in `~/.local/bin` (or `WHOSAID_INSTALL_DIR`). Refuses to replace an unrelated command, and refuses (unless `--force`) to install from a checkout under `/tmp`, `/private/tmp`, `/var/tmp`, or `$TMPDIR` — that symlink would dangle once the OS cleans the temp directory up. |
-| `whosaid enroll [Name]` | Records ~45s from the mic reading a printed passage, saves `voices/<Name>.wav`. |
+| `whosaid enroll [Name]` | Records ~45s from the mic reading a printed passage, saves `voices/<Name>.wav`. See [Speaker identity: enrollment clips vs. the registry](#speaker-identity-enrollment-clips-vs-the-registry). |
 | `whosaid enroll <Name> --from FILE [--ss T] [--t D\|--to T] [--force]` | Extracts a clip from an existing recording instead of the mic (extract → verify → save, no interaction). `--ss`/`--t`/`--to` accept seconds or `M:SS`/`H:MM:SS`; same ≥15s/non-silent bar as mic enrollment. |
 | `whosaid record [--label L]` | Foreground mic capture to `recordings/<timestamp>[-label].m4a`, then transcribes automatically. |
 | `whosaid <audio>… [flags]` | The default command: transcribe + diarize + label one or more audio files. |
 | `whosaid relabel <base> SPEAKER_02=Jane …` | Put real names on clusters after reading the speaker cards. Rewrites the transcript + cards and saves each named voiceprint to the local registry for future transcripts. No re-transcription. |
-| `whosaid relabel <base> --auto` | Re-apply naming to an existing transcript with no assignments: re-runs registry matching + the absorb pass over the cached sidecar and rewrites the transcript + cards. Picks up voices enrolled after the transcript was made, and folds phantom cluster splits of one person into a single speaker. No re-transcription, no re-diarization. In a meeting workspace the base is `transcript`. |
+| `whosaid relabel <base> --auto` | Re-apply naming to an existing transcript with no assignments: re-runs registry matching + the absorb pass over the cached sidecar and rewrites the transcript + cards. Picks up voices enrolled after the transcript was made, and folds phantom cluster splits of one person into a single speaker. No re-transcription, no re-diarization. In a meeting workspace the base is `transcript`. See [Speaker identity: enrollment clips vs. the registry](#speaker-identity-enrollment-clips-vs-the-registry). |
+| `whosaid samples <base> [-o DIR] [--audio FILE] [--per-speaker N] [--seconds S] [--json]` | Export one short representative WAV per speaker cluster — the longest diarized segment, clamped to `--seconds` (default 8) — so you can listen and confirm an identity before trusting an auto-label or enrolling. Cuts from the sidecar's own `source.path`, or an explicit `--audio FILE` for a sidecar written before that metadata existed. |
 | `whosaid doctor` | Read-only environment report. |
 | `whosaid version` \| `whosaid --version` \| `whosaid -V` | Print the installed version (plus a `git describe` suffix when run from a git checkout). |
 
@@ -192,6 +193,7 @@ Add it to your MCP client config:
 | `whosaid_list_speakers` | Read-only: lists enrolled voices and registry names already known. |
 | `whosaid_doctor` | Read-only readiness check — models cached, deps present, mic/audio devices — run this first when a transcribe fails. |
 | `whosaid_enroll_from_file` | Enrolls a named voice from an existing audio clip, no mic needed. |
+| `whosaid_samples` | Exports one short representative WAV per speaker cluster (longest segment, clamped to `seconds`) so you can listen and confirm an identity before trusting a label. |
 
 `enroll` and `record` (microphone capture) stay CLI-only — they need an interactive terminal and
 Microphone permission. The first `whosaid_transcribe` call downloads ~1.5 GB of models; call
@@ -230,6 +232,38 @@ Microphone permission. The first `whosaid_transcribe` call downloads ~1.5 GB of 
 | `WHOSAID_INSTALL_DIR` | Command install directory used by `whosaid install` (default: `~/.local/bin`). |
 | `HF_HOME` | Hugging Face cache location (where the Whisper model lands). |
 | `SHERPA_DIARIZE_CACHE` | Diarization model cache location (default: `~/.cache/sherpa-diarization`). |
+
+## Speaker identity: enrollment clips vs. the registry
+
+whosaid has two independent ways to put a name on a `SPEAKER_NN` cluster, and knowing which one
+is driving a given label matters — this was GitHub issue #1's other point of confusion.
+
+**1. Enrollment clips (`voices/`, `WHOSAID_VOICE_REFS`).** Every `*.wav`/`*.m4a` file in the
+directory is embedded *fresh on every transcribe* and passed to the diarizer as `--ref
+Name=path` (the `--ref "$refname=$ref"` loop in the `whosaid` script, run before each diarize
+call). Written by `whosaid enroll [Name]` (mic, or `--from FILE` to cut a clip from an existing
+recording). Because a clip is re-embedded every run, it survives a `DIARIZE_EMB_NAME` change
+with no extra step: the embedding is always current for whichever model is active.
+
+**2. The registry (`~/.config/whosaid/speakers.json`, `WHOSAID_SPEAKER_DB`).** A JSON file of
+`{name, model, embedding, added}` records, written once by `whosaid relabel SPEAKER_XX=Name`
+(or `--save-speaker` on a transcribe) and reused forever with no re-embedding. Each entry is
+keyed by the embedding `model` it was saved under, so switching `DIARIZE_EMB_NAME` silently
+orphans every registry entry for the old model — they don't error, they just stop matching —
+until you relabel again under the new model.
+
+**Which one actually names a cluster.** `name_clusters()` (`lib/diarize_sherpa.py`) runs three
+passes in order, and a later pass only touches a cluster the earlier ones left unnamed: (1)
+registry one-best, (2) `--ref` enrollment clips, (3) absorb (folds a still-unnamed cluster into
+a known voice — registry or clip — above `--absorb-threshold`). Passes 1 and 2 both gate on
+`--match-threshold` (default `0.50`, env `WHOSAID_MATCH_THRESHOLD`): below it a cluster keeps
+its anonymous label rather than take a low-confidence name.
+
+**Inspecting each.** `ls voices/` lists enrollment clips; `whosaid doctor` prints the registry's
+voiceprint count and path; the MCP `whosaid_list_speakers` tool lists both at once.
+`<base>.diarization.json`'s `registry_matches` records which pass named (or nearly named) every
+cluster, so you can tell exactly which mechanism fired — and `whosaid samples <base>` lets you
+listen to a clip per cluster to confirm a label before trusting either one.
 
 ## How it works
 
@@ -283,6 +317,7 @@ speakers as a single-pass run while finishing several times faster. Pass `--no-c
 | `<base>.speakers.txt` | Speaker-labeled transcript: Whisper text merged with diarization turns and enrollment names. |
 | `<base>.speaker-cards.txt` | One card per speaker with turn count, talk time, and representative snippets — read it to identify who each `SPEAKER_NN` is, then name them with `whosaid relabel`. |
 | `<base>.diarization.json` | Cached segments + per-cluster voiceprints, so `whosaid relabel` can rename and persist speakers without re-diarizing. Also carries `registry_matches` and `source` (below). |
+| `<base>.samples/` | Created on demand by `whosaid samples <base>`: one short representative WAV per speaker cluster (`SPEAKER_NN[-Name].wav`), for a quick human listen before trusting an auto-label. |
 
 The sidecar's two machine-readable extras, so a consumer never has to scrape stderr or shell out to
 `ffprobe`:
@@ -371,6 +406,10 @@ install symlink.
 `./test/enroll_from_file_test.sh` covers `whosaid enroll --from` in isolation (time-window parsing,
 the 15s/silence floor, and the `--force` overwrite guard) with synthesized `say` audio — no model
 download required.
+
+`./test/samples_test.sh` covers `whosaid samples` (longest-segment picking, the `--seconds` clamp,
+`--per-speaker`, naming, output format, and the `source`/`--audio` fallback) against a hand-written
+sidecar and synthesized `say` audio — no model download required.
 
 ## License
 

@@ -26,7 +26,7 @@ whosaid              # CLI dispatcher (bash): setup | install | enroll | record 
 bootstrap.sh         # capability check, dependency install, model pre-download
 lib/transcribe_mlx.py  # MLX Whisper runner (hallucination-hardened)
 lib/diarize_sherpa.py  # diarization + voice-ref cluster naming
-lib/mcp_server.py    # MCP stdio server: exposes transcribe/relabel/list/doctor/enroll to AI agents (whosaid mcp)
+lib/mcp_server.py    # MCP stdio server: exposes transcribe/relabel/list/doctor/enroll/samples to AI agents (whosaid mcp)
 voices/              # enrollment clips: <Name>.wav (16 kHz mono; contents gitignored)
 recordings/          # `whosaid record` output (gitignored)
 test/e2e.sh          # offline end-to-end smoke test (synthesizes a 2-voice dialog with `say`)
@@ -113,7 +113,7 @@ ephemeral way as everything else in whosaid: `uv run --with "mcp[cli]"`, no pers
 server never reimplements the pipeline — every tool **shells the existing `whosaid` CLI** as a
 subprocess, so the MCP surface and the CLI can't drift apart.
 
-Five tools, all prefixed `whosaid_`:
+Six tools, all prefixed `whosaid_`:
 
 - **`whosaid_transcribe`** — runs the transcribe + diarize pipeline on a file and returns the output
   paths, speaker cards, and a `next_step` pointing the agent at whichever speakers still need naming.
@@ -123,6 +123,9 @@ Five tools, all prefixed `whosaid_`:
 - **`whosaid_doctor`** *(read-only)* — the same environment/model-cache readiness report as
   `whosaid doctor`, for an agent to run before attempting a transcribe that might fail.
 - **`whosaid_enroll_from_file`** — enrolls a named voice from an existing audio clip (no mic).
+- **`whosaid_samples`** — exports one short representative WAV per speaker cluster (the longest
+  diarized segment, clamped to `seconds`) so an agent (or the human it's helping) can listen and
+  confirm an identity before trusting a label.
 
 Cross-cutting behavior — the local-only guarantee, the output-file contract, the
 transcribe-then-relabel workflow — lives once in the server's `instructions`, loaded up front rather

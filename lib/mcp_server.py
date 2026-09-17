@@ -164,7 +164,7 @@ SERVER_INSTRUCTIONS = """whosaid turns audio into a transcript where every turn 
 
 Output-file contract: each transcribe writes, using <base> = the input's basename (or your `name`, with any character outside [A-Za-z0-9_-] mapped to '_'): <base>.txt (plain transcript), <base>.speakers.txt (speaker-labeled), <base>.speaker-cards.txt (one card per speaker: turn count, talk time, sample snippets — to tell who each SPEAKER_NN is), and <base>.diarization.json (a sidecar that whosaid_relabel reuses).
 
-Typical workflow: whosaid_transcribe -> read the speaker cards in the result -> whosaid_relabel to put real names on the SPEAKER_NN clusters. Relabeling saves each name to a persistent local registry, so the same voice is auto-named in every later transcript. whosaid_list_speakers shows who is already known.
+Typical workflow: whosaid_transcribe -> read the speaker cards in the result -> whosaid_samples if you want to LISTEN to a clip per cluster before trusting a name -> whosaid_relabel to put real names on the SPEAKER_NN clusters. Relabeling saves each name to a persistent local registry, so the same voice is auto-named in every later transcript. whosaid_list_speakers shows who is already known.
 
 Not exposed here: `enroll` and `record` are interactive microphone operations that need a live terminal — run them from the `whosaid` CLI. The first transcribe downloads ~1.5 GB of models; run whosaid_doctor to check readiness. Full flag/env/long-audio reference: read the whosaid://guide resource."""
 
@@ -221,6 +221,18 @@ _DESC_ENROLL = (
     "interactive `whosaid enroll` CLI (it needs a terminal and Microphone permission). Fails "
     "clearly if the clip is too short or silent. Keywords: enroll voice, add speaker, register "
     "voice, voiceprint, teach a new voice from a file."
+)
+
+_DESC_SAMPLES = (
+    "Export ONE short representative WAV clip per SPEAKER_NN cluster, cut from the ORIGINAL "
+    "recording, so a human can quickly LISTEN and confirm an identity before trusting an "
+    "auto-label or enrolling that voice — replaces cutting clips by hand with ffmpeg. Picks "
+    "each cluster's longest diarized segment, clamped to `seconds` (default 8), and writes "
+    "<base>.samples/<SPEAKER_NN>[-<Name>].wav (mono 16kHz). Needs the sidecar's 'source' "
+    "metadata (present since GitHub issue #1 parts 2-3); an older sidecar without it must be "
+    "re-transcribed, or use the `whosaid samples --audio FILE` CLI flag directly. Keywords: "
+    "sample clip, listen to speaker, verify identity, confirm voice, spot check, per-speaker "
+    "snippet, sanity check a label."
 )
 
 
@@ -712,6 +724,75 @@ def whosaid_enroll_from_file(
 
 
 # ---------------------------------------------------------------------------
+# 6) whosaid_samples
+# ---------------------------------------------------------------------------
+@mcp.tool(
+    name="whosaid_samples",
+    description=_DESC_SAMPLES,
+    annotations=ToolAnnotations(
+        read_only_hint=False,
+        destructive_hint=False,
+        idempotent_hint=True,
+        open_world_hint=False,
+    ),
+)
+def whosaid_samples(
+    base: str,
+    outdir: Optional[str] = None,
+    per_speaker: int = 1,
+    seconds: float = 8.0,
+) -> dict:
+    """Shell `whosaid samples ... --json` and return the parsed per-cluster clip list.
+
+    Writes files (one short WAV per speaker cluster), so read_only_hint=False;
+    idempotent_hint=True because re-running with the same args overwrites the
+    same deterministic filenames rather than accumulating new ones.
+    """
+    args = ["samples", base, "--per-speaker", str(per_speaker), "--seconds", str(seconds), "--json"]
+    if outdir:
+        args += ["-o", outdir]
+
+    proc = _run_cli(args)
+    if proc.returncode != 0:
+        combined = ((proc.stdout or "") + (proc.stderr or "")).strip()
+        if "--audio" in combined:
+            return {
+                "ok": False,
+                "error": combined[-1000:],
+                "fix": "this sidecar predates 'source' metadata (GitHub issue #1 parts 2-3) — "
+                       "re-transcribe to regenerate it, or run "
+                       "`whosaid samples <base> --audio FILE` from the CLI directly",
+            }
+        if "diarization sidecar" in combined or "could not find" in combined:
+            return {
+                "ok": False,
+                "error": combined[-1000:],
+                "fix": f"run whosaid_transcribe first to produce {Path(base).name}.diarization.json",
+            }
+        return {
+            "ok": False,
+            "error": combined[-1000:] or "samples failed",
+            "fix": "run whosaid_doctor",
+        }
+
+    samples = []
+    for line in (proc.stdout or "").splitlines():
+        line = line.strip()
+        if line.startswith("{"):
+            try:
+                samples = json.loads(line).get("samples", [])
+            except json.JSONDecodeError:
+                pass
+
+    return {
+        "ok": True,
+        "base": base,
+        "samples": samples,
+        "summary": f"Exported {len(samples)} sample clip(s) — listen to each before trusting its label.",
+    }
+
+
+# ---------------------------------------------------------------------------
 # Resource: whosaid://guide (on-demand deep detail — not in the always-loaded schema)
 # ---------------------------------------------------------------------------
 _GUIDE = """# whosaid — deep reference (whosaid://guide)
@@ -769,6 +850,10 @@ CLI-only transcribe flags (not surfaced as MCP params; use the resource/CLI):
 - The sidecar also carries `source` (`path`, `duration_seconds`, `creation_time`
   from the container tag), so no separate `ffprobe` is needed for meeting timestamps.
 - whosaid_list_speakers shows enrolled clips + registered voiceprints.
+- whosaid_samples exports one short WAV per SPEAKER_NN cluster (longest segment,
+  clamped to `seconds`) so you can listen before trusting a label — needs the
+  sidecar's `source` metadata, so it only works on a transcript made after
+  GitHub issue #1 parts 2-3 (or re-transcribe an older one).
 
 ## Long audio runs in parallel
 Recordings over ~15 min (900 s) auto-chunk: the file is split into windows,
