@@ -74,7 +74,9 @@ The pipeline, per file:
    every `voices/*.wav` — plus every voiceprint in the persistent local speaker registry
    (`~/.config/whosaid/speakers.json`, overridable via `WHOSAID_SPEAKER_DB`; voiceprints are keyed
    by embedding model, so switching models re-enrolls) — is embedded and matched to clusters by
-   cosine similarity (≥ 0.40 names the cluster). Writes `<base>.rttm`, merges with the Whisper
+   cosine similarity (≥ `--match-threshold`, default 0.50, names the cluster; below it the cluster
+   keeps its `SPEAKER_NN` label, and every decision including near-misses is recorded in the
+   sidecar's `registry_matches`). Writes `<base>.rttm`, merges with the Whisper
    segments into `<base>.speakers.txt` (the speaker-labeled transcript), and emits a
    `<base>.speaker-cards.txt` (one card per speaker — turn count, talk time, representative
    snippets — to tell who each `SPEAKER_NN` is) plus a `<base>.diarization.json` sidecar (cached
