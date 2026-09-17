@@ -244,8 +244,14 @@ def _cos(a: np.ndarray, b: np.ndarray) -> float:
     return float(np.dot(a, b) / ((np.linalg.norm(a) + 1e-9) * (np.linalg.norm(b) + 1e-9)))
 
 
-def estimate_k(X: np.ndarray, thresh: float = 0.5, cap: int = 20) -> int:
-    """Coarse farthest-first estimate of the speaker count when none is given."""
+# When auto-detect saturates at this many clusters we stop trusting the count:
+# on a long, noisy recording every window looks a little different and the
+# farthest-first pass pins at the cap, which then feeds k-means a k of 20 and
+# shatters real voices into phantom speakers.
+SPEAKER_CAP = 20
+
+
+def _farthest_first_k(X: np.ndarray, thresh: float, cap: int) -> int:
     centers = [X[0]]
     for x in X[1:]:
         if max(float(x @ c) for c in centers) < thresh:
@@ -253,6 +259,36 @@ def estimate_k(X: np.ndarray, thresh: float = 0.5, cap: int = 20) -> int:
             if len(centers) >= cap:
                 break
     return len(centers)
+
+
+def estimate_k(X: np.ndarray, thresh: float = 0.5, cap: int = SPEAKER_CAP) -> int:
+    """Coarse farthest-first estimate of the speaker count when none is given.
+
+    A single greedy pass opens a new center whenever a turn's best similarity to
+    the existing centers falls below `thresh`, so `thresh` is really a merge
+    radius: a LOWER threshold merges more aggressively and yields FEWER clusters,
+    a higher one splits more and yields more. (NB the merge direction is the
+    opposite of what a "raise the threshold to collapse clusters" intuition
+    suggests — verified empirically against TitaNet-small embeddings.)
+
+    On long recordings the pass saturates at `cap`; handing k-means a k we know
+    is wrong is what splits real voices, so when we hit the cap we retry with
+    progressively LOWER thresholds until the estimate drops below it.
+    """
+    k = _farthest_first_k(X, thresh, cap)
+    if k < cap:
+        return k
+    for t in (0.45, 0.40, 0.35, 0.30, 0.25):
+        if t >= thresh:
+            continue
+        k2 = _farthest_first_k(X, t, cap)
+        if k2 < cap:
+            log(f"auto-detect saturated at cap {cap} at thresh {thresh:.2f}; "
+                f"re-estimated k={k2} at thresh {t:.2f}")
+            return k2
+    log(f"auto-detect saturated at cap {cap} at thresh {thresh:.2f}; still k={k} "
+        f"after re-estimating down to thresh 0.25")
+    return k
 
 
 def spherical_kmeans(X: np.ndarray, k: int, iters: int = 100, restarts: int = 8) -> np.ndarray:
@@ -412,22 +448,44 @@ def render_outputs(outdir: Path, base: str, segs: list, speakers: list, names: d
 
     if snippets_n <= 0:
         return
-    snippets = {sp: [] for sp in speakers}
+    # Group cards by FINAL speaker name so a person split across several clusters
+    # (e.g. absorbed SPEAKER_04 + SPEAKER_07 -> Matt) shows as ONE card with the
+    # combined turns/talk time. Unidentified clusters stay one card each.
+    def final_name(sp: str) -> str:
+        return names[sp] if names.get(sp, sp) != sp else sp
+
+    groups = []        # final names in talk-time order (speakers is biggest-talker first)
+    members = {}       # final name -> [cluster ids]
+    for sp in speakers:
+        fn = final_name(sp)
+        if fn not in members:
+            members[fn] = []
+            groups.append(fn)
+        members[fn].append(sp)
+    snippets = {fn: [] for fn in groups}
     for sp, start, texts in turns:
         joined = " ".join(texts).strip()
         if len(joined.split()) >= 4:  # skip "yeah", "mm-hm" backchannel
-            snippets[sp].append((start, joined))
+            snippets[final_name(sp)].append((start, joined))
     cards_path = outdir / f"{base}.speaker-cards.txt"
     lines = [f"# Speaker cards: {base}",
-             f"# {len(speakers)} speakers detected ({detect_mode}). "
+             f"# {len(groups)} speaker(s) ({detect_mode}). "
              f"Read the snippets, then persist names with:",
              f"#   whosaid relabel {base} SPEAKER_XX=Name [SPEAKER_YY=Name ...]", ""]
-    for sp in speakers:
-        label = names[sp] if names[sp] != sp else f"{sp}  (UNIDENTIFIED)"
+    for fn in groups:
+        clusters = members[fn]
+        g_turns = sum(nturns[sp] for sp in clusters)
+        g_talk = sum(talk[sp] for sp in clusters)
+        if fn in clusters:            # unnamed: final name IS the cluster id
+            label = f"{fn}  (UNIDENTIFIED)"
+        elif len(clusters) > 1:
+            label = f"{fn}  ({', '.join(clusters)})"
+        else:
+            label = fn
         lines.append("=" * 60)
-        lines.append(f"{label}   —   {nturns[sp]} turns, {hms(talk[sp])} talk time")
+        lines.append(f"{label}   —   {g_turns} turns, {hms(g_talk)} talk time")
         lines.append("=" * 60)
-        picks = sorted(snippets[sp], key=lambda x: len(x[1]), reverse=True)[:snippets_n]
+        picks = sorted(snippets[fn], key=lambda x: len(x[1]), reverse=True)[:snippets_n]
         picks.sort(key=lambda x: x[0])
         if not picks:
             lines.append("  (no substantive snippets — mostly short backchannel)")
@@ -439,6 +497,97 @@ def render_outputs(outdir: Path, base: str, segs: list, speakers: list, names: d
     log(f"wrote {cards_path}")
     for ln in lines:  # echo to stderr so the human sees it right after the run
         print(ln, file=sys.stderr)
+
+
+def name_clusters(cluster_emb: dict, ref_threshold: float, absorb_threshold: float,
+                  registry_entries: list, ref_voices: list | None = None,
+                  names: dict | None = None) -> dict:
+    """Assign real names to anonymous clusters in three passes and return the
+    {SPEAKER_NN: name-or-self} map. Shared by the transcribe path and
+    `relabel --auto` so both name clusters identically.
+
+    Passes (each only touches STILL-UNNAMED clusters, so earlier/explicit names win):
+      1. registry one-best — each known voiceprint claims its single best cluster
+         when cosine >= ref_threshold (default 0.40).
+      2. --ref clips — each reference voice claims its best cluster (>= ref_threshold),
+         but a ref whose name the registry already assigned is skipped, so one
+         person never lands on two cards.
+      3. absorb — every cluster still unnamed whose centroid cosine to ANY known
+         voice (registry entries AND --ref voices) is >= absorb_threshold takes
+         that name. Multiple clusters may share a name; the cards merge them.
+
+    Absorb-threshold rationale (0.85 default): same-speaker TitaNet-small centroids
+    measured 0.90-0.95 across window splits, while distinct speakers stayed <= 0.73,
+    so 0.85 folds phantom splits back together without swallowing real strangers.
+
+    `registry_entries` : list of {"name","embedding"} for the active model.
+    `ref_voices`       : list of (name, embedding) already-embedded --ref clips.
+    """
+    ref_voices = ref_voices or []
+    if names is None:
+        names = {sp: sp for sp in cluster_emb}
+
+    def unit(v):
+        v = np.asarray(v, dtype=np.float32)
+        return v / (np.linalg.norm(v) + 1e-9)
+
+    known = [(e["name"], unit(e["embedding"])) for e in registry_entries]
+
+    # Pass 1: registry one-best (each voiceprint -> its single closest free cluster).
+    # A voice that ALREADY owns a cluster (an explicit relabel spec, or a name kept
+    # from a prior run in relabel --auto) is skipped here: extending one person onto
+    # extra clusters is the absorb pass's job, gated at the far stricter
+    # absorb_threshold, so the loose 0.40 gate can't annex a second, low-confidence
+    # cluster to someone who is already placed.
+    assigned = {names[sp] for sp in names if names.get(sp, sp) != sp}
+    registry_named = set()
+    for entry_name, kemb in known:
+        if entry_name in assigned:
+            continue
+        sims = {sp: float(np.dot(kemb, unit(e))) for sp, e in cluster_emb.items()
+                if names.get(sp, sp) == sp}
+        if not sims:
+            continue
+        best = max(sims, key=sims.get)
+        if sims[best] >= ref_threshold:
+            names[best] = entry_name
+            assigned.add(entry_name)
+            registry_named.add(entry_name)
+            log(f"  registry: {best} -> {entry_name} (sim {sims[best]:.3f})")
+
+    # Pass 2: --ref clips (still-unnamed only; skip a name the registry already used).
+    for ref_name, remb in ref_voices:
+        remb = unit(remb)
+        allsims = {sp: float(np.dot(remb, unit(e))) for sp, e in cluster_emb.items()}
+        log(f"ref {ref_name}: " + ", ".join(f"{sp}={v:.3f}" for sp, v in sorted(allsims.items())))
+        if ref_name in registry_named:
+            log(f"ref {ref_name}: already named by registry, skipping")
+            continue
+        sims = {sp: v for sp, v in allsims.items() if names.get(sp, sp) == sp}
+        if not sims:
+            continue
+        best = max(sims, key=sims.get)
+        if sims[best] >= ref_threshold:
+            names[best] = ref_name
+            log(f"  ref: {best} -> {ref_name} (sim {sims[best]:.3f})")
+        else:
+            log(f"WARN ref {ref_name}: best similarity {sims[best]:.3f} < {ref_threshold}, cluster left unnamed")
+
+    # Pass 3: absorb phantom splits into the nearest known voice.
+    for sp, e in cluster_emb.items():
+        if names.get(sp, sp) != sp:
+            continue
+        ce = unit(e)
+        cands = {n: float(np.dot(ce, k)) for n, k in known}
+        for n, k in ref_voices:
+            cands[n] = max(cands.get(n, -1.0), float(np.dot(ce, unit(k))))
+        if not cands:
+            continue
+        bn = max(cands, key=cands.get)
+        if cands[bn] >= absorb_threshold:
+            names[sp] = bn
+            log(f"  absorb: {sp} -> {bn} (sim {cands[bn]:.3f})")
+    return names
 
 
 def do_relabel(args) -> None:
@@ -472,11 +621,27 @@ def do_relabel(args) -> None:
             log(f"WARN relabel: no voiceprint cached for {cluster}; renamed in transcript but not persisted")
     save_registry(reg)
 
+    # --auto: re-run registry matching + absorb over the cached voiceprints, so a
+    # sidecar produced before names were enrolled (or before the absorb pass
+    # existed) picks them up with no re-diarization. Explicit CLUSTER=NAME specs
+    # above already won (name_clusters only fills STILL-UNNAMED clusters).
+    detect_mode = f"{len(speakers)} speakers (relabel)"
+    if getattr(args, "auto", False):
+        detect_mode = f"{len(speakers)} speakers (relabel --auto)"
+        reg = load_registry()
+        registry_entries = [] if args.no_registry else [
+            s for s in reg.get("speakers", [])
+            if s.get("model") == emb_model and s.get("embedding")]
+        if registry_entries:
+            log(f"registry: matching against {len(registry_entries)} known voice(s) [{emb_model}]")
+        name_clusters(cluster_emb, args.ref_threshold, args.absorb_threshold,
+                      registry_entries, [], names)
+
     data["names"] = names
     sidecar.write_text(json.dumps(data, indent=2))
     turns = build_turns(segs, data.get("whisper_json"))
     render_outputs(outdir, base, segs, speakers, names, turns, args.snippets,
-                   f"{len(speakers)} speakers (relabel)", emb_name=emb_model)
+                   detect_mode, emb_name=emb_model)
     print(json.dumps({"num_speakers": len(speakers), "clusters": names, "relabeled": True}))
 
 
@@ -491,6 +656,14 @@ def main() -> None:
                     help="reference voice clip for naming a cluster (repeatable)")
     ap.add_argument("--ref-threshold", type=float, default=0.40,
                     help="min cosine similarity to accept a reference match")
+    ap.add_argument("--absorb-threshold", type=float,
+                    default=float(os.environ.get("WHOSAID_ABSORB_THRESHOLD", "0.85")),
+                    help="min cosine similarity for a still-unnamed cluster to be absorbed "
+                         "into a known voice (registry or --ref), so phantom splits of one "
+                         "person merge into that person. Default 0.85; env WHOSAID_ABSORB_THRESHOLD.")
+    ap.add_argument("--auto", action="store_true",
+                    help="with --relabel: re-run registry matching + the absorb pass over the "
+                         "sidecar's cached voiceprints (no CLUSTER=NAME needed, no re-diarization)")
     ap.add_argument("--save-speaker", action="append", default=[], metavar="CLUSTER=NAME",
                     help="persist a cluster's voiceprint under NAME in the local registry "
                          "(e.g. SPEAKER_02=Jane). Repeatable. Names it here and in future runs.")
@@ -595,7 +768,8 @@ def main() -> None:
     # emitting a 100-speaker transcript.
     if args.num_speakers < 0:
         tiny = [sp for sp in speakers if talk[sp] < 5.0]
-        if len(speakers) > 12 or (len(speakers) >= 6 and len(tiny) >= len(speakers) / 2):
+        if (len(speakers) > 12 or len(speakers) == SPEAKER_CAP
+                or (len(speakers) >= 6 and len(tiny) >= len(speakers) / 2)):
             log("!" * 56)
             log(f"WARN auto-detect found {len(speakers)} speakers ({len(tiny)} with <5s of speech).")
             log("WARN this usually means over-segmentation on long/mixed audio.")
@@ -604,36 +778,21 @@ def main() -> None:
 
     names = {sp: sp for sp in speakers}
 
-    # ---- auto-name from the local registry (people you've identified before) ----
-    if not args.no_registry:
-        known = registry_entries_for_model(load_registry())
-        if known:
-            log(f"registry: matching against {len(known)} known voice(s) [{EMB_NAME}]")
-            for entry in known:
-                kemb = np.array(entry["embedding"], dtype=np.float32)
-                kemb = kemb / (np.linalg.norm(kemb) + 1e-9)
-                sims = {sp: float(np.dot(kemb, e)) for sp, e in cluster_emb.items()
-                        if names[sp] == sp}  # don't overwrite an already-named cluster
-                if not sims:
-                    continue
-                best = max(sims, key=sims.get)
-                if sims[best] >= args.ref_threshold:
-                    names[best] = entry["name"]
-                    log(f"  registry: {best} -> {entry['name']} (sim {sims[best]:.3f})")
+    # ---- name clusters: registry one-best -> --ref clips -> absorb phantom splits.
+    # All three passes live in name_clusters() so `relabel --auto` names identically.
+    registry_entries = [] if args.no_registry else registry_entries_for_model(load_registry())
+    if registry_entries:
+        log(f"registry: matching against {len(registry_entries)} known voice(s) [{EMB_NAME}]")
 
-    # ---- name clusters by cosine similarity to reference clips (--ref) ----
+    ref_voices = []
     for spec in args.ref:
         if "=" not in spec:
             sys.exit(f"diarize: FATAL bad --ref (want NAME=CLIP): {spec}")
         ref_name, ref_path = spec.split("=", 1)
-        ref_emb = ref_embed(load_audio(ref_path))
-        sims = {sp: float(np.dot(ref_emb, e)) for sp, e in cluster_emb.items()}
-        best = max(sims, key=sims.get)
-        log(f"ref {ref_name}: " + ", ".join(f"{sp}={v:.3f}" for sp, v in sorted(sims.items())))
-        if sims[best] >= args.ref_threshold:
-            names[best] = ref_name
-        else:
-            log(f"WARN ref {ref_name}: best similarity {sims[best]:.3f} < {args.ref_threshold}, cluster left unnamed")
+        ref_voices.append((ref_name, ref_embed(load_audio(ref_path))))
+
+    name_clusters(cluster_emb, args.ref_threshold, args.absorb_threshold,
+                  registry_entries, ref_voices, names)
 
     # ---- persist identified speakers to the local registry (--save-speaker) ----
     if args.save_speaker:

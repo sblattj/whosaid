@@ -86,6 +86,7 @@ command without copying or duplicating the implementation.
 | `whosaid record [--label L]` | Foreground mic capture to `recordings/<timestamp>[-label].m4a`, then transcribes automatically. |
 | `whosaid <audio>… [flags]` | The default command: transcribe + diarize + label one or more audio files. |
 | `whosaid relabel <base> SPEAKER_02=Jane …` | Put real names on clusters after reading the speaker cards. Rewrites the transcript + cards and saves each named voiceprint to the local registry for future transcripts. No re-transcription. |
+| `whosaid relabel <base> --auto` | Re-apply naming to an existing transcript with no assignments: re-runs registry matching + the absorb pass over the cached sidecar and rewrites the transcript + cards. Picks up voices enrolled after the transcript was made, and folds phantom cluster splits of one person into a single speaker. No re-transcription, no re-diarization. In a meeting workspace the base is `transcript`. |
 | `whosaid doctor` | Read-only environment report. |
 
 ## Meeting workspaces
@@ -289,6 +290,14 @@ speakers as a single-pass run while finishing several times faster. Pass `--no-c
   then run `whosaid relabel <base> SPEAKER_01=Name` — this labels them and remembers them for next
   time. (Enrollment via `whosaid enroll <Name>` still works too.) Naming uses a cosine-similarity
   threshold (0.40), so a short or noisy sample can fall just short of it.
+- **The same person shows up as two speakers (phantom split), or a known voice stays
+  `UNIDENTIFIED`.** On long recordings the diarizer can split one voice across several clusters.
+  A registry/enrolled voice names its single closest cluster, so the extra clusters used to stay
+  unnamed. whosaid now runs an *absorb pass*: any still-unnamed cluster whose voiceprint is within
+  `--absorb-threshold` (default 0.85) of a known voice is folded into that person, and the speaker
+  cards merge those clusters into one card. To apply this to a transcript you already have, run
+  `whosaid relabel <base> --auto` — it re-names from the registry + absorb pass with no
+  re-transcription.
 - **Distinct people get merged into one speaker (or the count is too low).** The speaker-embedding
   model must match the spoken language. whosaid defaults to an English-native model (NeMo
   TitaNet-small); on English audio the Mandarin-trained model cannot tell similar voices apart and
