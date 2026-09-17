@@ -1,5 +1,7 @@
 # whosaid
 
+<!-- mcp-name: io.github.sblattj/whosaid -->
+
 Local, speaker-attributed transcription for Apple Silicon — who said what, on your Mac, nothing
 leaves the machine.
 

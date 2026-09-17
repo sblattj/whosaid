@@ -52,7 +52,13 @@ if _LIB_DIR not in sys.path:
     sys.path.insert(0, _LIB_DIR)
 import wsconfig  # noqa: E402
 
-__version__ = "1.3.0"
+# Single source of truth: lib/__init__.py (pyproject.toml reads it too, via
+# hatch's dynamic version). Import both ways so the file works as a package
+# module (whosaid.mcp_server in the wheel) and as a script (python lib/...).
+try:
+    from . import __version__  # type: ignore[attr-defined]
+except ImportError:
+    from __init__ import __version__  # type: ignore[attr-defined]  # noqa: F401
 
 # ---------------------------------------------------------------------------
 # Paths / environment (mirror the `whosaid` bash dispatcher's own derivations).
@@ -1738,5 +1744,10 @@ def meeting_action_items(folder: str) -> str:
     return text
 
 
-if __name__ == "__main__":
+def main() -> None:
+    """Run the whosaid MCP server over stdio (console-script entry point)."""
     mcp.run()
+
+
+if __name__ == "__main__":
+    main()

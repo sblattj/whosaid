@@ -1,0 +1,60 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "whosaid"
+dynamic = ["version"]
+description = "Local, speaker-attributed transcription for Apple Silicon — who said what, on your Mac, nothing leaves the machine."
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.10"
+authors = [{ name = "Stephen Blatt" }]
+keywords = [
+  "whisper",
+  "transcription",
+  "diarization",
+  "speaker-identification",
+  "mlx",
+  "apple-silicon",
+  "mcp",
+]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Environment :: MacOS X",
+  "Intended Audience :: End Users/Desktop",
+  "Operating System :: MacOS",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Multimedia :: Sound/Audio :: Speech",
+]
+dependencies = [
+  "mlx-whisper>=0.4",
+  "mcp>=2,<3",
+  "numpy>=1.26",
+  "sherpa-onnx>=1.10",
+]
+
+[project.urls]
+Homepage = "https://github.com/sblattj/whosaid"
+Repository = "https://github.com/sblattj/whosaid"
+Changelog = "https://github.com/sblattj/whosaid/blob/main/CHANGELOG.md"
+
+[project.scripts]
+whosaid-mcp = "whosaid.mcp_server:main"
+
+[tool.hatch.version]
+path = "lib/__init__.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["lib"]
+
+[tool.hatch.build.targets.wheel.sources]
+lib = "whosaid"
+
+[tool.uv]
+managed = false

@@ -6,10 +6,23 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ## [Unreleased]
 
+### Added
+
+- **PyPI packaging (`pyproject.toml`).** The `lib/` modules ship as the importable `whosaid`
+  package (PEP 621, hatchling; wheel renames `lib/` → `whosaid/`), with a `whosaid-mcp` console
+  script that runs the MCP server (`whosaid.mcp_server:main`) and the MCP registry marker
+  (`io.github.sblattj/whosaid`) in the README. Runtime deps are declared (`mlx-whisper`,
+  `mcp>=2,<3`, `numpy`, `sherpa-onnx`); ffmpeg/uv remain system prerequisites from
+  `whosaid setup`, and the full CLI is still installed from a checkout via `whosaid install`.
+  The version is single-sourced from `lib/__init__.py` (`__version__`): `pyproject.toml` reads it
+  via hatch's dynamic version and `lib/mcp_server.py` imports it, so a release bumps exactly two
+  places — `lib/__init__.py` and `WHOSAID_VERSION` in the `whosaid` script (`test/version_test.sh`
+  fails if they disagree). `[tool.uv] managed = false` keeps `uv run` in the checkout working
+  exactly as before (ephemeral `--with` environments; no project sync, no `.venv`, no lockfile).
+
 ## [1.3.0] - 2026-09-18
 
 ### Added
-
 - **SwiftBar menu bar plugin: `whosaid watch menubar install` (GitHub issue #24).** Ships
   `contrib/swiftbar/whosaid.10s.py` (stdlib only) and symlinks it into SwiftBar's plugin
   directory (`menubar uninstall` / `menubar status` manage it; `whosaid doctor` reports it).
