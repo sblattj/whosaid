@@ -210,6 +210,8 @@ Microphone permission. The first `whosaid_transcribe` call downloads ~1.5 GB of 
 | `--speakers N` | Exact number of speakers. Overrides auto-detect (and any `--min/--max-speakers`). |
 | `--min-speakers N` | Lower bound on the auto-detected speaker count. |
 | `--max-speakers N` | Upper bound on the auto-detected speaker count; also lowers the hard cap of 20. Use a range when you know roughly who was in the room but not exactly — an estimate that lands on the bound is reported as unreliable rather than shipped as a result. |
+| `--expected-speakers A,B,C` | Roster of people you expect in this recording (comma-separated, repeatable). Each name must already be a known voice — an enrolled clip or a registry entry. Clustering is **anchored** to their voiceprints: a turn within `--anchor-threshold` of one of them is pinned to that person, everyone else is clustered into new speakers, and a listed person who never speaks is dropped. This is the flag for a recurring team with varying attendance, where `--speakers N` would merge distinct people. |
+| `--anchor-threshold F` | Per-turn cosine required before `--expected-speakers` pins a turn to a known voice. Default `0.70`; turns below it fall through to ordinary clustering rather than taking a low-confidence name. |
 | `-j, --jobs N` | Parallel diarization workers for long audio (default: auto, ~cores−2, capped at 8). |
 | `--chunk-seconds S` | Window length for parallel diarization (default: auto — about `--jobs` windows, min 300s). |
 | `--no-chunk` | Diarize the whole file in a single pass (disable parallel chunking). |
@@ -227,6 +229,7 @@ Microphone permission. The first `whosaid_transcribe` call downloads ~1.5 GB of 
 | `WHOSAID_SPEAKER_DB` | Local speaker registry of named voiceprints (default: `~/.config/whosaid/speakers.json`). Private, never pushed. |
 | `WHOSAID_MATCH_THRESHOLD` | Default registry/reference match threshold, overridden by `--match-threshold` (default: `0.50`). |
 | `WHOSAID_ABSORB_THRESHOLD` | Default absorb-pass threshold, overridden by `--absorb-threshold` (default: `0.85`). |
+| `WHOSAID_ANCHOR_THRESHOLD` | Default per-turn anchoring threshold for `--expected-speakers`, overridden by `--anchor-threshold` (default: `0.70`). |
 | `DIARIZE_EMB_NAME` | Speaker-embedding model. Default is NeMo `nemo_en_titanet_small.onnx` (English-native, ~2.5× faster than ERes2Net in sherpa's benchmark). Alternatives from the same release: `3dspeaker_speech_eres2net_sv_en_voxceleb_16k.onnx` (English ERes2Net) or `…_zh-cn_…` for Mandarin. Registry voiceprints are keyed by model, so switching re-enrolls speakers. |
 | `WHOSAID_REC_DEVICE` | avfoundation input device used by `record` and `enroll`. |
 | `WHOSAID_INSTALL_DIR` | Command install directory used by `whosaid install` (default: `~/.local/bin`). |
@@ -264,6 +267,23 @@ default 0.50, names the cluster);
 unmatched clusters keep a `SPEAKER_00`-style label. Aside from the one-time model downloads,
 everything runs in ephemeral `uv` environments, so there's no persistent Python install left behind
 on your machine.
+
+**Tell it who to expect.** When you already know the roster, `--expected-speakers Alice,Bob,Carol`
+turns diarization from a guess into a lookup. Every listed name must already be a known voice (an
+enrolled clip in `voices/`, or a registry entry), and clustering is then *anchored*: each turn's
+voiceprint is compared to each expected person's, a turn at cosine ≥ `--anchor-threshold` (default
+`0.70`) is pinned directly to that person, and only the *residual* turns — guests, strangers, and
+the occasional turn that scored low — go through the ordinary count estimate and clustering. Anyone
+on the list who never speaks is silently dropped, so one roster works for a standing meeting whose
+attendance changes week to week. That is the difference from `--speakers N`: an exact count merges
+two distinct people the moment fewer than N show up, and auto-detect over-segments and then leaves a
+major speaker's averaged cluster unmatched. The threshold sits deliberately high — TitaNet-small
+scores same-speaker turns at ~0.90 (p10 ~0.72) against ~0.25 for strangers (p90 ~0.45), and a false
+anchor puts a real name on the wrong words, while a missed one merely falls through to clustering
+where the absorb pass can still recover it. Each anchor's result (`turns`, `mean_cosine`) lands in
+the sidecar under `anchors`, and each anchored cluster in `registry_matches` with `pass: "anchor"`.
+Because anchoring needs per-turn voiceprints, this flag forces the chunked diarization path at any
+recording length.
 
 **Long recordings run in parallel.** For audio over ~15 minutes, diarization splits into
 non-overlapping time windows that are segmented and embedded concurrently across CPU workers, then a

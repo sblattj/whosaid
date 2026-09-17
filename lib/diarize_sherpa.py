@@ -475,38 +475,150 @@ def spherical_kmeans(X: np.ndarray, k: int, iters: int = 100, restarts: int = 8)
     return best_labels
 
 
+# Cosine a single TURN must reach against an ENROLLED voiceprint before that turn
+# is pinned to that person's cluster (`--expected-speakers`, GitHub issue #1 part 4).
+#
+# This gate sits on the SAME per-turn quantity the count estimator was calibrated
+# against, measured on real TitaNet-small embeddings through this exact pipeline
+# (two 17.8-minute 6-voice fixtures, 65 and 72 embedded turns, 192-dim):
+#   intra-speaker cosine  mean 0.902 (p10 0.815) / mean 0.891 (p10 0.721)
+#   inter-speaker cosine  mean 0.252 (p90 0.452) / mean 0.256 (p90 0.454)
+# so the empty band between a stranger's p90 (~0.45) and the same person's p10
+# (~0.72) is roughly [0.46, 0.72]. 0.70 sits at the TOP of that band, just under
+# the intra-speaker p10, and that asymmetry is deliberate: this is not the count
+# cut (AGGLOM_THRESHOLD 0.58, which compares GROUP means, where the midpoint is
+# right) but a per-turn IDENTITY assertion, where the two errors are not
+# symmetric. A false anchor writes a real person's name onto someone else's
+# words and is invisible in the output; a missed anchor merely drops the turn
+# into the residual pool, where the ordinary estimator + the absorb pass still
+# have a chance to recover it. So we buy precision with recall: at 0.70 roughly
+# the bottom decile of genuine same-speaker turns falls through to the residual
+# clustering, while a stranger would have to score ~5 sigma above their mean to
+# be pinned. Raise it if you see a name on the wrong turns; lower it (towards
+# ~0.55) on channel-varied audio where one person's turns score low.
+DEFAULT_ANCHOR_THRESHOLD = 0.70
+
+
+def default_anchor_threshold() -> float:
+    """argparse default for --anchor-threshold: env WHOSAID_ANCHOR_THRESHOLD wins.
+
+    Read through a function (not at import time) so tests can flip the env var
+    and observe the new default without reloading the module.
+    """
+    raw = os.environ.get("WHOSAID_ANCHOR_THRESHOLD", "")
+    try:
+        return float(raw) if raw.strip() else DEFAULT_ANCHOR_THRESHOLD
+    except ValueError:
+        return DEFAULT_ANCHOR_THRESHOLD
+
+
 def cluster_segments(all_segments: list, num_speakers: int, min_speakers: int = 0,
-                     max_speakers: int = 0) -> tuple:
+                     max_speakers: int = 0, anchors: list | None = None,
+                     anchor_threshold: float | None = None) -> tuple:
     """Assign every segment a global speaker by clustering ALL per-turn voiceprints at
     once — a global view that matches whole-file quality even though the segmentation
     ran chunk-by-chunk.
 
-    Returns (segments with SPEAKER_NN, {SPEAKER_NN: centroid}, speakers, estimate),
-    where `estimate` is the estimate_speakers record (minus its label array) or None
-    when the count came from an explicit --num-speakers."""
+    Returns (segments with SPEAKER_NN, {SPEAKER_NN: centroid}, speakers, estimate,
+    anchor_info), where `estimate` is the estimate_speakers record (minus its label
+    array) or None when the count came from an explicit --num-speakers.
+
+    `anchors` (GitHub issue #1 part 4) is a list of (name, embedding) for the people
+    named by --expected-speakers. When given, clustering is ANCHORED: every embedded
+    turn is compared to each anchor voiceprint, a turn whose best anchor cosine is
+    >= `anchor_threshold` is pinned to that anchor's cluster, and only the RESIDUAL
+    turns go through the ordinary estimator + k-means (so min/max/cap bound the
+    number of UNKNOWN speakers, not the total). An anchor that received zero turns
+    is dropped — that person did not attend — which is exactly the failure mode an
+    exact --num-speakers has on a varying-attendance roster.
+
+    `anchor_info` is None on the unanchored path; otherwise
+    {"threshold", "anchored": {SPEAKER_NN: name}, "names": {name: {turns, mean_cosine}}}."""
     embedded = [s for s in all_segments if s.get("emb")]
     if not embedded:
-        return [], {}, [], None
+        return [], {}, [], None, None
     X = np.array([s["emb"] for s in embedded], dtype=np.float32)
     X = X / (np.linalg.norm(X, axis=1, keepdims=True) + 1e-9)
     estimate = None
-    if num_speakers and num_speakers > 0:
-        k = num_speakers
+    anchor_info = None
+
+    if anchors:
+        if anchor_threshold is None:
+            anchor_threshold = default_anchor_threshold()
+        # Clamp into the only range where a cosine gate means anything. A value
+        # outside [-1, 1] would either pin every turn or none, silently.
+        anchor_threshold = float(min(1.0, max(-1.0, float(anchor_threshold))))
+        A = np.array([a[1] for a in anchors], dtype=np.float32)
+        A = A / (np.linalg.norm(A, axis=1, keepdims=True) + 1e-9)
+        sims = X @ A.T                       # (turns, anchors)
+        best_a = np.argmax(sims, axis=1)
+        best_s = sims[np.arange(len(X)), best_a]
+        pinned = best_s >= anchor_threshold
+
+        n_anchor = len(anchors)
+        cid = np.full(len(X), -1, dtype=int)
+        cid[pinned] = best_a[pinned]         # anchor clusters occupy ids 0..n_anchor-1
+        residual = np.flatnonzero(~pinned)
+        log(f"anchored clustering: {len(embedded)} embedded turns, "
+            f"{int(pinned.sum())} pinned to {len(set(best_a[pinned].tolist()))} of "
+            f"{n_anchor} expected speaker(s) at cosine >= {anchor_threshold:.2f}, "
+            f"{len(residual)} residual")
+
+        if len(residual):
+            Xr = X[residual]
+            active = len(set(best_a[pinned].tolist()))
+            if num_speakers and num_speakers > 0:
+                # An exact total still means the total. Whatever the anchors did
+                # not claim is the residual budget (at least one cluster, since
+                # there are residual turns to put somewhere).
+                k_res = max(1, num_speakers - active)
+            else:
+                est = estimate_speakers(Xr, min_speakers=min_speakers,
+                                        max_speakers=max_speakers)
+                k_res = est["k"]
+                estimate = {p: est[p] for p in est if p != "labels"}
+                estimate["anchored"] = True
+                estimate["anchors_active"] = int(active)
+                estimate["residual_turns"] = int(len(residual))
+            k_res = max(1, min(k_res, len(residual)))
+            log(f"  residual clustering: {len(residual)} turn(s) -> {k_res} new speaker(s)")
+            rlabels = spherical_kmeans(Xr, k_res)
+            for i, lab in zip(residual, rlabels):
+                cid[i] = n_anchor + int(lab)
+
+        for s, c in zip(embedded, cid):
+            s["_c"] = int(c)
+        # Anchor clusters that took zero turns simply never appear in `cid`, so
+        # they drop out of the talk-time ordering below with no extra work.
+        anchor_stats = {}
+        for j, (name, _e) in enumerate(anchors):
+            rows = np.flatnonzero(cid == j)
+            if not len(rows):
+                log(f"  expected speaker '{name}' claimed no turns — dropped (did not attend)")
+                continue
+            anchor_stats[name] = {"turns": int(len(rows)),
+                                  "mean_cosine": round(float(best_s[rows].mean()), 6)}
+        anchor_info = {"threshold": anchor_threshold, "names": anchor_stats,
+                       "cluster_of": {j: anchors[j][0] for j in range(n_anchor)
+                                      if anchors[j][0] in anchor_stats}}
     else:
-        est = estimate_speakers(X, min_speakers=min_speakers, max_speakers=max_speakers)
-        k = est["k"]
-        estimate = {p: est[p] for p in est if p != "labels"}
-    k = max(1, min(k, len(embedded)))
-    # The agglomerative pass gives the COUNT; spherical k-means still does the
-    # ASSIGNMENT. On the synthetic fixtures both label every turn correctly
-    # (purity 1.000 each, test/estimate_k_test.py), so k-means is kept: it is
-    # the path --num-speakers already takes, so auto and hinted runs stay
-    # identical given the same k, and its reassignment step recovers turns that
-    # average linkage chained into a neighbour.
-    log(f"global clustering: {len(embedded)} embedded turns -> {k} speaker(s)")
-    labels = spherical_kmeans(X, k)
-    for s, lab in zip(embedded, labels):
-        s["_c"] = int(lab)
+        if num_speakers and num_speakers > 0:
+            k = num_speakers
+        else:
+            est = estimate_speakers(X, min_speakers=min_speakers, max_speakers=max_speakers)
+            k = est["k"]
+            estimate = {p: est[p] for p in est if p != "labels"}
+        k = max(1, min(k, len(embedded)))
+        # The agglomerative pass gives the COUNT; spherical k-means still does the
+        # ASSIGNMENT. On the synthetic fixtures both label every turn correctly
+        # (purity 1.000 each, test/estimate_k_test.py), so k-means is kept: it is
+        # the path --num-speakers already takes, so auto and hinted runs stay
+        # identical given the same k, and its reassignment step recovers turns that
+        # average linkage chained into a neighbour.
+        log(f"global clustering: {len(embedded)} embedded turns -> {k} speaker(s)")
+        labels = spherical_kmeans(X, k)
+        for s, lab in zip(embedded, labels):
+            s["_c"] = int(lab)
 
     # Segments too short to embed inherit the label of the nearest embedded turn in time.
     mids = np.array([0.5 * (s["start"] + s["end"]) for s in embedded])
@@ -529,14 +641,31 @@ def cluster_segments(all_segments: list, num_speakers: int, min_speakers: int = 
 
     segs = [{"start": s["start"], "end": s["end"], "speaker": relabel[s["_c"]]} for s in all_segments]
     segs.sort(key=lambda s: s["start"])
-    return segs, cluster_emb, sorted(cluster_emb), estimate
+
+    if anchor_info is not None:
+        # Map the internal anchor cluster ids onto the SPEAKER_NN labels the rest
+        # of the pipeline speaks, so main() can pre-seed `names` before naming runs.
+        anchor_info["anchored"] = {relabel[c]: name
+                                   for c, name in anchor_info.pop("cluster_of").items()
+                                   if c in relabel}
+        for sp, name in anchor_info["anchored"].items():
+            log(f"  anchor: {sp} -> {name} "
+                f"({anchor_info['names'][name]['turns']} turns, "
+                f"mean cosine {anchor_info['names'][name]['mean_cosine']:.3f})")
+
+    return segs, cluster_emb, sorted(cluster_emb), estimate, anchor_info
 
 
 def diarize_parallel(audio: str, total_dur: float, num_speakers: int, jobs: int,
                      chunk_seconds: float, min_speakers: int = 0,
-                     max_speakers: int = 0) -> tuple:
+                     max_speakers: int = 0, anchors: list | None = None,
+                     anchor_threshold: float | None = None) -> tuple:
     """Split the audio into windows, segment+embed them concurrently, then cluster
-    globally. Returns (segments, {SPEAKER_NN: embedding}, speakers, estimate)."""
+    globally. Returns (segments, {SPEAKER_NN: embedding}, speakers, estimate, anchor_info).
+
+    `n_chunks == 1` is a supported degenerate case: a single window covering the
+    whole file. That is how --expected-speakers reaches short recordings, whose
+    default path (sherpa FastClustering) has no place to apply an anchor."""
     n_chunks = max(1, math.ceil(total_dur / chunk_seconds))
     bounds = [(i * chunk_seconds, min(chunk_seconds, total_dur - i * chunk_seconds))
               for i in range(n_chunks)]
@@ -552,7 +681,8 @@ def diarize_parallel(audio: str, total_dur: float, num_speakers: int, jobs: int,
             log(f"  chunk {idx + 1}/{len(payloads)} done: {len(segs)} turns "
                 f"({sum(1 for s in segs if s.get('emb'))} embedded)")
     all_segments = [s for chunk in per_chunk if chunk for s in chunk]
-    return cluster_segments(all_segments, num_speakers, min_speakers, max_speakers)
+    return cluster_segments(all_segments, num_speakers, min_speakers, max_speakers,
+                            anchors=anchors, anchor_threshold=anchor_threshold)
 
 
 def build_turns(segs: list, whisper_json: str | None) -> list:
@@ -882,6 +1012,19 @@ def main() -> None:
                     help=f"upper bound for the auto-detected count (0 = no bound); also "
                          f"lowers the hard cap of {SPEAKER_CAP}. Ignored when "
                          f"--num-speakers gives an exact count.")
+    ap.add_argument("--expected-speakers", action="append", default=[], metavar="NAME[,NAME...]",
+                    help="names of people expected in this recording (comma-separated and/or "
+                         "repeatable). Each must already be a known voice — a registry entry "
+                         "for the active embedding model, or a --ref NAME. Clustering is then "
+                         "ANCHORED: every turn within --anchor-threshold of one of these "
+                         "voiceprints is pinned to that person, and only the remaining turns "
+                         "are clustered into new speakers. A listed person who never speaks "
+                         "is dropped, so a varying-attendance roster needs no exact count.")
+    ap.add_argument("--anchor-threshold", type=float, default=default_anchor_threshold(),
+                    help=f"min per-turn cosine for --expected-speakers to pin a turn to a known "
+                         f"voice. Default {DEFAULT_ANCHOR_THRESHOLD:.2f}; env "
+                         f"WHOSAID_ANCHOR_THRESHOLD. Turns below it fall through to ordinary "
+                         f"clustering rather than taking a low-confidence name.")
     ap.add_argument("--ref", action="append", default=[], metavar="NAME=CLIP",
                     help="reference voice clip for naming a cluster (repeatable)")
     ap.add_argument("--ref-threshold", "--match-threshold", dest="ref_threshold",
@@ -976,12 +1119,73 @@ def main() -> None:
             _ref_ex["fn"] = make_embed(ex)
         return _ref_ex["fn"](wave)
 
+    # ---- known voices, loaded BEFORE clustering so --expected-speakers can anchor it.
+    # (Naming used to embed --ref clips only afterwards; anchoring needs the
+    # voiceprints in hand while the turns are still being assigned.)
+    registry_entries = [] if args.no_registry else registry_entries_for_model(load_registry())
+    if registry_entries:
+        log(f"registry: matching against {len(registry_entries)} known voice(s) [{EMB_NAME}]")
+
+    ref_voices = []
+    for spec in args.ref:
+        if "=" not in spec:
+            sys.exit(f"diarize: FATAL bad --ref (want NAME=CLIP): {spec}")
+        ref_name, ref_path = spec.split("=", 1)
+        ref_voices.append((ref_name, ref_embed(load_audio(ref_path))))
+
+    # ---- --expected-speakers: resolve each name to a known voiceprint (issue #1 part 4).
+    expected = [n.strip() for spec in args.expected_speakers
+                for n in spec.split(",") if n.strip()]
+    anchors = []
+    if expected:
+        known = {}
+        for e in registry_entries:
+            known.setdefault(e["name"], np.asarray(e["embedding"], dtype=np.float32))
+        for rname, remb in ref_voices:  # a --ref clip wins: it is this recording's own audio
+            known[rname] = np.asarray(remb, dtype=np.float32)
+        if not known:
+            sys.exit("diarize: FATAL --expected-speakers needs known voices, but none are "
+                     f"available (no --ref clips and no registry entries for {EMB_NAME}"
+                     f"{'; --no-registry is set' if args.no_registry else ''}). "
+                     "Enroll a voice first (whosaid enroll) or pass --ref NAME=CLIP.")
+        seen, missing = set(), []
+        for name in expected:
+            if name in seen:
+                continue
+            seen.add(name)
+            if name not in known:
+                missing.append(name)
+            else:
+                anchors.append((name, known[name]))
+        if missing:
+            sys.exit(f"diarize: FATAL --expected-speakers: unknown voice(s) "
+                     f"{', '.join(repr(m) for m in missing)}. Known names for {EMB_NAME}: "
+                     f"{', '.join(sorted(known)) if known else '(none)'}")
+        if args.anchor_threshold < -1.0 or args.anchor_threshold > 1.0:
+            sys.exit(f"diarize: FATAL --anchor-threshold {args.anchor_threshold} is outside "
+                     f"[-1, 1]; it is a cosine similarity")
+        log(f"expected speakers: {', '.join(n for n, _ in anchors)} "
+            f"(anchoring at cosine >= {args.anchor_threshold:.2f})")
+        detect_mode += ", registry-anchored"
+        if not use_chunk:
+            # Anchoring works on PER-TURN voiceprints, which only the chunked path
+            # produces; the whole-file path hands clustering to sherpa's own
+            # FastClustering, which has no hook for a prior. One window over the
+            # whole file gives identical segmentation with per-turn embeddings.
+            use_chunk = True
+            chunk_seconds = max(total_dur, 1.0)
+            log("--expected-speakers: using the chunked diarization path (one window over the "
+                "whole file) — anchoring needs per-turn voiceprints, which sherpa's "
+                "whole-file FastClustering does not expose")
+
     count_estimate = None
+    anchor_info = None
     if use_chunk:
         log(f"audio {total_dur:.0f}s -> parallel diarization")
-        segs, cluster_emb, speakers, count_estimate = diarize_parallel(
+        segs, cluster_emb, speakers, count_estimate, anchor_info = diarize_parallel(
             args.audio, total_dur, args.num_speakers, jobs, chunk_seconds,
-            args.min_speakers, args.max_speakers)
+            args.min_speakers, args.max_speakers,
+            anchors=anchors or None, anchor_threshold=args.anchor_threshold)
     else:
         samples = load_audio(args.audio)
         log(f"audio loaded: {len(samples) / SAMPLE_RATE:.0f}s (whole-file diarization)")
@@ -1056,20 +1260,24 @@ def main() -> None:
 
     names = {sp: sp for sp in speakers}
 
-    # ---- name clusters: registry one-best -> --ref clips -> absorb phantom splits.
-    # All three passes live in name_clusters() so `relabel --auto` names identically.
-    registry_entries = [] if args.no_registry else registry_entries_for_model(load_registry())
-    if registry_entries:
-        log(f"registry: matching against {len(registry_entries)} known voice(s) [{EMB_NAME}]")
-
-    ref_voices = []
-    for spec in args.ref:
-        if "=" not in spec:
-            sys.exit(f"diarize: FATAL bad --ref (want NAME=CLIP): {spec}")
-        ref_name, ref_path = spec.split("=", 1)
-        ref_voices.append((ref_name, ref_embed(load_audio(ref_path))))
-
+    # ---- name clusters: anchors (pre-seeded) -> registry one-best -> --ref -> absorb.
+    # The last three passes live in name_clusters() so `relabel --auto` names identically;
+    # anchored clusters are seeded into `names` FIRST, and since every pass only touches
+    # still-unnamed clusters the anchor wins, while the absorb pass can still fold a
+    # residual phantom split of the same person into them.
     registry_matches: list = []
+    if anchor_info:
+        for sp, name in anchor_info["anchored"].items():
+            if sp in names:
+                names[sp] = name
+                stat = anchor_info["names"][name]
+                registry_matches.append({
+                    "cluster": sp, "name": name,
+                    "similarity": float(stat["mean_cosine"]),
+                    "threshold": float(anchor_info["threshold"]),
+                    "matched": True, "pass": "anchor", "turns": int(stat["turns"]),
+                })
+
     name_clusters(cluster_emb, args.ref_threshold, args.absorb_threshold,
                   registry_entries, ref_voices, names, report=registry_matches)
 
@@ -1110,6 +1318,7 @@ def main() -> None:
         "detect_mode": detect_mode,
         "count_warning": count_warning,
         "count_estimate": count_estimate,
+        "anchors": (anchor_info["names"] if anchor_info else None),
         "segments": segs,
         "cluster_emb": {sp: cluster_emb[sp].tolist() for sp in cluster_emb},
         "whisper_json": str(Path(args.whisper_json).resolve()) if args.whisper_json else None,
@@ -1120,6 +1329,7 @@ def main() -> None:
         "detect_mode": detect_mode,
         "count_warning": count_warning,
         "count_estimate": count_estimate,
+        "anchors": (anchor_info["names"] if anchor_info else None),
         "speakers": [names[sp] for sp in speakers],
         "clusters": {sp: names[sp] for sp in speakers},
         "registry_matches": registry_matches,
