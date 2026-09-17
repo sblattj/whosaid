@@ -311,6 +311,84 @@ grep -q 'Bob:' "$TMP/reload/reload.speakers.txt" \
 echo "registry relabel + reload OK"
 
 # ---------------------------------------------------------------------------
+# 8b. Registry-anchored diarization (--expected-speakers, GitHub issue #1 part 4).
+#     Diarize-only (reuses the cached whisper json, no Whisper re-run), so this
+#     costs one short sherpa pass. Anchors on the enrolled Alice reference and
+#     asserts (a) the anchoring path ran, (b) Alice is still named in the
+#     transcript, (c) the sidecar's `anchors` credits her with >0 turns, and
+#     (d) an unknown name is FATAL and lists the known voices.
+# ---------------------------------------------------------------------------
+echo "-- checking --expected-speakers (registry-anchored diarization) --"
+
+mkdir -p "$TMP/anchor"
+set +e
+uv run --quiet --with sherpa-onnx --with numpy python "$REPO/lib/diarize_sherpa.py" \
+  "$TMP/dialog.wav" --whisper-json "$TMP/out/$BASE.json" \
+  --outdir "$TMP/anchor" --name anchored \
+  --ref "Alice=$TMP/refs/Alice.wav" --expected-speakers Alice \
+  > "$TMP/anchor.out" 2> "$TMP/anchor.log"
+RC=$?
+set -e
+if [ "$RC" -ne 0 ]; then
+  cat "$TMP/anchor.log" >&2
+  fail "anchored diarization exited $RC (expected 0)"
+fi
+
+grep -q 'anchored clustering' "$TMP/anchor.log" \
+  || { cat "$TMP/anchor.log" >&2; fail "--expected-speakers did NOT take the anchored clustering path"; }
+
+# The short clip would normally take the whole-file path; anchoring must force chunking.
+grep -q 'chunked diarization path' "$TMP/anchor.log" \
+  || { cat "$TMP/anchor.log" >&2; fail "--expected-speakers did not force the chunked path on a short file"; }
+
+grep -q 'Alice:' "$TMP/anchor/anchored.speakers.txt" \
+  || fail "anchored run did not name Alice in $TMP/anchor/anchored.speakers.txt"
+
+ANCHOR_SIDECAR="$TMP/anchor/anchored.diarization.json"
+[ -s "$ANCHOR_SIDECAR" ] || fail "anchored run wrote no sidecar: $ANCHOR_SIDECAR"
+
+ANCHOR_TURNS="$(python3 -c '
+import json,sys
+d=json.load(open(sys.argv[1]))
+a=d.get("anchors")
+if not isinstance(a,dict):
+    print("NOT-A-DICT:%r"%(a,)); raise SystemExit(0)
+e=a.get("Alice")
+if not isinstance(e,dict):
+    print("NO-ALICE:%r"%(sorted(a),)); raise SystemExit(0)
+print("%d %.3f"%(e["turns"], e["mean_cosine"]))' "$ANCHOR_SIDECAR")"
+case "$ANCHOR_TURNS" in
+  NOT-A-DICT:*|NO-ALICE:*) fail "sidecar $ANCHOR_SIDECAR has no anchors entry for Alice ($ANCHOR_TURNS)" ;;
+esac
+ANCHOR_N="${ANCHOR_TURNS%% *}"
+[ "$ANCHOR_N" -gt 0 ] \
+  || fail "sidecar anchors credits Alice with $ANCHOR_N turns, expected > 0"
+echo "anchors: Alice claimed $ANCHOR_TURNS (turns, mean cosine)"
+
+grep -q '"pass": "anchor"' "$ANCHOR_SIDECAR" \
+  || fail "sidecar $ANCHOR_SIDECAR records no registry_matches entry with pass=anchor"
+python3 "$REPO/test/check_sidecar_schema.py" "$ANCHOR_SIDECAR" \
+  || fail "anchored sidecar $ANCHOR_SIDECAR failed the registry_matches/source schema check"
+
+# An unknown expected speaker must be FATAL and must list the known names.
+set +e
+uv run --quiet --with sherpa-onnx --with numpy python "$REPO/lib/diarize_sherpa.py" \
+  "$TMP/dialog.wav" --whisper-json "$TMP/out/$BASE.json" \
+  --outdir "$TMP/anchor" --name bogus \
+  --ref "Alice=$TMP/refs/Alice.wav" --expected-speakers Alice,Nobody \
+  > "$TMP/anchor_bad.out" 2> "$TMP/anchor_bad.log"
+RC_BAD=$?
+set -e
+[ "$RC_BAD" -ne 0 ] \
+  || fail "--expected-speakers Nobody (an unknown voice) exited 0; it must be fatal"
+grep -q "unknown voice" "$TMP/anchor_bad.log" \
+  || { cat "$TMP/anchor_bad.log" >&2; fail "the unknown --expected-speakers error does not say 'unknown voice'"; }
+grep -q "Alice" "$TMP/anchor_bad.log" \
+  || { cat "$TMP/anchor_bad.log" >&2; fail "the unknown --expected-speakers error does not list the known names"; }
+
+echo "--expected-speakers OK"
+
+# ---------------------------------------------------------------------------
 # 9. Parallel chunked diarization must match the single-pass speaker set.
 #    Forces the parallel path on the short clip via an explicit --chunk-seconds
 #    and asserts it (a) took the parallel path and (b) recovered the same

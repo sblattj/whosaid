@@ -144,6 +144,15 @@ TRANSCRIBE FLAGS
                        the hard cap of 20). Use a range when you know roughly how
                        many people were in the room but not exactly; an estimate
                        that lands on the bound is reported as unreliable.
+      --expected-speakers NAMES  Comma-separated roster of people you expect in this
+                       recording (repeatable), e.g. --expected-speakers Alice,Bob.
+                       Every name must already be a known voice (an enrolled clip or
+                       a registry entry). Turns matching one of those voiceprints are
+                       pinned to that person; everyone else is clustered normally, and
+                       a listed person who never speaks is simply dropped — so a
+                       varying-attendance team needs no exact --speakers count.
+      --anchor-threshold F  Cosine ≥ F is required before --expected-speakers pins a
+                       turn to a known voice. Default 0.70 (WHOSAID_ANCHOR_THRESHOLD).
   -j, --jobs N         Parallel diarization workers for long audio (default: auto).
       --chunk-seconds S Window length for parallel diarization (default: auto).
       --no-chunk       Diarize the whole file in one pass (disable parallel chunking).
@@ -759,6 +768,8 @@ cmd_transcribe() {
   local MATCH_THRESHOLD=""
   local MIN_SPEAKERS=""
   local MAX_SPEAKERS=""
+  local EXPECTED_SPEAKERS=()
+  local ANCHOR_THRESHOLD=""
   local AUDIO=()
 
   while [[ $# -gt 0 ]]; do
@@ -774,6 +785,8 @@ cmd_transcribe() {
       --speakers)   SPEAKERS="$2"; shift 2 ;;
       --min-speakers) MIN_SPEAKERS="$2"; shift 2 ;;
       --max-speakers) MAX_SPEAKERS="$2"; shift 2 ;;
+      --expected-speakers) EXPECTED_SPEAKERS+=("$2"); shift 2 ;;
+      --anchor-threshold) ANCHOR_THRESHOLD="$2"; shift 2 ;;
       -j|--jobs)    JOBS="$2"; shift 2 ;;
       --chunk-seconds) CHUNK_SECONDS="$2"; shift 2 ;;
       --absorb-threshold) ABSORB="$2"; shift 2 ;;
@@ -832,6 +845,13 @@ cmd_transcribe() {
         [[ -n "$SPEAKERS" ]] && dargs+=(--num-speakers "$SPEAKERS")
         [[ -n "$MIN_SPEAKERS" ]] && dargs+=(--min-speakers "$MIN_SPEAKERS")
         [[ -n "$MAX_SPEAKERS" ]] && dargs+=(--max-speakers "$MAX_SPEAKERS")
+        # bash 3.2 + `set -u`: expanding an EMPTY array is an unbound-variable error,
+        # so the count guard is required, not cosmetic.
+        if [[ ${#EXPECTED_SPEAKERS[@]} -gt 0 ]]; then
+          local exp=""
+          for exp in "${EXPECTED_SPEAKERS[@]}"; do dargs+=(--expected-speakers "$exp"); done
+        fi
+        [[ -n "$ANCHOR_THRESHOLD" ]] && dargs+=(--anchor-threshold "$ANCHOR_THRESHOLD")
         [[ -n "$JOBS" ]] && dargs+=(--jobs "$JOBS")
         [[ -n "$CHUNK_SECONDS" ]] && dargs+=(--chunk-seconds "$CHUNK_SECONDS")
         [[ "$NO_CHUNK" == "1" ]] && dargs+=(--no-chunk)
@@ -934,7 +954,7 @@ cmd_ingest() {
       -o|--outdir) log "ingest: -o/--outdir is not allowed — ingest places each meeting itself"; exit 1 ;;
       -n|--name)   log "ingest: -n/--name is not allowed — ingest names its outputs 'transcript'"; exit 1 ;;
       # transcribe flags that pass straight through
-      -m|--model|-l|--lang|-f|--format|--speakers|--min-speakers|--max-speakers|-j|--jobs|--chunk-seconds|--absorb-threshold|--match-threshold|--ref-threshold)
+      -m|--model|-l|--lang|-f|--format|--speakers|--min-speakers|--max-speakers|--expected-speakers|--anchor-threshold|-j|--jobs|--chunk-seconds|--absorb-threshold|--match-threshold|--ref-threshold)
                       passthrough+=("$1" "$2"); shift 2 ;;
       --accurate|--diarize|--no-diarize|--no-chunk)
                       passthrough+=("$1"); shift ;;

@@ -11,7 +11,10 @@ import json
 import sys
 
 ENTRY_KEYS = {"cluster", "name", "similarity", "threshold", "matched", "pass"}
-PASSES = {"registry", "ref", "absorb"}
+# The anchor pass (--expected-speakers) carries one extra field: how many turns
+# the anchor claimed. Every other pass must still be EXACTLY the base key set.
+EXTRA_KEYS = {"anchor": {"turns"}}
+PASSES = {"registry", "ref", "absorb", "anchor"}
 
 
 def fail(msg: str) -> None:
@@ -29,10 +32,16 @@ def main() -> None:
     if not isinstance(matches, list):
         fail(f"registry_matches must be a list, got {type(matches).__name__}")
     for entry in matches:
-        if not isinstance(entry, dict) or set(entry) != ENTRY_KEYS:
-            fail(f"registry_matches entry must have exactly {sorted(ENTRY_KEYS)}, got {entry}")
+        if not isinstance(entry, dict) or "pass" not in entry:
+            fail(f"registry_matches entry must be an object with a 'pass' key, got {entry}")
         if entry["pass"] not in PASSES:
             fail(f"registry_matches entry 'pass' must be one of {sorted(PASSES)}, got {entry}")
+        allowed = ENTRY_KEYS | EXTRA_KEYS.get(entry["pass"], set())
+        if set(entry) != allowed:
+            fail(f"registry_matches '{entry['pass']}' entry must have exactly "
+                 f"{sorted(allowed)}, got {entry}")
+        if entry["pass"] == "anchor" and not isinstance(entry["turns"], int):
+            fail(f"registry_matches anchor 'turns' must be an int, got {entry}")
         if not isinstance(entry["similarity"], (int, float)):
             fail(f"registry_matches 'similarity' must be numeric, got {entry}")
         if not isinstance(entry["matched"], bool):

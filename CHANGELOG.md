@@ -8,6 +8,7 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ### Added
 
+- **`--expected-speakers` registry-anchored diarization (GitHub issue #1, part 4).** `whosaid <audio> --expected-speakers Alice,Bob` (comma-separated and repeatable; also on `ingest`, and as `expected_speakers` on the `whosaid_transcribe` MCP tool) anchors clustering to the enrolled voiceprints of the people you expect: each turn at cosine ≥ `--anchor-threshold` (default `0.70`, env `WHOSAID_ANCHOR_THRESHOLD`) is pinned to that person, the residual turns are clustered into new speakers as before, and a listed person who never speaks is dropped — so a recurring team with varying attendance no longer needs an exact `--speakers N` (which merges distinct people when fewer show up) or bare auto-detect (which over-segments and then leaves a major speaker unmatched). Unknown names are fatal and list the known voices. Per-anchor results land in the sidecar under `anchors` and in `registry_matches` with `pass: "anchor"`; the flag forces the chunked diarization path at any length, since anchoring needs per-turn voiceprints.
 - **Temp-directory install guard (GitHub issue #10).** `whosaid install` (and `./bootstrap.sh`,
   before its multi-minute model downloads) now refuse to install from a checkout under `/tmp`,
   `/private/tmp`, `/var/tmp`, or `$TMPDIR` unless `--force` is given, since the installed symlink
