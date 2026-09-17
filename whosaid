@@ -118,6 +118,13 @@ USAGE
                                         remember them for future transcripts; --auto
                                         re-applies registry + absorb naming over the
                                         cached sidecar with no re-transcription.
+  whosaid samples <base> [-o DIR] [--audio FILE] [--per-speaker N]
+                  [--seconds S] [--json]
+                                        Export one short representative WAV per
+                                        speaker cluster, cut from the original
+                                        recording, so you can listen and confirm
+                                        an identity before trusting an auto-label
+                                        or enrolling.
   whosaid ingest <audio> [<audio> ...] --into DIR [--folder-by created|mtime]
                                         [--tz ZONE] [--action-items] [--hook CMD]
                                         [flags]
@@ -173,6 +180,22 @@ RELABEL FLAGS
   --match-threshold F  Registry/ref match cosine threshold for --auto (alias
                       --ref-threshold; default 0.50). Clusters under it stay SPEAKER_NN.
   -o, --outdir DIR    Where the sidecar/outputs live (default: alongside <base>).
+
+SAMPLES FLAGS
+  <base>              Sidecar path or base name of a prior transcribe — same
+                      resolution as relabel's <base>.
+  -o, --outdir DIR    Output ROOT (default: alongside <base>'s sidecar); clips
+                      land in <outdir>/<base>.samples/.
+  --audio FILE        Source recording to cut clips from, overriding the
+                      sidecar's own "source.path" — required for a sidecar
+                      written before source metadata existed (GitHub issue #1
+                      parts 2-3).
+  --per-speaker N     Clips per cluster, longest segment(s) first (default: 1).
+  --seconds S         Max clip length in seconds; a shorter segment exports at
+                      its own length (default: 8).
+  --json              Also print a final {"samples": [...]} JSON line
+                      (default: TSV only — SPEAKER_NN, name, start, duration,
+                      path, one line per file).
 
 RECORD FLAGS
   --label L           Suffix the recording filename with -L.
@@ -856,6 +879,30 @@ cmd_transcribe() {
   log "done in ${SECONDS}s."
 }
 
+# ---- sidecar resolution (shared by relabel + samples) -------------------------
+# resolve_sidecar TARGET OUTDIR CALLER_LABEL
+# Resolves TARGET (a sidecar path or a <base> name) to its <base>.diarization.json
+# sidecar: TARGET itself as a file, then TARGET.diarization.json in cwd, then
+# OUTDIR/TARGET.diarization.json. Sets RESOLVED_SIDECAR on success. Logs
+# "$CALLER_LABEL: could not find..." and exits 1 on failure. Call this directly
+# (never inside a subshell/command substitution) so that exit is real — bash's
+# `local x=$(...)` masks a command substitution's exit status from `set -e`.
+RESOLVED_SIDECAR=""
+resolve_sidecar() {
+  local target="$1" outdir="$2" label="$3"
+  if [[ -f "$target" ]]; then
+    RESOLVED_SIDECAR="$target"
+  elif [[ -f "$target.diarization.json" ]]; then
+    RESOLVED_SIDECAR="$target.diarization.json"
+  elif [[ -n "$outdir" && -f "$outdir/$target.diarization.json" ]]; then
+    RESOLVED_SIDECAR="$outdir/$target.diarization.json"
+  else
+    log "$label: could not find a diarization sidecar for '$target'"
+    log "  looked for: $target, ./$target.diarization.json${outdir:+, $outdir/$target.diarization.json}"
+    exit 1
+  fi
+}
+
 # ---- relabel -----------------------------------------------------------------
 # After reading the speaker cards, put real names on clusters and remember them.
 #   whosaid relabel <base|sidecar.diarization.json> SPEAKER_02=Jane SPEAKER_03=Bob [-o DIR]
@@ -880,24 +927,54 @@ cmd_relabel() {
     log "relabel: need at least one SPEAKER_XX=Name assignment, or --auto to re-apply registry + absorb naming"; exit 1
   fi
 
-  # Resolve the sidecar path.
-  local sidecar=""
-  if [[ -f "$target" ]]; then
-    sidecar="$target"
-  elif [[ -f "$target.diarization.json" ]]; then
-    sidecar="$target.diarization.json"
-  elif [[ -n "$outdir" && -f "$outdir/$target.diarization.json" ]]; then
-    sidecar="$outdir/$target.diarization.json"
-  else
-    log "relabel: could not find a diarization sidecar for '$target'"
-    log "  looked for: $target, ./$target.diarization.json${outdir:+, $outdir/$target.diarization.json}"
-    exit 1
-  fi
+  resolve_sidecar "$target" "$outdir" relabel
+  local sidecar="$RESOLVED_SIDECAR"
   local sdir; sdir="$(cd -P "$(dirname "$sidecar")" && pwd)"
   log "relabel: using sidecar $sidecar"
   [[ "$auto" -eq 1 ]] && extra+=(--auto)
   uv run --quiet --with sherpa-onnx --with numpy python "$DIARIZER" \
     --relabel "$sidecar" --outdir "$sdir" ${specs[@]+"${specs[@]}"} ${extra[@]+"${extra[@]}"}
+}
+
+# ---- samples ------------------------------------------------------------------
+# Per-speaker sample-clip export for human verification (GitHub issue #1):
+#   whosaid samples <base|sidecar.diarization.json> [-o DIR] [--audio FILE]
+#                    [--per-speaker N] [--seconds S] [--json]
+# Cuts one short representative WAV per SPEAKER_NN cluster from the ORIGINAL
+# recording, so you can listen and confirm an identity before trusting an
+# auto-label or enrolling — see the README's "Speaker identity" section for how
+# that differs from enrolling/relabeling. Resolves <base> to its sidecar the
+# same way `relabel` does; -o is also the output ROOT (default: alongside the
+# sidecar), under which <base>.samples/ is created. All picking/cutting logic
+# lives in lib/samples.py (stdlib-only; plain python3, no uv).
+cmd_samples() {
+  local target="" outdir="" audio="" per_speaker="" seconds="" want_json=0
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      -o|--outdir)   outdir="$2"; shift 2 ;;
+      --audio)       audio="$2"; shift 2 ;;
+      --per-speaker) per_speaker="$2"; shift 2 ;;
+      --seconds)     seconds="$2"; shift 2 ;;
+      --json)        want_json=1; shift ;;
+      -h|--help)     cmd_help; exit 0 ;;
+      -*)            log "samples: unknown option: $1"; exit 1 ;;
+      *)             if [[ -z "$target" ]]; then target="$1"; else log "samples: unexpected arg '$1'"; exit 1; fi; shift ;;
+    esac
+  done
+  [[ -z "$target" ]] && { log "samples: need a base name or sidecar path. e.g. whosaid samples meeting"; exit 1; }
+
+  resolve_sidecar "$target" "$outdir" samples
+  local sidecar="$RESOLVED_SIDECAR"
+  log "samples: using sidecar $sidecar"
+
+  local pyargs=("$sidecar")
+  [[ -n "$outdir" ]] && pyargs+=(--outdir "$outdir")
+  [[ -n "$audio" ]] && pyargs+=(--audio "$audio")
+  [[ -n "$per_speaker" ]] && pyargs+=(--per-speaker "$per_speaker")
+  [[ -n "$seconds" ]] && pyargs+=(--seconds "$seconds")
+  [[ "$want_json" -eq 1 ]] && pyargs+=(--json)
+
+  python3 "$REPO_DIR/lib/samples.py" "${pyargs[@]}"
 }
 
 # ---- ingest / roll-up (issue #2: meeting workspace) ----------------------------
@@ -1140,6 +1217,9 @@ case "${1:-}" in
     ;;
   relabel)
     cmd_relabel "${@:2}"
+    ;;
+  samples)
+    cmd_samples "${@:2}"
     ;;
   ingest)
     cmd_ingest "${@:2}"
