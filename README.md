@@ -81,7 +81,7 @@ command without copying or duplicating the implementation.
 | Command | What it does |
 |---|---|
 | `./bootstrap.sh [--yes]` (also `whosaid setup`) | Capability check, dependency install, model pre-download, and command installation. Idempotent — safe to re-run. |
-| `whosaid install` | Install/update the command symlink in `~/.local/bin` (or `WHOSAID_INSTALL_DIR`). Refuses to replace an unrelated command. |
+| `whosaid install [--force]` | Install/update the command symlink in `~/.local/bin` (or `WHOSAID_INSTALL_DIR`). Refuses to replace an unrelated command, and refuses (unless `--force`) to install from a checkout under `/tmp`, `/private/tmp`, `/var/tmp`, or `$TMPDIR` — that symlink would dangle once the OS cleans the temp directory up. |
 | `whosaid enroll [Name]` | Records ~45s from the mic reading a printed passage, saves `voices/<Name>.wav`. |
 | `whosaid record [--label L]` | Foreground mic capture to `recordings/<timestamp>[-label].m4a`, then transcribes automatically. |
 | `whosaid <audio>… [flags]` | The default command: transcribe + diarize + label one or more audio files. |
@@ -272,6 +272,17 @@ speakers as a single-pass run while finishing several times faster. Pass `--no-c
 
 ## Troubleshooting
 
+- **`whosaid: command not found` after it used to work.** `whosaid install` makes
+  `~/.local/bin/whosaid` a *symlink* to the checkout — it doesn't copy the implementation. If that
+  checkout lived in a temp directory (`/tmp`, `/private/tmp`, `$TMPDIR`, e.g. a clone under
+  `/private/tmp/whosaid-latest/`), the OS eventually purges it and the symlink starts pointing at
+  nothing, so the shell reports a plain "command not found" with no hint why. `whosaid install`
+  (and `./bootstrap.sh`) now refuse to install from a temp-directory checkout in the first place
+  unless you pass `--force`. To fix an already-dangling install: clone/move the checkout to a
+  stable location (e.g. `~/code/whosaid`) and run `whosaid install` again from there. Because the
+  installed symlink itself is what's broken, `whosaid doctor` can't be run by name to confirm this
+  — run `./whosaid doctor` from the fresh checkout instead; it reports a `DANGLING` install line
+  when it finds this.
 - **Enroll/record produces silence.** This is almost always a macOS microphone permission problem:
   go to System Settings → Privacy & Security → Microphone and grant access to your terminal app.
   macOS feeds an unauthorized app *silent zeros* instead of an error, so whosaid detects this by
@@ -318,6 +329,10 @@ models are cached locally; the test itself makes no network calls.
 
 `./test/version_test.sh` is a fast, offline unit test that checks `whosaid version`, `--version`,
 and `-V` all print a matching `whosaid X.Y.Z` line and exit 0.
+
+`./test/install_guard_test.sh` covers the temp-directory install guard: refusal without
+`--force`, success with it, `install --check-only`, and `whosaid doctor` detecting a dangling
+install symlink.
 
 ## License
 
