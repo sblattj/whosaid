@@ -13,6 +13,16 @@ All notable changes to whosaid are documented here. This project adheres to
   `/private/tmp`, `/var/tmp`, or `$TMPDIR` unless `--force` is given, since the installed symlink
   would silently dangle once the OS cleans that directory up. `whosaid doctor` now also reports a
   dangling or foreign install symlink so a "command not found" regression points at the real cause.
+- **Match-threshold flag, machine-readable match confidence, source metadata (GitHub issue #1, parts 2–3).**
+  `whosaid <audio> --match-threshold F` (alias `--ref-threshold`, env `WHOSAID_MATCH_THRESHOLD`) now
+  passes the registry/reference match gate through from the CLI, `ingest`, `relabel` and the MCP
+  tools, and its default is raised from `0.40` to `0.50` — real meeting audio produced wrong
+  assertions in the 0.40–0.53 band, while genuine matches score far higher. Clusters below the
+  threshold keep their `SPEAKER_NN` label. Every naming decision, near-misses included, is written
+  to `<base>.diarization.json` as `registry_matches`
+  (`{cluster, name, similarity, threshold, matched, pass}`), refreshed by `relabel --auto`, and the
+  sidecar also gains `source` (`path`, `duration_seconds`, `creation_time`) so no separate `ffprobe`
+  is needed for per-meeting timestamps.
 - **Meeting workspaces (GitHub issue #2).** A dated, auditable home for a recurring meeting
   series (`lib/workspace.py`): every recording transcribed into a `YYYY-MM-DD-HHMM` folder,
   per-meeting action items, and one roll-up across the whole workspace — still entirely offline.
