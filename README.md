@@ -207,7 +207,9 @@ Microphone permission. The first `whosaid_transcribe` call downloads ~1.5 GB of 
 | `-l, --lang LANG` | Force the transcription language. |
 | `-f, --format FMT` | Output format: `txt`, `srt`, `vtt`, `tsv`, `json`, or `all`. |
 | `-n, --name NAME` | Override the output base name (single input only; default: derived from the input filename). |
-| `--speakers N` | Hint the expected number of speakers. On long recordings this is recommended — auto-detect can over-segment. |
+| `--speakers N` | Exact number of speakers. Overrides auto-detect (and any `--min/--max-speakers`). |
+| `--min-speakers N` | Lower bound on the auto-detected speaker count. |
+| `--max-speakers N` | Upper bound on the auto-detected speaker count; also lowers the hard cap of 20. Use a range when you know roughly who was in the room but not exactly — an estimate that lands on the bound is reported as unreliable rather than shipped as a result. |
 | `-j, --jobs N` | Parallel diarization workers for long audio (default: auto, ~cores−2, capped at 8). |
 | `--chunk-seconds S` | Window length for parallel diarization (default: auto — about `--jobs` windows, min 300s). |
 | `--no-chunk` | Diarize the whole file in a single pass (disable parallel chunking). |
@@ -352,6 +354,22 @@ deliberately if a real speaker is being missed.
 - **The speaker count looks one too high, with a cluster that has ~1 second of speech.** Forcing
   `--speakers N` too high can carve a phantom cluster out of crosstalk. Omit `--speakers` to
   auto-detect, which is usually more accurate.
+- **Auto-detect reports far too many speakers on a long recording (it used to always say 20).**
+  Fixed in the current version. The speaker count is now estimated by average-linkage
+  agglomerative clustering of the per-turn voiceprints, cut at cosine `0.58` (env
+  `WHOSAID_COUNT_THRESHOLD`; calibrated against real TitaNet-small embeddings, where
+  same-speaker turns measure ~0.90 and different speakers ~0.25). The previous estimator
+  compared each turn to a single earlier turn rather than to a cluster, so on any recording
+  with real channel variation it kept opening new clusters until it pinned at the hard cap of
+  20. The cap is now a **bound, not a target**: if the estimate lands on it, the count is
+  reported as untrustworthy — a `WARNING:` line is written into `<base>.speaker-cards.txt` right
+  under the count, and `count_warning` / `count_estimate` appear in `<base>.diarization.json` and
+  in the JSON on stdout. If you know roughly how many people were present, pass
+  `--min-speakers`/`--max-speakers`; if you know exactly, pass `--speakers N`.
+  Note this estimator runs on the **chunked** path (recordings over 15 minutes, or any
+  `--chunk-seconds`); shorter recordings use sherpa's own clustering, which takes an exact count
+  only, so a `--min-speakers`/`--max-speakers` range there is reported as unenforced unless the
+  two are equal.
 
 ## Testing
 

@@ -6,7 +6,8 @@ Exercises, with synthetic embeddings (no models, no audio):
   * name_clusters absorb pass — phantom splits of one voice fold into that voice.
   * name_clusters --ref skip — a ref whose name the registry already used is skipped
     (no duplicate speaker for one person).
-  * estimate_k cap guard — a saturating auto-count is re-estimated below the cap.
+  * estimate_speakers — the agglomerative count estimator recovers the true count
+    on scattered turns, and reports `saturated` when the count is only a bound.
   * render_outputs card merge — one card per NAME with combined turns/talk time.
 
 Run:
@@ -122,38 +123,56 @@ def test_reapply_does_not_annex_already_named_voice():
           f"01 (~0.6 to Matt, who is already placed) must stay UNIDENTIFIED, got {names['SPEAKER_01']}")
 
 
-def test_cap_guard_resolves_saturation():
+def test_noisy_turns_do_not_saturate_the_cap():
+    """The #5 regression: 3 real speakers whose turns scatter must come back as
+    ~3, NOT pinned at the cap. The old farthest-first pass saturated here and
+    only its retry ladder pulled it back under; the agglomerative estimator
+    reads the group means and lands on the true count directly."""
     rng = np.random.default_rng(3)
     cap = 5
-    # 3 true speakers, but noisy within-speaker sim (~0.4) so a farthest-first pass
-    # at thresh 0.5 opens a new center for almost every turn and saturates at `cap`.
     bases = [voice(rng) for _ in range(3)]
     X = []
     for b in bases:
         for _ in range(60):
-            X.append(near(rng, b, 0.08))   # within-speaker cosine straddles the ladder
+            # jitter 0.05 -> intra-speaker cosine ~0.68. The pre-#5 version of
+            # this fixture used 0.08 (~0.45), which was picked to straddle the
+            # OLD farthest-first retry ladder rather than to match real audio.
+            # Real TitaNet-small per-turn intra-speaker similarity measures
+            # ~0.90 through this pipeline (see AGGLOM_THRESHOLD), so 0.68 is a
+            # deliberately PESSIMISTIC same-speaker case -- which is what this
+            # test wants: it must not saturate even on scattered turns.
+            X.append(near(rng, b, 0.05))
     X = np.array(X, dtype=np.float32)
     rng.shuffle(X)
 
-    sat = d._farthest_first_k(X, 0.5, cap)
-    check(sat == cap, f"test setup: farthest-first at 0.5 must saturate at cap {cap}, got {sat}")
-    k = d.estimate_k(X, thresh=0.5, cap=cap)
-    check(k < cap, f"cap guard must re-estimate below cap {cap}, got {k}")
+    S = X @ X.T
+    off = S[~np.eye(len(X), dtype=bool)]
+    check(float(off.max()) > 0.6,
+          f"fixture guard: same-speaker turns must reach the reported 0.6-0.8 band, "
+          f"max off-diagonal cosine was {float(off.max()):.3f}")
 
-    # Direction sanity: a LOWER merge threshold yields <= clusters (never more).
-    ks = [d._farthest_first_k(X, t, 100) for t in (0.25, 0.35, 0.45, 0.55)]
+    est = d.estimate_speakers(X, cap=cap)
+    check(est["k"] < cap, f"3 real speakers must estimate below cap {cap}, got {est['k']}")
+    check(est["saturated"] is False, f"3 real speakers must not saturate: {est}")
+
+    # Direction: a HIGHER cosine cut splits more (never fewer). Note this is the
+    # OPPOSITE of the old farthest-first threshold, whose cap guard therefore
+    # retried downward; see test/estimate_k_test.py for the full contract.
+    ks = [int(d.agglomerative_labels(X, t).max()) + 1 for t in (0.25, 0.35, 0.45, 0.55)]
     check(all(ks[i] <= ks[i + 1] for i in range(len(ks) - 1)),
-          f"lower threshold must not yield more clusters: {ks}")
+          f"a higher cut must not yield fewer clusters: {ks}")
 
 
-def test_cap_guard_unresolvable_returns_cap():
+def test_more_real_voices_than_the_cap_returns_the_cap():
     rng = np.random.default_rng(4)
     cap = 6
-    # Many mutually-distinct turns: no threshold in the escalation ladder can
-    # collapse below the cap, so estimate_k must return the cap (and WARN).
+    # 40 mutually-distinct voices genuinely exceed the cap, so the count is a
+    # bound rather than a measurement: return the cap AND flag it.
     X = np.array([voice(rng) for _ in range(40)], dtype=np.float32)
-    k = d.estimate_k(X, thresh=0.5, cap=cap)
-    check(k == cap, f"unresolvable saturation must return cap {cap}, got {k}")
+    est = d.estimate_speakers(X, cap=cap)
+    check(est["k"] == cap, f"unresolvable saturation must return cap {cap}, got {est['k']}")
+    check(est["saturated"] is True, f"hitting the cap must be flagged as untrusted: {est}")
+    check(d.estimate_k(X, cap=cap) == cap, "estimate_k wrapper must agree with estimate_speakers")
 
 
 def test_render_merges_cards_by_name():
@@ -185,13 +204,37 @@ def test_render_merges_cards_by_name():
     check("# 2 speaker(s)" in cards, f"header must count 2 merged speakers:\n{cards.splitlines()[1]}")
 
 
+def test_cards_header_carries_the_count_warning():
+    """GitHub #6: an unreliable count must be visible in the ARTIFACT, on the
+    line right under the count, not only in the log of the run that made it."""
+    names = {"SPEAKER_00": "SPEAKER_00"}
+    segs = [{"start": 0.0, "end": 5.0, "speaker": "SPEAKER_00"}]
+    turns = [("SPEAKER_00", 0.0, ["a reasonably substantive opening remark here"])]
+    warn = "speaker count is UNRELIABLE - the auto estimate hit its bound of 20"
+    with tempfile.TemporaryDirectory() as td:
+        d.render_outputs(Path(td), "meeting", segs, ["SPEAKER_00"], names, turns, 3,
+                         "auto-detected", count_warning=warn)
+        lines = (Path(td) / "meeting.speaker-cards.txt").read_text().splitlines()
+    check(lines[2] == f"# WARNING: {warn}",
+          f"warning must be the line directly after the count line, got: {lines[:4]}")
+    check(lines[1].startswith("# 1 speaker(s)"),
+          f"count line must still come first: {lines[1]}")
+
+    with tempfile.TemporaryDirectory() as td:
+        d.render_outputs(Path(td), "meeting", segs, ["SPEAKER_00"], names, turns, 3,
+                         "auto-detected")
+        clean = (Path(td) / "meeting.speaker-cards.txt").read_text()
+    check("WARNING" not in clean, f"a trusted count must not emit a warning line:\n{clean}")
+
+
 def main():
     test_absorb_pass()
     test_ref_skip_no_double_naming()
     test_reapply_does_not_annex_already_named_voice()
-    test_cap_guard_resolves_saturation()
-    test_cap_guard_unresolvable_returns_cap()
+    test_noisy_turns_do_not_saturate_the_cap()
+    test_more_real_voices_than_the_cap_returns_the_cap()
     test_render_merges_cards_by_name()
+    test_cards_header_carries_the_count_warning()
     print(f"PASS: {CHECKS} assertions")
     sys.exit(0)
 

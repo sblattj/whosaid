@@ -274,51 +274,171 @@ def _cos(a: np.ndarray, b: np.ndarray) -> float:
     return float(np.dot(a, b) / ((np.linalg.norm(a) + 1e-9) * (np.linalg.norm(b) + 1e-9)))
 
 
-# When auto-detect saturates at this many clusters we stop trusting the count:
-# on a long, noisy recording every window looks a little different and the
-# farthest-first pass pins at the cap, which then feeds k-means a k of 20 and
-# shatters real voices into phantom speakers.
+# Upper bound on the auto-detected speaker count. It is a BOUND, not a target:
+# an estimate that lands on the cap is treated as a FAILED estimate (the run
+# still proceeds, but `saturated` is set, the WARN fires and the count warning
+# is written into the speaker cards) rather than as a result. See GitHub #5.
 SPEAKER_CAP = 20
 
+# Same-speaker cosine cut for the agglomerative count estimate, calibrated
+# against REAL TitaNet-small per-turn embeddings.
+#
+# With AVERAGE linkage the distance between two groups converges to the MEAN
+# pairwise similarity between them, so the usable cut is between mean-intra and
+# mean-inter, and the robust choice is the midpoint of the band over which the
+# true count holds.
+#
+# Measured (not assumed) on two 17.8-minute 6-voice fixtures put through this
+# exact pipeline — 65 and 72 embedded turns, 192-dim embeddings:
+#   intra-speaker cosine  mean 0.902 (p10 0.815) / mean 0.891 (p10 0.721)
+#   inter-speaker cosine  mean 0.252 (p90 0.452) / mean 0.256 (p90 0.454)
+# k == 6 (the true count) holds for a cut in [0.55, 0.61] on the harder
+# channel-varied fixture and [0.44, 0.61] on the clean one; 0.58 is the
+# midpoint of the intersection.
+#
+# NB issue #5 states same-speaker turns sit at 0.6-0.8. That is NOT what this
+# model produces on this path: per-turn intra-speaker similarity measures ~0.90,
+# with the 0.6-0.8 range being roughly the p10 tail. A cut calibrated to the
+# quoted 0.6-0.8 lands near 0.45 and OVER-merges — it returned 5 speakers for 6
+# on the channel-varied fixture, which is how this number was corrected.
+AGGLOM_THRESHOLD = float(os.environ.get("WHOSAID_COUNT_THRESHOLD", "0.58"))
 
-def _farthest_first_k(X: np.ndarray, thresh: float, cap: int) -> int:
-    centers = [X[0]]
-    for x in X[1:]:
-        if max(float(x @ c) for c in centers) < thresh:
-            centers.append(x)
-            if len(centers) >= cap:
-                break
-    return len(centers)
 
+def _average_linkage_merges(D: np.ndarray) -> list:
+    """Full average-linkage (UPGMA) dendrogram over a square distance matrix.
 
-def estimate_k(X: np.ndarray, thresh: float = 0.5, cap: int = SPEAKER_CAP) -> int:
-    """Coarse farthest-first estimate of the speaker count when none is given.
+    Uses the nearest-neighbour-chain algorithm, which is exact for average
+    linkage (a reducible Lance-Williams method) and runs in O(n^2) time with
+    O(n^2) memory — the naive "rescan the whole matrix per merge" loop is
+    O(n^3) and would not survive the ~700 turns of a 52-minute meeting.
 
-    A single greedy pass opens a new center whenever a turn's best similarity to
-    the existing centers falls below `thresh`, so `thresh` is really a merge
-    radius: a LOWER threshold merges more aggressively and yields FEWER clusters,
-    a higher one splits more and yields more. (NB the merge direction is the
-    opposite of what a "raise the threshold to collapse clusters" intuition
-    suggests — verified empirically against TitaNet-small embeddings.)
-
-    On long recordings the pass saturates at `cap`; handing k-means a k we know
-    is wrong is what splits real voices, so when we hit the cap we retry with
-    progressively LOWER thresholds until the estimate drops below it.
+    Returns [(height, a, b), ...] where `a` and `b` are the row indices of the
+    two groups merged at cosine distance `height`. The surviving row is `a`.
+    Because average linkage is monotone the list can be cut by height in any
+    order, so `_cut_merges` just unions every merge below the cut.
     """
-    k = _farthest_first_k(X, thresh, cap)
-    if k < cap:
-        return k
-    for t in (0.45, 0.40, 0.35, 0.30, 0.25):
-        if t >= thresh:
-            continue
-        k2 = _farthest_first_k(X, t, cap)
-        if k2 < cap:
-            log(f"auto-detect saturated at cap {cap} at thresh {thresh:.2f}; "
-                f"re-estimated k={k2} at thresh {t:.2f}")
-            return k2
-    log(f"auto-detect saturated at cap {cap} at thresh {thresh:.2f}; still k={k} "
-        f"after re-estimating down to thresh 0.25")
-    return k
+    n = D.shape[0]
+    D = np.array(D, dtype=np.float64, copy=True)
+    np.fill_diagonal(D, np.inf)
+    size = np.ones(n)
+    dead = np.zeros(n, dtype=bool)
+    merges: list = []
+    chain: list = []
+    for _ in range(n - 1):
+        if not chain:
+            chain = [int(np.flatnonzero(~dead)[0])]
+        while True:
+            a = chain[-1]
+            row = D[a]
+            b = int(np.argmin(row))
+            # Prefer the previous chain link on ties, or an exact-tie pair can
+            # chase each other forever without ever forming a reciprocal pair.
+            if len(chain) >= 2 and row[chain[-2]] <= row[b]:
+                b = chain[-2]
+            if len(chain) >= 2 and b == chain[-2]:
+                break
+            chain.append(b)
+        height = float(D[chain[-1], chain[-2]])
+        b = chain.pop()
+        a = chain.pop()
+        merges.append((height, a, b))
+        na, nb = size[a], size[b]
+        newrow = (na * D[a] + nb * D[b]) / (na + nb)   # Lance-Williams, average linkage
+        newrow[a] = np.inf
+        newrow[b] = np.inf
+        D[a] = newrow
+        D[:, a] = newrow
+        D[b, :] = np.inf
+        D[:, b] = np.inf
+        size[a] = na + nb
+        dead[b] = True
+    return merges
+
+
+def _cut_merges(n: int, merges: list, cutoff: float) -> np.ndarray:
+    """Flat labels from a dendrogram, keeping every merge below `cutoff`."""
+    parent = list(range(n))
+
+    def find(x: int) -> int:
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    for height, a, b in merges:
+        if height < cutoff:
+            ra, rb = find(a), find(b)
+            if ra != rb:
+                parent[ra] = rb
+    order: dict = {}
+    labels = np.empty(n, dtype=int)
+    for i in range(n):
+        r = find(i)
+        if r not in order:
+            order[r] = len(order)
+        labels[i] = order[r]
+    return labels
+
+
+def agglomerative_labels(X: np.ndarray, thresh: float = AGGLOM_THRESHOLD) -> np.ndarray:
+    """Average-linkage clustering of unit-norm embeddings, cut at cosine `thresh`."""
+    n = len(X)
+    if n <= 1:
+        return np.zeros(n, dtype=int)
+    D = 1.0 - (np.asarray(X, dtype=np.float32) @ np.asarray(X, dtype=np.float32).T)
+    return _cut_merges(n, _average_linkage_merges(D), 1.0 - thresh)
+
+
+def estimate_speakers(X: np.ndarray, thresh: float = AGGLOM_THRESHOLD,
+                      cap: int = SPEAKER_CAP, min_speakers: int = 0,
+                      max_speakers: int = 0) -> dict:
+    """Estimate the speaker count by agglomerative clustering of per-turn voiceprints.
+
+    The old farthest-first pass opened a new center whenever a turn's similarity
+    to every existing center fell below a threshold. That is order-dependent and
+    compares each turn to a SINGLE turn, so on real meeting audio — where
+    same-speaker turns sit at 0.6-0.8 depending on channel and prosody — it kept
+    minting centers until it pinned at the cap on every long recording (#5).
+    Average linkage instead compares GROUP means, which is exactly the quantity
+    that separates cleanly, and needs no cap to terminate.
+
+    `cap` (and `max_speakers`, which lowers it) is a bound only. If the raw
+    estimate reaches it we do not trust the count: `saturated` is True and the
+    caller warns instead of silently shipping an inflated speaker list.
+
+    Returns {"method", "threshold", "k", "raw_k", "cap", "min", "max",
+             "saturated", "labels"}.
+    """
+    labels = agglomerative_labels(X, thresh)
+    raw_k = int(labels.max()) + 1 if len(labels) else 0
+    eff_cap = min(cap, max_speakers) if max_speakers and max_speakers > 0 else cap
+    k = raw_k
+    saturated = raw_k >= eff_cap
+    if saturated:
+        k = eff_cap
+    if min_speakers and min_speakers > 0:
+        k = max(k, min_speakers)
+    k = max(1, min(k, len(X)))
+    if saturated:
+        log(f"WARN speaker-count estimate hit the bound of {eff_cap} "
+            f"(agglomerative at cosine {thresh:.2f} found {raw_k}); the count is NOT trustworthy")
+    return {
+        "method": "agglomerative",
+        "threshold": round(float(thresh), 4),
+        "k": int(k),
+        "raw_k": int(raw_k),
+        "cap": int(cap),
+        "min": int(min_speakers) if min_speakers and min_speakers > 0 else None,
+        "max": int(max_speakers) if max_speakers and max_speakers > 0 else None,
+        "saturated": bool(saturated),
+        "labels": labels,
+    }
+
+
+def estimate_k(X: np.ndarray, thresh: float = AGGLOM_THRESHOLD,
+               cap: int = SPEAKER_CAP) -> int:
+    """Speaker count only; see estimate_speakers for the full estimate record."""
+    return estimate_speakers(X, thresh=thresh, cap=cap)["k"]
 
 
 def spherical_kmeans(X: np.ndarray, k: int, iters: int = 100, restarts: int = 8) -> np.ndarray:
@@ -355,17 +475,34 @@ def spherical_kmeans(X: np.ndarray, k: int, iters: int = 100, restarts: int = 8)
     return best_labels
 
 
-def cluster_segments(all_segments: list, num_speakers: int) -> tuple:
+def cluster_segments(all_segments: list, num_speakers: int, min_speakers: int = 0,
+                     max_speakers: int = 0) -> tuple:
     """Assign every segment a global speaker by clustering ALL per-turn voiceprints at
     once — a global view that matches whole-file quality even though the segmentation
-    ran chunk-by-chunk. Returns (segments with SPEAKER_NN, {SPEAKER_NN: centroid}, speakers)."""
+    ran chunk-by-chunk.
+
+    Returns (segments with SPEAKER_NN, {SPEAKER_NN: centroid}, speakers, estimate),
+    where `estimate` is the estimate_speakers record (minus its label array) or None
+    when the count came from an explicit --num-speakers."""
     embedded = [s for s in all_segments if s.get("emb")]
     if not embedded:
-        return [], {}, []
+        return [], {}, [], None
     X = np.array([s["emb"] for s in embedded], dtype=np.float32)
     X = X / (np.linalg.norm(X, axis=1, keepdims=True) + 1e-9)
-    k = num_speakers if num_speakers and num_speakers > 0 else estimate_k(X)
+    estimate = None
+    if num_speakers and num_speakers > 0:
+        k = num_speakers
+    else:
+        est = estimate_speakers(X, min_speakers=min_speakers, max_speakers=max_speakers)
+        k = est["k"]
+        estimate = {p: est[p] for p in est if p != "labels"}
     k = max(1, min(k, len(embedded)))
+    # The agglomerative pass gives the COUNT; spherical k-means still does the
+    # ASSIGNMENT. On the synthetic fixtures both label every turn correctly
+    # (purity 1.000 each, test/estimate_k_test.py), so k-means is kept: it is
+    # the path --num-speakers already takes, so auto and hinted runs stay
+    # identical given the same k, and its reassignment step recovers turns that
+    # average linkage chained into a neighbour.
     log(f"global clustering: {len(embedded)} embedded turns -> {k} speaker(s)")
     labels = spherical_kmeans(X, k)
     for s, lab in zip(embedded, labels):
@@ -392,13 +529,14 @@ def cluster_segments(all_segments: list, num_speakers: int) -> tuple:
 
     segs = [{"start": s["start"], "end": s["end"], "speaker": relabel[s["_c"]]} for s in all_segments]
     segs.sort(key=lambda s: s["start"])
-    return segs, cluster_emb, sorted(cluster_emb)
+    return segs, cluster_emb, sorted(cluster_emb), estimate
 
 
 def diarize_parallel(audio: str, total_dur: float, num_speakers: int, jobs: int,
-                     chunk_seconds: float) -> tuple:
+                     chunk_seconds: float, min_speakers: int = 0,
+                     max_speakers: int = 0) -> tuple:
     """Split the audio into windows, segment+embed them concurrently, then cluster
-    globally. Returns (segments, {SPEAKER_NN: embedding}, speakers)."""
+    globally. Returns (segments, {SPEAKER_NN: embedding}, speakers, estimate)."""
     n_chunks = max(1, math.ceil(total_dur / chunk_seconds))
     bounds = [(i * chunk_seconds, min(chunk_seconds, total_dur - i * chunk_seconds))
               for i in range(n_chunks)]
@@ -414,7 +552,7 @@ def diarize_parallel(audio: str, total_dur: float, num_speakers: int, jobs: int,
             log(f"  chunk {idx + 1}/{len(payloads)} done: {len(segs)} turns "
                 f"({sum(1 for s in segs if s.get('emb'))} embedded)")
     all_segments = [s for chunk in per_chunk if chunk for s in chunk]
-    return cluster_segments(all_segments, num_speakers)
+    return cluster_segments(all_segments, num_speakers, min_speakers, max_speakers)
 
 
 def build_turns(segs: list, whisper_json: str | None) -> list:
@@ -450,7 +588,7 @@ def build_turns(segs: list, whisper_json: str | None) -> list:
 
 def render_outputs(outdir: Path, base: str, segs: list, speakers: list, names: dict,
                    turns: list, snippets_n: int, detect_mode: str,
-                   emb_name: str = EMB_NAME) -> None:
+                   emb_name: str = EMB_NAME, count_warning: str | None = None) -> None:
     """Write RTTM, the speaker-labeled transcript, and the human-facing speaker cards."""
     talk = {sp: 0.0 for sp in speakers}
     nturns = {sp: 0 for sp in speakers}
@@ -500,8 +638,12 @@ def render_outputs(outdir: Path, base: str, segs: list, speakers: list, names: d
     cards_path = outdir / f"{base}.speaker-cards.txt"
     lines = [f"# Speaker cards: {base}",
              f"# {len(groups)} speaker(s) ({detect_mode}). "
-             f"Read the snippets, then persist names with:",
-             f"#   whosaid relabel {base} SPEAKER_XX=Name [SPEAKER_YY=Name ...]", ""]
+             f"Read the snippets, then persist names with:"]
+    # #6: an unreliable count must be visible to whoever reads THIS file, not
+    # only to whoever was watching the log when the run happened.
+    if count_warning:
+        lines.append(f"# WARNING: {count_warning}")
+    lines += [f"#   whosaid relabel {base} SPEAKER_XX=Name [SPEAKER_YY=Name ...]", ""]
     for fn in groups:
         clusters = members[fn]
         g_turns = sum(nturns[sp] for sp in clusters)
@@ -721,7 +863,8 @@ def do_relabel(args) -> None:
     sidecar.write_text(json.dumps(data, indent=2))
     turns = build_turns(segs, data.get("whisper_json"))
     render_outputs(outdir, base, segs, speakers, names, turns, args.snippets,
-                   detect_mode, emb_name=emb_model)
+                   detect_mode, emb_name=emb_model,
+                   count_warning=data.get("count_warning"))
     print(json.dumps({"num_speakers": len(speakers), "clusters": names, "relabeled": True}))
 
 
@@ -732,6 +875,13 @@ def main() -> None:
     ap.add_argument("--outdir", default=None)
     ap.add_argument("--name", default=None)
     ap.add_argument("--num-speakers", type=int, default=-1, help="-1 = auto-detect")
+    ap.add_argument("--min-speakers", type=int, default=0, metavar="N",
+                    help="lower bound for the auto-detected count (0 = no bound). "
+                         "Ignored when --num-speakers gives an exact count.")
+    ap.add_argument("--max-speakers", type=int, default=0, metavar="N",
+                    help=f"upper bound for the auto-detected count (0 = no bound); also "
+                         f"lowers the hard cap of {SPEAKER_CAP}. Ignored when "
+                         f"--num-speakers gives an exact count.")
     ap.add_argument("--ref", action="append", default=[], metavar="NAME=CLIP",
                     help="reference voice clip for naming a cluster (repeatable)")
     ap.add_argument("--ref-threshold", "--match-threshold", dest="ref_threshold",
@@ -788,7 +938,19 @@ def main() -> None:
     outdir.mkdir(parents=True, exist_ok=True)
     base = args.name or Path(args.audio).stem
 
-    detect_mode = "auto-detected" if args.num_speakers < 0 else f"as hinted (--num-speakers {args.num_speakers})"
+    if args.min_speakers < 0 or args.max_speakers < 0:
+        sys.exit("diarize: FATAL --min-speakers/--max-speakers must be >= 0 (0 = no bound)")
+    if args.min_speakers and args.max_speakers and args.min_speakers > args.max_speakers:
+        sys.exit(f"diarize: FATAL --min-speakers {args.min_speakers} is greater than "
+                 f"--max-speakers {args.max_speakers}; the range is empty")
+
+    bound_note = ""
+    if args.num_speakers < 0 and (args.min_speakers or args.max_speakers):
+        lo = args.min_speakers or 1
+        hi = args.max_speakers or SPEAKER_CAP
+        bound_note = f", bounded {lo}-{hi}"
+    detect_mode = (f"auto-detected{bound_note}" if args.num_speakers < 0
+                   else f"as hinted (--num-speakers {args.num_speakers})")
 
     # Decide whether to diarize the whole file at once or split it into windows and
     # diarize them in parallel (much faster on long recordings — the feedback loop
@@ -814,14 +976,31 @@ def main() -> None:
             _ref_ex["fn"] = make_embed(ex)
         return _ref_ex["fn"](wave)
 
+    count_estimate = None
     if use_chunk:
         log(f"audio {total_dur:.0f}s -> parallel diarization")
-        segs, cluster_emb, speakers = diarize_parallel(
-            args.audio, total_dur, args.num_speakers, jobs, chunk_seconds)
+        segs, cluster_emb, speakers, count_estimate = diarize_parallel(
+            args.audio, total_dur, args.num_speakers, jobs, chunk_seconds,
+            args.min_speakers, args.max_speakers)
     else:
         samples = load_audio(args.audio)
         log(f"audio loaded: {len(samples) / SAMPLE_RATE:.0f}s (whole-file diarization)")
-        config = make_diar_config(args.num_speakers)
+        # The whole-file path hands the count to sherpa's own FastClustering,
+        # which takes an EXACT num_clusters or nothing — it has no notion of a
+        # range. A degenerate range (min == max) is therefore the only bound we
+        # can honour here; anything wider is announced as unenforced rather than
+        # silently ignored. The agglomerative estimator only runs on the chunked
+        # (>15 min) path, which is where issue #5's saturation was measured.
+        whole_file_k = args.num_speakers
+        if whole_file_k < 0 and args.min_speakers and args.min_speakers == args.max_speakers:
+            whole_file_k = args.min_speakers
+            log(f"whole-file diarization: --min-speakers == --max-speakers, "
+                f"using an exact count of {whole_file_k}")
+        elif whole_file_k < 0 and (args.min_speakers or args.max_speakers):
+            log("WARN --min-speakers/--max-speakers are not enforced on the whole-file "
+                "path (sherpa FastClustering takes an exact count only); pass equal "
+                "min/max for an exact count, or --chunk-seconds to force the chunked path.")
+        config = make_diar_config(whole_file_k)
         if not config.validate():
             sys.exit("diarize: FATAL invalid config (model files missing?)")
         result = sherpa_onnx.OfflineSpeakerDiarization(config).process(samples).sort_by_start_time()
@@ -850,14 +1029,29 @@ def main() -> None:
     # recording into dozens of phantom clusters. If the count looks implausible,
     # say so loudly and tell the user the one-flag fix rather than silently
     # emitting a 100-speaker transcript.
+    count_warning = None
     if args.num_speakers < 0:
         tiny = [sp for sp in speakers if talk[sp] < 5.0]
-        if (len(speakers) > 12 or len(speakers) == SPEAKER_CAP
+        saturated = bool(count_estimate and count_estimate.get("saturated"))
+        if saturated:
+            eff_cap = count_estimate["max"] or count_estimate["cap"]
+            count_warning = (
+                f"speaker count is UNRELIABLE — the auto estimate hit its bound of "
+                f"{eff_cap} (agglomerative at cosine {count_estimate['threshold']:.2f} "
+                f"found {count_estimate['raw_k']} clusters), so {len(speakers)} is a "
+                f"bound, not a measurement. Re-run with a known count "
+                f"(--speakers N) or a range (--min-speakers/--max-speakers).")
+        elif (len(speakers) > 12
                 or (len(speakers) >= 6 and len(tiny) >= len(speakers) / 2)):
+            count_warning = (
+                f"speaker count may be UNRELIABLE — auto-detect found {len(speakers)} "
+                f"speakers, {len(tiny)} of them with under 5s of speech, which usually "
+                f"means over-segmentation on long or mixed audio. Re-run with a known "
+                f"count (--speakers N) or a range (--min-speakers/--max-speakers).")
+        if count_warning:
             log("!" * 56)
-            log(f"WARN auto-detect found {len(speakers)} speakers ({len(tiny)} with <5s of speech).")
-            log("WARN this usually means over-segmentation on long/mixed audio.")
-            log("WARN re-run with a known count, e.g.  --speakers 5  (whosaid: --speakers 5).")
+            for part in count_warning.split(". "):
+                log(f"WARN {part.strip().rstrip('.')}.")
             log("!" * 56)
 
     names = {sp: sp for sp in speakers}
@@ -901,7 +1095,8 @@ def main() -> None:
 
     # ---- render RTTM + speaker-labeled transcript + snippet cards ----
     turns = build_turns(segs, args.whisper_json)
-    render_outputs(outdir, base, segs, speakers, names, turns, args.snippets, detect_mode)
+    render_outputs(outdir, base, segs, speakers, names, turns, args.snippets, detect_mode,
+                   count_warning=count_warning)
 
     # ---- sidecar: segments + voiceprints so `whosaid relabel` is instant later ----
     sidecar = outdir / f"{base}.diarization.json"
@@ -912,6 +1107,9 @@ def main() -> None:
         "names": names,
         "registry_matches": registry_matches,
         "source": source_metadata(args.audio),
+        "detect_mode": detect_mode,
+        "count_warning": count_warning,
+        "count_estimate": count_estimate,
         "segments": segs,
         "cluster_emb": {sp: cluster_emb[sp].tolist() for sp in cluster_emb},
         "whisper_json": str(Path(args.whisper_json).resolve()) if args.whisper_json else None,
@@ -920,6 +1118,8 @@ def main() -> None:
     print(json.dumps({
         "num_speakers": len(speakers),
         "detect_mode": detect_mode,
+        "count_warning": count_warning,
+        "count_estimate": count_estimate,
         "speakers": [names[sp] for sp in speakers],
         "clusters": {sp: names[sp] for sp in speakers},
         "registry_matches": registry_matches,
