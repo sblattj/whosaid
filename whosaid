@@ -106,6 +106,11 @@ TRANSCRIBE FLAGS
       --absorb-threshold F  Cosine ≥ F folds a still-unnamed cluster into a known
                        voice (registry/enrolled), so a person split across clusters
                        merges into one speaker. Default 0.85 (WHOSAID_ABSORB_THRESHOLD).
+      --match-threshold F  Cosine ≥ F is required before a registry/enrolled voice
+                       may claim a cluster (alias --ref-threshold). A cluster whose
+                       best candidate scores below F keeps its anonymous SPEAKER_NN
+                       label. Default 0.50 (WHOSAID_MATCH_THRESHOLD); raise it if
+                       you see wrong names, lower it to catch more.
       --no-diarize     Skip speaker diarization.
       --diarize        Force diarization on (default already on).
   -h, --help          This message.
@@ -126,6 +131,8 @@ RELABEL FLAGS
                       and <base>.speaker-cards.txt. Picks up voices enrolled after
                       the transcript was made — no re-diarization.
   --absorb-threshold F  Absorb-pass cosine threshold for --auto (default 0.85).
+  --match-threshold F  Registry/ref match cosine threshold for --auto (alias
+                      --ref-threshold; default 0.50). Clusters under it stay SPEAKER_NN.
   -o, --outdir DIR    Where the sidecar/outputs live (default: alongside <base>).
 
 RECORD FLAGS
@@ -162,6 +169,8 @@ ENV OVERRIDES
   WHOSAID_SPEAKER_DB   Local speaker registry (default: ~/.config/whosaid/speakers.json).
   WHOSAID_ABSORB_THRESHOLD  Absorb-pass cosine threshold (default: 0.85); a still-
                       unnamed cluster this close to a known voice is folded into it.
+  WHOSAID_MATCH_THRESHOLD  Registry/reference match cosine threshold (default: 0.50);
+                      a cluster whose best candidate scores below it stays SPEAKER_NN.
   DIARIZE_EMB_NAME     Speaker-embedding model (default: NeMo TitaNet-small,
                        English-native; set the zh-cn model for Mandarin audio).
   WHOSAID_REC_DEVICE   avfoundation audio device index (default: 0).
@@ -453,6 +462,7 @@ cmd_transcribe() {
   local CHUNK_SECONDS=""
   local NO_CHUNK=0
   local ABSORB=""
+  local MATCH_THRESHOLD=""
   local AUDIO=()
 
   while [[ $# -gt 0 ]]; do
@@ -469,6 +479,7 @@ cmd_transcribe() {
       -j|--jobs)    JOBS="$2"; shift 2 ;;
       --chunk-seconds) CHUNK_SECONDS="$2"; shift 2 ;;
       --absorb-threshold) ABSORB="$2"; shift 2 ;;
+      --match-threshold|--ref-threshold) MATCH_THRESHOLD="$2"; shift 2 ;;
       --no-chunk)   NO_CHUNK=1; shift ;;
       -h|--help)    cmd_help; exit 0 ;;
       --)           shift; while [[ $# -gt 0 ]]; do AUDIO+=("$1"); shift; done ;;
@@ -524,6 +535,7 @@ cmd_transcribe() {
         [[ -n "$CHUNK_SECONDS" ]] && dargs+=(--chunk-seconds "$CHUNK_SECONDS")
         [[ "$NO_CHUNK" == "1" ]] && dargs+=(--no-chunk)
         [[ -n "$ABSORB" ]] && dargs+=(--absorb-threshold "$ABSORB")
+        [[ -n "$MATCH_THRESHOLD" ]] && dargs+=(--ref-threshold "$MATCH_THRESHOLD")
         if [[ -d "$VOICE_REFS" ]]; then
           for ref in "$VOICE_REFS"/*.wav "$VOICE_REFS"/*.m4a; do
             [[ -f "$ref" ]] || continue
@@ -568,7 +580,7 @@ cmd_relabel() {
       -o|--outdir) outdir="$2"; shift 2 ;;
       --auto)      auto=1; shift ;;
       --absorb-threshold) extra+=(--absorb-threshold "$2"); shift 2 ;;
-      --ref-threshold)    extra+=(--ref-threshold "$2"); shift 2 ;;
+      --ref-threshold|--match-threshold) extra+=(--ref-threshold "$2"); shift 2 ;;
       *=*)         specs+=(--save-speaker "$1"); shift ;;
       *)           if [[ -z "$target" ]]; then target="$1"; else log "relabel: unexpected arg '$1'"; exit 1; fi; shift ;;
     esac
@@ -621,7 +633,7 @@ cmd_ingest() {
       -o|--outdir) log "ingest: -o/--outdir is not allowed — ingest places each meeting itself"; exit 1 ;;
       -n|--name)   log "ingest: -n/--name is not allowed — ingest names its outputs 'transcript'"; exit 1 ;;
       # transcribe flags that pass straight through
-      -m|--model|-l|--lang|-f|--format|--speakers|-j|--jobs|--chunk-seconds)
+      -m|--model|-l|--lang|-f|--format|--speakers|-j|--jobs|--chunk-seconds|--absorb-threshold|--match-threshold|--ref-threshold)
                       passthrough+=("$1" "$2"); shift 2 ;;
       --accurate|--diarize|--no-diarize|--no-chunk)
                       passthrough+=("$1"); shift ;;
