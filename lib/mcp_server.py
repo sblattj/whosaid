@@ -153,7 +153,9 @@ _DESC_RELABEL = (
     "local speaker registry and auto-applied to EVERY future transcript. Reads the cached "
     "<base>.diarization.json sidecar and rewrites <base>.speakers.txt + <base>.speaker-cards.txt "
     "in place — no re-transcription, no re-diarization. Run whosaid_transcribe first, read its "
-    "speaker cards to tell who is who, then map clusters to names. Keywords: rename speaker, "
+    "speaker cards to tell who is who, then map clusters to names. Pass auto=true (with an empty "
+    "assignments map) to instead re-apply registry matching + the absorb pass over the cached "
+    "sidecar, which folds phantom cluster splits into their real speaker. Keywords: rename speaker, "
     "label speaker, assign name, identify voice, who is SPEAKER_00, correct labels."
 )
 
@@ -346,13 +348,19 @@ def whosaid_relabel(
     base: str,
     assignments: dict,
     outdir: Optional[str] = None,
+    auto: bool = False,
 ) -> dict:
-    """Name SPEAKER_NN clusters and persist them, by shelling `whosaid relabel`."""
-    if not isinstance(assignments, dict) or not assignments:
+    """Name SPEAKER_NN clusters and persist them, by shelling `whosaid relabel`.
+
+    With auto=True the assignments map may be empty: whosaid re-applies registry
+    matching + the absorb pass over the cached sidecar (no re-diarization),
+    merging phantom cluster splits into their real speaker.
+    """
+    if not isinstance(assignments, dict) or (not assignments and not auto):
         return {
             "ok": False,
-            "error": "assignments must be a non-empty map of SPEAKER_NN -> Name",
-            "fix": "pass at least one entry, e.g. {'SPEAKER_00':'Jane'}",
+            "error": "assignments must be a non-empty map of SPEAKER_NN -> Name (or pass auto=true)",
+            "fix": "pass at least one entry, e.g. {'SPEAKER_00':'Jane'}, or auto=true with {}",
         }
     bad = []
     for k, v in assignments.items():
@@ -369,6 +377,8 @@ def whosaid_relabel(
 
     specs = [f"{k}={v}" for k, v in assignments.items()]
     args = ["relabel", base, *specs]
+    if auto:
+        args.append("--auto")
     if outdir:
         args += ["-o", outdir]
 
@@ -407,8 +417,12 @@ def whosaid_relabel(
         "speakers_txt": speakers_txt,
         "registry_path": str(_speaker_db()),
         "summary": (
-            f"Renamed {len(assignments)} cluster(s); saved to the local speaker registry "
-            f"so they auto-name in future transcripts."
+            (f"Re-applied registry + absorb naming from the sidecar"
+             + (f" plus {len(assignments)} explicit assignment(s)" if assignments else "")
+             + "." )
+            if auto else
+            (f"Renamed {len(assignments)} cluster(s); saved to the local speaker registry "
+             f"so they auto-name in future transcripts.")
         ),
     }
 

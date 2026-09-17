@@ -27,6 +27,35 @@ All notable changes to whosaid are documented here. This project adheres to
   Incremental and append-only by default (`--rebuild` to reset); state is plain JSON
   (`_workspace.json`, `_action-items.json`) that is safe to hand-edit.
 
+### Fixed
+
+- **Phantom speaker clusters on long recordings (GitHub issues #5, #6, #7, #8, #11).** Four
+  related fixes so a long meeting no longer fragments into duplicate/unidentified speakers:
+  - **Absorb pass.** After the registry one-best and `--ref` passes, every still-unnamed cluster
+    whose centroid cosine to a known voice (registry entry or `--ref` clip) is `>=`
+    `--absorb-threshold` (default `0.85`, env `WHOSAID_ABSORB_THRESHOLD`) is folded into that
+    person. A person split across several clusters is named on all of them, and the speaker cards
+    now render **one card per name** with the combined turns/talk time (was one card per cluster).
+  - **`--ref` no longer double-names.** The `--ref` pass only considers still-unnamed clusters and
+    skips any name the registry already assigned, so an enrolled voice plus a registry entry for the
+    same person can't produce two cards for them.
+  - **Auto speaker-count cap guard.** When farthest-first speaker-count estimation saturates at the
+    cap (20), it is re-estimated with progressively lower merge thresholds until the count drops
+    below the cap, instead of handing k-means a `k` of 20 that shatters real voices. The
+    over-segmentation WARN also now fires when the final count equals the cap.
+- **Registry entries computed with a different embedding model no longer mis-match** in
+  `relabel --auto`: candidate voiceprints are filtered to the sidecar's own embedding model.
+
+### Added
+
+- **`whosaid relabel <base> --auto` — re-apply naming with no re-diarization.** Reloads the cached
+  `<base>.diarization.json`, re-runs registry matching + the absorb pass, and rewrites
+  `<base>.speakers.txt` / `<base>.speaker-cards.txt` (and the sidecar's names). Picks up voices you
+  enrolled after the transcript was made and merges phantom splits. Accepts the meeting-workspace
+  layout (`base` = `transcript`). The MCP `whosaid_relabel` tool gains an `auto` parameter.
+- **`--absorb-threshold F` transcribe/relabel flag** (env `WHOSAID_ABSORB_THRESHOLD`, default
+  `0.85`) controlling the absorb pass above.
+
 ## [1.1.0] — 2026-08-18
 
 ### Added
