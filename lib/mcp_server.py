@@ -83,6 +83,21 @@ def _run_cli(args: list, timeout: Optional[float] = None) -> subprocess.Complete
     )
 
 
+def _cli_version() -> Optional[str]:
+    """Shell `whosaid version` and return just the version token (e.g. "1.1.0"),
+    the second whitespace-separated token of its stdout ("whosaid 1.1.0 ...").
+    None on any failure, so a broken/missing CLI never breaks whosaid_doctor.
+    """
+    try:
+        proc = _run_cli(["version"], timeout=10)
+    except Exception:
+        return None
+    if proc.returncode != 0:
+        return None
+    tokens = (proc.stdout or "").split()
+    return tokens[1] if len(tokens) >= 2 else None
+
+
 def _read_text_or_none(path: Path) -> Optional[str]:
     """Full file text, or None if missing/empty/unreadable."""
     try:
@@ -511,6 +526,7 @@ def whosaid_doctor() -> dict:
         "report": report,
         "ready": ready,
         "summary": summary,
+        "version": _cli_version(),
     }
 
 
