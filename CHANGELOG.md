@@ -65,6 +65,32 @@ All notable changes to whosaid are documented here. This project adheres to
     cap (20), it is re-estimated with progressively lower merge thresholds until the count drops
     below the cap, instead of handing k-means a `k` of 20 that shatters real voices. The
     over-segmentation WARN also now fires when the final count equals the cap.
+- **Auto speaker-count estimation (GitHub issue #5, #6 header warning, #1 min/max speakers).**
+  Replaces the farthest-first count (and its cap-retry ladder) with average-linkage
+  agglomerative clustering of the per-turn voiceprints, cut at cosine `0.58` (env
+  `WHOSAID_COUNT_THRESHOLD`), using the nearest-neighbour-chain algorithm so it stays O(n^2):
+  1000 turns estimate in **0.009 s**. The cap of 20 is now a **bound, not a target** — an
+  estimate that lands on it is treated as a failed estimate rather than a result.
+  - Measured on a purpose-built 17.8-minute, 6-voice, 48-turn synthetic meeting (macOS `say`,
+    65-72 embedded turns): raw `say` audio is too clean to fragment, so base and new both
+    return the true 6. Re-mixed with 8 per-turn channel profiles (band-limiting, room/headset
+    EQ, level offsets, pink noise) the true count is still 6, base returns 6, and the new
+    estimator returns **6** — an earlier cut of 0.45, calibrated from the 0.6-0.8 same-speaker
+    figure quoted in the issue, returned 5 and was corrected by measurement.
+  - Real per-turn TitaNet-small similarity through this pipeline is **intra-speaker ~0.90,
+    inter-speaker ~0.25** (not the 0.6-0.8 the issue assumes, which is the low tail); k=6 holds
+    for any cut in `[0.55, 0.61]` on the channel-varied fixture and `[0.44, 0.61]` on the clean
+    one, and 0.58 is the midpoint of the intersection.
+  - **`--min-speakers N` / `--max-speakers N`** (issue #1) clamp the auto estimate on
+    `whosaid`, the diarizer and the `whosaid_transcribe` MCP tool; `--max-speakers` also lowers
+    the cap, `--speakers N` still forces an exact count, and `min > max` is rejected. The
+    whole-file (<15 min) path passes an exact count only when `min == max` and otherwise
+    reports the range as unenforced, since sherpa's `FastClustering` has no notion of a range.
+  - **The count warning now reaches the artifact (issue #6).** When the count is untrustworthy
+    a `# WARNING: ...` line is written into `<base>.speaker-cards.txt` directly under the count
+    line, and `count_warning` plus a `count_estimate` record (`method`, `threshold`, `k`,
+    `raw_k`, `cap`, `min`, `max`, `saturated`) appear in `<base>.diarization.json`, in the JSON
+    on stdout, and in the MCP result.
 - **Registry entries computed with a different embedding model no longer mis-match** in
   `relabel --auto`: candidate voiceprints are filtered to the sidecar's own embedding model.
 

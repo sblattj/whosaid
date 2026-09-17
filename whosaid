@@ -137,8 +137,13 @@ TRANSCRIBE FLAGS
   -l, --lang CODE     Language code (default: en; use "auto" to auto-detect).
   -f, --format FMT    txt | srt | vtt | tsv | json | all (default: all).
   -n, --name NAME     Output base name (single input only; default: input basename).
-      --speakers N     Speaker-count hint for diarization (e.g. 2 for a 1:1 call;
+      --speakers N     Exact speaker count for diarization (e.g. 2 for a 1:1 call;
                        omit to auto-detect the number of speakers).
+      --min-speakers N  Lower bound on the auto-detected speaker count.
+      --max-speakers N  Upper bound on the auto-detected speaker count (also lowers
+                       the hard cap of 20). Use a range when you know roughly how
+                       many people were in the room but not exactly; an estimate
+                       that lands on the bound is reported as unreliable.
   -j, --jobs N         Parallel diarization workers for long audio (default: auto).
       --chunk-seconds S Window length for parallel diarization (default: auto).
       --no-chunk       Diarize the whole file in one pass (disable parallel chunking).
@@ -752,6 +757,8 @@ cmd_transcribe() {
   local NO_CHUNK=0
   local ABSORB=""
   local MATCH_THRESHOLD=""
+  local MIN_SPEAKERS=""
+  local MAX_SPEAKERS=""
   local AUDIO=()
 
   while [[ $# -gt 0 ]]; do
@@ -765,6 +772,8 @@ cmd_transcribe() {
       --no-diarize) DIARIZE=0; shift ;;
       --diarize)    DIARIZE=1; shift ;;
       --speakers)   SPEAKERS="$2"; shift 2 ;;
+      --min-speakers) MIN_SPEAKERS="$2"; shift 2 ;;
+      --max-speakers) MAX_SPEAKERS="$2"; shift 2 ;;
       -j|--jobs)    JOBS="$2"; shift 2 ;;
       --chunk-seconds) CHUNK_SECONDS="$2"; shift 2 ;;
       --absorb-threshold) ABSORB="$2"; shift 2 ;;
@@ -821,6 +830,8 @@ cmd_transcribe() {
       if [[ -f "$DIARIZER" ]]; then
         local dargs=("$audio" --whisper-json "$out/$base.json" --outdir "$out" --name "$base")
         [[ -n "$SPEAKERS" ]] && dargs+=(--num-speakers "$SPEAKERS")
+        [[ -n "$MIN_SPEAKERS" ]] && dargs+=(--min-speakers "$MIN_SPEAKERS")
+        [[ -n "$MAX_SPEAKERS" ]] && dargs+=(--max-speakers "$MAX_SPEAKERS")
         [[ -n "$JOBS" ]] && dargs+=(--jobs "$JOBS")
         [[ -n "$CHUNK_SECONDS" ]] && dargs+=(--chunk-seconds "$CHUNK_SECONDS")
         [[ "$NO_CHUNK" == "1" ]] && dargs+=(--no-chunk)
@@ -923,7 +934,7 @@ cmd_ingest() {
       -o|--outdir) log "ingest: -o/--outdir is not allowed — ingest places each meeting itself"; exit 1 ;;
       -n|--name)   log "ingest: -n/--name is not allowed — ingest names its outputs 'transcript'"; exit 1 ;;
       # transcribe flags that pass straight through
-      -m|--model|-l|--lang|-f|--format|--speakers|-j|--jobs|--chunk-seconds|--absorb-threshold|--match-threshold|--ref-threshold)
+      -m|--model|-l|--lang|-f|--format|--speakers|--min-speakers|--max-speakers|-j|--jobs|--chunk-seconds|--absorb-threshold|--match-threshold|--ref-threshold)
                       passthrough+=("$1" "$2"); shift 2 ;;
       --accurate|--diarize|--no-diarize|--no-chunk)
                       passthrough+=("$1"); shift ;;

@@ -244,6 +244,8 @@ def whosaid_transcribe(
     format: Literal["txt", "srt", "vtt", "tsv", "json", "all"] = "all",
     lang: str = "en",
     speakers: Optional[int] = None,
+    min_speakers: Optional[int] = None,
+    max_speakers: Optional[int] = None,
     diarize: bool = True,
     match_threshold: Optional[float] = None,
 ) -> dict:
@@ -253,6 +255,14 @@ def whosaid_transcribe(
             "ok": False,
             "error": f"audio file not found: {audio}",
             "fix": "pass an existing audio file path (absolute is safest)",
+        }
+
+    if (min_speakers is not None and max_speakers is not None
+            and min_speakers >= 1 and max_speakers >= 1 and min_speakers > max_speakers):
+        return {
+            "ok": False,
+            "error": f"min_speakers ({min_speakers}) is greater than max_speakers ({max_speakers})",
+            "fix": "pass min_speakers <= max_speakers, or just `speakers` for an exact count",
         }
 
     # Diarization needs the Whisper .json. Force a format that produces it.
@@ -268,6 +278,13 @@ def whosaid_transcribe(
         args.append("--accurate")
     if speakers is not None and speakers >= 1:
         args += ["--speakers", str(speakers)]
+    else:
+        # A range only means anything for the AUTO estimate; an exact --speakers
+        # overrides it, so do not send both.
+        if min_speakers is not None and min_speakers >= 1:
+            args += ["--min-speakers", str(min_speakers)]
+        if max_speakers is not None and max_speakers >= 1:
+            args += ["--max-speakers", str(max_speakers)]
     if not diarize:
         args.append("--no-diarize")
     if match_threshold is not None:
@@ -305,6 +322,8 @@ def whosaid_transcribe(
     num_speakers: Optional[int] = None
     registry_matches: list = []
     source_meta: Optional[dict] = None
+    count_warning: Optional[str] = None
+    count_estimate: Optional[dict] = None
     if sidecar_path.exists():
         try:
             data = json.loads(sidecar_path.read_text())
@@ -312,6 +331,8 @@ def whosaid_transcribe(
             registry_matches = data.get("registry_matches") or []
             source_meta = data.get("source")
             num_speakers = data.get("num_speakers")
+            count_warning = data.get("count_warning")
+            count_estimate = data.get("count_estimate")
             if num_speakers is None:
                 num_speakers = len({s["speaker"] for s in data.get("segments", [])}) or None
         except Exception:  # noqa: BLE001
@@ -340,6 +361,8 @@ def whosaid_transcribe(
             f"Transcribed {base}: {num_speakers if num_speakers is not None else '?'} speaker(s), "
             f"{len(named_speakers)} named, {len(unnamed_clusters)} to name."
         )
+        if count_warning:
+            summary += f" WARNING: {count_warning}"
 
     return {
         "ok": True,
@@ -353,6 +376,8 @@ def whosaid_transcribe(
         "source": source_meta,
         "duration_seconds": _probe_duration(audio),
         "num_speakers": num_speakers,
+        "count_warning": count_warning,
+        "count_estimate": count_estimate,
         "named_speakers": named_speakers,
         "unnamed_clusters": unnamed_clusters,
         "speaker_cards": speaker_cards,
