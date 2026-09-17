@@ -183,7 +183,10 @@ _DESC_TRANSCRIBE = (
     "to the input (or `outdir`). The FIRST run downloads ~1.5 GB of models. Speakers you "
     "haven't named come back as SPEAKER_00/01…; the result includes the speaker cards — read "
     "them, then call whosaid_relabel to name them (names then auto-apply to future "
-    "transcripts). Keywords: transcribe, diarize, speaker diarization, who spoke, meeting "
+    "transcripts). If you already know who was in the room, pass `expected_speakers` "
+    "(names of voices you have enrolled) — clustering is then anchored to their "
+    "voiceprints, absentees are dropped, and nobody has to guess a count. Keywords: "
+    "transcribe, diarize, speaker diarization, who spoke, meeting "
     "notes, call recording, whisper, voice attribution, subtitles, srt, vtt."
 )
 
@@ -246,6 +249,8 @@ def whosaid_transcribe(
     speakers: Optional[int] = None,
     min_speakers: Optional[int] = None,
     max_speakers: Optional[int] = None,
+    expected_speakers: Optional[list[str]] = None,
+    anchor_threshold: Optional[float] = None,
     diarize: bool = True,
     match_threshold: Optional[float] = None,
 ) -> dict:
@@ -285,6 +290,16 @@ def whosaid_transcribe(
             args += ["--min-speakers", str(min_speakers)]
         if max_speakers is not None and max_speakers >= 1:
             args += ["--max-speakers", str(max_speakers)]
+    # Registry-anchored diarization: the roster biases clustering itself, so it is
+    # NOT mutually exclusive with a count — unlike min/max above, which only shape
+    # the auto estimate. Names that are not known voices make the CLI exit fatally
+    # with the list of known names, which is the right, visible failure.
+    for name in (expected_speakers or []):
+        name = str(name).strip()
+        if name:
+            args += ["--expected-speakers", name]
+    if anchor_threshold is not None:
+        args += ["--anchor-threshold", str(anchor_threshold)]
     if not diarize:
         args.append("--no-diarize")
     if match_threshold is not None:
@@ -758,6 +773,19 @@ Nothing — audio, text, or voice embeddings — ever leaves the machine.
 - `lang` → `-l/--lang CODE` (default `en`; `auto` to auto-detect).
 - `speakers` → `--speakers N`: speaker-count hint (e.g. 2 for a 1:1 call). Omit to
   auto-detect the number of speakers.
+- `expected_speakers` → `--expected-speakers NAME[,NAME…]` (repeatable): the roster
+  of people you expect. **Registry-anchored diarization** — each turn is compared to
+  the enrolled voiceprint of every listed person, and a turn at or above
+  `anchor_threshold` (`--anchor-threshold`, default `0.70`, env
+  `WHOSAID_ANCHOR_THRESHOLD`) is pinned to that person; the remaining turns are
+  clustered into new speakers as usual. Every name must ALREADY be a known voice
+  (enrolled clip or registry entry) or the run fails with the list of known names.
+  A listed person who never speaks is dropped, so this is the right tool for a
+  recurring team with varying attendance — unlike `speakers=N`, which forces an
+  exact count and merges distinct people when fewer show up. It also forces the
+  chunked diarization path at any length (anchoring needs per-turn voiceprints).
+  The per-anchor result (`turns`, `mean_cosine`) comes back under `anchors`, and
+  each anchored cluster appears in `registry_matches` with `pass: "anchor"`.
 - `diarize=False` → `--no-diarize`: plain transcript only, no speaker labels.
 - `match_threshold` → `--match-threshold F`: cosine a known voice must reach to
   claim a cluster (default `0.50`, env `WHOSAID_MATCH_THRESHOLD`). Omit it to use
@@ -790,7 +818,8 @@ CLI-only transcribe flags (not surfaced as MCP params; use the resource/CLI):
 - Every match decision — including near-misses — is machine-readable in
   `<base>.diarization.json` under `registry_matches`
   (`{cluster, name, similarity, threshold, matched, pass}`; `pass` is
-  `registry`/`ref`/`absorb`), and is returned by whosaid_transcribe.
+  `anchor`/`registry`/`ref`/`absorb`; an `anchor` record carries an extra `turns`),
+  and is returned by whosaid_transcribe.
 - The sidecar also carries `source` (`path`, `duration_seconds`, `creation_time`
   from the container tag), so no separate `ffprobe` is needed for meeting timestamps.
 - whosaid_list_speakers shows enrolled clips + registered voiceprints.
