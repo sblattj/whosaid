@@ -55,6 +55,7 @@ def main() -> None:
         "whosaid_list_speakers",
         "whosaid_doctor",
         "whosaid_enroll_from_file",
+        "whosaid_samples",
     }
 
     # --- tool-name set + prefix ---
