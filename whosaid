@@ -74,8 +74,11 @@ USAGE
   whosaid <audio> [<audio> ...] [flags]
                                         Transcribe (and by default diarize) file(s).
   whosaid relabel <base> SPEAKER_02=Jane [SPEAKER_03=Bob ...] [-o DIR]
+  whosaid relabel <base> --auto [--absorb-threshold F] [-o DIR]
                                         Name clusters from the speaker cards and
-                                        remember them for future transcripts.
+                                        remember them for future transcripts; --auto
+                                        re-applies registry + absorb naming over the
+                                        cached sidecar with no re-transcription.
   whosaid ingest <audio> [<audio> ...] --into DIR [--folder-by created|mtime]
                                         [--tz ZONE] [--action-items] [--hook CMD]
                                         [flags]
@@ -100,6 +103,9 @@ TRANSCRIBE FLAGS
   -j, --jobs N         Parallel diarization workers for long audio (default: auto).
       --chunk-seconds S Window length for parallel diarization (default: auto).
       --no-chunk       Diarize the whole file in one pass (disable parallel chunking).
+      --absorb-threshold F  Cosine ≥ F folds a still-unnamed cluster into a known
+                       voice (registry/enrolled), so a person split across clusters
+                       merges into one speaker. Default 0.85 (WHOSAID_ABSORB_THRESHOLD).
       --no-diarize     Skip speaker diarization.
       --diarize        Force diarization on (default already on).
   -h, --help          This message.
@@ -109,6 +115,18 @@ TRANSCRIBE FLAGS
   auto-names anyone already in your local speaker registry. Name the rest with
   'whosaid relabel'. Long recordings (>15 min) are diarized in parallel windows and
   stitched back into consistent speakers automatically — much faster, same result.
+
+RELABEL FLAGS
+  <base>              Sidecar path or base name of a prior transcribe (the folder
+                      holds <base>.diarization.json). In a meeting workspace the
+                      base is "transcript".
+  SPEAKER_XX=Name     Assign a name to a cluster and remember its voiceprint.
+  --auto              No assignments needed: re-run registry matching + the absorb
+                      pass over the cached voiceprints and rewrite <base>.speakers.txt
+                      and <base>.speaker-cards.txt. Picks up voices enrolled after
+                      the transcript was made — no re-diarization.
+  --absorb-threshold F  Absorb-pass cosine threshold for --auto (default 0.85).
+  -o, --outdir DIR    Where the sidecar/outputs live (default: alongside <base>).
 
 RECORD FLAGS
   --label L           Suffix the recording filename with -L.
@@ -142,6 +160,8 @@ ENV OVERRIDES
   WHOSAID_LANG         Default language code.
   WHOSAID_VOICE_REFS   Directory of enrollment clips (default: ./voices).
   WHOSAID_SPEAKER_DB   Local speaker registry (default: ~/.config/whosaid/speakers.json).
+  WHOSAID_ABSORB_THRESHOLD  Absorb-pass cosine threshold (default: 0.85); a still-
+                      unnamed cluster this close to a known voice is folded into it.
   DIARIZE_EMB_NAME     Speaker-embedding model (default: NeMo TitaNet-small,
                        English-native; set the zh-cn model for Mandarin audio).
   WHOSAID_REC_DEVICE   avfoundation audio device index (default: 0).
@@ -432,6 +452,7 @@ cmd_transcribe() {
   local JOBS=""
   local CHUNK_SECONDS=""
   local NO_CHUNK=0
+  local ABSORB=""
   local AUDIO=()
 
   while [[ $# -gt 0 ]]; do
@@ -447,6 +468,7 @@ cmd_transcribe() {
       --speakers)   SPEAKERS="$2"; shift 2 ;;
       -j|--jobs)    JOBS="$2"; shift 2 ;;
       --chunk-seconds) CHUNK_SECONDS="$2"; shift 2 ;;
+      --absorb-threshold) ABSORB="$2"; shift 2 ;;
       --no-chunk)   NO_CHUNK=1; shift ;;
       -h|--help)    cmd_help; exit 0 ;;
       --)           shift; while [[ $# -gt 0 ]]; do AUDIO+=("$1"); shift; done ;;
@@ -501,6 +523,7 @@ cmd_transcribe() {
         [[ -n "$JOBS" ]] && dargs+=(--jobs "$JOBS")
         [[ -n "$CHUNK_SECONDS" ]] && dargs+=(--chunk-seconds "$CHUNK_SECONDS")
         [[ "$NO_CHUNK" == "1" ]] && dargs+=(--no-chunk)
+        [[ -n "$ABSORB" ]] && dargs+=(--absorb-threshold "$ABSORB")
         if [[ -d "$VOICE_REFS" ]]; then
           for ref in "$VOICE_REFS"/*.wav "$VOICE_REFS"/*.m4a; do
             [[ -f "$ref" ]] || continue
@@ -539,16 +562,21 @@ cmd_transcribe() {
 # default) so the person is auto-named in future transcripts, and rewrites the
 # speaker-labeled transcript + cards.
 cmd_relabel() {
-  local target="" outdir="" specs=()
+  local target="" outdir="" auto=0 specs=() extra=()
   while [[ $# -gt 0 ]]; do
     case "$1" in
       -o|--outdir) outdir="$2"; shift 2 ;;
+      --auto)      auto=1; shift ;;
+      --absorb-threshold) extra+=(--absorb-threshold "$2"); shift 2 ;;
+      --ref-threshold)    extra+=(--ref-threshold "$2"); shift 2 ;;
       *=*)         specs+=(--save-speaker "$1"); shift ;;
       *)           if [[ -z "$target" ]]; then target="$1"; else log "relabel: unexpected arg '$1'"; exit 1; fi; shift ;;
     esac
   done
-  [[ -z "$target" ]] && { log "relabel: need a base name or sidecar path. e.g. whosaid relabel meeting SPEAKER_02=Jane"; exit 1; }
-  [[ ${#specs[@]} -eq 0 ]] && { log "relabel: need at least one SPEAKER_XX=Name assignment"; exit 1; }
+  [[ -z "$target" ]] && { log "relabel: need a base name or sidecar path. e.g. whosaid relabel meeting SPEAKER_02=Jane (or --auto)"; exit 1; }
+  if [[ ${#specs[@]} -eq 0 && "$auto" -eq 0 ]]; then
+    log "relabel: need at least one SPEAKER_XX=Name assignment, or --auto to re-apply registry + absorb naming"; exit 1
+  fi
 
   # Resolve the sidecar path.
   local sidecar=""
@@ -565,8 +593,9 @@ cmd_relabel() {
   fi
   local sdir; sdir="$(cd -P "$(dirname "$sidecar")" && pwd)"
   log "relabel: using sidecar $sidecar"
+  [[ "$auto" -eq 1 ]] && extra+=(--auto)
   uv run --quiet --with sherpa-onnx --with numpy python "$DIARIZER" \
-    --relabel "$sidecar" --outdir "$sdir" "${specs[@]}"
+    --relabel "$sidecar" --outdir "$sdir" ${specs[@]+"${specs[@]}"} ${extra[@]+"${extra[@]}"}
 }
 
 # ---- ingest / roll-up (issue #2: meeting workspace) ----------------------------
