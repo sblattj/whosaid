@@ -88,6 +88,7 @@ command without copying or duplicating the implementation.
 | `whosaid relabel <base> SPEAKER_02=Jane …` | Put real names on clusters after reading the speaker cards. Rewrites the transcript + cards and saves each named voiceprint to the local registry for future transcripts. No re-transcription. |
 | `whosaid relabel <base> --auto` | Re-apply naming to an existing transcript with no assignments: re-runs registry matching + the absorb pass over the cached sidecar and rewrites the transcript + cards. Picks up voices enrolled after the transcript was made, and folds phantom cluster splits of one person into a single speaker. No re-transcription, no re-diarization. In a meeting workspace the base is `transcript`. |
 | `whosaid doctor` | Read-only environment report. |
+| `whosaid version` \| `whosaid --version` \| `whosaid -V` | Print the installed version (plus a `git describe` suffix when run from a git checkout). |
 
 ## Meeting workspaces
 
@@ -314,6 +315,9 @@ speakers as a single-pass run while finishing several times faster. Pass `--no-c
 diarize + name pipeline against it end to end — then asserts the speaker-labeled transcript names
 the enrolled speaker and labels the other speaker distinctly. Run `./bootstrap.sh` once first so the
 models are cached locally; the test itself makes no network calls.
+
+`./test/version_test.sh` is a fast, offline unit test that checks `whosaid version`, `--version`,
+and `-V` all print a matching `whosaid X.Y.Z` line and exit 0.
 
 ## License
 
