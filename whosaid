@@ -67,7 +67,9 @@ whosaid — local, GPU-accelerated, speaker-attributed transcription (Apple Sili
 USAGE
   whosaid setup                        Install dependencies, pre-download models.
   whosaid install                      Install/update ~/.local/bin/whosaid.
-  whosaid enroll [Name]                Record a voice sample, name a speaker cluster.
+  whosaid enroll [Name] [--from FILE [--ss T] [--t D|--to T]] [--force]
+                                        Record (or extract from an existing FILE) a voice
+                                        sample and name a speaker cluster.
   whosaid record [--label L] [flags]   Record from the mic, then transcribe it.
   whosaid doctor                       Read-only environment/model/device report.
   whosaid mcp                          Run the MCP server (stdio) for AI agents / Claude.
@@ -131,6 +133,20 @@ RELABEL FLAGS
 RECORD FLAGS
   --label L           Suffix the recording filename with -L.
   Any transcribe flag above is also accepted and passed through after recording.
+
+ENROLL FLAGS
+  --from FILE         Extract the reference clip from an existing recording instead of
+                      recording from the mic (extract -> verify -> save, no interaction).
+  --ss T              Start offset into FILE (seconds, e.g. 200 or 12.5; or M:SS / H:MM:SS,
+                      e.g. 3:20). Default: start of file. Requires --from.
+  --t D               Clip duration (same time formats as --ss). Mutually exclusive with
+                      --to. Requires --from.
+  --to T              Clip end time (same time formats as --ss); converted to a duration
+                      internally. Mutually exclusive with --t. Requires --from.
+  --force             Overwrite an existing voices/<Name>.wav (default: refuse). Only
+                      meaningful with --from.
+  The extracted (or recorded) clip must still clear the same bar as mic enrollment: at
+  least 15s long and not silent (mean volume > -85 dB).
 
 INGEST FLAGS
   --into DIR          Meeting workspace root (required; created if missing).
@@ -299,11 +315,114 @@ cmd_doctor() {
 # ---- enroll --------------------------------------------------------------------
 RAINBOW_PASSAGE="When the sunlight strikes raindrops in the air, they act as a prism and form a rainbow. The rainbow is a division of white light into many beautiful colors. These take the shape of a long round arch, with its path high above, and its two ends apparently beyond the horizon. There is, according to legend, a boiling pot of gold at one end. People look, but no one ever finds it. When a man looks for something beyond his reach, his friends say he is looking for the pot of gold at the end of the rainbow."
 
+# Enrollment clips (mic or --from) must clear this floor.
+MIN_ENROLL_SECONDS=15
+
+# is_valid_time TIME — TIME is seconds ("200", "12.5") or M:SS / H:MM:SS
+# ("3:20", "1:02:03"). Validated with a bash regex BEFORE it ever reaches
+# ffmpeg (which accepts both forms itself, but we want a clear error here).
+is_valid_time() {
+  [[ "$1" =~ ^[0-9]+(\.[0-9]+)?$ ]] && return 0
+  [[ "$1" =~ ^[0-9]{1,2}:[0-9]{1,2}(\.[0-9]+)?$ ]] && return 0
+  [[ "$1" =~ ^[0-9]{1,2}:[0-9]{1,2}:[0-9]{1,2}(\.[0-9]+)?$ ]] && return 0
+  return 1
+}
+
+# time_to_seconds TIME — converts a value already validated by is_valid_time
+# into plain seconds, for arithmetic (bash 3.2 has no float math, so awk).
+time_to_seconds() {
+  local t="$1"
+  if [[ "$t" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
+    printf '%s' "$t"
+    return
+  fi
+  awk -F: -v t="$t" 'BEGIN{
+    n = split(t, a, ":");
+    if (n == 2) printf "%.3f", a[1]*60 + a[2];
+    else if (n == 3) printf "%.3f", a[1]*3600 + a[2]*60 + a[3];
+    else printf "0";
+  }'
+}
+
+# verify_enroll_clip FILE LABEL [SILENCE_HINT]
+# Shared duration + silence gate used by BOTH the mic capture path and the
+# --from extraction path, so the two can never drift apart. Exits 1 with a
+# clear message on failure (caller's EXIT trap handles temp-file cleanup).
+# LABEL is the noun used in messages ("recording" for mic keeps the original
+# wording byte-for-byte; anything else — e.g. "clip" — uses SILENCE_HINT for
+# the silence-specific follow-up instead of the mic-permission fix).
+verify_enroll_clip() {
+  local file="$1" label="$2" silence_hint="${3:-}"
+
+  local dur
+  dur="$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$file" 2>/dev/null || echo 0)"
+  if ! awk -v d="$dur" -v m="$MIN_ENROLL_SECONDS" 'BEGIN{exit !((d+0) >= m)}'; then
+    if [[ "$label" == "recording" ]]; then
+      log "recording too short (${dur}s) — need at least ${MIN_ENROLL_SECONDS}s of speech. Try again and read the whole passage."
+    else
+      log "$label too short (${dur}s) — need at least ${MIN_ENROLL_SECONDS}s of speech."
+    fi
+    exit 1
+  fi
+
+  local ffout meandb
+  ffout="$(ffmpeg -hide_banner -i "$file" -af volumedetect -f null - 2>&1)" || true
+  meandb=""
+  if [[ "$ffout" =~ mean_volume:\ (-?[0-9.]+)\ dB ]]; then
+    meandb="${BASH_REMATCH[1]}"
+  fi
+  if [[ -n "$meandb" ]] && awk -v m="$meandb" 'BEGIN{exit !((m+0) <= -85)}'; then
+    log "$label is SILENT (mean volume ${meandb} dB)."
+    if [[ "$label" == "recording" ]]; then
+      log "macOS denies an unauthorized app's microphone by feeding it silent zeros — no error is raised."
+      log "Fix: System Settings -> Privacy & Security -> Microphone -> enable your terminal app, then re-run 'whosaid enroll'."
+    else
+      log "$silence_hint"
+    fi
+    exit 1
+  fi
+}
+
+# whosaid enroll [Name] [--from FILE [--ss T] [--t D | --to T]] [--force]
 cmd_enroll() {
   warn_if_not_arm64
   ensure_uv_and_ffmpeg
 
-  local name="${1:-}"
+  local name="" from="" ss="" t_dur="" to="" force=0
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --from)  from="${2:-}"; shift 2 ;;
+      --ss)    ss="${2:-}"; shift 2 ;;
+      --t)     t_dur="${2:-}"; shift 2 ;;
+      --to)    to="${2:-}"; shift 2 ;;
+      --force) force=1; shift ;;
+      -h|--help) cmd_help; exit 0 ;;
+      -*)
+        log "enroll: unknown option: $1"
+        log "usage: whosaid enroll [Name] [--from FILE [--ss T] [--t D|--to T]] [--force]"
+        exit 1
+        ;;
+      *)
+        if [[ -z "$name" ]]; then
+          name="$1"
+        else
+          log "enroll: unexpected argument '$1'"
+          exit 1
+        fi
+        shift
+        ;;
+    esac
+  done
+
+  if [[ -n "$t_dur" && -n "$to" ]]; then
+    log "enroll: --t and --to are mutually exclusive — pass a duration or an end time, not both."
+    exit 1
+  fi
+  if [[ ( -n "$ss" || -n "$t_dur" || -n "$to" ) && -z "$from" ]]; then
+    log "enroll: --ss/--t/--to require --from FILE."
+    exit 1
+  fi
+
   if [[ -z "$name" ]]; then
     read -r -p "whosaid: name for this voice (e.g. Alice): " name
   fi
@@ -313,7 +432,84 @@ cmd_enroll() {
   fi
 
   mkdir -p "$VOICE_REFS"
+  local dest="$VOICE_REFS/$name.wav"
 
+  # ---- from-file path: extract -> diarize-grade clip check -> move --------
+  if [[ -n "$from" ]]; then
+    if [[ ! -f "$from" ]]; then
+      log "enroll: file not found: $from"
+      exit 1
+    fi
+    if [[ -e "$dest" && "$force" -ne 1 ]]; then
+      log "enroll: '$dest' already exists — pass --force to overwrite."
+      exit 1
+    fi
+
+    local start="0"
+    if [[ -n "$ss" ]]; then
+      if ! is_valid_time "$ss"; then
+        log "enroll: invalid --ss '$ss' — use seconds (200, 12.5) or M:SS / H:MM:SS."
+        exit 1
+      fi
+      start="$ss"
+    fi
+
+    local extract_dur=""
+    if [[ -n "$t_dur" ]]; then
+      if ! is_valid_time "$t_dur"; then
+        log "enroll: invalid --t '$t_dur' — use seconds (200, 12.5) or M:SS / H:MM:SS."
+        exit 1
+      fi
+      extract_dur="$t_dur"
+    elif [[ -n "$to" ]]; then
+      if ! is_valid_time "$to"; then
+        log "enroll: invalid --to '$to' — use seconds (200, 12.5) or M:SS / H:MM:SS."
+        exit 1
+      fi
+      # ffmpeg's `-to` is relative to the seeked start with `-ss` before `-i`
+      # on some versions, not an absolute end time — so rather than pass
+      # `-ss START -to END` and depend on that semantics, compute the
+      # duration ourselves and pass `-t DURATION`, which is unambiguous.
+      local start_s to_s
+      start_s="$(time_to_seconds "$start")"
+      to_s="$(time_to_seconds "$to")"
+      extract_dur="$(awk -v a="$start_s" -v b="$to_s" 'BEGIN{printf "%.3f", (b - a)}')"
+      if awk -v d="$extract_dur" 'BEGIN{exit !((d+0) <= 0)}'; then
+        log "enroll: --to ($to) must be after --ss ($start)."
+        exit 1
+      fi
+    fi
+
+    local tmpdir tmp
+    tmpdir="$(mktemp -d -t whosaid-enroll)"
+    tmp="$tmpdir/clip.wav"
+    trap 'rm -rf "$tmpdir"' EXIT
+
+    if [[ -n "$extract_dur" ]]; then
+      ffmpeg -hide_banner -loglevel warning -y -ss "$start" -i "$from" -t "$extract_dur" -ac 1 -ar 16000 "$tmp" \
+        || { log "enroll: ffmpeg extraction failed."; exit 1; }
+    else
+      ffmpeg -hide_banner -loglevel warning -y -ss "$start" -i "$from" -ac 1 -ar 16000 "$tmp" \
+        || { log "enroll: ffmpeg extraction failed."; exit 1; }
+    fi
+
+    if [[ ! -s "$tmp" ]]; then
+      log "enroll: extraction produced no audio — check --ss/--t/--to fall within '$from'."
+      exit 1
+    fi
+
+    verify_enroll_clip "$tmp" "clip" \
+      "check --ss/--t/--to select a segment where the person is actually speaking, and that '$from' is the right file."
+
+    mv "$tmp" "$dest"
+    rm -rf "$tmpdir"
+    trap - EXIT
+    log "✓ enrolled '$name' -> $dest"
+    log "future transcripts will label this voice '$name'."
+    return
+  fi
+
+  # ---- mic recording path (unchanged) --------------------------------------
   echo "============================================================================" >&2
   echo "$RAINBOW_PASSAGE" | fold -s -w 76 >&2
   echo "============================================================================" >&2
@@ -345,28 +541,11 @@ cmd_enroll() {
     exit 1
   fi
 
-  local dur
-  dur="$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$tmp" 2>/dev/null || echo 0)"
-  if ! awk -v d="$dur" 'BEGIN{exit !((d+0) >= 15)}'; then
-    log "recording too short (${dur}s) — need at least 15s of speech. Try again and read the whole passage."
-    exit 1
-  fi
+  verify_enroll_clip "$tmp" "recording"
 
-  local ffout meandb
-  ffout="$(ffmpeg -hide_banner -i "$tmp" -af volumedetect -f null - 2>&1)" || true
-  meandb=""
-  if [[ "$ffout" =~ mean_volume:\ (-?[0-9.]+)\ dB ]]; then
-    meandb="${BASH_REMATCH[1]}"
-  fi
-  if [[ -n "$meandb" ]] && awk -v m="$meandb" 'BEGIN{exit !((m+0) <= -85)}'; then
-    log "recording is SILENT (mean volume ${meandb} dB)."
-    log "macOS denies an unauthorized app's microphone by feeding it silent zeros — no error is raised."
-    log "Fix: System Settings -> Privacy & Security -> Microphone -> enable your terminal app, then re-run 'whosaid enroll'."
-    exit 1
-  fi
-
-  local dest="$VOICE_REFS/$name.wav"
   ffmpeg -hide_banner -loglevel warning -y -i "$tmp" -ac 1 -ar 16000 "$dest"
+  rm -rf "$tmpdir"
+  trap - EXIT
 
   log "✓ enrolled '$name' -> $dest"
   log "future transcripts will label this voice '$name'."
