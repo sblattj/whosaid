@@ -28,6 +28,14 @@ All notable changes to whosaid are documented here. This project adheres to
   recording instead of the mic: `--ss`/`--t`/`--to` cut a time window (seconds or `M:SS`/`H:MM:SS`),
   the same ≥15s/non-silent check runs on the extracted clip, and `--force` allows overwriting an
   existing `voices/<Name>.wav`.
+- **`whosaid samples <base>` and the identity-mechanisms doc (GitHub issue #1, nice-to-haves).**
+  `whosaid samples <base> [-o DIR] [--audio FILE] [--per-speaker N] [--seconds S] [--json]` exports
+  one short representative WAV per speaker cluster (the longest segment, clamped to `--seconds`,
+  default 8) so you can listen and confirm an identity before trusting an auto-label or enrolling —
+  replacing the by-hand `ffmpeg` cut issue #1 described. Also exposed as the `whosaid_samples` MCP
+  tool. A new README section, "Speaker identity: enrollment clips vs. the registry", documents how
+  `WHOSAID_VOICE_REFS` enrollment clips and the speaker registry (`relabel`/`--save-speaker`) differ
+  and which one names a given cluster.
 - **Meeting workspaces (GitHub issue #2).** A dated, auditable home for a recurring meeting
   series (`lib/workspace.py`): every recording transcribed into a `YYYY-MM-DD-HHMM` folder,
   per-meeting action items, and one roll-up across the whole workspace — still entirely offline.
