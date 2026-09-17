@@ -23,6 +23,10 @@ All notable changes to whosaid are documented here. This project adheres to
   (`{cluster, name, similarity, threshold, matched, pass}`), refreshed by `relabel --auto`, and the
   sidecar also gains `source` (`path`, `duration_seconds`, `creation_time`) so no separate `ffprobe`
   is needed for per-meeting timestamps.
+- **`whosaid enroll --from FILE` (GitHub issue #1, part 1).** Enroll a voice from an existing
+  recording instead of the mic: `--ss`/`--t`/`--to` cut a time window (seconds or `M:SS`/`H:MM:SS`),
+  the same ≥15s/non-silent check runs on the extracted clip, and `--force` allows overwriting an
+  existing `voices/<Name>.wav`.
 - **Meeting workspaces (GitHub issue #2).** A dated, auditable home for a recurring meeting
   series (`lib/workspace.py`): every recording transcribed into a `YYYY-MM-DD-HHMM` folder,
   per-meeting action items, and one roll-up across the whole workspace — still entirely offline.

@@ -20,7 +20,9 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 from typing import Literal, Optional
 
@@ -131,6 +133,28 @@ def _mean_volume_db(path: str) -> Optional[float]:
         return float(m.group(1)) if m else None
     except Exception:  # noqa: BLE001
         return None
+
+
+# Time-window shape accepted by whosaid_enroll_from_file's ss/t/to: seconds
+# ("200", "12.5") or M:SS / H:MM:SS ("3:20", "1:02:03") — mirrors the CLI's
+# `is_valid_time`/`time_to_seconds` in the `whosaid` script exactly.
+_TIME_RE = re.compile(
+    r"^[0-9]+(\.[0-9]+)?$"
+    r"|^[0-9]{1,2}:[0-9]{1,2}(\.[0-9]+)?$"
+    r"|^[0-9]{1,2}:[0-9]{1,2}:[0-9]{1,2}(\.[0-9]+)?$"
+)
+
+
+def _time_to_seconds(value: str) -> float:
+    """Convert a `_TIME_RE`-validated string to plain seconds."""
+    if re.fullmatch(r"[0-9]+(\.[0-9]+)?", value):
+        return float(value)
+    parts = [float(p) for p in value.split(":")]
+    if len(parts) == 2:
+        return parts[0] * 60 + parts[1]
+    if len(parts) == 3:
+        return parts[0] * 3600 + parts[1] * 60 + parts[2]
+    raise ValueError(f"unparsable time: {value!r}")
 
 
 # ---------------------------------------------------------------------------
@@ -555,8 +579,21 @@ def whosaid_doctor() -> dict:
         open_world_hint=False,
     ),
 )
-def whosaid_enroll_from_file(name: str, audio: str) -> dict:
-    """Non-interactive voice enrollment from an existing clip (mirrors CLI checks)."""
+def whosaid_enroll_from_file(
+    name: str,
+    audio: str,
+    ss: Optional[str] = None,
+    t: Optional[str] = None,
+    to: Optional[str] = None,
+) -> dict:
+    """Non-interactive voice enrollment from an existing clip (mirrors CLI checks).
+
+    ss/t/to optionally cut a time window out of `audio` FIRST — same shape and
+    semantics as `whosaid enroll --from FILE --ss/--t/--to` (seconds or
+    M:SS/H:MM:SS; `to` is converted to a duration internally, never passed to
+    ffmpeg as `-to`, for the same seek-relative-`-to` ambiguity reason the CLI
+    avoids it). Omit all three to enroll from the whole file, unchanged.
+    """
     if not re.fullmatch(r"[A-Za-z0-9_-]+", name or ""):
         return {
             "ok": False,
@@ -569,52 +606,109 @@ def whosaid_enroll_from_file(name: str, audio: str) -> dict:
             "error": f"audio file not found: {audio}",
             "fix": "pass an existing audio clip path",
         }
-
-    dur = _probe_duration(audio)
-    if dur is None:
+    if t and to:
         return {
             "ok": False,
-            "error": f"could not read audio duration for {audio}",
-            "fix": "check the file is a valid audio clip",
+            "error": "t and to are mutually exclusive",
+            "fix": "pass a duration (t) or an end time (to), not both",
         }
-    if dur < 15:
+    for label, value in (("ss", ss), ("t", t), ("to", to)):
+        if value is not None and not _TIME_RE.match(value):
+            return {
+                "ok": False,
+                "error": f"invalid {label} '{value}'",
+                "fix": "use seconds (200, 12.5) or M:SS / H:MM:SS",
+            }
+
+    clip_source = audio
+    extracted_dir: Optional[Path] = None
+    if ss or t or to:
+        start = ss or "0"
+        extract_dur: Optional[str] = None
+        if t:
+            extract_dur = t
+        elif to:
+            try:
+                delta = _time_to_seconds(to) - _time_to_seconds(start)
+            except ValueError as exc:
+                return {"ok": False, "error": str(exc), "fix": "use seconds or M:SS/H:MM:SS"}
+            if delta <= 0:
+                return {
+                    "ok": False,
+                    "error": f"to ({to}) must be after ss ({start})",
+                    "fix": "pass an end time after the start time",
+                }
+            extract_dur = f"{delta:.3f}"
+
+        extracted_dir = Path(tempfile.mkdtemp(prefix="whosaid-enroll-"))
+        extracted = extracted_dir / "clip.wav"
+        cmd = ["ffmpeg", "-hide_banner", "-loglevel", "warning", "-y", "-ss", start, "-i", audio]
+        if extract_dur is not None:
+            cmd += ["-t", extract_dur]
+        cmd += ["-ac", "1", "-ar", "16000", str(extracted)]
+        proc = subprocess.run(cmd, capture_output=True, text=True)
+        if proc.returncode != 0 or not extracted.exists() or extracted.stat().st_size == 0:
+            shutil.rmtree(extracted_dir, ignore_errors=True)
+            return {
+                "ok": False,
+                "error": (proc.stderr or "ffmpeg extraction failed").strip()[-1000:],
+                "fix": "check ss/t/to fall within the file",
+            }
+        clip_source = str(extracted)
+
+    try:
+        dur = _probe_duration(clip_source)
+        if dur is None:
+            return {
+                "ok": False,
+                "error": f"could not read audio duration for {clip_source}",
+                "fix": "check the file is a valid audio clip",
+            }
+        if dur < 15:
+            return {
+                "ok": False,
+                "error": f"clip is only {dur}s",
+                "fix": "need ≥15 s of speech from one person",
+            }
+
+        mean = _mean_volume_db(clip_source)
+        if mean is not None and mean <= -85:
+            return {
+                "ok": False,
+                "error": f"clip is silent (mean volume {mean} dB)",
+                "fix": "silent/likely wrong file — check the recording (or Microphone permission on capture)",
+            }
+
+        voice_refs = _voice_refs()
+        voice_refs.mkdir(parents=True, exist_ok=True)
+        dest = voice_refs / f"{name}.wav"
+
+        if extracted_dir is not None:
+            # Already extracted at mono/16kHz above — just move it into place.
+            shutil.move(clip_source, str(dest))
+        else:
+            proc = subprocess.run(
+                ["ffmpeg", "-hide_banner", "-loglevel", "warning", "-y",
+                 "-i", audio, "-ac", "1", "-ar", "16000", str(dest)],
+                capture_output=True, text=True,
+            )
+            if proc.returncode != 0 or not dest.exists():
+                return {
+                    "ok": False,
+                    "error": (proc.stderr or "ffmpeg conversion failed").strip()[-1000:],
+                    "fix": "check ffmpeg is installed (whosaid_doctor) and the clip is valid audio",
+                }
+
         return {
-            "ok": False,
-            "error": f"clip is only {dur}s",
-            "fix": "need ≥15 s of speech from one person",
+            "ok": True,
+            "name": name,
+            "voice_path": str(dest),
+            "duration_seconds": dur,
+            "summary": f"Enrolled '{name}' from {Path(audio).name}; future transcripts will auto-label this voice.",
         }
-
-    mean = _mean_volume_db(audio)
-    if mean is not None and mean <= -85:
-        return {
-            "ok": False,
-            "error": f"clip is silent (mean volume {mean} dB)",
-            "fix": "silent/likely wrong file — check the recording (or Microphone permission on capture)",
-        }
-
-    voice_refs = _voice_refs()
-    voice_refs.mkdir(parents=True, exist_ok=True)
-    dest = voice_refs / f"{name}.wav"
-
-    proc = subprocess.run(
-        ["ffmpeg", "-hide_banner", "-loglevel", "warning", "-y",
-         "-i", audio, "-ac", "1", "-ar", "16000", str(dest)],
-        capture_output=True, text=True,
-    )
-    if proc.returncode != 0 or not dest.exists():
-        return {
-            "ok": False,
-            "error": (proc.stderr or "ffmpeg conversion failed").strip()[-1000:],
-            "fix": "check ffmpeg is installed (whosaid_doctor) and the clip is valid audio",
-        }
-
-    return {
-        "ok": True,
-        "name": name,
-        "voice_path": str(dest),
-        "duration_seconds": dur,
-        "summary": f"Enrolled '{name}' from {Path(audio).name}; future transcripts will auto-label this voice.",
-    }
+    finally:
+        if extracted_dir is not None:
+            shutil.rmtree(extracted_dir, ignore_errors=True)
 
 
 # ---------------------------------------------------------------------------

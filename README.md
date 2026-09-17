@@ -83,12 +83,21 @@ command without copying or duplicating the implementation.
 | `./bootstrap.sh [--yes]` (also `whosaid setup`) | Capability check, dependency install, model pre-download, and command installation. Idempotent — safe to re-run. |
 | `whosaid install [--force]` | Install/update the command symlink in `~/.local/bin` (or `WHOSAID_INSTALL_DIR`). Refuses to replace an unrelated command, and refuses (unless `--force`) to install from a checkout under `/tmp`, `/private/tmp`, `/var/tmp`, or `$TMPDIR` — that symlink would dangle once the OS cleans the temp directory up. |
 | `whosaid enroll [Name]` | Records ~45s from the mic reading a printed passage, saves `voices/<Name>.wav`. |
+| `whosaid enroll <Name> --from FILE [--ss T] [--t D\|--to T] [--force]` | Extracts a clip from an existing recording instead of the mic (extract → verify → save, no interaction). `--ss`/`--t`/`--to` accept seconds or `M:SS`/`H:MM:SS`; same ≥15s/non-silent bar as mic enrollment. |
 | `whosaid record [--label L]` | Foreground mic capture to `recordings/<timestamp>[-label].m4a`, then transcribes automatically. |
 | `whosaid <audio>… [flags]` | The default command: transcribe + diarize + label one or more audio files. |
 | `whosaid relabel <base> SPEAKER_02=Jane …` | Put real names on clusters after reading the speaker cards. Rewrites the transcript + cards and saves each named voiceprint to the local registry for future transcripts. No re-transcription. |
 | `whosaid relabel <base> --auto` | Re-apply naming to an existing transcript with no assignments: re-runs registry matching + the absorb pass over the cached sidecar and rewrites the transcript + cards. Picks up voices enrolled after the transcript was made, and folds phantom cluster splits of one person into a single speaker. No re-transcription, no re-diarization. In a meeting workspace the base is `transcript`. |
 | `whosaid doctor` | Read-only environment report. |
 | `whosaid version` \| `whosaid --version` \| `whosaid -V` | Print the installed version (plus a `git describe` suffix when run from a git checkout). |
+
+### Enroll from an existing recording
+
+Already have a clip of the person speaking? Skip the mic and cut a reference straight from it:
+
+```bash
+whosaid enroll Alice --from meeting.m4a --ss 3:20 --t 20   # or --to 3:40
+```
 
 ## Meeting workspaces
 
@@ -358,6 +367,10 @@ and `-V` all print a matching `whosaid X.Y.Z` line and exit 0.
 `./test/install_guard_test.sh` covers the temp-directory install guard: refusal without
 `--force`, success with it, `install --check-only`, and `whosaid doctor` detecting a dangling
 install symlink.
+
+`./test/enroll_from_file_test.sh` covers `whosaid enroll --from` in isolation (time-window parsing,
+the 15s/silence floor, and the `--force` overwrite guard) with synthesized `say` audio — no model
+download required.
 
 ## License
 
