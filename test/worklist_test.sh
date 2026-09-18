@@ -14,7 +14,9 @@
 # Sections:
 #   1. guards + module sanity
 #   2. unit rules: name matching, cue strength, deadline/blocking cues,
-#      tier assignment per rule, negative never P1, [commitments] overrides
+#      negation and bare-noun cues (issue #21), relative deadline
+#      resolution and overdue ranking under WHOSAID_TODAY, tier assignment
+#      per rule, negative never P1, [commitments] overrides
 #   3. roll-up writes _WORKLIST-<Owner>.md: owner from the self role, union
 #      of CM + AI items (name match, '_'/' ' interchangeable, aliases),
 #      tiers, ordering, why strings, line shape, --all-owners
@@ -46,6 +48,9 @@ TEST_FAILED=0
 TMP="$(mktemp -d)"
 
 export WHOSAID_OLLAMA="http://127.0.0.1:9"   # closed port: difflib-only dedupe
+# Pin "today" to the morning after the newest fixture meeting (2026-09-16) so
+# relative deadlines expire the same way on every run (issue #21).
+export WHOSAID_TODAY="2026-09-17"
 unset WHOSAID_EMBED_FAKE WHOSAID_OWNER
 
 cleanup() {
@@ -191,7 +196,11 @@ EOF
     {"speaker": "Alice_Example", "speaker_role": "self", "text": "I plan to tidy the README",
      "time": "00:00:14", "cue": "i plan to", "negative": false, "priority": "normal"},
     {"speaker": "Alice_Example", "speaker_role": "self", "text": "I will pair with Bob on the review",
-     "time": "00:00:19", "cue": "i will", "negative": false, "priority": "normal"}
+     "time": "00:00:19", "cue": "i will", "negative": false, "priority": "normal"},
+    {"speaker": "Alice_Example", "speaker_role": "self", "text": "I'm going to add those features today",
+     "time": "00:00:24", "cue": "i'm going to", "negative": false, "priority": "normal"},
+    {"speaker": "Alice_Example", "speaker_role": "self", "text": "I'll send non-urgent questions to the channel",
+     "time": "00:00:29", "cue": "i'll send", "negative": false, "priority": "normal"}
   ]
 }
 EOF
@@ -236,7 +245,8 @@ assert_has "--json" "$TMP/help.txt" "worklist --help documents --json"
 echo "-- unit rules --"
 
 cat > "$TMP/check_rules.py" <<'PY'
-import sys
+import os, sys
+from datetime import date
 sys.path.insert(0, sys.argv[1])
 import workspace as w
 
@@ -259,8 +269,69 @@ assert w.deadline_cue("I'll have it by Friday", cfg["deadline_cues"]) == "by fri
 assert w.deadline_cue("due 2026-09-30 at the latest", cfg["deadline_cues"]) == "2026-09-30"
 assert w.deadline_cue("on sept 3 we start", cfg["deadline_cues"]) == "on sept 3"
 assert w.deadline_cue("todays notes", cfg["deadline_cues"]) == "", "no substring hits"
-assert w.cue_hit("fix the prod outage", cfg["blocking_cues"]) == "prod"
+assert w.cue_hit("fix the prod outage", cfg["blocking_cues"]) == "outage"
 assert w.cue_hit("improve the product page", cfg["blocking_cues"]) == "", "prod must not match product"
+
+# issue #21: negation in the same clause, bare nouns, phrase cues
+B, N = cfg["blocking_cues"], cfg["negators"]
+assert N == w.WORKLIST_DEFAULTS["negators"] and "non" in N and "isn't" in N, N
+assert w.cue_hit("send non-urgent questions to the channel", B, N) == "", "non- is a negator"
+assert w.cue_hit("not blocking anyone", B, N) == ""
+assert w.cue_hit("no rush on this", B, N) == ""
+assert w.cue_hit("this isn't really urgent", B, N) == "", "three-token window"
+assert w.cue_hit("this isn’t really urgent", B, N) == "", "curly apostrophe"
+assert w.cue_hit("it won't block us, no longer a blocker", B, N) == ""
+assert w.cue_hit("this is urgent", B, N) == "urgent"
+assert w.cue_hit("not done yet, this is urgent", B, N) == "urgent", "a comma starts a new clause"
+assert w.cue_hit("not urgent for them, but urgent for us", B, N) == "urgent", "a later un-negated hit still counts"
+assert w.cue_hit("this is not the plan we agreed on but it is urgent", B, N) == "urgent", "negator outside the window"
+assert w.cue_hit("this is urgent", B) == "urgent" and w.cue_hit("not urgent", B) == "urgent", "no negators: old behavior"
+assert w.cue_hit("post it in the release chat", B, N) == "", "release is not a blocking cue"
+assert w.cue_hit("ship version 2.5", B, N) == "", "ship is not a blocking cue"
+assert w.cue_hit("ping the customer about the invoice", B, N) == "", "customer is not a blocking cue"
+assert w.cue_hit("we are blocking the release", B, N) != "", "phrase cue"
+assert w.cue_hit("there is a prod issue on the login page", B, N) == "prod issue"
+assert w.cue_hit("the customer is waiting on the fix", B, N) == "customer is waiting"
+assert "prod" not in B and "release" not in B and "customers" not in B, B
+assert w.deadline_cue("not tomorrow, next week", cfg["deadline_cues"], N) == "next week"
+assert w.deadline_cue("it is not due by friday", cfg["deadline_cues"], N) == "", "structural dates honor negators too"
+assert w.deadline_cue("do it by friday", cfg["deadline_cues"], N) == "by friday"
+nc = w.commitments_config({"commitments": {"negators": "kinda, sorta", "blocking_cues": ["urgent", "prod"]}})
+assert nc["negators"] == ["kinda", "sorta"], nc["negators"]
+assert w.cue_hit("kinda urgent", nc["blocking_cues"], nc["negators"]) == ""
+assert w.cue_hit("not urgent", nc["blocking_cues"], nc["negators"]) == "urgent", "an overridden negator list drops the defaults"
+assert w.cue_hit("fix the prod outage", nc["blocking_cues"], nc["negators"]) == "prod", "a workspace can add the bare noun back"
+
+# relative deadline resolution against the meeting day (2026-09-16 is a Wednesday)
+wed = date(2026, 9, 16)
+table = {
+    "today": wed, "tonight": wed, "eod": wed, "end of day": wed, "end of the day": wed,
+    "tomorrow": date(2026, 9, 17),
+    "this week": date(2026, 9, 18), "eow": date(2026, 9, 18), "end of week": date(2026, 9, 18),
+    "end of the week": date(2026, 9, 18), "next week": date(2026, 9, 25),
+    "by friday": date(2026, 9, 18), "before monday": date(2026, 9, 21), "on wed": wed,
+    "until thurs": date(2026, 9, 17), "by tuesday": date(2026, 9, 22),
+    "the 16th": wed, "before the 20th": date(2026, 9, 20), "by the 12th": date(2026, 10, 12),
+    "on sept 3": date(2026, 9, 3), "by september 30": date(2026, 9, 30), "due oct 1st": date(2026, 10, 1),
+    "by 9/20": date(2026, 9, 20), "for 10/2": date(2026, 10, 2), "2026-09-30": date(2026, 9, 30),
+    "this sprint": None, "before the demo": None, "before the release": None, "": None,
+    "by 13/45": None, "2026-13-01": None,
+}
+for cue, want in table.items():
+    got = w.resolve_deadline(cue, wed)
+    assert got == want, (cue, got, want)
+assert w.resolve_deadline("this week", date(2026, 9, 18)) == date(2026, 9, 18), "a Friday is its own end of week"
+assert w.resolve_deadline("this week", date(2026, 9, 19)) == date(2026, 9, 25), "Saturday rolls to the next Friday"
+assert w.resolve_deadline("this week", date(2026, 9, 20)) == date(2026, 9, 25), "Sunday rolls to the next Friday"
+assert w.resolve_deadline("next week", date(2026, 9, 19)) == date(2026, 10, 2), "next week from a Saturday"
+assert w.resolve_deadline("by friday", date(2026, 9, 18)) == date(2026, 9, 18), "on a Friday, 'by friday' is that day"
+assert w.resolve_deadline("by saturday", date(2026, 9, 20)) == date(2026, 9, 26), "weekday already past this week -> next"
+assert w.resolve_deadline("the 30th", date(2026, 1, 31)) == date(2026, 3, 30), "day of month rolls past a short month"
+assert w.resolve_deadline("tomorrow", None) is None, "no meeting day: unresolvable"
+assert w.meeting_day_of("2026-09-14-0900") == date(2026, 9, 14)
+assert w.meeting_day_of("2026-09-14-0900-2") == date(2026, 9, 14), "collision suffix"
+assert w.meeting_day_of("M1") is None and w.meeting_day_of("2026-13-14-0900") is None
+
 
 # tiers per rule; latest meeting is M3
 def entry(**kw):
@@ -280,7 +351,7 @@ assert tier(entry(priority="high")) == ("P1", 5, ["boss"])
 assert tier(entry(requested_by="Bob_Example", requested_by_role="boss")) == ("P1", 5, ["boss"])
 assert tier(entry(requested_by="Bob_Example")) == ("P1", 5, ["boss"]), "leadership group stands in for roles"
 assert tier(entry(requested_by="Bob_Example", requested_by_role="peer"))[0] == "P2", "a registry role wins over the group"
-assert tier(entry(text="fix the prod outage")) == ("P1", 4, ["blocking=prod"])
+assert tier(entry(text="fix the prod outage")) == ("P1", 4, ["blocking=outage"])
 assert tier(entry(text="send it by friday")) == ("P1", 4, ["due=by friday"])
 assert tier(entry(meetings={"M1", "M2", "M3"}, last_seen="M3")) == ("P1", 5, ["3 meetings", "latest meeting"])
 assert tier(entry(meetings={"M1", "M2"}, last_seen="M2")) == ("P2", 2, ["2 meetings"])
@@ -292,6 +363,39 @@ assert tier(entry()) == ("P3", 0, [])
 assert tier(entry(priority="high", negative=True)) == ("P2", 2, ["boss", "negative"]), "negative is never P1"
 assert tier(entry(negative=True)) == ("P3", -3, ["negative"])
 assert tier(entry(source="action-items", type="Asks from leadership")) == ("P1", 5, ["boss"])
+
+# WHOSAID_TODAY pins today; an overdue relative deadline stops earning P1
+os.environ["WHOSAID_TODAY"] = "2026-09-16"
+assert w.worklist_today() == wed
+rt = w.Ranker({}, "2026-09-16-0900", today=w.worklist_today())
+def rank_with(**kw):
+    e = entry(**kw)
+    rt.rank(e)
+    return e["tier"], e["score"], e["why"]
+stale = rank_with(text="I'm going to add those features today", last_seen="2026-09-02-0900",
+                  first_seen="2026-09-02-0900", meetings={"2026-09-02-0900"})
+assert stale == ("P3", 1, ["overdue=2026-09-02"]), stale
+fresh = rank_with(text="I'm going to add those features today", last_seen="2026-09-16-0900",
+                  first_seen="2026-09-16-0900", meetings={"2026-09-16-0900"})
+assert fresh == ("P1", 5, ["due=today", "latest meeting"]), fresh
+week = rank_with(text="I'll finish the migration this week", last_seen="2026-09-14-0900",
+                 first_seen="2026-09-14-0900", meetings={"2026-09-14-0900"})
+assert week == ("P1", 4, ["due=this week"]), "resolves to Friday the 18th, still ahead of the 16th"
+sprint = rank_with(text="I'll finish it this sprint", last_seen="2026-09-02-0900",
+                   first_seen="2026-09-02-0900", meetings={"2026-09-02-0900"})
+assert sprint == ("P1", 4, ["due=this sprint"]), "unresolvable cues never expire"
+unk = rank_with(text="I'll do it today", last_seen="M1")
+assert unk == ("P1", 4, ["due=today"]), "an undated folder name is unresolvable"
+boss_stale = rank_with(text="I'll send the deck tomorrow", priority="high", last_seen="2026-09-02-0900",
+                       first_seen="2026-09-02-0900", meetings={"2026-09-02-0900"})
+assert boss_stale == ("P1", 6, ["boss", "overdue=2026-09-03"]), boss_stale
+rw = w.Ranker({"commitments": {"weights": {"overdue": 3}}}, "", today=wed)
+e = entry(text="ship it tomorrow", last_seen="2026-09-02-0900"); rw.rank(e)
+assert e["score"] == 3 and e["why"] == ["overdue=2026-09-03"], e
+assert w.Ranker({}, "").today == date.today(), "no today: the clock"
+os.environ["WHOSAID_TODAY"] = "not-a-date"
+assert w.worklist_today() == date.today(), "a bad WHOSAID_TODAY warns and falls back to the clock"
+del os.environ["WHOSAID_TODAY"]
 
 # ordering: tier, score desc, last_seen desc, id
 es = [entry(id="CM-003", cue="i'll", last_seen="M3"), entry(id="CM-002", priority="high"),
@@ -306,7 +410,9 @@ c = w.commitments_config({"commitments": {"boss": ["Carol_Example"], "blocking_c
                                           "weights": {"boss": 7, "bogus": "x"}, "embed_threshold": "0.8"}})
 assert c["boss"] == ["carol_example"] and c["blocking_cues"] == ["kraken", "wumpus"], c
 assert c["weights"]["boss"] == 7 and c["weights"]["deadline"] == 4 and "bogus" not in c["weights"], c["weights"]
+assert c["weights"]["overdue"] == 1, c["weights"]
 assert c["embed_threshold"] == 0.8 and c["deadline_cues"] == w.WORKLIST_DEFAULTS["deadline_cues"], c
+assert c["negators"] == w.WORKLIST_DEFAULTS["negators"], c["negators"]
 r2 = w.Ranker({"commitments": {"boss": ["Carol_Example"], "blocking_cues": ["kraken"],
                                "weights": {"boss": 7}}}, "M3")
 e = entry(requested_by="Carol_Example"); r2.rank(e)
@@ -363,14 +469,20 @@ assert_has "## P1" "$WL" "P1 section"
 assert_has "## P2" "$WL" "P2 section"
 assert_has "## P3" "$WL" "P3 section"
 assert_has "## Done / history" "$WL" "Done / history section"
-assert_has "- **CM-001** [open] 2026-09-14-0900 (1×) P1 · boss · due=tomorrow · strong cue: I'll send the exec deck update tomorrow" "$WL" \
-  "boss-requested item with a deadline cue renders as P1 with its why strings"
+assert_has "overdue=YYYY-MM-DD" "$WL" "header explains the overdue marker and negated cues"
+assert_has "- **CM-001** [open] 2026-09-14-0900 (1×) P1 · boss · overdue=2026-09-15 · strong cue: I'll send the exec deck update tomorrow" "$WL" \
+  "boss-requested item whose 'tomorrow' (said on the 14th) has passed by WHOSAID_TODAY renders overdue=, still P1 via boss"
+assert_not_has "due=tomorrow" "$WL" "an expired relative deadline no longer shows as due="
+assert_has "- **CM-012** [open] 2026-09-16-0900 (1×) P3 · overdue=2026-09-16 · latest meeting: I'm going to add those features today" "$WL" \
+  "an overdue 'today' alone is not P1"
+assert_has "- **CM-013** [open] 2026-09-16-0900 (1×) P2 · latest meeting · strong cue: I'll send non-urgent questions to the channel" "$WL" \
+  "non-urgent is not a blocking cue (negator before the cue)"
 assert_has "- **CM-002** [open] 2026-09-14-0900 → 2026-09-16-0900 (3×) P1 · 3 meetings · latest meeting: I can look at the flaky test" "$WL" \
   "an item seen in 3 meetings is P1 with the span and count"
 assert_has "- **CM-008** [open] 2026-09-15-0900 (1×) P1 · boss: I can send the metrics summary" "$WL" \
   "a requester in [groups] leadership counts as boss when the item has no role"
-assert_has "- **CM-009** [open] 2026-09-16-0900 (1×) P1 · blocking=customer · latest meeting · strong cue: I'll own the customer escalation" "$WL" \
-  "a blocking cue is P1"
+assert_has "- **CM-009** [open] 2026-09-16-0900 (1×) P1 · blocking=customer escalation · latest meeting · strong cue: I'll own the customer escalation" "$WL" \
+  "a blocking phrase cue is P1"
 assert_has "- **AI-001** [open] 2026-09-16-0900 (1×) P1 · boss · latest meeting: for the platform team write the rollout runbook" "$WL" \
   "an action item owned by an alias (Ali) joins the worklist; a leadership ask counts as boss"
 assert_has "- **AI-004** [open] 2026-09-16-0900 (1×) P3 · latest meeting: update the onboarding checklist" "$WL" \
@@ -401,8 +513,8 @@ for ln in md.splitlines():
     elif cur and ln.startswith("- **"):
         sections[cur].append(re.match(r"- \*\*([A-Z]+-\d+)\*\*", ln).group(1))
 assert sections["P1"] == ["CM-001", "AI-001", "AI-002", "CM-009", "CM-002", "CM-008"], sections["P1"]
-assert sections["P2"] == ["CM-011", "CM-005", "CM-007"], sections["P2"]
-assert sections["P3"] == ["AI-004", "CM-010", "CM-006", "CM-003"], sections["P3"]
+assert sections["P2"] == ["CM-011", "CM-013", "CM-005", "CM-007"], sections["P2"]
+assert sections["P3"] == ["CM-012", "AI-004", "CM-010", "CM-006", "CM-003"], sections["P3"]
 assert sections["Done / history"] == [], sections["Done / history"]
 print("ok")
 PY
@@ -426,8 +538,8 @@ assert_eq "$RC" 0 "rollup --all-owners exit code"
 assert_file "$WS/_WORKLIST-Carol_Example.md" "--all-owners writes Carol_Example's worklist"
 assert_absent "$WS/_WORKLIST-Ali.md" "--all-owners folds the alias label into the owner instead of a file of its own"
 assert_absent "$WS/_WORKLIST-Alice_Example_.md" "--all-owners does not split 'Alice Example' from the owner"
-assert_has "- **CM-004** [open] 2026-09-14-0900 (1×) P1 · blocking=prod · strong cue: I'll fix the prod outage runbook" \
-  "$WS/_WORKLIST-Carol_Example.md" "Carol's commitment ranks in her own worklist"
+assert_has "- **CM-004** [open] 2026-09-14-0900 (1×) P1 · blocking=outage · strong cue: I'll fix the prod outage runbook" \
+  "$WS/_WORKLIST-Carol_Example.md" "Carol's commitment ranks in her own worklist (outage, not the bare noun prod)"
 assert_has "- **AI-003** [open] 2026-09-16-0900 (1×) P3 · latest meeting: rotate the on-call schedule" \
   "$WS/_WORKLIST-Carol_Example.md" "Carol's action item joins her worklist"
 assert_absent "$WS/_WORKLIST-Bob_Example.md" "a requester with no items of their own gets no file"
@@ -558,8 +670,10 @@ keys = {"id", "source", "text", "status", "tier", "score", "why", "first_seen", 
         "occurrences", "requested_by", "negative", "also", "merged_into"}
 assert all(set(it) == keys for it in d["items"]), [sorted(it) for it in d["items"]][:1]
 by_id = {it["id"]: it for it in d["items"]}
-assert by_id["CM-001"]["tier"] == "P1" and by_id["CM-001"]["score"] == 10, by_id["CM-001"]
-assert by_id["CM-001"]["why"] == ["boss", "due=tomorrow", "strong cue"], by_id["CM-001"]
+assert by_id["CM-001"]["tier"] == "P1" and by_id["CM-001"]["score"] == 7, by_id["CM-001"]
+assert by_id["CM-001"]["why"] == ["boss", "overdue=2026-09-15", "strong cue"], by_id["CM-001"]
+assert by_id["CM-012"]["tier"] == "P3" and by_id["CM-012"]["why"] == ["overdue=2026-09-16", "latest meeting"], by_id["CM-012"]
+assert by_id["CM-013"]["tier"] == "P2" and not any(s.startswith("blocking=") for s in by_id["CM-013"]["why"]), by_id["CM-013"]
 assert by_id["CM-001"]["requested_by"] == "Bob_Example" and by_id["CM-001"]["source"] == "commitments"
 assert by_id["CM-002"]["occurrences"] == 3 and by_id["CM-002"]["first_seen"] == "2026-09-14-0900"
 assert by_id["CM-003"]["status"] == "done" and by_id["CM-003"]["tier"] == "" and by_id["CM-003"]["negative"] is True

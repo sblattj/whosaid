@@ -148,6 +148,13 @@ boss-requested (priority `high`, requester role `boss`, `[commitments] boss`, or
 leadership` when no role is recorded), a blocking/urgency cue, a deadline cue (literal list plus
 `DEADLINE_DATE_RE` for "by friday", "on sept 3", ISO dates), or 3+ meetings; P2 for 2 meetings,
 any requester, or a strong cue in the latest meeting; P3 otherwise; negated items never P1.
+`cue_hit` skips a cue with one of `[commitments] negators` in the three words before it inside
+the same clause ("non-urgent", "not blocking"); the default blocking list carries phrases, not
+bare nouns (`prod issue`, not `prod`). `resolve_deadline` turns a relative cue into a date
+against the item's `last_seen` meeting day (`meeting_day_of`); when that date is before
+`Ranker.today` (`worklist_today()`, `WHOSAID_TODAY` or the clock) the line says
+`overdue=YYYY-MM-DD`, the `overdue` weight replaces `deadline`, and the deadline no longer earns
+P1.
 Score is the sum of the signal weights, ordering within a tier is score, last_seen, id, and each
 line keeps the corpus prefix (`- **CM-002** [open] span (2×) P1 · boss · due=tomorrow: text`)
 so `parse_commitments_md` still reads it. The file is a regenerated view, never reconciled;
