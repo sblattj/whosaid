@@ -235,8 +235,10 @@ assert_not_has "# Role:" "$TMP/render_without/meeting.speakers.txt" \
   "legacy run has no '# Role:' header lines"
 assert_not_has "[self]" "$TMP/render_without/meeting.speaker-cards.txt" \
   "legacy run has no [role] card labels"
-if ! diff -q "$TMP/render_without/meeting.speakers.txt" "$TMP/render_without/meeting.speakers.txt" >/dev/null; then
-  fail "sanity: diff against itself failed"
+# the two runs must actually differ (the roles run carries the Role header
+# lines), otherwise the only-Role-lines check below would pass vacuously
+if diff -q "$TMP/render_without/meeting.speakers.txt" "$TMP/render_with/meeting.speakers.txt" >/dev/null; then
+  fail "sanity: the roles run and the legacy run rendered identical speakers.txt"
 fi
 PASS=$((PASS + 1))
 run_py "
