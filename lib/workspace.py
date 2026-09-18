@@ -1336,12 +1336,21 @@ def fold_commitments(meeting_folder: str, entries: list[dict],
                      items: list[CommitmentItem], next_id: list[int],
                      threshold: float = SIMILARITY_THRESHOLD,
                      near_misses: list[tuple[str, str, float]] | None = None,
-                     matcher: "TextMatcher | None" = None) -> list[CommitmentItem]:
+                     matcher: "TextMatcher | None" = None,
+                     cues: dict | None = None) -> list[CommitmentItem]:
     """Fold one meeting's commitments.json entries into the corpus. The
     ranking inputs (cue, negative, requested_by_role) ride along on new items;
     on a match a stronger cue, a positive re-statement, or a first requester
     upgrades the item, so the worklist sees the best evidence across meetings.
-    `matcher` (optional) adds the embedding rule; see fold_meeting."""
+    `matcher` (optional) adds the embedding rule; see fold_meeting. `cues` is
+    the commitments_config() mapping so "stronger" means the same thing here
+    as in Ranker (whosaid.toml strong_cues/weak_cues); default lists otherwise."""
+    strong_cues = list((cues or WORKLIST_DEFAULTS)["strong_cues"])
+    weak_cues = list((cues or WORKLIST_DEFAULTS)["weak_cues"])
+
+    def strength(c: str) -> str:
+        return cue_strength(c, strong_cues, weak_cues)
+
     if matcher is not None:
         matcher.prime([str(e.get("text", "")) for e in entries] + [it.text for it in items])
     for n, entry in enumerate(entries, start=1):
@@ -1386,7 +1395,7 @@ def fold_commitments(meeting_folder: str, entries: list[dict],
             if not target.requested_by and entry.get("requested_by"):
                 target.requested_by = str(entry["requested_by"])
                 target.requested_by_role = str(entry.get("requested_by_role", "") or "")
-            if not target.cue or (cue_strength(cue) == "strong" and cue_strength(target.cue) != "strong"):
+            if not target.cue or (strength(cue) == "strong" and strength(target.cue) != "strong"):
                 target.cue = cue or target.cue
             if target.negative and not negative:
                 target.negative = False  # restated positively later: no longer a refusal
@@ -2124,6 +2133,7 @@ def cmd_rollup(args: argparse.Namespace) -> int:
     # worklist owner and its cue lists ([workspace], [groups], [commitments]).
     cfg = _wsconfig().load_config(ws)
     matcher = build_matcher(cfg, args.similarity_threshold)
+    cm_cues = commitments_config(cfg)
 
     prev_meetings = manifest_to_meetings(manifest_data)
     dated: list[Path] = []
@@ -2214,7 +2224,7 @@ def cmd_rollup(args: argparse.Namespace) -> int:
             continue
         log(f"folding {folder.name}/commitments.json ({len(entries)} item(s))")
         fold_commitments(folder.name, entries, cm_items, cm_next_id,
-                         args.similarity_threshold, cm_near_misses, matcher)
+                         args.similarity_threshold, cm_near_misses, matcher, cm_cues)
         cm_folded.add(folder.name)
     cm_dupes = possible_duplicates(cm_items, cm_near_misses, args.similarity_threshold)
     cm_md = render_commitments_md(ws, cm_items, cm_dupes)

@@ -327,6 +327,17 @@ assert line == ("- **CM-002** [open] 2026-09-14-1802 → 2026-09-21-1802 (2×) P
 parsed = w.parse_commitments_md(line)
 assert parsed["CM-002"]["status"] == "open" and parsed["CM-002"]["text"].startswith("update the exec deck"), parsed
 assert w.worklist_filename("Alice Example") == "_WORKLIST-Alice_Example.md"
+
+# fold-time "stronger cue" upgrade reads the same [commitments] lists as Ranker
+def fold_twice(cues):
+    items, nid = [], [1]
+    w.fold_commitments("M1", [{"text": "ship the exec deck", "speaker": "Alice_Example", "cue": "i'll send"}], items, nid)
+    w.fold_commitments("M2", [{"text": "ship the exec deck", "speaker": "Alice_Example", "cue": "let me"}], items, nid, cues=cues)
+    assert len(items) == 1, items
+    return items[0].cue
+assert fold_twice(None) == "i'll send", "default lists: 'let me' is weak, the strong cue stays"
+flipped = w.commitments_config({"commitments": {"strong_cues": ["let me"], "weak_cues": ["i'll send"]}})
+assert fold_twice(flipped) == "let me", "toml-flipped cue lists drive the fold-time upgrade too"
 print("ok")
 PY
 RULES="$(run_pycheck "$TMP/check_rules.py" "$REPO/lib")" || fail "unit rules check crashed"
