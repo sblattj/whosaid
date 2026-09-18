@@ -8,6 +8,19 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ### Added
 
+- **SwiftBar menu bar plugin: `whosaid watch menubar install` (GitHub issue #24).** Ships
+  `contrib/swiftbar/whosaid.10s.py` (stdlib only) and symlinks it into SwiftBar's plugin
+  directory (`menubar uninstall` / `menubar status` manage it; `whosaid doctor` reports it).
+  The glyph tracks the watcher — 🎙 idle, 🔴 REC, ⏳ syncing, ⚙️ ingesting, ✅ done (30 min),
+  ⚠️ needs a look, 🎙✗ agent not loaded — driven ONLY by the watcher's own timestamped stage
+  lines (subprocess noise like the diarizer's `chunk 8/8 done:` can never match), reading the
+  last ~2 MB of `.watch.log`. The dropdown shows the stage tail, agent line, store-read probes
+  (SwiftBar needs its own Full Disk Access; pane link + relaunch action on failure), and opens
+  the workspace, the latest dated meeting folder (greatest `YYYY-MM-DD-HHMM` name), each
+  `_WORKLIST-<Owner>.md`, and `_WIKI.md`; actions follow the log, kickstart the watcher, and
+  relaunch/refresh SwiftBar. macOS notifications fire once per transition. Offline tests:
+  `test/menubar_test.py` (72 assertions).
+
 - **One commitment model (GitHub issue #23).** The CM corpus (`_commitments.json`) is now the
   single id authority for commitments from BOTH sources: the roll-up folds self-owned
   action-items bullets (`- **Owner** [Requester HH:MM:SS] text`) into the same CM-NNN items as

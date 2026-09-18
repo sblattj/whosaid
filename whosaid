@@ -173,8 +173,12 @@ USAGE
                                         (--owner/--source/--status filters).
   whosaid wiki <ws> [--stdout] [-o FILE]
                                         Regenerate the wiki from the graph.
-  whosaid watch run|install|uninstall|status [--into <ws>] [flags]
+  whosaid watch run|install|uninstall|status|menubar [--into <ws>] [flags]
                                         Hands-free ingest of new recordings (launchd).
+  whosaid watch menubar install [--workspace <ws>] [--interval 10s]
+                                        SwiftBar menu bar glyph for the watcher
+                                        (idle/recording/syncing/ingesting/done);
+                                        menubar uninstall | status manage it.
   whosaid memos list|pull|delete|shortcut-recipe [flags]
                                         Voice Memos helpers (never touch the store).
   whosaid help | -h | --help           This message.
@@ -672,6 +676,11 @@ cmd_doctor() {
     fi
   else
     echo "  workspace: WHOSAID_WORKSPACE not set; set it to your meeting workspace to see its index status here and to give 'whosaid mcp' a default"
+  fi
+
+  # Menu bar plugin (GitHub issue #24): informational, never fails doctor.
+  if [[ -f "$WATCH_PY" ]] && command -v python3 >/dev/null 2>&1; then
+    python3 "$WATCH_PY" menubar status 2>/dev/null | sed 's/^/  menu bar: /' || true
   fi
 
   echo "--- avfoundation audio devices ---"
@@ -1658,15 +1667,15 @@ cmd_wiki() {
   exec python3 "$GRAPH_PY" wiki "$@"
 }
 
-# whosaid watch run|install|uninstall|status [flags]     -> lib/watch.py <sub> ...
+# whosaid watch run|install|uninstall|status|menubar [flags]  -> lib/watch.py <sub> ...
 # WHOSAID_BIN tells the watcher which whosaid to run; default to this script so
 # a launchd job started from an installed symlink still finds the checkout.
 cmd_watch() {
   if want_help "$@"; then help_section "WATCH"; exit 0; fi
-  local usage="usage: whosaid watch run|install|uninstall|status [--into <ws>] [flags]"
+  local usage="usage: whosaid watch run|install|uninstall|status|menubar [--into <ws>] [flags]"
   [[ $# -eq 0 ]] && { log "watch: need a subcommand. $usage"; exit 1; }
   case "$1" in
-    run|install|uninstall|status) ;;
+    run|install|uninstall|status|menubar) ;;
     *) log "watch: unknown subcommand '$1'. $usage"; exit 1 ;;
   esac
   require_module "$WATCH_PY" watch

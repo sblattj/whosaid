@@ -38,6 +38,20 @@ Subcommands (the `whosaid` bash CLI dispatches `whosaid watch ...` and
   memos delete "<title>" [--yes] [--source DIR]
   memos shortcut-recipe [--no-sign]
 
+  menubar install [--workspace DIR] [--interval 10s]     (issue #24)
+      Symlink the SwiftBar menu bar plugin (contrib/swiftbar/whosaid.10s.py)
+      into SwiftBar's plugin directory: `defaults read com.ameba.SwiftBar
+      PluginDirectory`, fallback ~/.config/swiftbar (created). A non-default
+      --interval names the symlink whosaid.<interval>.py. When SwiftBar is
+      absent (no app bundle, no PluginDirectory) it prints an
+      install-then-retry message and exits non-zero. WHOSAID_SWIFTBAR_DIR and
+      WHOSAID_SWIFTBAR_APP override the directory and the app-bundle check
+      (tests point them at temp dirs). The plugin itself reads
+      WHOSAID_WORKSPACE at refresh time, exactly like the MCP server.
+  menubar uninstall   remove the plugin symlink(s) from the plugin directory
+  menubar status      is SwiftBar installed/running, the plugin linked, the
+                      Voice Memos store readable?
+
 Source folder: --source, else [watch] source in <ws>/whosaid.toml, else the
 macOS Voice Memos store (~/Library/Group Containers/group.com.apple.VoiceMemos.shared/
 Recordings). Any folder of audio files works.
@@ -605,6 +619,7 @@ def cmd_install(args: argparse.Namespace) -> int:
     else:
         print(f"Watching {source} (outside ~/Library, so no Full Disk Access needed).")
         print(f"Tail the log with:   tail -f {ws / LOG_NAME}")
+    print("Menu bar: install the SwiftBar glyph with:  whosaid watch menubar install")
     return 0
 
 
@@ -1027,6 +1042,193 @@ def cmd_memos_shortcut_recipe(args: argparse.Namespace) -> int:
     return 1
 
 
+# ---- menubar: the SwiftBar plugin (issue #24) ----------------------------------------
+
+SWIFTBAR_PLUGIN_SRC = Path(__file__).resolve().parent.parent / "contrib" / "swiftbar" / "whosaid.10s.py"
+SWIFTBAR_INTERVAL_DEFAULT = "10s"
+SWIFTBAR_INTERVAL_RE = re.compile(r"^[0-9]+[smh]$")
+MENUBAR_FALLBACK_DIR = Path.home() / ".config/swiftbar"
+
+
+def swiftbar_app() -> Path | None:
+    """The SwiftBar.app bundle, or None when SwiftBar is not installed.
+    WHOSAID_SWIFTBAR_APP relocates the check (tests point it at a temp dir)."""
+    env = os.environ.get("WHOSAID_SWIFTBAR_APP", "").strip()
+    if env:
+        p = Path(env).expanduser()
+        return p if p.is_dir() else None
+    for base in (Path("/Applications"), Path.home() / "Applications"):
+        if (base / "SwiftBar.app").is_dir():
+            return base / "SwiftBar.app"
+    return None
+
+
+def swiftbar_plugin_dir() -> tuple[Path | None, str]:
+    """(dir, how-resolved). WHOSAID_SWIFTBAR_DIR (tests, or installing before
+    SwiftBar's first run) > `defaults read com.ameba.SwiftBar PluginDirectory`.
+    (None, "unset") when SwiftBar is absent or was never configured."""
+    env = os.environ.get("WHOSAID_SWIFTBAR_DIR", "").strip()
+    if env:
+        return Path(env).expanduser(), "WHOSAID_SWIFTBAR_DIR"
+    try:
+        out = subprocess.run(["defaults", "read", "com.ameba.SwiftBar", "PluginDirectory"],
+                             capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.TimeoutExpired):
+        return None, "unset"
+    raw = out.stdout.strip() if out.returncode == 0 else ""
+    return (Path(raw).expanduser(), "SwiftBar PluginDirectory") if raw else (None, "unset")
+
+
+def menubar_links(pdir: Path | None) -> list[tuple[Path, str]]:
+    """(symlink, interval) for every whosaid.<interval>.py in pdir that points
+    at the repo's plugin source (a stale/broken link still matches: the
+    resolved target path is compared, existence is not required)."""
+    out: list[tuple[Path, str]] = []
+    if pdir is None or not pdir.is_dir():
+        return out
+    for entry in sorted(pdir.glob("whosaid.*.py")):
+        if not entry.is_symlink():
+            continue
+        try:
+            if entry.resolve() == SWIFTBAR_PLUGIN_SRC.resolve():
+                out.append((entry, entry.name.split(".")[1]))
+        except OSError:
+            continue
+    return out
+
+
+def cmd_menubar_install(args: argparse.Namespace) -> int:
+    if not SWIFTBAR_PLUGIN_SRC.is_file():
+        log(f"menubar install: the plugin source is missing from the checkout: {SWIFTBAR_PLUGIN_SRC}")
+        return 1
+    if not SWIFTBAR_INTERVAL_RE.match(args.interval or ""):
+        log(f"menubar install: --interval must look like 10s / 5m / 1h (got {args.interval!r})")
+        return 2
+    ws: Path | None = None
+    if args.workspace:
+        ws = Path(args.workspace).expanduser()
+        if not ws.is_dir():
+            log(f"menubar install: --workspace not found: {ws}")
+            return 1
+    pdir, how = swiftbar_plugin_dir()
+    if pdir is None:
+        if swiftbar_app() is None:
+            log("menubar install: SwiftBar is not installed (no SwiftBar.app in /Applications or ~/Applications)")
+            log("  install it from https://swiftbar.com, launch it once and set its plugin directory")
+            log("  (or rely on the ~/.config/swiftbar default), then re-run:  whosaid watch menubar install")
+            return 1
+        pdir, how = MENUBAR_FALLBACK_DIR, "fallback (PluginDirectory unset)"
+    try:
+        pdir.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        log(f"menubar install: cannot create the plugin directory {pdir} ({e})")
+        return 1
+    target = pdir / f"whosaid.{args.interval}.py"
+    if target.exists() and not target.is_symlink():
+        log(f"menubar install: refusing to overwrite the non-symlink {target}")
+        return 1
+    already = False
+    if target.is_symlink():
+        same = False
+        try:
+            same = target.resolve() == SWIFTBAR_PLUGIN_SRC.resolve()
+        except OSError:
+            pass
+        already = same and target.exists()
+        if already:
+            log(f"menubar install: already installed at {target}")
+        else:
+            target.unlink()
+            log(f"menubar install: replaced the link at {target}")
+    if not already:
+        os.symlink(str(SWIFTBAR_PLUGIN_SRC), target)
+        log(f"menubar install: linked {target} -> {SWIFTBAR_PLUGIN_SRC}")
+    if not os.access(SWIFTBAR_PLUGIN_SRC, os.X_OK):
+        try:
+            SWIFTBAR_PLUGIN_SRC.chmod(0o755)
+        except OSError:
+            pass
+    print(f"SwiftBar plugin dir: {pdir}  ({how})")
+    print(f"plugin:               {target}  (SwiftBar refreshes it every {args.interval})")
+    ws_hint = str(ws) if ws is not None else os.environ.get("WHOSAID_WORKSPACE", "").strip()
+    if ws_hint:
+        print("The plugin reads WHOSAID_WORKSPACE; make it visible to SwiftBar (a GUI app) with:")
+        print(f"    launchctl setenv WHOSAID_WORKSPACE {Path(ws_hint).expanduser()}")
+        print("then relaunch SwiftBar (without it the plugin falls back to the single installed watcher label).")
+    else:
+        print("The plugin reads WHOSAID_WORKSPACE; set it with:")
+        print("    launchctl setenv WHOSAID_WORKSPACE <your meeting workspace>")
+        print("so SwiftBar (a GUI app) sees it, then relaunch SwiftBar.")
+    return 0
+
+
+def cmd_menubar_uninstall(args: argparse.Namespace) -> int:
+    pdir, _how = swiftbar_plugin_dir()
+    candidates = [pdir] if pdir is not None else []
+    if MENUBAR_FALLBACK_DIR not in candidates:
+        candidates.append(MENUBAR_FALLBACK_DIR)
+    removed = 0
+    for d in candidates:
+        for link, _interval in menubar_links(d):
+            try:
+                link.unlink()
+                log(f"menubar uninstall: removed {link}")
+                removed += 1
+            except OSError as e:
+                log(f"menubar uninstall: could not remove {link} ({e})")
+    if not removed:
+        looked = ", ".join(str(d) for d in candidates if d) or "nowhere"
+        log(f"menubar uninstall: no whosaid menu bar plugin found (looked in {looked})")
+    else:
+        log("menubar uninstall: SwiftBar drops it within one refresh interval")
+    return 0
+
+
+def cmd_menubar_status(args: argparse.Namespace) -> int:
+    app = swiftbar_app()
+    pdir, how = swiftbar_plugin_dir()
+    running: bool | None = None
+    try:
+        running = subprocess.run(["pgrep", "-x", "SwiftBar"], capture_output=True).returncode == 0
+    except OSError:
+        pass
+    links = menubar_links(pdir)
+    if pdir != MENUBAR_FALLBACK_DIR:
+        links += [pair for pair in menubar_links(MENUBAR_FALLBACK_DIR) if pair not in links]
+    try:
+        os.listdir(VOICE_MEMOS_STORE)
+        store = True
+    except OSError:
+        store = False
+    ws_env = os.environ.get("WHOSAID_WORKSPACE", "").strip()
+    print(f"SwiftBar app:     {'installed (' + str(app) + ')' if app else 'NOT installed'}")
+    if pdir is not None:
+        print(f"plugin directory: {pdir}  ({how})")
+    else:
+        print(f"plugin directory: unset ({how}); fallback {MENUBAR_FALLBACK_DIR}")
+    if running is None:
+        print("SwiftBar running: unknown (pgrep unavailable)")
+    else:
+        print(f"SwiftBar running: {'yes' if running else 'no'}")
+    if links:
+        for link, interval in links:
+            print(f"plugin:           {link}  (every {interval})")
+    else:
+        print("plugin:           not installed (run: whosaid watch menubar install)")
+    if store:
+        print(f"store readable:   yes (this shell reads {VOICE_MEMOS_STORE})")
+    else:
+        print(f"store readable:   NO (this shell cannot read {VOICE_MEMOS_STORE})")
+        print("                   SwiftBar needs its own Full Disk Access grant for REC detection;")
+        print("                   the menu bar shows the live probe and links the pane when it fails.")
+    if ws_env:
+        print(f"workspace:        $WHOSAID_WORKSPACE={ws_env}")
+    else:
+        print("workspace:        WHOSAID_WORKSPACE not set; the plugin falls back to the single")
+        print("                   installed watcher label, or shows a set-WHOSAID_WORKSPACE line")
+    return 0
+
+
 # ---- CLI --------------------------------------------------------------------------
 
 def add_source(p: argparse.ArgumentParser) -> None:
@@ -1039,7 +1241,8 @@ def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="watch.py",
         description="whosaid watcher: new recordings -> ingest, hands-free (launchd on macOS), "
-                    "plus Voice Memos list/pull/delete helpers (issue #14).",
+                    "Voice Memos list/pull/delete helpers, and the SwiftBar menu bar "
+                    "plugin installer (issues #14, #24).",
     )
     sub = p.add_subparsers(dest="command", required=True)
 
@@ -1119,6 +1322,31 @@ def build_parser() -> argparse.ArgumentParser:
                          help=f"build + sign the one-action '{SHORTCUT_NAME}' Shortcut, or print how to")
     mr.add_argument("--no-sign", action="store_true", help="only print the manual recipe")
     mr.set_defaults(func=cmd_memos_shortcut_recipe)
+
+    pmn = sub.add_parser(
+        "menubar",
+        help="SwiftBar menu bar plugin: install | uninstall | status (issue #24)")
+    mnsub = pmn.add_subparsers(dest="menubar_command", required=True)
+
+    mni = mnsub.add_parser(
+        "install",
+        help="symlink the menu bar plugin into SwiftBar's plugin directory")
+    mni.add_argument("--workspace", default=None,
+                     help="meeting workspace (validates it; printed in the launchctl setenv "
+                          "WHOSAID_WORKSPACE hint the plugin depends on)")
+    mni.add_argument("--interval", default=SWIFTBAR_INTERVAL_DEFAULT,
+                     help=f"SwiftBar refresh suffix (default: {SWIFTBAR_INTERVAL_DEFAULT}; "
+                          f"a non-default value names the symlink whosaid.<interval>.py)")
+    mni.set_defaults(func=cmd_menubar_install)
+
+    mnu = mnsub.add_parser("uninstall",
+                           help="remove the plugin symlink(s) from the SwiftBar plugin directory")
+    mnu.set_defaults(func=cmd_menubar_uninstall)
+
+    mns = mnsub.add_parser(
+        "status",
+        help="is SwiftBar installed/running, the plugin linked, the Voice Memos store readable?")
+    mns.set_defaults(func=cmd_menubar_status)
     return p
 
 
