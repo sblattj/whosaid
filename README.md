@@ -42,9 +42,16 @@ command.
   tens of minutes, recovering the same speakers as a single-pass run.
 - **No accounts, no API keys, no Hugging Face token** — every model comes from an open, ungated
   source.
-- **Usable from an AI agent, too** — `whosaid mcp` exposes transcribe, relabel, and doctor (among
-  others) as MCP tools for Claude Code, Claude Desktop, and other MCP clients, with the same
-  local-only guarantee as the CLI.
+- **Search everything you have recorded.** `whosaid index` builds a local full-text (and,
+  with Ollama, meaning) index over every transcript in a meeting workspace; `whosaid search`
+  finds the turn, `whosaid context` shows the minute around it, and `whosaid graph` answers
+  who committed to what, when. See [Search your meetings](#search-your-meetings).
+- **Hands-free from Voice Memos.** `whosaid watch install` puts a launchd agent on the Voice
+  Memos folder (or any folder): stop recording, and a few minutes later the meeting is
+  transcribed, summarized, and searchable. See [Hands-free ingest](#hands-free-ingest-whosaid-watch).
+- **Usable from an AI agent, too.** `whosaid mcp` exposes transcribe, relabel, doctor, and the
+  read-only workspace search tools as MCP tools for Claude Code, Claude Desktop, Kiro, and other
+  MCP clients, with the same local-only guarantee as the CLI.
 
 ## How it compares
 
@@ -89,7 +96,16 @@ command without copying or duplicating the implementation.
 | `whosaid relabel <base> SPEAKER_02=Jane …` | Put real names on clusters after reading the speaker cards. Rewrites the transcript + cards and saves each named voiceprint to the local registry for future transcripts. No re-transcription. |
 | `whosaid relabel <base> --auto` | Re-apply naming to an existing transcript with no assignments: re-runs registry matching + the absorb pass over the cached sidecar and rewrites the transcript + cards. Picks up voices enrolled after the transcript was made, and folds phantom cluster splits of one person into a single speaker. No re-transcription, no re-diarization. In a meeting workspace the base is `transcript`. See [Speaker identity: enrollment clips vs. the registry](#speaker-identity-enrollment-clips-vs-the-registry). |
 | `whosaid samples <base> [-o DIR] [--audio FILE] [--per-speaker N] [--seconds S] [--json]` | Export one short representative WAV per speaker cluster — the longest diarized segment, clamped to `--seconds` (default 8) — so you can listen and confirm an identity before trusting an auto-label or enrolling. Cuts from the sidecar's own `source.path`, or an explicit `--audio FILE` for a sidecar written before that metadata existed. |
-| `whosaid doctor` | Read-only environment report. |
+| `whosaid ingest <audio>… --into DIR [--action-items] [--engine E] [--index]` | Transcribe a batch into dated meeting folders (idempotent by content hash). `--engine` picks the action-item summarizer, `--index` runs roll-up + index afterwards. See [Meeting workspaces](#meeting-workspaces). |
+| `whosaid roll-up <ws> [--action-items] [--index]` | Rebuild the workspace index (`_INDEX.md`), audit, and the deduplicated action-item corpus; `--index` then rebuilds the search index too. |
+| `whosaid index <ws> [--no-embed] [--rebuild]` | Build `<ws>/_search.db` (full text, optional embeddings, entity graph) and `<ws>/_WIKI.md`. See [Search your meetings](#search-your-meetings). |
+| `whosaid search <ws> "<query>" [--mode exact\|meaning\|hybrid] [--speaker S] [--meeting M] [-k N] [--json]` | Search every speaker-labeled transcript; each hit is a meeting, a timestamp, a speaker, and a snippet. |
+| `whosaid context <ws> <meeting> <HH:MM:SS> [--before S] [--after S] [--json]` | The verbatim turns around a moment, for reading a hit in place. |
+| `whosaid graph <ws> items\|item AI-NNN\|person [Name]\|prs\|meetings\|speakers [--json]` | Entity views: action items with filters, one item's history, a person's commitments and asks, PR mentions, meeting coverage, talk share. |
+| `whosaid wiki <ws> [--stdout] [-o FILE]` | Regenerate `<ws>/_WIKI.md` from the graph. |
+| `whosaid watch run\|install\|uninstall\|status --into <ws>` | Hands-free ingest of new recordings via a launchd agent. See [Hands-free ingest](#hands-free-ingest-whosaid-watch). |
+| `whosaid memos list\|pull\|delete "<title>"\|shortcut-recipe` | Voice Memos helpers that never touch the app's files or database. See [Voice Memos helpers](#voice-memos-helpers-whosaid-memos). |
+| `whosaid doctor` | Read-only environment report, including Ollama reachability and the index status of `$WHOSAID_WORKSPACE`. |
 | `whosaid version` \| `whosaid --version` \| `whosaid -V` | Print the installed version (plus a `git describe` suffix when run from a git checkout). |
 
 ### Enroll from an existing recording
@@ -134,6 +150,17 @@ only; any command that turns stdin into markdown works:
 ollama run llama3.2 "List this meeting's action items as markdown bullets (Owner: task):"
 ```
 
+You no longer need a hook to get a real draft: `--engine ollama` (or the default `--engine
+auto`, which uses Ollama when it is running) turns on the built-in summarizer described in
+[Action items drafted by a local model](#action-items-drafted-by-a-local-model). `--engine`
+implies `--action-items`. Add `--index` and, once every file is in, ingest runs
+`whosaid roll-up <ws> --action-items` and `whosaid index <ws>` for you, so the new meetings are
+searchable in the same command:
+
+```bash
+whosaid ingest weekly/*.m4a --into ./meetings --engine ollama --index
+```
+
 ### `whosaid roll-up` — index, audit, and the action-item corpus
 
 ```bash
@@ -164,7 +191,194 @@ safe to read and hand-edit — marking an item `resolved` by hand is the intende
 the extractor phrased wrong. Hand edits made directly in `_ACTION-ITEMS.md` are folded back on
 the next roll-up and survive re-runs: statuses, types, retitles, and `(merged AI-NNN)` merge
 annotations (the merged item stays at its id, rendered collapsed as `[merged → AI-NNN]`). Only
-`--rebuild` discards them.
+`--rebuild` discards them. `--index` runs `whosaid index <ws>` right after the roll-up.
+
+## Search your meetings
+
+A workspace with a dozen meetings is a corpus you cannot reread. `whosaid index` turns it into
+something you can query: an exact full-text index over every turn, optional meaning search
+through a local embedding model, an entity graph (people, meetings, action items, timestamped
+commitments, PR mentions), and a generated wiki. Everything lives in the workspace, everything is
+rebuildable, and nothing leaves the machine.
+
+```bash
+whosaid index ./meetings                     # build _search.db + _WIKI.md (embeds if Ollama is up)
+whosaid index ./meetings --no-embed          # exact search only, no Ollama needed
+whosaid search ./meetings "budget"           # every turn that says budget
+whosaid search ./meetings "who is blocked" --mode meaning
+whosaid search ./meetings '"token exchange"' --speaker Bob_Example --meeting 2026-09-16 -k 5
+whosaid context ./meetings 2026-09-16-0900 00:00:06   # the verbatim minute around a hit
+whosaid graph ./meetings items --owner Alice_Example --status open
+whosaid graph ./meetings item AI-003         # one item: occurrences + timestamped commitments
+whosaid graph ./meetings person Bob_Example  # talk share, commitments made, asks received
+whosaid graph ./meetings prs | whosaid graph ./meetings meetings | whosaid graph ./meetings speakers
+whosaid wiki ./meetings --stdout             # the generated wiki, regenerated from the graph
+```
+
+`<ws>` can be left out everywhere: the commands fall back to `$WHOSAID_WORKSPACE`, then to the
+current directory when it holds `_workspace.json` or `whosaid.toml`. Any subfolder with a
+`*.speakers.txt` counts as a meeting, dated or hand-named, so transcripts you made by hand are
+indexed too.
+
+**Three search modes.** `--mode exact` (the default) is SQLite FTS5: words, `"quoted phrases"`,
+`AND`/`OR`/`NOT`, and `prefix*`, and it needs nothing but Python. `--mode meaning` embeds the
+query with `nomic-embed-text` through Ollama on `127.0.0.1:11434` and returns the nearest turns,
+so "who is blocked" finds "I'm stuck until the review lands" with no shared words. `--mode hybrid`
+runs both and fuses the rankings, which is usually what you want once the index has embeddings.
+Every hit prints the same way, and `--json` gives you one object per hit with the same fields:
+
+```text
+$ whosaid search ./meetings "budget"
+whosaid: engine: exact
+[2026-09-16-0900 @ 00:00:06] Bob_Example: I will review the »budget« spreadsheet before Thursday.
+1 hit(s).
+
+$ whosaid context ./meetings 2026-09-16-0900 00:00:06 --before 10 --after 10
+whosaid: 2026-09-16-0900: 3 turn(s) between 0s and 16s
+[00:00:01] Alice_Example: Let's start with the roadmap for next quarter.
+[00:00:06] Bob_Example: I will review the budget spreadsheet before Thursday.
+[00:00:14] Alice_Example: Great, and I will send the draft out to the team today.
+```
+
+Set Ollama up once if you want meaning search: `brew install ollama && brew services start ollama
+&& ollama pull nomic-embed-text`. Without it, `index` skips the embedding pass with a note and
+`search` runs exact-only; nothing fails.
+
+**Graph views.** The entity tables are built from reliable signals only: the manifest, the
+deduplicated action-item corpus, each meeting's `action-items.md`, and the transcripts
+themselves. `items` filters by `--owner`, `--requester`, `--status`, and `--type`; `item AI-NNN`
+shows one item's occurrences and every timestamped commitment behind it; `person [Name]` is the
+per-owner view (talk share, what they committed to, what they asked others for); `prs` lists
+pull-request numbers mentioned in speech or in the notes; `meetings` is coverage per folder; and
+`speakers` is talk share across the workspace. Every view takes `--json`.
+
+**The wiki.** `_WIKI.md` is a generated rollup: people, meetings, open items, and PR mentions,
+each action item citing the `[meeting @ time]` it was committed at. It is regenerated by `index`
+and by `whosaid wiki`, so it never drifts from the data. Edit the corpus, not the wiki.
+
+**Per-workspace settings: `whosaid.toml`.** Optional, next to the transcripts. Every key has a
+default; `WHOSAID_OWNER`, `WHOSAID_OLLAMA`, and `WHOSAID_SUMMARIZER_MODEL` override the matching
+keys per run.
+
+```toml
+[workspace]
+owner = "Alice_Example"          # whose action items this workspace tracks
+aliases = ["Ali", "Alicia"]      # how the transcript may misspell the owner (default: first name)
+
+[groups]                         # optional, ordered; drives the action-item sections
+leadership = ["Bob_Example"]
+team = ["Carol_Example", "Dan_Example"]
+
+[summarizer]
+engine = "auto"                  # auto | ollama | hook | none
+model = "qwen2.5:14b"
+timeout = 900                    # seconds per model call
+
+[search]
+ollama = "http://127.0.0.1:11434"
+embed_model = "nomic-embed-text"
+embed = true                     # false: exact search only, never contact Ollama
+
+[watch]
+source = ""                      # folder to watch (default: the macOS Voice Memos store)
+```
+
+**What `_search.db` is.** One SQLite file in the workspace: an FTS5 table of every turn (meeting,
+timestamp, speaker, text), a table of stored embeddings keyed by turn, and the graph tables.
+It is a derived artifact. Delete it whenever you like and run `whosaid index` again; `--rebuild`
+does the same and also re-embeds every turn.
+
+## Action items drafted by a local model
+
+`whosaid ingest --action-items` can draft each meeting's `action-items.md` with a local model
+instead of a hook. `--engine` (or `[summarizer] engine` in `whosaid.toml`) picks how:
+
+| Engine | What happens |
+|---|---|
+| `auto` (default) | The hook if one is configured, else Ollama if it answers on localhost, else the skeleton. |
+| `ollama` | The built-in summarizer below. If Ollama is down or the model is missing, it warns and writes the skeleton (exit 0). |
+| `hook` | The `--hook` / `WHOSAID_ACTION_ITEMS_HOOK` command, exactly as before. |
+| `none` | The skeleton only (speakers listed, no items). |
+
+The model never gets to invent timestamps or evidence. The script picks the candidate turns
+deterministically (every substantive turn by the workspace owner, every turn that names the
+owner, plus one model pass over the rest for unnamed asks), then the model reads one turn at a
+time (long turns in sentence groups) and answers either `SKIP` or bullets that each carry a short
+verbatim quote. Every quote is checked against its turn before it is kept; a mismatch is flagged
+rather than dropped silently, and the evidence turns are appended verbatim at the bottom of the
+file.
+
+Sections come from your config: the owner's own commitments, one section per `[groups]` entry
+(asks from leadership, asks from the team, and so on), and an inferred section for the rest. The
+file opens with a **DRAFT** banner so a reader knows it has not been reviewed, and ends with an
+evidence block of the exact turns each bullet came from. Read the evidence before folding
+anything into `_ACTION-ITEMS.md`.
+
+Model choice: the default is `qwen2.5:14b` (`ollama pull qwen2.5:14b`; about a minute for an
+hour-long meeting on an M-series Mac). `WHOSAID_SUMMARIZER_MODEL=qwen2.5:7b` is roughly twice as
+fast and roughly twice as noisy. Ollama is only ever contacted on `127.0.0.1`.
+
+## Hands-free ingest: `whosaid watch`
+
+Record a meeting in Voice Memos, walk away, and have it transcribed, summarized, and searchable a
+few minutes after you press stop. `whosaid watch` is a launchd LaunchAgent that watches a folder
+(the macOS Voice Memos store by default) and pushes each new recording through
+`whosaid ingest --action-items`, then `roll-up`, then `index`.
+
+```bash
+whosaid watch install --into ~/meetings --seed      # install; mark the memos already there as done
+whosaid watch install --into ~/meetings --dry-run   # print the plist and every step; change nothing
+whosaid watch status  --into ~/meetings             # installed? loaded? last run? (--json too)
+whosaid watch run     --into ~/meetings --dry-run   # what WOULD be ingested right now
+whosaid watch uninstall --into ~/meetings --purge   # stop the agent, remove state + staging + interpreter
+```
+
+How a pass works: every audio file in the source folder that is not yet in
+`<ws>/.watch_state.json` and whose mtime has been stable for `[watch] stable_seconds` (default
+120) is copied into `<ws>/.watch_staging/` and ingested from there; a file whose mtime is still
+moving is treated as still recording or still syncing, and the pass waits (bounded by
+`max_wait_seconds`) and rescans. A `.watch.lock` keeps two passes from overlapping. The agent
+fires on folder changes (`WatchPaths`) and every `--interval` seconds (default 900) as a safety
+net. `--seed` marks the recordings already present as done so an existing library is never
+reprocessed. `--source DIR` watches any folder, not just Voice Memos; `--offline` bakes the
+Hugging Face offline variables into the agent so a machine with no network access never tries to
+fetch; `--env K=V` adds any other environment the agent should carry; `--engine E` on `run` picks
+the summarizer.
+
+**Full Disk Access, scoped to one binary.** The Voice Memos store is TCC-protected: only an
+executable you have granted Full Disk Access can read it, and macOS grants that per executable
+path. Granting it to your terminal or your everyday Python would privilege everything they run.
+So `install` provisions one dedicated, ad-hoc-signed interpreter at
+`$HOME/.local/opt/whosaid-watch/bin/whosaid-watch` (named so that is what the FDA list shows),
+points the agent at it, and opens the right System Settings pane. That interpreter runs nothing
+but the watcher; it copies each recording out of the store and hands the copy to `whosaid`, so
+whosaid, `uv`, `ffmpeg`, and the models read an ordinary file and need no grant at all. Adding
+that one path is the single manual step. Already granted a binary? `--interpreter PATH` reuses
+it instead of provisioning a new one. Several workspaces can coexist: the label defaults to
+`com.whosaid.watch.<8 hex of the workspace path>`, or pass `--label`.
+
+Logs land in `<ws>/.watch.log` (launchd captures the watcher's stdout and stderr there).
+`uninstall` unloads and removes the agent; `--purge` also removes the dedicated interpreter and
+the workspace's `.watch_state.json`, `.watch.lock`, and `.watch_staging/`, never the log.
+
+## Voice Memos helpers: `whosaid memos`
+
+```bash
+whosaid memos list                          # titles and sync state (reads a COPY of the database)
+whosaid memos pull --latest -o ./inbox      # copy the newest recording out of the store
+whosaid memos pull --title "Standup" -o .   # or one by exact title
+whosaid memos delete "Standup" --yes        # delete through the app's own action
+whosaid memos shortcut-recipe               # build (or print how to build) the Shortcut delete uses
+```
+
+`delete` never touches `CloudRecordings.db` or the `.m4a` files. It runs the Voice Memos
+"Delete Recordings" App Intent through a one-action Shortcut named "Delete Voice Memo", which is
+exactly what tapping Delete in the app does: iCloud stays in sync across your devices, the memo
+lands in Recently Deleted (restorable for 30 days), and the app's database stays consistent.
+Editing the store behind the app's back desyncs iCloud and can corrupt the library, which is why
+there is no `--force` path that does. `shortcut-recipe` builds and signs that Shortcut for you
+when signing is available; on a Mac with no iCloud account it prints the one-action recipe to
+build by hand in the Shortcuts app (`--no-sign` prints the recipe only).
 
 ## Use it from an AI agent (MCP)
 
@@ -198,6 +412,54 @@ Add it to your MCP client config:
 `enroll` and `record` (microphone capture) stay CLI-only — they need an interactive terminal and
 Microphone permission. The first `whosaid_transcribe` call downloads ~1.5 GB of models; call
 `whosaid_doctor` first to check readiness.
+
+### Workspace search tools (read-only)
+
+The [workspace search](#search-your-meetings) layer is exposed too, so an agent can answer "what
+did we decide about the budget" from the transcripts instead of reading them whole. Every tool
+takes an optional `workspace` argument and otherwise uses `WHOSAID_WORKSPACE` from the server's
+environment; there is no current-directory fallback. None of them rebuilds the index: `whosaid
+index` (or the watcher) owns writes, and the tools only read `_search.db`.
+
+| Tool | What it does |
+|---|---|
+| `whosaid_search` | Turn-level hits (meeting folder, timestamp, speaker, snippet) for a query in `exact`, `meaning`, or `hybrid` mode, with speaker/meeting filters. |
+| `whosaid_context` | The verbatim turns around one hit, so an agent reads a minute instead of a transcript. |
+| `whosaid_items` | The action-item corpus, filterable by owner, requester, status, and type. |
+| `whosaid_item` | One item with its occurrences and timestamped commitments. |
+| `whosaid_person` | A person's talk share, the commitments they made, and the asks they received. |
+| `whosaid_meetings` | Every meeting folder with coverage figures. |
+| `whosaid_prs` | Pull-request numbers mentioned in speech or in the notes. |
+| `whosaid_speakers` | Talk share per speaker across the workspace. |
+| `whosaid_workspace_status` | Whether the index exists, how many turns it holds, and whether Ollama is reachable. |
+
+Resources, all reading `WHOSAID_WORKSPACE`: `whosaid://workspace/wiki` (`_WIKI.md`),
+`whosaid://workspace/action-items` (`_ACTION-ITEMS.md`), `whosaid://workspace/index`
+(`_INDEX.md`), and per meeting `whosaid://workspace/meeting/{folder}/transcript` and
+`whosaid://workspace/meeting/{folder}/action-items`.
+
+Register it with the workspace set. Claude Code:
+
+```bash
+claude mcp add --scope user whosaid -e WHOSAID_WORKSPACE=$HOME/meetings -- whosaid mcp
+```
+
+Kiro (`~/.kiro/settings/mcp.json`) and any client that takes the same JSON shape:
+
+```json
+{
+  "mcpServers": {
+    "whosaid": {
+      "command": "whosaid",
+      "args": ["mcp"],
+      "env": { "WHOSAID_WORKSPACE": "/Users/<you>/meetings" }
+    }
+  }
+}
+```
+
+Write the workspace as an absolute path (most clients do not expand `$HOME` inside `env`), and use
+the absolute path to the `whosaid` script for `command` if it is not on the client's `PATH`.
 
 ### Key flags (on `whosaid <audio>…`)
 
@@ -235,6 +497,12 @@ Microphone permission. The first `whosaid_transcribe` call downloads ~1.5 GB of 
 | `DIARIZE_EMB_NAME` | Speaker-embedding model. Default is NeMo `nemo_en_titanet_small.onnx` (English-native, ~2.5× faster than ERes2Net in sherpa's benchmark). Alternatives from the same release: `3dspeaker_speech_eres2net_sv_en_voxceleb_16k.onnx` (English ERes2Net) or `…_zh-cn_…` for Mandarin. Registry voiceprints are keyed by model, so switching re-enrolls speakers. |
 | `WHOSAID_REC_DEVICE` | avfoundation input device used by `record` and `enroll`. |
 | `WHOSAID_INSTALL_DIR` | Command install directory used by `whosaid install` (default: `~/.local/bin`). |
+| `WHOSAID_ACTION_ITEMS_HOOK` | Default action-items hook for `ingest --action-items` (transcript on stdin, markdown on stdout), overridden by `--hook`. |
+| `WHOSAID_WORKSPACE` | Default meeting workspace for `index`, `search`, `context`, `graph`, `wiki`, `watch`, for the index-status line in `whosaid doctor`, and for the read-only workspace tools and resources of `whosaid mcp`. |
+| `WHOSAID_OWNER` | Whose action items a workspace tracks; overrides `[workspace] owner` in `whosaid.toml`. |
+| `WHOSAID_OLLAMA` | Ollama base URL for embeddings and the built-in summarizer (default: `http://127.0.0.1:11434`). Localhost is the only supported destination. |
+| `WHOSAID_SUMMARIZER_MODEL` | Ollama model for `--engine ollama` (default: `qwen2.5:14b`); overrides `[summarizer] model`. |
+| `WHOSAID_BIN` | The `whosaid` command the watcher runs (default: the script that launched `whosaid watch`). |
 | `HF_HOME` | Hugging Face cache location (where the Whisper model lands). |
 | `SHERPA_DIARIZE_CACHE` | Diarization model cache location (default: `~/.cache/sherpa-diarization`). |
 
@@ -341,6 +609,20 @@ speakers as a single-pass run while finishing several times faster. Pass `--no-c
 | `<base>.diarization.json` | Cached segments + per-cluster voiceprints, so `whosaid relabel` can rename and persist speakers without re-diarizing. Also carries `registry_matches` and `source` (below). |
 | `<base>.samples/` | Created on demand by `whosaid samples <base>`: one short representative WAV per speaker cluster (`SPEAKER_NN[-Name].wav`), for a quick human listen before trusting an auto-label. |
 
+A meeting workspace (`whosaid ingest --into <ws>`) adds these at the workspace root. Underscored
+files are generated and safe to delete; the dotfiles are the watcher's working state.
+
+| File | Contents |
+|---|---|
+| `<ws>/YYYY-MM-DD-HHMM/` | One meeting: the source audio, `transcript.*` outputs as above, and `action-items.md` / `action-items.json` when requested. |
+| `_workspace.json` | The manifest: one entry per ingested meeting with its source sha256 (what makes ingest idempotent). |
+| `_INDEX.md` | Coverage index and nothing-missing audit, from `whosaid roll-up`. |
+| `_ACTION-ITEMS.md`, `_action-items.json` | The deduplicated action-item corpus and its state (stable `AI-NNN` ids, statuses, occurrences). Hand-editable. |
+| `_search.db` | SQLite: FTS5 over every turn, stored embeddings, and the entity graph tables. Rebuilt by `whosaid index`; delete freely. |
+| `_WIKI.md` | The generated wiki, regenerated by `whosaid index` and `whosaid wiki`. |
+| `whosaid.toml` | Optional per-workspace settings (owner, groups, summarizer, search, watch). The one file here you write by hand. |
+| `.watch_state.json`, `.watch.lock`, `.watch_staging/`, `.watch.log` | `whosaid watch` state: recordings already handled, the overlap guard, copies staged out of the Voice Memos store, and the agent's log. |
+
 The sidecar's two machine-readable extras, so a consumer never has to scrape stderr or shell out to
 `ffprobe`:
 
@@ -425,6 +707,26 @@ deliberately if a real speaker is being missed.
   `--chunk-seconds`); shorter recordings use sherpa's own clustering, which takes an exact count
   only, so a `--min-speakers`/`--max-speakers` range there is reported as unenforced unless the
   two are equal.
+- **`whosaid search --mode meaning` says Ollama is unreachable, or `index` skipped embeddings.**
+  Meaning and hybrid search need Ollama with `nomic-embed-text` on `127.0.0.1:11434`
+  (`brew install ollama && brew services start ollama && ollama pull nomic-embed-text`, or point
+  `WHOSAID_OLLAMA` at where it listens). Nothing else breaks: `index` still builds the full-text
+  tables and `search` falls back to exact mode, and `whosaid doctor` prints an Ollama line so you
+  can see which state you are in. Once Ollama is up, run `whosaid index <ws>` again to embed the
+  turns that were skipped.
+- **`no search index at <ws>/_search.db; run: whosaid index <ws>`.** Search, context, the graph
+  views, and the MCP workspace tools only read the index; none of them builds it. Run
+  `whosaid index <ws>` once (and again after adding meetings, or use `ingest --index` /
+  `roll-up --index` / the watcher so it stays current). The same message from `whosaid doctor`
+  means `WHOSAID_WORKSPACE` points at a workspace that has not been indexed yet.
+- **`whosaid watch` never sees new memos, or `watch run` exits 3 with "cannot read the source".**
+  The dedicated interpreter does not have Full Disk Access yet. Open System Settings, Privacy &
+  Security, Full Disk Access, and add the exact path `whosaid watch install` printed (default
+  `$HOME/.local/opt/whosaid-watch/bin/whosaid-watch`), then
+  `launchctl kickstart -k gui/$(id -u)/<label>` or just wait for the next interval.
+  `whosaid watch status --into <ws>` shows the label and whether the agent is loaded;
+  `<ws>/.watch.log` has the pass-by-pass detail. Granting your terminal FDA instead would work but
+  privileges everything you run from it, which is exactly what the dedicated binary avoids.
 
 ## Testing
 
@@ -448,6 +750,21 @@ download required.
 `./test/samples_test.sh` covers `whosaid samples` (longest-segment picking, the `--seconds` clamp,
 `--per-speaker`, naming, output format, and the `source`/`--audio` fallback) against a hand-written
 sidecar and synthesized `say` audio — no model download required.
+
+The workspace-search layer has its own offline tests, all against synthetic workspaces with
+placeholder speakers and `--no-embed` so Ollama is never contacted:
+
+- `./test/cli_test.sh` checks the launcher: every new command in `whosaid help`, usage hints and
+  `--help` paths, then an end-to-end `roll-up`, `index`, `search`, `context`, `graph`, `wiki`,
+  `roll-up --index`, `doctor`, and a stub `ingest --index` over a two-meeting workspace.
+- `./test/search_test.sh` covers `lib/search.py`: the FTS5 build, exact queries with filters,
+  `context`, `speakers`, `status`, and the no-Ollama fallback.
+- `python3 test/graph_test.py` covers `lib/graph.py`: the entity tables, each view, and the wiki.
+- `python3 test/action_items_test.py` covers the built-in summarizer with a fake model:
+  candidate selection, quote verification, section assignment, and the evidence block.
+- `./test/watch_test.sh` covers `lib/watch.py` against a temp source folder and a stub
+  `whosaid`: the stable-mtime wait, staging, state, `--seed`, `--dry-run`, and the plist.
+- `python3 test/mcp_descriptions_test.py` also checks the new read-only workspace tools.
 
 ## License
 

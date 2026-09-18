@@ -22,6 +22,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 from typing import Literal, Optional
@@ -42,7 +43,16 @@ except ImportError:  # pragma: no cover - SDK 1.x fallback
 
 from mcp.types import ToolAnnotations
 
-__version__ = "1.1.0"
+# Shared meeting-workspace helpers (lib/wsconfig.py: config, meeting discovery,
+# search-db path). `python lib/mcp_server.py` already has lib/ first on
+# sys.path; importing this module from elsewhere (tests) works the same way
+# once lib/ is added here.
+_LIB_DIR = str(Path(__file__).resolve().parent)
+if _LIB_DIR not in sys.path:
+    sys.path.insert(0, _LIB_DIR)
+import wsconfig  # noqa: E402
+
+__version__ = "1.2.0"
 
 # ---------------------------------------------------------------------------
 # Paths / environment (mirror the `whosaid` bash dispatcher's own derivations).
@@ -166,7 +176,9 @@ Output-file contract: each transcribe writes, using <base> = the input's basenam
 
 Typical workflow: whosaid_transcribe -> read the speaker cards in the result -> whosaid_samples if you want to LISTEN to a clip per cluster before trusting a name -> whosaid_relabel to put real names on the SPEAKER_NN clusters. Relabeling saves each name to a persistent local registry, so the same voice is auto-named in every later transcript. whosaid_list_speakers shows who is already known.
 
-Not exposed here: `enroll` and `record` are interactive microphone operations that need a live terminal — run them from the `whosaid` CLI. The first transcribe downloads ~1.5 GB of models; run whosaid_doctor to check readiness. Full flag/env/long-audio reference: read the whosaid://guide resource."""
+Not exposed here: `enroll` and `record` are interactive microphone operations that need a live terminal. Run them from the `whosaid` CLI. The first transcribe downloads ~1.5 GB of models; run whosaid_doctor to check readiness. Full flag/env/long-audio reference: read the whosaid://guide resource.
+
+Meeting workspace (search across many transcripts): point the server at a workspace directory by launching it with WHOSAID_WORKSPACE=<dir>, or pass `workspace` on each call; there is no cwd fallback. Flow: whosaid_search (turn-level hits with meeting folder + timestamp) -> whosaid_context (the verbatim minute around one hit; do not read whole transcripts) -> whosaid_items / whosaid_item / whosaid_person for action items and per-person commitments. whosaid_meetings, whosaid_prs and whosaid_speakers list what the graph knows; whosaid_workspace_status says whether the index exists. The index (_search.db, _WIKI.md) is built by `whosaid index <ws>` from the CLI or the watcher, never from here: every workspace tool is read-only. Resources: whosaid://workspace/wiki, whosaid://workspace/action-items, whosaid://workspace/index, whosaid://workspace/meeting/{folder}/transcript and whosaid://workspace/meeting/{folder}/action-items. Everything stays local (SQLite FTS5 plus optional embeddings from a localhost Ollama)."""
 
 
 mcp = _Server(name="whosaid", instructions=SERVER_INSTRUCTIONS)
@@ -833,6 +845,473 @@ def whosaid_samples(
 
 
 # ---------------------------------------------------------------------------
+# Meeting workspace (GitHub issue #14): read-only search / graph tools.
+#
+# Same rule as the tools above: nothing is re-implemented here. Every workspace
+# tool shells one of the stdlib CLIs lib/search.py (FTS5 + optional embeddings
+# over the workspace's *.speakers.txt) or lib/graph.py (people, meetings,
+# action items, commitments, PR mentions) with --json and passes the JSON
+# through. The index itself is built by `whosaid index <ws>` (CLI or watcher),
+# never from here, so every tool below is read-only and idempotent.
+#
+# Workspace resolution for tools: the `workspace` argument, else the
+# WHOSAID_WORKSPACE environment variable, else an error dict. An MCP server's
+# cwd is whatever the client happened to launch it from, so unlike the CLIs
+# (wsconfig.resolve_workspace) there is deliberately no cwd fallback.
+# ---------------------------------------------------------------------------
+LIB_DIR = REPO_DIR / "lib"
+SEARCH_PY = LIB_DIR / "search.py"
+GRAPH_PY = LIB_DIR / "graph.py"
+WS_TIMEOUT = 60.0  # seconds: local SQLite plus, for meaning search, one localhost Ollama call
+
+WORKSPACE_FILES = ("_WIKI.md", "_ACTION-ITEMS.md", "_INDEX.md")
+MEETING_ACTION_ITEMS = "action-items.md"  # per-meeting file written by `whosaid ingest --action-items`
+
+_SEARCH_MODES = ("exact", "meaning", "hybrid")
+_AT_RE = re.compile(r"^[0-9]{1,3}:[0-9]{2}(:[0-9]{2})?$")  # MM:SS or HH:MM:SS
+_ITEM_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")  # e.g. AI-042
+_MAX_K = 100
+_MAX_WINDOW = 3600  # seconds of context either side; more than that is "read the transcript"
+
+
+def _read_only() -> ToolAnnotations:
+    """Annotations shared by every workspace tool: read-only, idempotent, local."""
+    return ToolAnnotations(
+        read_only_hint=True,
+        destructive_hint=False,
+        idempotent_hint=True,
+        open_world_hint=False,
+    )
+
+
+def _ws_error(error: str, hint: str) -> dict:
+    return {"ok": False, "error": error, "hint": hint}
+
+
+def _resolve_ws(workspace: Optional[str]) -> tuple:
+    """(workspace dir, None) or (None, error dict). Argument > $WHOSAID_WORKSPACE; never cwd."""
+    raw = (workspace or "").strip() or os.environ.get("WHOSAID_WORKSPACE", "").strip()
+    if not raw:
+        return None, _ws_error(
+            "no workspace given",
+            "pass workspace=<meeting workspace dir> on the call, or launch the server with "
+            "WHOSAID_WORKSPACE=<dir> so every workspace tool and resource defaults to it",
+        )
+    ws = Path(raw).expanduser()
+    if not ws.is_dir():
+        return None, _ws_error(
+            f"workspace is not a directory: {ws}",
+            "pass the directory that holds the meeting folders "
+            "(and _search.db once `whosaid index` has run)",
+        )
+    return ws.resolve(), None
+
+
+def _safe_folder(value: Optional[str]) -> bool:
+    """A meeting folder is one path component: no separators, no '..', not hidden."""
+    v = (value or "").strip()
+    if not v or v.startswith("."):
+        return False
+    return "/" not in v and "\\" not in v and ".." not in v
+
+
+def _run_ws(script: Path, args: list, ws: Path) -> tuple:
+    """Run `python <script> <args...> --json` from the repo root.
+
+    Returns (parsed JSON, None) or (None, error dict). Never raises: a missing
+    script, a non-zero exit, a timeout, or unparsable stdout all come back as
+    {"ok": False, "error": <last stderr line>, "hint": ...}, where the hint is
+    `run: whosaid index <ws>` (the CLIs' own hint when the index is missing)
+    or, for exit 2, an argument problem.
+    """
+    index_hint = f"run: whosaid index {ws}"
+    if not script.is_file():
+        return None, _ws_error(
+            f"{script.name} is missing from {LIB_DIR}",
+            "this whosaid checkout lacks the workspace search stack; reinstall or update it",
+        )
+    cmd = [sys.executable, str(script), *[str(a) for a in args], "--json"]
+    try:
+        proc = subprocess.run(
+            cmd,
+            cwd=str(REPO_DIR),
+            capture_output=True,
+            text=True,
+            timeout=WS_TIMEOUT,
+        )
+    except subprocess.TimeoutExpired:
+        return None, _ws_error(
+            f"{script.name} {args[0] if args else ''} timed out after {WS_TIMEOUT:.0f}s".replace("  ", " "),
+            "retry with a narrower query, or check that the local Ollama is reachable "
+            "if meaning search is enabled",
+        )
+    except OSError as exc:
+        return None, _ws_error(f"could not start {script.name}: {exc}", "run whosaid_doctor")
+    if proc.returncode != 0:
+        lines = [ln.strip() for ln in (proc.stderr or "").splitlines() if ln.strip()]
+        last = lines[-1] if lines else (proc.stdout or "").strip()[-500:]
+        if proc.returncode == 2:
+            hint = "check the arguments (usage error)"
+        elif "whosaid index" in last or not wsconfig.search_db(ws).is_file():
+            hint = index_hint
+        else:  # the index exists and the CLI did not ask for a rebuild: an argument problem
+            hint = f"the index exists; check the arguments (rebuild if stale with: whosaid index {ws})"
+        return None, _ws_error(last or f"{script.name} exited {proc.returncode}", hint)
+    try:
+        return json.loads(proc.stdout or "null"), None
+    except json.JSONDecodeError as exc:
+        return None, _ws_error(f"{script.name} returned unparsable JSON: {exc}", index_hint)
+
+
+def _as_list(payload, key: str) -> list:
+    """The CLIs emit a bare JSON array; tolerate a {key: [...]} wrapper too."""
+    if isinstance(payload, list):
+        return payload
+    if isinstance(payload, dict) and isinstance(payload.get(key), list):
+        return payload[key]
+    return []
+
+
+_DESC_WS_SEARCH = (
+    "Search every speaker-labeled transcript in a meeting workspace and get back the matching "
+    "TURNS (meeting folder, timestamp, speaker, text, score), not whole files. mode: exact "
+    "(SQLite FTS5 full text; quoted phrases and prefix* work), meaning (local Ollama "
+    "embeddings; falls back to exact when the index has none), hybrid (both, the default). "
+    "Filter by `speaker` label or `meeting` folder; `k` caps the hits (1-100). Then call "
+    "whosaid_context on a hit to read the verbatim minute around it. Read-only: the index is "
+    "built by `whosaid index <ws>` from the CLI, never here. Workspace = the `workspace` "
+    "argument or WHOSAID_WORKSPACE. Keywords: search transcripts, who said, find a quote, "
+    "when did we discuss, meeting search, full text, semantic search."
+)
+
+_DESC_WS_CONTEXT = (
+    "Read the verbatim transcript turns around ONE moment of ONE meeting: `meeting` is the "
+    "workspace folder name from a search hit, `at` its timestamp (HH:MM:SS or MM:SS), "
+    "`before`/`after` the window in seconds (default 60 s before, 120 s after). Call this "
+    "after whosaid_search instead of loading a whole transcript: it is the cheap way to "
+    "confirm what was actually said and by whom. Read-only. Keywords: context, surrounding "
+    "turns, what was said before, exact quote, verify a hit."
+)
+
+_DESC_WS_ITEMS = (
+    "List action items from the workspace's entity graph, filtered by `owner`, `requester`, "
+    "`status` or `type`. Each item carries its id (AI-NNN), text, owner, status, the meetings "
+    "it was raised in and any commitments. Built by `whosaid index`; read-only. Keywords: "
+    "action items, todos, commitments, who owes what, open items, follow-ups."
+)
+
+_DESC_WS_ITEM = (
+    "One action item by id (AI-NNN) with its full history: every meeting it came up in, the "
+    "timestamped turns where it was discussed, commitments and status changes, related PRs. "
+    "Use whosaid_context on those timestamps for the verbatim discussion. Read-only."
+)
+
+_DESC_WS_PERSON = (
+    "Per-person commitments view (GitHub issue #13): what `name` owns, what they asked "
+    "others for, deadlines they gave, and the meetings they were in. Omit `name` to list "
+    "every known person with counts. Names are speaker labels exactly as they appear in the "
+    "transcripts (see whosaid_speakers). Read-only. Keywords: my action items, what does X "
+    "owe, commitments by person, who promised what."
+)
+
+_DESC_WS_MEETINGS = (
+    "List the meetings in the workspace as the graph knows them: folder, date, duration, "
+    "attendees (speaker labels), action-item count. The folder names are what whosaid_search "
+    "hits carry, what whosaid_context takes, and what the "
+    "whosaid://workspace/meeting/{folder}/... resources use. Read-only."
+)
+
+_DESC_WS_PRS = (
+    "List pull-request mentions found in the transcripts: PR numbers or links, who mentioned "
+    "them, in which meeting and when. Read-only. Keywords: PR, pull request, code review, "
+    "merged, deployed."
+)
+
+_DESC_WS_SPEAKERS = (
+    "List every speaker label in the search index with turn counts and the meetings they "
+    "appear in. Use the exact labels as the `speaker` filter of whosaid_search or the `name` "
+    "of whosaid_person. Read-only."
+)
+
+_DESC_WS_STATUS = (
+    "Read-only health check for a meeting workspace: whether the search index (_search.db) "
+    "exists and what it holds (meetings, turns, embeddings), whether the rendered _WIKI.md, "
+    "_ACTION-ITEMS.md and _INDEX.md exist, how many meeting folders there are, and the "
+    "configured owner and group names from whosaid.toml. Run this first when a search returns "
+    "nothing: it tells you whether `whosaid index <ws>` has been run. Keywords: workspace "
+    "status, is it indexed, index health."
+)
+
+
+# ---------------------------------------------------------------------------
+# 7) whosaid_search
+# ---------------------------------------------------------------------------
+@mcp.tool(name="whosaid_search", description=_DESC_WS_SEARCH, annotations=_read_only())
+def whosaid_search(
+    query: str,
+    mode: Literal["exact", "meaning", "hybrid"] = "hybrid",
+    speaker: Optional[str] = None,
+    meeting: Optional[str] = None,
+    k: int = 10,
+    workspace: Optional[str] = None,
+) -> dict:
+    """Shell `search.py query <ws> <query> --mode M -k N [--speaker S] [--meeting M] --json`.
+
+    Returns {"ok", "workspace", "mode", "hits": [{meeting, t_sec, t_str, speaker,
+    text, score, source}], "count"} plus "engine" when the CLI reports one.
+    """
+    ws, err = _resolve_ws(workspace)
+    if err:
+        return err
+    if not (query or "").strip():
+        return _ws_error("query is empty", "pass a word, phrase, or question to search for")
+    if mode not in _SEARCH_MODES:
+        return _ws_error(f"invalid mode '{mode}'", "use one of: " + ", ".join(_SEARCH_MODES))
+    try:
+        k = int(k)
+    except (TypeError, ValueError):
+        return _ws_error(f"invalid k '{k}'", f"pass an integer between 1 and {_MAX_K}")
+    if not 1 <= k <= _MAX_K:
+        return _ws_error(f"k must be between 1 and {_MAX_K}, got {k}", "lower k, then page by narrowing the query")
+    if meeting is not None and not _safe_folder(meeting):
+        return _ws_error(f"invalid meeting folder '{meeting}'", "pass a folder name from whosaid_meetings (no path separators)")
+
+    args = ["query", ws, query.strip(), "--mode", mode, "-k", k]
+    if speaker and speaker.strip():
+        args += ["--speaker", speaker.strip()]
+    if meeting:
+        args += ["--meeting", meeting.strip()]
+
+    payload, err = _run_ws(SEARCH_PY, args, ws)
+    if err:
+        return err
+    hits = _as_list(payload, "hits")
+    out = {"ok": True, "workspace": str(ws), "mode": mode, "hits": hits, "count": len(hits)}
+    if isinstance(payload, dict) and payload.get("engine"):
+        out["engine"] = payload["engine"]
+    if hits:
+        out["next_step"] = "call whosaid_context(meeting, t_str) on a hit for the verbatim turns around it"
+    else:
+        out["next_step"] = "no hits: loosen the query, or run whosaid_workspace_status to confirm the index exists"
+    return out
+
+
+# ---------------------------------------------------------------------------
+# 8) whosaid_context
+# ---------------------------------------------------------------------------
+@mcp.tool(name="whosaid_context", description=_DESC_WS_CONTEXT, annotations=_read_only())
+def whosaid_context(
+    meeting: str,
+    at: str,
+    before: int = 60,
+    after: int = 120,
+    workspace: Optional[str] = None,
+) -> dict:
+    """Shell `search.py context <ws> <meeting> <at> --before B --after A --json`.
+
+    The one to call after a whosaid_search hit: it returns just the verbatim
+    turns around `at` ({"meeting", "at", "turns": [{t_sec, t_str, speaker,
+    text}], "count"}) instead of a whole transcript.
+    """
+    ws, err = _resolve_ws(workspace)
+    if err:
+        return err
+    if not _safe_folder(meeting):
+        return _ws_error(f"invalid meeting folder '{meeting}'", "pass a folder name from whosaid_meetings or a search hit (no path separators)")
+    at = (at or "").strip()
+    if not _AT_RE.match(at):
+        return _ws_error(f"invalid at '{at}'", "use HH:MM:SS or MM:SS, e.g. the t_str of a search hit")
+    for label, value in (("before", before), ("after", after)):
+        try:
+            value = int(value)
+        except (TypeError, ValueError):
+            return _ws_error(f"invalid {label} '{value}'", f"pass whole seconds between 0 and {_MAX_WINDOW}")
+        if not 0 <= value <= _MAX_WINDOW:
+            return _ws_error(f"{label} must be between 0 and {_MAX_WINDOW} seconds, got {value}", "narrow the window; read the transcript resource for more")
+    before, after = int(before), int(after)
+
+    args = ["context", ws, meeting.strip(), at, "--before", before, "--after", after]
+    payload, err = _run_ws(SEARCH_PY, args, ws)
+    if err:
+        return err
+    turns = _as_list(payload, "turns")
+    return {
+        "ok": True,
+        "workspace": str(ws),
+        "meeting": meeting.strip(),
+        "at": at,
+        "before": before,
+        "after": after,
+        "turns": turns,
+        "count": len(turns),
+    }
+
+
+# ---------------------------------------------------------------------------
+# 9) whosaid_items
+# ---------------------------------------------------------------------------
+@mcp.tool(name="whosaid_items", description=_DESC_WS_ITEMS, annotations=_read_only())
+def whosaid_items(
+    owner: Optional[str] = None,
+    requester: Optional[str] = None,
+    status: Optional[str] = None,
+    type: Optional[str] = None,  # noqa: A002 - the MCP-facing name; mirrors `graph.py items --type`
+    workspace: Optional[str] = None,
+) -> dict:
+    """Shell `graph.py items <ws> [--owner ..] [--requester ..] [--status ..] [--type ..] --json`."""
+    ws, err = _resolve_ws(workspace)
+    if err:
+        return err
+    args = ["items", ws]
+    for flag, value in (("--owner", owner), ("--requester", requester), ("--status", status), ("--type", type)):
+        if value is not None and str(value).strip():
+            args += [flag, str(value).strip()]
+    payload, err = _run_ws(GRAPH_PY, args, ws)
+    if err:
+        return err
+    items = _as_list(payload, "items")
+    return {"ok": True, "workspace": str(ws), "items": items, "count": len(items)}
+
+
+# ---------------------------------------------------------------------------
+# 10) whosaid_item
+# ---------------------------------------------------------------------------
+@mcp.tool(name="whosaid_item", description=_DESC_WS_ITEM, annotations=_read_only())
+def whosaid_item(
+    id: str,  # noqa: A002 - the MCP-facing name; the AI-NNN id from whosaid_items
+    workspace: Optional[str] = None,
+) -> dict:
+    """Shell `graph.py item <ws> <id> --json` and return {"ok", "id", "item": {...}}."""
+    ws, err = _resolve_ws(workspace)
+    if err:
+        return err
+    item_id = (id or "").strip()
+    if not _ITEM_ID_RE.match(item_id):
+        return _ws_error(f"invalid item id '{id}'", "pass an id such as AI-042 (from whosaid_items)")
+    payload, err = _run_ws(GRAPH_PY, ["item", ws, item_id], ws)
+    if err:
+        return err
+    return {"ok": True, "workspace": str(ws), "id": item_id, "item": payload}
+
+
+# ---------------------------------------------------------------------------
+# 11) whosaid_person
+# ---------------------------------------------------------------------------
+@mcp.tool(name="whosaid_person", description=_DESC_WS_PERSON, annotations=_read_only())
+def whosaid_person(
+    name: Optional[str] = None,
+    workspace: Optional[str] = None,
+) -> dict:
+    """Shell `graph.py person <ws> [Name] --json`.
+
+    With `name`: {"ok", "name", "person": {...}} (that person's commitments view).
+    Without: {"ok", "people": [...], "count"} (everyone the graph knows).
+    """
+    ws, err = _resolve_ws(workspace)
+    if err:
+        return err
+    who = (name or "").strip()
+    args = ["person", ws] + ([who] if who else [])
+    payload, err = _run_ws(GRAPH_PY, args, ws)
+    if err:
+        return err
+    if who:
+        return {"ok": True, "workspace": str(ws), "name": who, "person": payload}
+    people = _as_list(payload, "people")
+    return {"ok": True, "workspace": str(ws), "people": people, "count": len(people)}
+
+
+# ---------------------------------------------------------------------------
+# 12) whosaid_meetings, 13) whosaid_prs, 14) whosaid_speakers
+# ---------------------------------------------------------------------------
+@mcp.tool(name="whosaid_meetings", description=_DESC_WS_MEETINGS, annotations=_read_only())
+def whosaid_meetings(workspace: Optional[str] = None) -> dict:
+    """Shell `graph.py meetings <ws> --json` and return {"ok", "meetings": [...], "count"}."""
+    ws, err = _resolve_ws(workspace)
+    if err:
+        return err
+    payload, err = _run_ws(GRAPH_PY, ["meetings", ws], ws)
+    if err:
+        return err
+    meetings = _as_list(payload, "meetings")
+    return {"ok": True, "workspace": str(ws), "meetings": meetings, "count": len(meetings)}
+
+
+@mcp.tool(name="whosaid_prs", description=_DESC_WS_PRS, annotations=_read_only())
+def whosaid_prs(workspace: Optional[str] = None) -> dict:
+    """Shell `graph.py prs <ws> --json` and return {"ok", "prs": [...], "count"}."""
+    ws, err = _resolve_ws(workspace)
+    if err:
+        return err
+    payload, err = _run_ws(GRAPH_PY, ["prs", ws], ws)
+    if err:
+        return err
+    prs = _as_list(payload, "prs")
+    return {"ok": True, "workspace": str(ws), "prs": prs, "count": len(prs)}
+
+
+@mcp.tool(name="whosaid_speakers", description=_DESC_WS_SPEAKERS, annotations=_read_only())
+def whosaid_speakers(workspace: Optional[str] = None) -> dict:
+    """Shell `search.py speakers <ws> --json` and return {"ok", "speakers": [...], "count"}."""
+    ws, err = _resolve_ws(workspace)
+    if err:
+        return err
+    payload, err = _run_ws(SEARCH_PY, ["speakers", ws], ws)
+    if err:
+        return err
+    speakers = _as_list(payload, "speakers")
+    return {"ok": True, "workspace": str(ws), "speakers": speakers, "count": len(speakers)}
+
+
+# ---------------------------------------------------------------------------
+# 15) whosaid_workspace_status
+# ---------------------------------------------------------------------------
+@mcp.tool(name="whosaid_workspace_status", description=_DESC_WS_STATUS, annotations=_read_only())
+def whosaid_workspace_status(workspace: Optional[str] = None) -> dict:
+    """`search.py status <ws> --json` plus local file checks and the whosaid.toml owner.
+
+    Always returns ok=True once the workspace resolves: a missing index is a
+    finding ("search_error" + "hint"), not a failure. Config is reported as the
+    owner label and the group NAMES only, never group members.
+    """
+    ws, err = _resolve_ws(workspace)
+    if err:
+        return err
+    status, serr = _run_ws(SEARCH_PY, ["status", ws], ws)
+    cfg = wsconfig.load_config(ws)
+    files = {name: (ws / name).is_file() for name in WORKSPACE_FILES}
+    index_present = wsconfig.search_db(ws).is_file()
+    meeting_folders = len(wsconfig.iter_meetings(ws))
+    owner = (cfg.get("workspace") or {}).get("owner") or None
+    groups = list((cfg.get("groups") or {}).keys())
+
+    out = {
+        "ok": True,
+        "workspace": str(ws),
+        "index_present": index_present,
+        "index_path": str(wsconfig.search_db(ws)),
+        "search": status if serr is None else None,
+        "files": files,
+        "meeting_folders": meeting_folders,
+        "config_present": (ws / wsconfig.CONFIG_NAME).is_file(),
+        "owner": owner,
+        "groups": groups,
+    }
+    if serr is not None:
+        out["search_error"] = serr["error"]
+        out["hint"] = serr["hint"]
+    missing = [name for name, present in files.items() if not present]
+    out["summary"] = (
+        f"{meeting_folders} meeting folder(s); index "
+        + ("present" if index_present else "MISSING (run: whosaid index <ws>)")
+        + (f"; missing {', '.join(missing)}" if missing else "; wiki, action items and index rendered")
+        + (f"; owner {owner}" if owner else "; no owner configured")
+        + "."
+    )
+    return out
+
+
+# ---------------------------------------------------------------------------
 # Resource: whosaid://guide (on-demand deep detail — not in the always-loaded schema)
 # ---------------------------------------------------------------------------
 _GUIDE = """# whosaid — deep reference (whosaid://guide)
@@ -935,6 +1414,25 @@ times faster with the same result. Tuning (CLI flags):
 - `HF_HOME` — Hugging Face cache (Whisper model cache).
 - `SHERPA_DIARIZE_CACHE` — sherpa-onnx diarization model cache.
 
+## Meeting workspace (search, graph, resources)
+A workspace is a directory of meeting folders, each holding a `*.speakers.txt`
+transcript (from `whosaid ingest`) and optionally `action-items.md`. `whosaid
+index <ws>` builds `_search.db` (SQLite FTS5 over every turn, optional
+`nomic-embed-text` embeddings from a localhost Ollama, and the entity graph:
+people, meetings, action items, commitments, PR mentions) plus `_WIKI.md`.
+`whosaid roll-up <ws> [--action-items]` renders `_INDEX.md` and `_ACTION-ITEMS.md`.
+- Workspace for tools: the `workspace` argument, else `WHOSAID_WORKSPACE`. No
+  cwd fallback. Resources read `WHOSAID_WORKSPACE` only.
+- whosaid_search -> whosaid_context -> whosaid_items / whosaid_item /
+  whosaid_person; whosaid_meetings, whosaid_prs, whosaid_speakers list the graph;
+  whosaid_workspace_status reports index + rendered files + config owner.
+- Resources: `whosaid://workspace/wiki` (_WIKI.md), `whosaid://workspace/action-items`
+  (_ACTION-ITEMS.md), `whosaid://workspace/index` (_INDEX.md),
+  `whosaid://workspace/meeting/{folder}/transcript` (the folder's speaker
+  transcript(s)), `whosaid://workspace/meeting/{folder}/action-items`.
+- Nothing here writes: rebuild with `whosaid index <ws>` (the watcher does it
+  after each ingest). A missing index comes back as an error dict with that hint.
+
 ## Not exposed over MCP
 `whosaid enroll` and `whosaid record` need a live terminal + Microphone
 permission — run them from the CLI. To enroll from a file you already have, use
@@ -947,6 +1445,128 @@ missing prerequisite prints its exact fix (usually `whosaid setup`).
 def guide() -> str:
     """Full flag / env / long-audio reference, read on demand by agents."""
     return _GUIDE
+
+
+# ---------------------------------------------------------------------------
+# Resources: whosaid://workspace/... (GitHub issue #14)
+#
+# Resource URIs carry no arguments beyond the {folder} template, so these read
+# the workspace from WHOSAID_WORKSPACE only. Every failure (no workspace, no
+# such file, bad folder) is returned as a short explanatory text, never raised,
+# so a client that lists-then-reads never sees a protocol error.
+#
+# `@mcp.resource("...{folder}...")` on a function taking `folder` registers a
+# resource TEMPLATE under both SDK majors (FastMCP 1.x and MCPServer 2.x); the
+# SDK matches the concrete URI and passes the segment in. The 2.x matcher does
+# not let "{folder}" span a "/", and _safe_folder rejects "..", so a read can
+# never leave the workspace.
+# ---------------------------------------------------------------------------
+def _resource_ws() -> tuple:
+    """(workspace dir, None) or (None, explanatory text). Resources: env only."""
+    ws, err = _resolve_ws(None)
+    if err:
+        return None, (
+            f"whosaid: {err['error']}. Resources read the workspace from WHOSAID_WORKSPACE; "
+            "launch the server with it set (tools also accept a `workspace` argument)."
+        )
+    return ws, None
+
+
+def _workspace_file(name: str, built_by: str) -> str:
+    """Text of <ws>/<name>, or a one-line note saying what writes it."""
+    ws, note = _resource_ws()
+    if note:
+        return note
+    text = _read_text_or_none(ws / name)
+    if text is None:
+        return f"{name} is not in {ws} yet; it is written by `{built_by}`."
+    return text
+
+
+def _meeting_dir(folder: str) -> tuple:
+    """(meeting dir, None) or (None, explanatory text) for a {folder} template value."""
+    ws, note = _resource_ws()
+    if note:
+        return None, note
+    if not _safe_folder(folder):
+        return None, (
+            f"invalid meeting folder '{folder}': pass one folder name from whosaid_meetings "
+            "(no path separators, no '..')."
+        )
+    meeting = ws / folder.strip()
+    if not meeting.is_dir():
+        return None, f"no meeting folder '{folder}' in {ws}; list them with whosaid_meetings."
+    return meeting, None
+
+
+@mcp.resource(
+    "whosaid://workspace/wiki",
+    description="The generated workspace wiki (_WIKI.md) built by `whosaid index <ws>`.",
+    mime_type="text/markdown",
+)
+def workspace_wiki() -> str:
+    """_WIKI.md from WHOSAID_WORKSPACE, or a note saying it is not built yet."""
+    return _workspace_file("_WIKI.md", "whosaid index <ws>")
+
+
+@mcp.resource(
+    "whosaid://workspace/action-items",
+    description="The deduplicated action-item corpus (_ACTION-ITEMS.md) rendered by `whosaid roll-up <ws> --action-items`.",
+    mime_type="text/markdown",
+)
+def workspace_action_items() -> str:
+    """_ACTION-ITEMS.md from WHOSAID_WORKSPACE, or a note saying it is not rendered yet."""
+    return _workspace_file("_ACTION-ITEMS.md", "whosaid roll-up <ws> --action-items")
+
+
+@mcp.resource(
+    "whosaid://workspace/index",
+    description="The meeting index (_INDEX.md: one row per meeting plus the nothing-missing audit) rendered by `whosaid roll-up <ws>`.",
+    mime_type="text/markdown",
+)
+def workspace_index() -> str:
+    """_INDEX.md from WHOSAID_WORKSPACE, or a note saying it is not rendered yet."""
+    return _workspace_file("_INDEX.md", "whosaid roll-up <ws>")
+
+
+@mcp.resource(
+    "whosaid://workspace/meeting/{folder}/transcript",
+    description="One meeting's speaker-labeled transcript (its *.speakers.txt, joined if there are several). Prefer whosaid_context for a slice.",
+    mime_type="text/plain",
+)
+def meeting_transcript(folder: str) -> str:
+    """Every *.speakers.txt in <ws>/<folder>, joined with a `# <file>` header each."""
+    meeting, note = _meeting_dir(folder)
+    if note:
+        return note
+    files = sorted(p for p in meeting.glob("*.speakers.txt") if p.is_file())
+    if not files:
+        return f"no *.speakers.txt in {meeting}; it is written by `whosaid ingest`."
+    if len(files) == 1:
+        return _read_text_or_none(files[0]) or f"{files[0].name} is empty."
+    parts = []
+    for f in files:
+        parts.append(f"# {f.name}\n" + (_read_text_or_none(f) or "(empty)"))
+    return "\n\n".join(parts)
+
+
+@mcp.resource(
+    "whosaid://workspace/meeting/{folder}/action-items",
+    description="One meeting's action-items.md, written by `whosaid ingest --action-items`.",
+    mime_type="text/markdown",
+)
+def meeting_action_items(folder: str) -> str:
+    """<ws>/<folder>/action-items.md, or a note saying it is not written yet."""
+    meeting, note = _meeting_dir(folder)
+    if note:
+        return note
+    text = _read_text_or_none(meeting / MEETING_ACTION_ITEMS)
+    if text is None:
+        return (
+            f"no {MEETING_ACTION_ITEMS} in {meeting} yet; it is written by "
+            "`whosaid ingest --action-items` (or the summarizer over this folder)."
+        )
+    return text
 
 
 if __name__ == "__main__":

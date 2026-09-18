@@ -28,13 +28,24 @@ Subcommands (the `whosaid` bash CLI shells out to this module via
       ingest and the coverage audit.
 
   action-items --transcript <path.speakers.txt> [--md-out F] [--json-out F] [--hook CMD]
-      Per-meeting action items. Pluggable: --hook (or WHOSAID_ACTION_ITEMS_HOOK)
-      runs as a shell command with the transcript text on stdin plus
-      WHOSAID_TRANSCRIPT_PATH and WHOSAID_SPEAKERS in the environment; its
-      stdout is the markdown, written to --md-out (default: action-items.md
-      alongside the transcript) and mirrored to --json-out if given. With no
-      hook a skeleton is emitted instead. Exits 0 either way — the offline
-      default stays intact.
+               [--engine auto|ollama|hook|none] [--ws DIR]
+      Per-meeting action items. Two engines (issue #14):
+        hook    --hook (or WHOSAID_ACTION_ITEMS_HOOK) runs as a shell command
+                with the transcript text on stdin plus WHOSAID_TRANSCRIPT_PATH
+                and WHOSAID_SPEAKERS in the environment; its stdout is the
+                markdown.
+        ollama  the built-in summarizer, lib/action_items.py, run in-process:
+                a local Ollama model on 127.0.0.1 drafts sectioned bullets
+                with verified quotes, configured by <workspace>/whosaid.toml
+                (owner, groups, model; see lib/wsconfig.py).
+      --engine defaults to [summarizer] engine in whosaid.toml, itself
+      defaulting to auto: a hook if one is set, else ollama if it answers,
+      else a skeleton. `none` always writes the skeleton. The markdown goes to
+      --md-out (default: action-items.md alongside the transcript) and is
+      mirrored to --json-out if given. Exits 0 either way, degrading to the
+      skeleton with a WARN when an engine fails, so the offline default stays
+      intact. --ws names the workspace whose whosaid.toml applies (default:
+      the transcript's parent's parent).
 
   rollup <workspace-dir> [--action-items] [-o INDEX.md] [--action-items-out F]
          [--similarity-threshold F] [--rebuild]
@@ -60,8 +71,17 @@ Subcommands (the `whosaid` bash CLI shells out to this module via
       collapsed as "[merged → AI-XXX]"), and new occurrences keep appending.
       Only edits visible in the md apply — direct JSON edits also survive.
       Incremental by default: re-running with nothing new writes nothing.
+      Folding is section-aware: a bullet that sits under a "## N. Heading"
+      in its meeting's action-items.md gives a NEW corpus item (or one that
+      has no type yet) that heading as its type, minus the "N. " and any
+      trailing parenthetical ("Asks from leadership (Bob)" -> "Asks from
+      leadership"), so the built-in summarizer's sections carry through to
+      _ACTION-ITEMS.md; hand-edited types still win. Bullets inside a
+      <details> block (the summarizer's verbatim evidence) and "- none"
+      placeholders are not items and are never folded.
 
-Everything stays LOCAL: stdlib only, no third-party imports, no network.
+Everything stays LOCAL: stdlib only, no third-party imports, no network
+(the ollama engine talks only to Ollama on 127.0.0.1).
 """
 
 from __future__ import annotations
@@ -106,6 +126,12 @@ MD_MERGE_NOTE_RE = re.compile(r"\((?P<ids>merged AI-\d{3,}(?:, ?AI-\d{3,})*)\)")
 MD_MERGED_STATUS_RE = re.compile(r"^merged → (AI-\d{3,})$")
 MD_COUNT_RE = re.compile(r"^\d+×$")
 MD_PAREN_RE = re.compile(r"\(([^()]*)\)")
+# Section headings in a per-meeting action-items.md: "## 3. Alice's own
+# commitments" -> "Alice's own commitments"; a trailing "(Bob, Carol)" is dropped.
+HEADING_RE = re.compile(r"^\s{0,3}(?P<hashes>#{1,6})\s+(?P<text>.*?)\s*#*\s*$")
+HEADING_NUM_RE = re.compile(r"^\d+[.)]\s+")
+HEADING_PAREN_RE = re.compile(r"\s*\([^()]*\)\s*$")
+ENGINES = ("auto", "ollama", "hook", "none")
 
 STOPWORDS = frozenset(
     """
@@ -238,6 +264,44 @@ def parse_bullets(markdown: str) -> list[tuple[int, str, str]]:
     return out
 
 
+def section_name(heading_text: str) -> str:
+    """'3. Asks from leadership (Bob, Carol)' -> 'Asks from leadership'."""
+    text = HEADING_NUM_RE.sub("", heading_text.strip(), count=1)
+    return HEADING_PAREN_RE.sub("", text).strip()
+
+
+def parse_bullets_with_sections(markdown: str) -> list[tuple[int, str, str, str]]:
+    """Like parse_bullets, plus the '##' section each bullet sits under:
+    [(line_no, owner, text, section)]. section is the heading text without
+    its leading 'N. ' and trailing parenthetical, '' before any heading (an
+    h1 resets it). Bullets inside a <details> block and '- none' placeholders
+    are skipped: they are evidence and empty-section markers, not items."""
+    out = []
+    section = ""
+    in_details = False
+    for n, line in enumerate(markdown.splitlines(), start=1):
+        low = line.strip().lower()
+        if in_details:
+            if "</details>" in low:
+                in_details = False
+            continue
+        if low.startswith("<details"):
+            in_details = "</details>" not in low
+            continue
+        h = HEADING_RE.match(line)
+        if h:
+            section = "" if len(h.group("hashes")) == 1 else section_name(h.group("text"))
+            continue
+        m = BULLET_RE.match(line)
+        if not m or not m.group("text").strip():
+            continue
+        text = m.group("text").strip()
+        if not m.group("owner") and normalize_text(text) == "none":
+            continue
+        out.append((n, (m.group("owner") or "").strip(), text, section))
+    return out
+
+
 def normalize_text(text: str) -> str:
     lowered = text.lower()
     stripped = re.sub(r"[^0-9a-z\s]", " ", lowered)
@@ -290,14 +354,47 @@ def skeleton_markdown(transcript: Path, speakers: list[str]) -> str:
     lines = [
         f"# Action items — {transcript.parent.name}",
         "",
-        "_No summarizer hook is configured, so no action items were extracted._",
-        "_Pass --hook CMD (or set WHOSAID_ACTION_ITEMS_HOOK) to generate them offline._",
+        "_No summarizer hook is configured and the built-in Ollama engine did not run, "
+        "so no action items were extracted._",
+        "_Re-run with --engine ollama (a local Ollama model on 127.0.0.1, offline) or pass "
+        "--hook CMD (or set WHOSAID_ACTION_ITEMS_HOOK) to generate them._",
         "",
     ]
     if speakers:
         lines.append(f"Speakers in this meeting: {', '.join(speakers)}")
         lines.append("")
     return "\n".join(lines)
+
+
+def run_hook(hook: str, transcript: Path, text: str, speakers: list[str]) -> str:
+    """The --hook engine: shell command, transcript on stdin, markdown on stdout.
+    Returns '' (after a WARN) when the hook fails or prints nothing."""
+    env = dict(os.environ)
+    env["WHOSAID_TRANSCRIPT_PATH"] = str(transcript.resolve())
+    env["WHOSAID_SPEAKERS"] = ",".join(speakers)
+    try:
+        proc = subprocess.run(
+            hook, shell=True, input=text, env=env,
+            capture_output=True, text=True,
+        )
+    except OSError as e:  # noqa: BLE001
+        log(f"WARN action-items hook failed to start ({e}); writing skeleton")
+        return ""
+    if proc.returncode == 0 and proc.stdout.strip():
+        return proc.stdout
+    tail = (proc.stderr or "").strip().splitlines()[-1:] or ["(no stderr)"]
+    log(f"WARN action-items hook exited {proc.returncode}: {tail[0]}; writing skeleton")
+    return ""
+
+
+def run_ollama_engine(text: str, meeting: str, cfg: dict) -> tuple[str, dict]:
+    """The built-in engine, in-process. Returns ('', {}) after a WARN on any failure."""
+    try:
+        import action_items  # lazy: only the ollama engine needs it
+        return action_items.draft(text, meeting, cfg)
+    except Exception as e:  # noqa: BLE001
+        log(f"WARN action-items engine ollama failed ({type(e).__name__}: {e}); writing skeleton")
+        return "", {}
 
 
 def cmd_action_items(args: argparse.Namespace) -> int:
@@ -308,28 +405,40 @@ def cmd_action_items(args: argparse.Namespace) -> int:
     text = transcript.read_text()
     speakers = parse_speakers(text)
 
+    import wsconfig  # sibling module in lib/; lazy so importers of this file need nothing new
+    ws = Path(args.ws).expanduser() if getattr(args, "ws", None) else transcript.resolve().parent.parent
+    cfg = wsconfig.load_config(ws)
+    engine = getattr(args, "engine", None) or str(cfg["summarizer"].get("engine") or "auto")
+    if engine not in ENGINES:
+        log(f"action-items: unknown engine {engine!r} (expected one of {', '.join(ENGINES)})")
+        return 1
     hook = args.hook or os.environ.get("WHOSAID_ACTION_ITEMS_HOOK", "")
+    if engine == "auto":
+        if hook:
+            engine = "hook"
+        elif wsconfig.ollama_up(wsconfig.ollama_url(cfg)):
+            engine = "ollama"
+        else:
+            engine = "none"
+            log(f"engine auto: no hook set and Ollama at {wsconfig.ollama_url(cfg)} is not "
+                "answering; writing skeleton")
+
     source = "skeleton"
     markdown = ""
-    if hook:
-        env = dict(os.environ)
-        env["WHOSAID_TRANSCRIPT_PATH"] = str(transcript.resolve())
-        env["WHOSAID_SPEAKERS"] = ",".join(speakers)
-        try:
-            proc = subprocess.run(
-                hook, shell=True, input=text, env=env,
-                capture_output=True, text=True,
-            )
-        except OSError as e:  # noqa: BLE001
-            log(f"WARN action-items hook failed to start ({e}); writing skeleton")
-            proc = None
-        if proc is not None and proc.returncode == 0 and proc.stdout.strip():
-            source = "hook"
-            markdown = proc.stdout
-        elif proc is not None:
-            tail = (proc.stderr or "").strip().splitlines()[-1:] or ["(no stderr)"]
-            log(f"WARN action-items hook exited {proc.returncode}: {tail[0]}; writing skeleton")
-    if source == "skeleton":
+    stats: dict = {}
+    if engine == "hook":
+        if not hook:
+            log("WARN --engine hook but no hook is set (--hook CMD or WHOSAID_ACTION_ITEMS_HOOK); "
+                "writing skeleton")
+        else:
+            markdown = run_hook(hook, transcript, text, speakers)
+            if markdown:
+                source = "hook"
+    elif engine == "ollama":
+        markdown, stats = run_ollama_engine(text, transcript.resolve().parent.name, cfg)
+        if markdown:
+            source = f"ollama:{stats.get('model', '')}"
+    if not markdown:
         markdown = skeleton_markdown(transcript, speakers)
 
     md_out = Path(args.md_out) if args.md_out else transcript.parent / "action-items.md"
@@ -340,10 +449,14 @@ def cmd_action_items(args: argparse.Namespace) -> int:
         payload = {
             "transcript": str(transcript),
             "md_out": str(md_out),
-            "source": source,
+            "source": source.split(":", 1)[0],
+            "engine": source,
             "speakers": speakers,
-            "items": [{"line": n, "owner": o, "text": t} for n, o, t in parse_bullets(markdown)],
+            "items": [{"line": n, "owner": o, "text": t, "section": s}
+                      for n, o, t, s in parse_bullets_with_sections(markdown)],
         }
+        if stats:
+            payload["stats"] = {k: v for k, v in stats.items() if k not in ("speakers", "meeting")}
         write_if_changed(Path(args.json_out), json.dumps(payload, indent=2) + "\n")
     return 0
 
@@ -639,11 +752,16 @@ def reconcile_from_md(items: list[ActionItem], md_text: str) -> None:
             it.type = entry["type"]
 
 
-def fold_meeting(meeting_folder: str, bullets: list[tuple[int, str, str]],
+def fold_meeting(meeting_folder: str, bullets: list[tuple],
                  items: list[ActionItem], next_id: list[int],
                  threshold: float = SIMILARITY_THRESHOLD,
                  near_misses: list[tuple[str, str, float]] | None = None) -> list[ActionItem]:
-    for line_no, owner, text in bullets:
+    """Bullets are (line, owner, text) or (line, owner, text, section); a
+    section becomes the type of a new item, or of a matched item that has
+    none yet (hand-set types were reconciled before folding and win)."""
+    for entry in bullets:
+        line_no, owner, text = entry[:3]
+        section = str(entry[3]) if len(entry) > 3 else ""
         norm = normalize_text(text)
         if not norm:
             continue
@@ -659,17 +777,19 @@ def fold_meeting(meeting_folder: str, bullets: list[tuple[int, str, str]],
         target = match
         if target is None:
             item = ActionItem(
-                id=f"AI-{next_id[0]:03d}", text=text, owner=owner,
+                id=f"AI-{next_id[0]:03d}", text=text, owner=owner, type=section,
                 first_seen=meeting_folder, last_seen=meeting_folder,
                 occurrences=[Occurrence(meeting=meeting_folder, line=line_no)],
             )
             next_id[0] += 1
             items.append(item)
             target = item
-            log(f"  + {item.id} (new): {text}")
+            log(f"  + {item.id} (new{', ' + section if section else ''}): {text}")
         else:
             if not target.owner and owner:
                 target.owner = owner
+            if not target.type and section and target.status != "merged":
+                target.type = section
             target.last_seen = max(target.last_seen, meeting_folder)
             if not any(o.meeting == meeting_folder for o in target.occurrences):
                 target.occurrences.append(Occurrence(meeting=meeting_folder, line=line_no))
@@ -800,7 +920,7 @@ def cmd_rollup(args: argparse.Namespace) -> int:
             if folder.name in folded:
                 log(f"  {folder.name}: action items already folded (skipping)")
                 continue
-            bullets = parse_bullets(md_path.read_text())
+            bullets = parse_bullets_with_sections(md_path.read_text())
             log(f"folding {folder.name}/action-items.md ({len(bullets)} item(s))")
             fold_meeting(folder.name, bullets, items, next_id,
                          args.similarity_threshold, near_misses)
@@ -893,7 +1013,15 @@ def build_parser() -> argparse.ArgumentParser:
     pai.add_argument("--json-out", default=None, help="also write parsed items as JSON")
     pai.add_argument("--hook", default=None,
                      help="shell command producing markdown from stdin "
-                          "(default: $WHOSAID_ACTION_ITEMS_HOOK, else skeleton)")
+                          "(default: $WHOSAID_ACTION_ITEMS_HOOK)")
+    pai.add_argument("--engine", choices=ENGINES, default=None,
+                     help="auto: hook if set, else ollama if it answers, else skeleton; "
+                          "ollama: built-in local-model summarizer (lib/action_items.py); "
+                          "hook: the --hook command; none: skeleton "
+                          "(default: [summarizer] engine in whosaid.toml, else auto)")
+    pai.add_argument("--ws", default=None,
+                     help="workspace dir whose whosaid.toml configures the summarizer "
+                          "(default: the transcript's parent's parent)")
     pai.set_defaults(func=cmd_action_items)
 
     pr = sub.add_parser("rollup", help="aggregate a meeting workspace: coverage index, "
