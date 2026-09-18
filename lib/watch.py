@@ -11,9 +11,12 @@ Subcommands (the `whosaid` bash CLI dispatches `whosaid watch ...` and
       One watcher pass. Every audio file in the source folder that is not in
       <ws>/.watch_state.json and whose mtime has been stable for
       watch.stable_seconds is copied into <ws>/.watch_staging/, fed to
-      `whosaid ingest <copy> --into <ws> --folder-by created --action-items`,
-      and recorded as done (keyed name:size, recordings are immutable). After
-      any success `whosaid roll-up <ws> --action-items` and `whosaid index <ws>`
+      `whosaid ingest <copy> --into <ws> --folder-by created --action-items
+      --commitments` (dev-commitments always ride along: the extractor is a
+      stdlib heuristic, so it costs nothing), and recorded as done (keyed
+      name:size, recordings are immutable). After any success `whosaid
+      roll-up <ws> --action-items` (which also folds the commitments corpus
+      and regenerates _WORKLIST-<Owner>.md) and `whosaid index <ws>`
       rebuild the aggregates. A file whose mtime is fresher than
       stable_seconds may still be syncing, so the pass stays alive (bounded by
       watch.max_wait_seconds) and rescans. <ws>/.watch.lock guards against
@@ -259,7 +262,7 @@ def ingest_one(ws: Path, path: Path, whosaid: str, engine: str | None,
     shutil.copy2(path, staged)  # keeps mtime; the container keeps its creation_time tag
     try:
         cmd = [whosaid, "ingest", str(staged), "--into", str(ws),
-               "--folder-by", "created", "--action-items"]
+               "--folder-by", "created", "--action-items", "--commitments"]
         if engine:
             cmd += ["--engine", engine]
         if accurate:
