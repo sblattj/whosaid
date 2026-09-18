@@ -66,6 +66,7 @@ def main() -> None:
         "whosaid_prs",
         "whosaid_speakers",
         "whosaid_workspace_status",
+        "whosaid_worklist",
     }
     expected = {
         "whosaid_transcribe",
@@ -186,6 +187,14 @@ def main() -> None:
     check("instead of loading a whole transcript" in d_context, "context desc must discourage whole-transcript reads")
     check("GitHub issue #13" in d_person, "person desc must cite the per-owner commitments view")
     check("whosaid index" in d_status, "status desc must point at whosaid index")
+    d_worklist = by_name["whosaid_worklist"].description or ""
+    check("GitHub issue #13" in d_worklist and "P1" in d_worklist and "_WORKLIST-" in d_worklist,
+          "worklist desc must cite issue #13, the tiers and the rendered file")
+    wprops = dumps["whosaid_worklist"]["inputSchema"]["properties"]
+    check(set(wprops) == {"owner", "workspace"}, f"worklist params: {sorted(wprops)}")
+    check(wprops["owner"].get("default") == "me", f"worklist owner default must be me: {wprops['owner']}")
+    check(not dumps["whosaid_worklist"]["inputSchema"].get("required"), "worklist has no required params")
+    check("whosaid_worklist" in (mcp_server.SERVER_INSTRUCTIONS or ""), "instructions must mention whosaid_worklist")
 
     sprops = dumps["whosaid_search"]["inputSchema"]["properties"]
     check(set(sprops["mode"]["enum"]) == {"exact", "meaning", "hybrid"}, f"search mode enum: {sprops['mode'].get('enum')}")
