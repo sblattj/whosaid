@@ -23,6 +23,13 @@
 
 set -euo pipefail
 
+# Hermetic summarizer: `action-items --engine auto` (the default) would use a
+# hook from the environment or a live Ollama on 127.0.0.1:11434 if it found
+# one. Point it at a port nobody listens on and drop any hook so the no-hook
+# checks below always exercise the skeleton path, offline.
+export WHOSAID_OLLAMA="http://127.0.0.1:9"
+unset WHOSAID_ACTION_ITEMS_HOOK
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPT_PATH="$SCRIPT_DIR/$(basename "${BASH_SOURCE[0]}")"
 REPO="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -251,6 +258,50 @@ assert_eq "$RC" 0 "action-items (failing hook) still exits 0"
 assert_text "hook exited 7" "$ERR" "failing hook is reported on stderr"
 assert_file "$TMP/ai/hook7.md" "failing hook still writes action-items.md"
 assert_grep "Speakers in this meeting: Alice, Bob" "$TMP/ai/hook7.md" "failing hook degrades to the skeleton"
+
+# --engine (issue #14): the default (auto) keeps the hook/skeleton behaviour
+# above; explicit engines are honoured; every failure degrades to the
+# skeleton with exit 0. Ollama is unreachable here (WHOSAID_OLLAMA above).
+echo "-- action-items --engine --"
+
+run_ws action-items --transcript "$TR" --md-out "$TMP/ai/auto.md"
+assert_eq "$RC" 0 "action-items (engine auto, nothing available) exit code"
+assert_text "engine auto: no hook set and Ollama at http://127.0.0.1:9 is not answering" "$ERR" \
+  "engine auto with no hook and no Ollama says so on stderr"
+assert_grep "with --engine ollama" "$TMP/ai/auto.md" "skeleton mentions --engine ollama"
+
+run_ws action-items --transcript "$TR" --md-out "$TMP/ai/none.md" --engine none --hook "$HOOK"
+assert_eq "$RC" 0 "action-items --engine none exit code"
+assert_text "action items \(skeleton\)" "$ERR" "--engine none writes the skeleton even with a hook given"
+assert_grep "No summarizer hook" "$TMP/ai/none.md" "--engine none markdown is the skeleton"
+
+run_ws action-items --transcript "$TR" --md-out "$TMP/ai/enghook.md" --engine hook --hook "$HOOK"
+assert_eq "$RC" 0 "action-items --engine hook exit code"
+assert_text "action items \(hook\)" "$ERR" "--engine hook runs the hook"
+assert_grep "prepare the slide deck" "$TMP/ai/enghook.md" "--engine hook markdown came from the hook"
+
+run_ws action-items --transcript "$TR" --md-out "$TMP/ai/enghook-none.md" --engine hook
+assert_eq "$RC" 0 "action-items --engine hook without a hook exit code"
+assert_text "no hook is set" "$ERR" "--engine hook without a hook warns"
+assert_grep "No summarizer hook" "$TMP/ai/enghook-none.md" "--engine hook without a hook degrades to the skeleton"
+
+run_ws action-items --transcript "$TR" --md-out "$TMP/ai/engollama.md" --json-out "$TMP/ai/engollama.json" --engine ollama
+assert_eq "$RC" 0 "action-items --engine ollama (Ollama down) still exits 0"
+assert_text "engine ollama failed" "$ERR" "--engine ollama failure is reported on stderr"
+assert_grep "No summarizer hook" "$TMP/ai/engollama.md" "--engine ollama failure degrades to the skeleton"
+OLLSRC="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["source"])' "$TMP/ai/engollama.json")" \
+  || fail "--engine ollama --json-out does not parse as JSON"
+assert_eq "$OLLSRC" "skeleton" "--engine ollama failure reports source=skeleton in --json-out"
+
+WHOSAID_ACTION_ITEMS_HOOK="$HOOK" run_ws action-items --transcript "$TR" --md-out "$TMP/ai/envhook.md"
+assert_eq "$RC" 0 "action-items with WHOSAID_ACTION_ITEMS_HOOK exit code"
+assert_text "action items \(hook\)" "$ERR" "engine auto picks the hook from the environment"
+
+run_ws action-items --transcript "$TR" --md-out "$TMP/ai/badengine.md" --engine bogus
+if [ "$RC" -eq 0 ]; then
+  fail "--engine bogus must be rejected (argparse choices), got exit 0"
+fi
+PASS=$((PASS + 1))
 
 # ---------------------------------------------------------------------------
 # 4. rollup basic: two complete dated meetings fold into the four
@@ -853,6 +904,70 @@ if grep -q 'my commitment' "$WS8/_ACTION-ITEMS.md"; then
   fail "type parenthetical survived --rebuild in _ACTION-ITEMS.md"
 fi
 PASS=$((PASS + 1))
+
+# ---------------------------------------------------------------------------
+# 17. Issue #14, section-aware folding: bullets under "## N. Heading" in a
+#     meeting's action-items.md (the built-in summarizer's shape) give new
+#     corpus items that heading as their type (minus "N. " and a trailing
+#     parenthetical); "- none" placeholders and the <details> evidence block
+#     are never folded; a hand-set type still wins on the next run.
+# ---------------------------------------------------------------------------
+echo "-- rollup section-typed items --"
+
+WS9="$TMP/ws-sections"
+make_meeting "$WS9" "2026-09-16-0703" "2026-09-16T14:03:17Z"
+cat > "$WS9/2026-09-16-0703/action-items.md" <<'EOF'
+# Action items — 2026-09-16-0703
+
+Speakers in this meeting: Alice_Example, Bob_Example, Carol_Example
+
+_Auto-drafted 2026-09-16T07:30-07:00 by `qwen-stub` (local Ollama, offline) via `whosaid action-items --engine ollama`: 3 candidate turns (1 by Alice, 2 naming them, 0 added by the model over 1 slice), 2 kept as evidence, 2 items drafted, 0 flagged ⚠. A DRAFT: read the evidence and the transcript before trusting it._
+
+## 1. Asks from leadership (Bob)
+- **Alice_Example** [Bob 00:00:05] Send the vendor report by Thursday. Bob wants it first. "send the vendor report to me by Thursday"
+
+## 2. Asks from team (Carol)
+- none
+
+## 3. Alice's own commitments
+- **Alice_Example** [Alice 00:00:20] Refresh the dashboard data source. Before the demo. "I will refresh the data source"
+
+## 4. Inferred next steps
+- **Alice_Example** [inferred] Confirm the demo time with Carol.
+
+<details><summary>Evidence turns the draft was built from (verbatim, 2)</summary>
+
+- [00:00:05] Bob_Example: Alice, can you send the vendor report to me by Thursday?
+- [00:00:20] Alice_Example: Yes, I will refresh the data source before the demo.
+
+</details>
+EOF
+
+run_ws rollup "$WS9" --action-items
+assert_eq "$RC" 0 "rollup (sections workspace) exit code"
+SECTIONCHECK="$(python3 - "$WS9" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1] + "/_action-items.json"))
+items = d["items"]
+assert [it["id"] for it in items] == ["AI-001", "AI-002", "AI-003"], [it["text"] for it in items]
+assert [it["type"] for it in items] == ["Asks from leadership", "Alice's own commitments", "Inferred next steps"], items
+assert all(it["owner"] == "Alice_Example" for it in items), items
+assert not any(it["text"].startswith("[00:") for it in items), "evidence turns were folded as items"
+assert not any(it["text"] == "none" for it in items), "'- none' placeholder was folded as an item"
+print("ok")
+PY
+)" || fail "section-type JSON check crashed"
+assert_eq "$SECTIONCHECK" "ok" "3 items typed from their sections; evidence and '- none' not folded"
+assert_grep '\*\*AI-001\*\* \[open\] \(Asks from leadership\) ' "$WS9/_ACTION-ITEMS.md" \
+  "_ACTION-ITEMS.md renders the section as the type"
+
+sed -i '' 's/\*\*AI-001\*\* \[open\] (Asks from leadership)/\*\*AI-001\*\* [open] (manager ask)/' \
+  "$WS9/_ACTION-ITEMS.md" || fail "sed failed to hand-edit the section-derived type"
+PASS=$((PASS + 1))
+run_ws rollup "$WS9" --action-items
+assert_eq "$RC" 0 "rollup after hand-editing a section-derived type exit code"
+assert_grep '\*\*AI-001\*\* \[open\] \(manager ask\) ' "$WS9/_ACTION-ITEMS.md" \
+  "hand-edited type wins over the section-derived one"
 
 # ---------------------------------------------------------------------------
 echo ""
