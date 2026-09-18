@@ -13,6 +13,13 @@
 #   whosaid <audio> [...]         Transcribe (and, by default, diarize) audio file(s).
 #   whosaid ingest <a...> --into D  Transcribe into a dated meeting workspace.
 #   whosaid roll-up <dir>           Rebuild the meeting-workspace index and audit.
+#   whosaid index <ws>              Build the workspace search index, graph, and wiki.
+#   whosaid search <ws> "<q>"       Exact / meaning / hybrid search over every transcript.
+#   whosaid context <ws> <mtg> <t>  Verbatim turns around a timestamp.
+#   whosaid graph <ws> <view>       items | item ID | person [Name] | prs | meetings | speakers.
+#   whosaid wiki <ws>               Regenerate <ws>/_WIKI.md from the graph.
+#   whosaid watch <sub>             run | install | uninstall | status: hands-free ingest (launchd).
+#   whosaid memos <sub>             list | pull | delete | shortcut-recipe: Voice Memos helpers.
 #   whosaid help                  This message.
 #
 # See `whosaid help` for the full flag reference.
@@ -34,7 +41,7 @@ REPO_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
 
 # Single source of truth for the released version. Bump this alongside the
 # CHANGELOG.md entry and git tag at release time.
-WHOSAID_VERSION="1.1.0"
+WHOSAID_VERSION="1.2.0"
 
 HELPER="$REPO_DIR/lib/transcribe_mlx.py"
 DIARIZER="$REPO_DIR/lib/diarize_sherpa.py"
@@ -132,8 +139,24 @@ USAGE
                                         meeting folder (idempotent by content
                                         hash; skips anything already ingested).
   whosaid roll-up <dir> [--action-items] [--similarity-threshold F] [--rebuild]
-                                        Rebuild the workspace index, audit, and
+                        [--index]       Rebuild the workspace index, audit, and
                                         action-item corpus.
+  whosaid index <ws> [--no-embed] [--rebuild]
+                                        Build <ws>/_search.db (full text, optional
+                                        embeddings, entity graph) and <ws>/_WIKI.md.
+  whosaid search <ws> "<query>" [--mode exact|meaning|hybrid] [--speaker S]
+                  [--meeting M] [-k N] [--json]
+                                        Search every speaker-labeled transcript.
+  whosaid context <ws> <meeting> <HH:MM:SS> [--before S] [--after S] [--json]
+                                        The verbatim turns around a timestamp.
+  whosaid graph <ws> items|item ID|person [Name]|prs|meetings|speakers [--json]
+                                        Entity views over the workspace.
+  whosaid wiki <ws> [--stdout] [-o FILE]
+                                        Regenerate the wiki from the graph.
+  whosaid watch run|install|uninstall|status [--into <ws>] [flags]
+                                        Hands-free ingest of new recordings (launchd).
+  whosaid memos list|pull|delete|shortcut-recipe [flags]
+                                        Voice Memos helpers (never touch the store).
   whosaid help | -h | --help           This message.
 
 TRANSCRIBE FLAGS
@@ -236,7 +259,13 @@ INGEST FLAGS
   --tz ZONE           IANA zone for the dated folder name (default: system local
                       zone via /etc/localtime, else UTC).
   --action-items      Also extract action items for each ingested meeting.
+  --engine E          Action-items engine: auto (default; Ollama when it is up,
+                      else hook, else a skeleton) | ollama (the built-in local
+                      summarizer) | hook | none. Implies --action-items.
   --hook CMD          Action-items hook for this run (default: $WHOSAID_ACTION_ITEMS_HOOK).
+  --index             After every file is ingested, run
+                      'whosaid roll-up <ws> --action-items' then 'whosaid index <ws>'
+                      so the new meetings are searchable right away.
   Any transcribe flag above (except -o/--outdir and -n/--name, which ingest
   controls) is accepted and passed through to the transcriber.
 
@@ -251,6 +280,65 @@ ROLL-UP FLAGS
                       Dedupe similarity threshold, 0.5–1.0 (default: 0.82).
                       Pairs within 0.10 below it are listed for review.
   --rebuild           Reset manifest + corpus, rebuild from folders on disk.
+  --index             Run 'whosaid index <ws>' after the roll-up.
+
+WORKSPACE SEARCH
+  <ws> is the meeting workspace directory. Every search command also accepts it
+  from $WHOSAID_WORKSPACE, or from the current directory when that holds
+  _workspace.json or whosaid.toml, so <ws> may be omitted.
+
+  index      Builds <ws>/_search.db: an FTS5 table over every *.speakers.txt
+             (dated or hand-named folders alike), optional neural embeddings via
+             Ollama nomic-embed-text on 127.0.0.1 (skipped with --no-embed or
+             when Ollama is down; exact search still works), and the entity
+             tables (person, meeting, action_item, occurrence, commitment,
+             pr_mention) derived from the manifest, the action-item corpus, each
+             meeting's action-items.md, and the transcripts. Then writes
+             <ws>/_WIKI.md. Steps run in order: search, graph, wiki; the first
+             failure stops the run and is named. --rebuild drops and recreates
+             the database; the file is always safe to delete.
+  search     --mode exact (FTS5: words, "phrases", AND/OR/NOT; default when no
+             embeddings exist), meaning (nearest embeddings), or hybrid (both,
+             fused; the default when embeddings exist). --speaker and --meeting
+             narrow the hits, -k caps them, --json prints one object per hit.
+             Each hit prints "[meeting @ HH:MM:SS] Speaker: ...snippet...".
+  context    The verbatim turns --before (default 60 s) and --after (default
+             120 s) a timestamp in one meeting, for reading a hit in place.
+  graph      items [--owner N] [--requester N] [--status S] [--type T]
+             item AI-NNN (detail, occurrences, timestamped commitments)
+             person [Name] (talk share, commitments they made and asked for)
+             prs (PR numbers mentioned, spoken or written) | meetings (coverage)
+             speakers (talk share per speaker across the workspace)
+  wiki       Regenerates <ws>/_WIKI.md from the graph; --stdout prints instead.
+  Per-workspace settings live in <ws>/whosaid.toml (owner, groups, summarizer,
+  search, watch); see the README for the full example.
+
+WATCH
+  whosaid watch install --into <ws> [--source DIR] [--seed] [--dry-run]
+                        [--interpreter PATH] [--label L] [--interval S]
+                        [--offline] [--env K=V ...] [--no-open]
+  whosaid watch run     --into <ws> [--source DIR] [--seed] [--dry-run]
+                        [--accurate] [--offline] [--whosaid PATH] [--engine E]
+  whosaid watch uninstall [--into <ws> | --label L] [--purge]
+  whosaid watch status    [--into <ws> | --label L] [--json]
+  install writes a launchd LaunchAgent that watches --source (default: the macOS
+  Voice Memos store) and, once a recording's mtime has been stable, stages it
+  out of the TCC-protected store and runs 'whosaid ingest --action-items', then
+  roll-up and index. --seed marks the recordings already there as done. Full
+  Disk Access is granted to ONE dedicated, ad-hoc-signed interpreter the
+  installer provisions; --interpreter PATH reuses a binary you already granted.
+  --source works for any folder, not just Voice Memos. uninstall --purge also
+  removes the interpreter, state file, and log. run is the same pipeline in the
+  foreground (--dry-run lists what would be ingested).
+
+  whosaid memos list [--source DIR] [--json]     Titles and sync state.
+  whosaid memos pull [--latest | --title T] [-o DIR]
+                                                 Copy a memo out of the store.
+  whosaid memos delete "<title>" [--yes]         Delete through the Voice Memos
+                                                 app's own Delete Recordings
+                                                 intent (a one-action Shortcut),
+                                                 never the files or database.
+  whosaid memos shortcut-recipe                  How to build that Shortcut.
 
 ENV OVERRIDES
   WHOSAID_MODEL        Default Whisper model repo.
@@ -267,6 +355,16 @@ ENV OVERRIDES
   WHOSAID_INSTALL_DIR  Command install directory (default: ~/.local/bin).
   WHOSAID_ACTION_ITEMS_HOOK  Default action-items summarizer hook: gets the
                       transcript on stdin, prints markdown on stdout.
+  WHOSAID_WORKSPACE    Default meeting workspace for index/search/context/graph/
+                      wiki, for 'whosaid doctor', and for the read-only search
+                      tools of 'whosaid mcp'.
+  WHOSAID_OWNER        Whose action items a workspace tracks (overrides
+                      whosaid.toml [workspace] owner).
+  WHOSAID_OLLAMA       Ollama base URL for embeddings and the built-in summarizer
+                      (default: http://127.0.0.1:11434; localhost only).
+  WHOSAID_SUMMARIZER_MODEL  Ollama model for the built-in action-items engine
+                      (default: qwen2.5:14b).
+  WHOSAID_BIN          The whosaid command the watcher runs (default: this script).
   HF_HOME               Hugging Face cache location (Whisper model cache).
   SHERPA_DIARIZE_CACHE  sherpa-onnx diarization model cache location.
 
@@ -464,8 +562,57 @@ cmd_doctor() {
     echo "✓ $voices_found enrolled voice(s) in $VOICE_REFS"
   fi
 
+  # Workspace search stack (GitHub issue #14): both lines are informational.
+  # Ollama is optional (exact search and the hook/none engines work without it)
+  # and a missing workspace or module must never fail doctor.
+  local ollama_url="${WHOSAID_OLLAMA:-http://127.0.0.1:11434}"
+  ollama_url="${ollama_url%/}"
+  if ollama_reachable "$ollama_url"; then
+    echo "✓ Ollama reachable at $ollama_url (meaning search + built-in summarizer available)"
+  else
+    echo "  Ollama not reachable at $ollama_url: search falls back to exact; action items use --engine hook or none (optional: brew install ollama; ollama pull nomic-embed-text)"
+  fi
+
+  if [[ -n "${WHOSAID_WORKSPACE:-}" ]]; then
+    local ws_status_py="$REPO_DIR/lib/search.py"
+    if [[ ! -d "$WHOSAID_WORKSPACE" ]]; then
+      echo "  workspace: WHOSAID_WORKSPACE=$WHOSAID_WORKSPACE is not a directory"
+    elif [[ ! -f "$ws_status_py" ]]; then
+      echo "  workspace: $WHOSAID_WORKSPACE (index status unavailable: lib/search.py missing)"
+    else
+      local ws_status="" ws_rc=0
+      ws_status="$(python3 "$ws_status_py" status "$WHOSAID_WORKSPACE" 2>&1)" || ws_rc=$?
+      if [[ "$ws_rc" -eq 0 ]]; then
+        echo "✓ workspace: $WHOSAID_WORKSPACE"
+      else
+        echo "  workspace: $WHOSAID_WORKSPACE has no index yet (fix: whosaid index \"$WHOSAID_WORKSPACE\")"
+      fi
+      [[ -n "$ws_status" ]] && printf '%s\n' "$ws_status" | sed 's/^/    /'
+    fi
+  else
+    echo "  workspace: WHOSAID_WORKSPACE not set; set it to your meeting workspace to see its index status here and to give 'whosaid mcp' a default"
+  fi
+
   echo "--- avfoundation audio devices ---"
   ffmpeg -f avfoundation -list_devices true -i "" 2>&1 | awk '/AVFoundation audio devices:/{show=1} show' || true
+}
+
+# ollama_reachable URL: 0 when GET URL/api/tags answers within 1.5 s. curl when
+# present, else python3 urllib; never raises under set -e.
+ollama_reachable() {
+  local url="$1"
+  if command -v curl >/dev/null 2>&1; then
+    curl -fsS --max-time 1.5 -o /dev/null "$url/api/tags" >/dev/null 2>&1 && return 0
+    return 1
+  fi
+  python3 - "$url" <<'PY' >/dev/null 2>&1
+import sys, urllib.request
+try:
+    with urllib.request.urlopen(sys.argv[1] + "/api/tags", timeout=1.5) as r:
+        sys.exit(0 if r.status == 200 else 1)
+except Exception:
+    sys.exit(1)
+PY
 }
 
 # ---- enroll --------------------------------------------------------------------
@@ -1010,14 +1157,17 @@ cmd_samples() {
 
 # ---- ingest / roll-up (issue #2: meeting workspace) ----------------------------
 # whosaid ingest <audio...> --into DIR [--folder-by created|mtime] [--tz ZONE]
-#                [--action-items] [--hook CMD] [transcribe flags...]
+#                [--action-items] [--engine E] [--hook CMD] [--index]
+#                [transcribe flags...]
 # Transcribe each file into <into>/<YYYY-MM-DD-HHMM>/ with base name "transcript"
 # and keep the source audio beside it so roll-up's audit can hash it. Idempotent:
 # a file whose sha256 already appears in <into>/_workspace.json (written by
 # roll-up) is skipped BEFORE any transcription. Folder naming, hashing, and
 # action items live in lib/workspace.py (stdlib-only; plain python3 runs it).
+# --engine picks the action-items engine (auto|ollama|hook|none; issue #14) and
+# implies --action-items; --index runs roll-up + index once every file is in.
 cmd_ingest() {
-  local into="" folder_by="created" tz_arg="" want_action_items=0 hook=""
+  local into="" folder_by="created" tz_arg="" want_action_items=0 hook="" engine="" want_index=0
   local passthrough=() AUDIO=()
 
   while [[ $# -gt 0 ]]; do
@@ -1026,7 +1176,9 @@ cmd_ingest() {
       --folder-by)    folder_by="$2"; shift 2 ;;
       --tz)           tz_arg="$2"; shift 2 ;;
       --action-items) want_action_items=1; shift ;;
+      --engine)       engine="$2"; want_action_items=1; shift 2 ;;
       --hook)         hook="$2"; shift 2 ;;
+      --index)        want_index=1; shift ;;
       # ingest owns the output layout and base name
       -o|--outdir) log "ingest: -o/--outdir is not allowed — ingest places each meeting itself"; exit 1 ;;
       -n|--name)   log "ingest: -n/--name is not allowed — ingest names its outputs 'transcript'"; exit 1 ;;
@@ -1198,6 +1350,7 @@ except BaseException:
       if [[ -s "$transcript" ]]; then
         local ai_args=(action-items --transcript "$transcript" --json-out "$folder/action-items.json")
         if [[ -n "$hook" ]]; then ai_args+=(--hook "$hook"); fi
+        if [[ -n "$engine" ]]; then ai_args+=(--engine "$engine"); fi
         python3 "$REPO_DIR/lib/workspace.py" "${ai_args[@]}" \
           || log "WARN action items failed for $fname (continuing)"
       else
@@ -1207,19 +1360,29 @@ except BaseException:
     log "✓ ingested $fname/"
   done
 
-  log "next: whosaid roll-up $into --action-items"
+  if [[ "$want_index" == "1" ]]; then
+    log "→ roll-up $into --action-items"
+    cmd_rollup "$into" --action-items
+    log "→ index $into"
+    cmd_index "$into"
+  else
+    log "next: whosaid roll-up $into --action-items --index"
+  fi
 }
 
 # whosaid roll-up <workspace-dir> [--action-items] [-o OUT] [--action-items-out OUT]
-#                 [--similarity-threshold F] [--rebuild]
+#                 [--similarity-threshold F] [--rebuild] [--index]
 # Thin bash front for `python3 lib/workspace.py rollup`: rebuilds _INDEX.md, the
 # _workspace.json manifest, and (with --action-items) the deduplicated corpus.
+# --index then runs `whosaid index <ws>` (issue #14), so this is a plain call
+# rather than an exec.
 cmd_rollup() {
-  local wsdir="" py_args=()
+  local wsdir="" py_args=() want_index=0
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --action-items)     py_args+=("$1"); shift ;;
       --rebuild)          py_args+=("$1"); shift ;;
+      --index)            want_index=1; shift ;;
       -o|--out)           py_args+=("$1" "$2"); shift 2 ;;
       --action-items-out) py_args+=("$1" "$2"); shift 2 ;;
       --similarity-threshold) py_args+=("$1" "$2"); shift 2 ;;
@@ -1229,7 +1392,178 @@ cmd_rollup() {
     esac
   done
   [[ -z "$wsdir" ]] && { log "roll-up: need a workspace directory. e.g. whosaid roll-up meetings/"; exit 1; }
-  exec python3 "$REPO_DIR/lib/workspace.py" rollup "$wsdir" ${py_args[@]+"${py_args[@]}"}
+  python3 "$REPO_DIR/lib/workspace.py" rollup "$wsdir" ${py_args[@]+"${py_args[@]}"}
+  if [[ "$want_index" == "1" ]]; then
+    cmd_index "$wsdir"
+  fi
+}
+
+# ---- workspace search / graph / wiki / watch / memos (issue #14) ----------------
+# Thin bash fronts for the stdlib modules in lib/: every remaining argument is
+# passed through untouched, so the modules own their flag sets. <ws> may be
+# omitted on the command line; the modules then resolve it from
+# $WHOSAID_WORKSPACE or the current directory (lib/wsconfig.py).
+SEARCH_PY="$REPO_DIR/lib/search.py"
+GRAPH_PY="$REPO_DIR/lib/graph.py"
+WATCH_PY="$REPO_DIR/lib/watch.py"
+
+# help_section TITLE: print one block of `whosaid help` (from the TITLE line
+# up to the next all-caps section header), so `whosaid search --help` answers
+# with the relevant part instead of the whole reference.
+help_section() {
+  # No awk `exit`: reading to the end keeps cmd_help clear of SIGPIPE under pipefail.
+  cmd_help | awk -v title="$1" '
+    $0 == title { show = 1; print; next }
+    show && /^[A-Z][A-Z -]+$/ { show = 0 }
+    show { print }
+  '
+}
+
+# want_help ARGS...: 0 when -h/--help appears anywhere in ARGS.
+want_help() {
+  local arg
+  for arg in "$@"; do
+    case "$arg" in -h|--help) return 0 ;; esac
+  done
+  return 1
+}
+
+# require_module PATH LABEL: fail loud if a lib module is missing from this checkout.
+require_module() {
+  [[ -f "$1" ]] || { log "$2: module not found at $1 (is this checkout complete?)"; exit 1; }
+}
+
+# whosaid index <ws> [--no-embed] [--rebuild]
+# Three steps in order, stopping at the first failure and naming it:
+#   1. python3 lib/search.py build <ws> [--no-embed] [--rebuild]   (FTS5 + embeddings)
+#   2. python3 lib/graph.py build <ws>                             (entity tables)
+#   3. python3 lib/graph.py wiki <ws>                              (_WIKI.md)
+cmd_index() {
+  if want_help "$@"; then help_section "WORKSPACE SEARCH"; exit 0; fi
+  require_module "$SEARCH_PY" index
+  require_module "$GRAPH_PY" index
+
+  local ws="" build_args=()
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --no-embed|--rebuild) build_args+=("$1"); shift ;;
+      -*) log "index: unknown option: $1"; log "usage: whosaid index <ws> [--no-embed] [--rebuild]"; exit 1 ;;
+      *)  if [[ -z "$ws" ]]; then ws="$1"; else log "index: unexpected arg '$1'"; exit 1; fi; shift ;;
+    esac
+  done
+  local ws_args=()
+  [[ -n "$ws" ]] && ws_args+=("$ws")
+
+  local step
+  step="search: python3 lib/search.py build"
+  python3 "$SEARCH_PY" build ${ws_args[@]+"${ws_args[@]}"} ${build_args[@]+"${build_args[@]}"} \
+    || { log "index: step failed: $step"; exit 1; }
+  step="graph: python3 lib/graph.py build"
+  python3 "$GRAPH_PY" build ${ws_args[@]+"${ws_args[@]}"} \
+    || { log "index: step failed: $step"; exit 1; }
+  step="wiki: python3 lib/graph.py wiki"
+  python3 "$GRAPH_PY" wiki ${ws_args[@]+"${ws_args[@]}"} \
+    || { log "index: step failed: $step"; exit 1; }
+  log "✓ index complete${ws:+ ($ws)}"
+}
+
+# whosaid search <ws> "<query>" [--mode exact|meaning|hybrid] [--speaker S]
+#                [--meeting M] [-k N] [--json]        -> lib/search.py query ...
+cmd_search() {
+  if want_help "$@"; then help_section "WORKSPACE SEARCH"; exit 0; fi
+  if [[ $# -eq 0 ]]; then
+    log "search: need a query. usage: whosaid search <ws> \"<query>\" [--mode exact|meaning|hybrid] [--speaker S] [--meeting M] [-k N] [--json]"
+    log "  (<ws> may be omitted when \$WHOSAID_WORKSPACE is set; run 'whosaid index <ws>' first)"
+    exit 1
+  fi
+  require_module "$SEARCH_PY" search
+  exec python3 "$SEARCH_PY" query "$@"
+}
+
+# whosaid context <ws> <meeting> <HH:MM:SS> [--before S] [--after S] [--json]
+#                                                      -> lib/search.py context ...
+cmd_context() {
+  if want_help "$@"; then help_section "WORKSPACE SEARCH"; exit 0; fi
+  if [[ $# -eq 0 ]]; then
+    log "context: usage: whosaid context <ws> <meeting> <HH:MM:SS> [--before S] [--after S] [--json]"
+    exit 1
+  fi
+  require_module "$SEARCH_PY" context
+  exec python3 "$SEARCH_PY" context "$@"
+}
+
+# whosaid graph <ws> items|item ID|person [Name]|prs|meetings|speakers [flags]
+# The view keyword may come first (no <ws>) or second (after <ws>). speakers is
+# a search.py view (talk share needs the segment table); the rest are graph.py.
+GRAPH_VIEWS="items item person prs meetings speakers build"
+cmd_graph() {
+  if want_help "$@"; then help_section "WORKSPACE SEARCH"; exit 0; fi
+  local usage="usage: whosaid graph <ws> items|item AI-NNN|person [Name]|prs|meetings|speakers [--json]"
+  [[ $# -eq 0 ]] && { log "graph: need a view. $usage"; exit 1; }
+
+  local ws="" view=""
+  if is_graph_view "$1"; then
+    view="$1"; shift
+  else
+    ws="$1"; shift
+    [[ $# -gt 0 ]] && is_graph_view "$1" || { log "graph: need a view after '$ws'. $usage"; exit 1; }
+    view="$1"; shift
+  fi
+  local ws_args=()
+  [[ -n "$ws" ]] && ws_args+=("$ws")
+
+  case "$view" in
+    speakers)
+      require_module "$SEARCH_PY" graph
+      exec python3 "$SEARCH_PY" speakers ${ws_args[@]+"${ws_args[@]}"} "$@"
+      ;;
+    *)
+      require_module "$GRAPH_PY" graph
+      exec python3 "$GRAPH_PY" "$view" ${ws_args[@]+"${ws_args[@]}"} "$@"
+      ;;
+  esac
+}
+
+is_graph_view() {
+  local v
+  for v in $GRAPH_VIEWS; do [[ "$1" == "$v" ]] && return 0; done
+  return 1
+}
+
+# whosaid wiki <ws> [--stdout] [-o FILE]                -> lib/graph.py wiki ...
+cmd_wiki() {
+  if want_help "$@"; then help_section "WORKSPACE SEARCH"; exit 0; fi
+  require_module "$GRAPH_PY" wiki
+  exec python3 "$GRAPH_PY" wiki "$@"
+}
+
+# whosaid watch run|install|uninstall|status [flags]     -> lib/watch.py <sub> ...
+# WHOSAID_BIN tells the watcher which whosaid to run; default to this script so
+# a launchd job started from an installed symlink still finds the checkout.
+cmd_watch() {
+  if want_help "$@"; then help_section "WATCH"; exit 0; fi
+  local usage="usage: whosaid watch run|install|uninstall|status [--into <ws>] [flags]"
+  [[ $# -eq 0 ]] && { log "watch: need a subcommand. $usage"; exit 1; }
+  case "$1" in
+    run|install|uninstall|status) ;;
+    *) log "watch: unknown subcommand '$1'. $usage"; exit 1 ;;
+  esac
+  require_module "$WATCH_PY" watch
+  export WHOSAID_BIN="${WHOSAID_BIN:-$REPO_DIR/whosaid}"
+  exec python3 "$WATCH_PY" "$@"
+}
+
+# whosaid memos list|pull|delete|shortcut-recipe [flags] -> lib/watch.py memos <sub> ...
+cmd_memos() {
+  if want_help "$@"; then help_section "WATCH"; exit 0; fi
+  local usage="usage: whosaid memos list|pull|delete \"<title>\"|shortcut-recipe [flags]"
+  [[ $# -eq 0 ]] && { log "memos: need a subcommand. $usage"; exit 1; }
+  case "$1" in
+    list|pull|delete|shortcut-recipe) ;;
+    *) log "memos: unknown subcommand '$1'. $usage"; exit 1 ;;
+  esac
+  require_module "$WATCH_PY" memos
+  exec python3 "$WATCH_PY" memos "$@"
 }
 
 # ---- dispatch --------------------------------------------------------------------
@@ -1258,6 +1592,27 @@ case "${1:-}" in
   roll-up|rollup)
     cmd_rollup "${@:2}"
     ;;
+  index)
+    cmd_index "${@:2}"
+    ;;
+  search)
+    cmd_search "${@:2}"
+    ;;
+  context)
+    cmd_context "${@:2}"
+    ;;
+  graph)
+    cmd_graph "${@:2}"
+    ;;
+  wiki)
+    cmd_wiki "${@:2}"
+    ;;
+  watch)
+    cmd_watch "${@:2}"
+    ;;
+  memos)
+    cmd_memos "${@:2}"
+    ;;
   doctor)
     cmd_doctor
     ;;
@@ -1267,6 +1622,9 @@ case "${1:-}" in
   mcp)
     # Pin to the tested SDK major: mcp 2.x uses MCPServer; a future 3.0 could
     # break the API, so cap it rather than silently pull an untested major.
+    # WHOSAID_WORKSPACE (inherited from the client's env) is the default
+    # workspace for the read-only search tools and whosaid://workspace/...
+    # resources; the server never rebuilds the index itself.
     exec uv run --quiet --with "mcp[cli]>=2,<3" python "$REPO_DIR/lib/mcp_server.py"
     ;;
   help|-h|--help|"")
