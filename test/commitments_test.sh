@@ -25,6 +25,10 @@
 #  10. semantic dedupe: a reworded commitment difflib scores far below 0.82
 #      folds under WHOSAID_EMBED_FAKE=1 (bag-of-words cosine) and stays a
 #      separate item when the embed server is unreachable (difflib fallback)
+#  11. fragment filter (issue #22): clause hygiene, the min_words content
+#      rule at extraction and at fold, the requested_by / deadline rescue,
+#      min_words=0, --min-words and [commitments] min_words, and the
+#      near-miss reporting in commitments.md/.json and _COMMITMENTS.md
 #
 # macOS/BSD only: BSD grep/sed, bash 3.2 (no associative arrays). Python
 # checker scripts are written to files (not inline in "$( ... )") because
@@ -517,6 +521,325 @@ SEMFAKE="$(run_pycheck "$TMP/check_sem_fake.py" "$SEMWS")" || fail "fake-embeddi
 assert_eq "$SEMFAKE" "ok" "fake embeddings fold the reworded commitment into CM-001 (2 occurrences)"
 assert_has "(2×): I'll write the rollout runbook for the platform team" "$SEMWS/_COMMITMENTS.md" \
   "_COMMITMENTS.md renders the semantically merged item once"
+
+# ---------------------------------------------------------------------------
+# 11. Fragment filter (issue #22). The fixture is the issue's own sample: 14
+#     clauses that carry something to act on and 13 that do not, one per
+#     turn, plus a boss request and a deadline that rescue one-word clauses.
+# ---------------------------------------------------------------------------
+echo "-- fragment filter: extraction --"
+
+FRAGWS="$TMP/frag"
+FRAG="$FRAGWS/2026-09-17-0900"
+mkdir -p "$FRAG"
+cat > "$FRAG/transcript.speakers.txt" <<'EOF'
+# Speaker-labeled transcript: transcript
+# Diarization: sherpa-onnx, local.
+# Speakers (3): Alice_Example, Bob_Example, Carol_Example
+# Role: Alice_Example = self
+# Role: Bob_Example = boss
+# Role: Carol_Example = peer
+
+[00:00:01] Alice_Example: I'll look into two things before tomorrow
+
+[00:00:02] Alice_Example: I'm going to add those features today
+
+[00:00:03] Alice_Example: I'll report back what savings we get
+
+[00:00:04] Alice_Example: I'll post the top ranking first
+
+[00:00:05] Alice_Example: I can create an Epic if needed
+
+[00:00:06] Alice_Example: I will bump the version
+
+[00:00:07] Alice_Example: I will just focus on their comments
+
+[00:00:08] Alice_Example: I'll coordinate with the team on that
+
+[00:00:09] Alice_Example: I'll ground myself on the latest
+
+[00:00:10] Alice_Example: I can have AI control the browser
+
+[00:00:11] Alice_Example: I can record the video for you
+
+[00:00:12] Alice_Example: I'll take a look at this
+
+[00:00:13] Alice_Example: I'll post it for maybe DocX
+
+[00:00:14] Alice_Example: i'll i'll start investigating that while i
+
+[00:00:20] Alice_Example: I'll do that
+
+[00:00:21] Alice_Example: I'll do that secondarily
+
+[00:00:22] Alice_Example: I'll check
+
+[00:00:23] Alice_Example: I'll bring that up
+
+[00:00:24] Alice_Example: I'll leave this one
+
+[00:00:25] Alice_Example: I'll show that off
+
+[00:00:26] Alice_Example: I can go towards
+
+[00:00:27] Alice_Example: I can literally show
+
+[00:00:28] Alice_Example: I could call him
+
+[00:00:29] Alice_Example: i'll post it there
+
+[00:00:30] Alice_Example: I'll see what I can do
+
+[00:00:31] Alice_Example: i can i can have these
+
+[00:00:32] Alice_Example: I'll probably talk to him about that
+
+[00:00:40] Bob_Example: Can you own the rollout?
+
+[00:00:41] Alice_Example: I'll own it
+
+[00:00:42] Carol_Example: Thanks, that helps.
+
+[00:00:43] Alice_Example: I'll do it today
+EOF
+
+run_ws commitments --transcript "$FRAG/transcript.speakers.txt" --json-out "$FRAG/commitments.json"
+assert_eq "$RC" 0 "commitments extraction (fragment fixture) exit code"
+printf '%s\n' "$ERR" > "$TMP/frag_extract.err"
+assert_has "dropped 13 fragment(s) (min_words=2)" "$TMP/frag_extract.err" \
+  "extraction logs the one-line dropped-fragments summary"
+
+cat > "$TMP/check_frag.py" <<'PY'
+import json, sys
+sys.path.insert(0, sys.argv[2])
+import workspace as w
+d = json.load(open(sys.argv[1]))
+assert d["min_words"] == 2, d["min_words"]
+texts = [it["text"] for it in d["items"]]
+assert texts == [
+    "I'll look into two things before tomorrow",
+    "I'm going to add those features today",
+    "I'll report back what savings we get",
+    "I'll post the top ranking first",
+    "I can create an Epic",
+    "I will bump the version",
+    "I will just focus on their comments",
+    "I'll coordinate with the team on that",
+    "I'll ground myself on the latest",
+    "I can have AI control the browser",
+    "I can record the video for you",
+    "I'll take a look at this",
+    "I'll post it for maybe DocX",
+    "I'll start investigating that",
+    "I'll own it",
+    "I'll do it today",
+], texts
+by_text = {it["text"]: it for it in d["items"]}
+own = by_text["I'll own it"]
+assert own["requested_by"] == "Bob_Example" and own["priority"] == "high", own
+assert "requested_by" not in by_text["I'll do it today"], by_text["I'll do it today"]
+dropped = d["dropped"]
+assert [x["text"] for x in dropped] == [
+    "I'll do that", "I'll do that secondarily", "I'll check", "I'll bring that up",
+    "I'll leave this one", "I'll show that off", "I can go towards", "I can literally show",
+    "I could call him", "I'll post it there", "I'll see what I can do", "I can have these",
+    "I'll probably talk to him about that",
+], dropped
+assert all(x["reason"].startswith("fragment") for x in dropped), dropped
+assert dropped[0]["reason"] == "fragment: 0 content words, min 2", dropped[0]
+assert dropped[2]["reason"] == "fragment: 1 content word, min 2", dropped[2]
+assert dropped[0]["speaker"] == "Alice_Example" and dropped[0]["time"] == "00:00:20", dropped[0]
+# the review lines in commitments.md are not item bullets
+md = open(sys.argv[1].replace("commitments.json", "commitments.md")).read()
+assert "## Dropped fragments (review)" in md, md
+assert "- (Alice_Example) I'll check @ 00:00:22 (fragment: 1 content word, min 2)" in md, md
+assert len(w.parse_commitment_bullets(md)) == len(texts), "dropped lines must not parse as items"
+print("ok")
+PY
+FRAGCHECK="$(run_pycheck "$TMP/check_frag.py" "$FRAG/commitments.json" "$REPO/lib")" \
+  || fail "fragment extraction JSON check crashed"
+assert_eq "$FRAGCHECK" "ok" "sample: 14 kept (hygiene applied), 13 dropped with reasons; boss request and deadline rescue one-word clauses"
+
+# --min-words 0 disables the filter: every clause is an item, nothing dropped.
+run_ws commitments --transcript "$FRAG/transcript.speakers.txt" \
+  --json-out "$FRAG/cm_min0.json" --min-words 0
+assert_eq "$RC" 0 "commitments --min-words 0 exit code"
+cat > "$TMP/check_frag_min0.py" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+assert d["min_words"] == 0 and d["dropped"] == [], (d["min_words"], d["dropped"])
+texts = [it["text"] for it in d["items"]]
+assert len(texts) == 29, texts
+assert "I'll do that" in texts and "I can have these" in texts, texts
+assert "I'll start investigating that" in texts, "hygiene still applies with the filter off"
+print("ok")
+PY
+MIN0="$(run_pycheck "$TMP/check_frag_min0.py" "$FRAG/cm_min0.json")" || fail "--min-words 0 check crashed"
+assert_eq "$MIN0" "ok" "--min-words 0 keeps every clause (29 items) and drops nothing"
+assert_not_has "Dropped fragments" "$FRAG/commitments.md" \
+  "commitments.md (rewritten by the --min-words 0 run) has no review section"
+
+# [commitments] min_words in the workspace's whosaid.toml (the transcript's
+# parent's parent) is the default; --ws points elsewhere.
+printf '[commitments]\nmin_words = 3\n' > "$FRAGWS/whosaid.toml"
+run_ws commitments --transcript "$FRAG/transcript.speakers.txt" --json-out "$FRAG/cm_toml.json"
+assert_eq "$RC" 0 "commitments with [commitments] min_words = 3 exit code"
+cat > "$TMP/check_frag_toml.py" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+assert d["min_words"] == 3, d["min_words"]
+texts = [it["text"] for it in d["items"]]
+assert "I'll look into two things before tomorrow" in texts, texts
+assert "I will bump the version" not in texts, texts
+assert any(x["text"] == "I will bump the version" and x["reason"] == "fragment: 2 content words, min 3"
+           for x in d["dropped"]), d["dropped"]
+assert "I'll own it" in texts, "requested items still pass with one content word"
+print("ok")
+PY
+TOML="$(run_pycheck "$TMP/check_frag_toml.py" "$FRAG/cm_toml.json")" || fail "toml min_words check crashed"
+assert_eq "$TOML" "ok" "[commitments] min_words = 3 raises the bar; requested items keep the one-word rule"
+
+WS0="$TMP/frag-ws0"
+mkdir -p "$WS0"
+printf '[commitments]\nmin_words = 0\n' > "$WS0/whosaid.toml"
+run_ws commitments --transcript "$FRAG/transcript.speakers.txt" --json-out "$FRAG/cm_ws.json" --ws "$WS0"
+assert_eq "$RC" 0 "commitments --ws exit code"
+cat > "$TMP/check_frag_ws.py" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+assert d["min_words"] == 0 and d["dropped"] == [] and len(d["items"]) == 29, (d["min_words"], len(d["items"]))
+print("ok")
+PY
+WSCHK="$(run_pycheck "$TMP/check_frag_ws.py" "$FRAG/cm_ws.json")" || fail "--ws check crashed"
+assert_eq "$WSCHK" "ok" "--ws DIR reads [commitments] min_words from that workspace"
+rm -f "$FRAGWS/whosaid.toml"
+
+# Config round-trip and the helpers, in-process.
+cat > "$TMP/check_frag_cfg.py" <<'PY'
+import sys
+sys.path.insert(0, sys.argv[1])
+import workspace as w
+assert w.commitments_config({})["min_words"] == 2
+assert w.commitments_config({"commitments": {"min_words": 0}})["min_words"] == 0
+assert w.commitments_config({"commitments": {"min_words": "3"}})["min_words"] == 3
+assert w.commitments_config({"commitments": {"min_words": -1}})["min_words"] == 2, "negative falls back"
+assert w.commitments_config({"commitments": {"min_words": True}})["min_words"] == 2, "bool falls back"
+assert w.commitments_config({"commitments": {"min_words": "two"}})["min_words"] == 2, "junk falls back"
+assert w.content_words("I'll take a look at this") == ["take", "look"]
+assert w.content_words("i can i can have these") == []
+assert w.fragment_check("I'll check", 2) == (1, 2)
+assert w.fragment_check("I'll check", 2, requested=True) == (1, 1), "a request lowers the bar to 1"
+assert w.fragment_check("I'll do it by Friday", 2) == (1, 1), "a deadline phrase lowers the bar to 1"
+assert w.fragment_check("I'll check", 0) == (1, 0), "0 disables"
+assert w.tidy_clause("i'll i'll start investigating that while i", "i'll") == "I'll start investigating that", \
+    "stutter collapses, the dangling 'while i' tail drops, the pronoun is capitalized"
+assert w.tidy_clause("I'll send the report to", "i'll send") == "I'll send the report"
+assert w.tidy_clause("I can record the video for you", "i can") == "I can record the video for you"
+print("ok")
+PY
+CFGCHK="$(run_pycheck "$TMP/check_frag_cfg.py" "$REPO/lib")" || fail "config/helpers check crashed"
+assert_eq "$CFGCHK" "ok" "[commitments] min_words validates (int >= 0, junk falls back); helpers behave"
+
+# Fold time: a legacy commitments.json (written before the filter) with two
+# fragments, one requested fragment and one real item. A CM item that is
+# already a fragment in the corpus stays untouched.
+echo "-- fragment filter: fold --"
+
+FWS="$TMP/ws-frag"
+mkdir -p "$FWS/2026-09-15-0900"
+cat > "$FWS/_commitments.json" <<'EOF'
+{
+  "next_id": 2,
+  "similarity_threshold": 0.82,
+  "folded_meetings": [],
+  "items": [
+    {"id": "CM-001", "text": "I'll do that", "speaker": "Alice_Example", "priority": "normal",
+     "requested_by": "", "requested_by_role": "", "cue": "i'll", "negative": false,
+     "status": "open", "first_seen": "2026-09-01-0900", "last_seen": "2026-09-01-0900",
+     "merged_into": "", "occurrences": [{"meeting": "2026-09-01-0900", "line": 1}],
+     "md_status": "open", "md_text": "I'll do that", "md_speaker": "Alice_Example"}
+  ]
+}
+EOF
+cat > "$FWS/2026-09-15-0900/commitments.json" <<'EOF'
+{
+  "source": "heuristic",
+  "roles": {"Alice_Example": "self", "Bob_Example": "boss"},
+  "items": [
+    {"speaker": "Alice_Example", "speaker_role": "self",
+     "text": "I'll do that", "time": "00:00:04",
+     "cue": "i'll", "negative": false, "priority": "normal"},
+    {"speaker": "Alice_Example", "speaker_role": "self",
+     "text": "I'll check", "time": "00:00:09",
+     "cue": "i'll", "negative": false, "priority": "normal"},
+    {"speaker": "Alice_Example", "speaker_role": "self",
+     "text": "I'll own it", "time": "00:00:14",
+     "cue": "i'll own", "negative": false, "priority": "high",
+     "requested_by": "Bob_Example", "requested_by_role": "boss"},
+    {"speaker": "Alice_Example", "speaker_role": "self",
+     "text": "I'll review the migration plan", "time": "00:00:19",
+     "cue": "i'll", "negative": false, "priority": "normal"}
+  ]
+}
+EOF
+
+run_ws rollup "$FWS"
+assert_eq "$RC" 0 "rollup (fold-time fragment filter) exit code"
+printf '%s\n' "$ERR" > "$TMP/frag_fold.err"
+assert_has "dropped 2 fragment(s) at fold (min_words=2)" "$TMP/frag_fold.err" \
+  "roll-up logs the one-line fold-time dropped summary"
+assert_has "skipped (fragment: 1 content word, min 2): I'll check" "$TMP/frag_fold.err" \
+  "roll-up logs each skipped entry the way folds are logged"
+cat > "$TMP/check_frag_fold.py" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1] + "/_commitments.json"))
+items = d["items"]
+assert [(it["id"], it["text"]) for it in items] == [
+    ("CM-001", "I'll do that"), ("CM-002", "I'll own it"), ("CM-003", "I'll review the migration plan")], items
+assert len(items[0]["occurrences"]) == 1 and items[0]["status"] == "open", "existing CM-001 stays untouched"
+assert items[1]["priority"] == "high" and items[1]["requested_by"] == "Bob_Example", items[1]
+assert d["next_id"] == 4, d["next_id"]
+assert [(x["meeting"], x["text"], x["reason"]) for x in d["dropped"]] == [
+    ("2026-09-15-0900", "I'll do that", "fragment: 0 content words, min 2"),
+    ("2026-09-15-0900", "I'll check", "fragment: 1 content word, min 2")], d["dropped"]
+assert d["dropped"][0]["speaker"] == "Alice_Example" and d["dropped"][0]["time"] == "00:00:04", d["dropped"][0]
+print("ok")
+PY
+FOLDCHK="$(run_pycheck "$TMP/check_frag_fold.py" "$FWS")" || fail "fold-time fragment corpus check crashed"
+assert_eq "$FOLDCHK" "ok" "fold skips fragments (no CM id), keeps the requested one, records near misses; existing CM-001 stays"
+assert_has "## Dropped fragments (review)" "$FWS/_COMMITMENTS.md" \
+  "_COMMITMENTS.md renders the dropped-fragments review section"
+assert_has "- 2026-09-15-0900 (Alice_Example) I'll check @ 00:00:09 (fragment: 1 content word, min 2)" \
+  "$FWS/_COMMITMENTS.md" "review line carries meeting, speaker, text, time and reason"
+assert_has "**CM-001** [open] (Alice_Example)" "$FWS/_COMMITMENTS.md" \
+  "the pre-existing fragment item still renders as CM-001"
+
+shasum "$FWS/_COMMITMENTS.md" "$FWS/_commitments.json" > "$TMP/frag_before.sha"
+run_ws rollup "$FWS"
+assert_eq "$RC" 0 "second rollup (fold-time fragment filter) exit code"
+shasum -c "$TMP/frag_before.sha" >/dev/null 2>&1 \
+  || fail "second rollup rewrote the corpus (dropped near misses must persist byte-identically)"
+PASS=$((PASS + 1))
+printf '%s\n' "$ERR" > "$TMP/frag_fold2.err"
+assert_not_has "fragment(s) at fold" "$TMP/frag_fold2.err" \
+  "an incremental re-run drops nothing new and logs no summary"
+
+# [commitments] min_words = 0 at fold: everything folds, no review section.
+printf '[commitments]\nmin_words = 0\n' > "$FWS/whosaid.toml"
+run_ws rollup "$FWS" --rebuild
+assert_eq "$RC" 0 "rollup --rebuild with min_words = 0 exit code"
+cat > "$TMP/check_frag_fold0.py" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1] + "/_commitments.json"))
+assert [it["text"] for it in d["items"]] == [
+    "I'll do that", "I'll check", "I'll own it", "I'll review the migration plan"], d["items"]
+assert "dropped" not in d, d.get("dropped")
+print("ok")
+PY
+FOLD0="$(run_pycheck "$TMP/check_frag_fold0.py" "$FWS")" || fail "min_words = 0 fold check crashed"
+assert_eq "$FOLD0" "ok" "[commitments] min_words = 0 turns the fold-time filter off"
+assert_not_has "Dropped fragments" "$FWS/_COMMITMENTS.md" \
+  "no review section when nothing was dropped"
 
 # ---------------------------------------------------------------------------
 echo ""

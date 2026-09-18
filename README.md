@@ -168,6 +168,8 @@ With `--commitments`, each meeting also gets a `commitments.md` — the first-pe
 *you* made in it (see [Dev-commitments](#dev-commitments)). Roles set once via
 `whosaid relabel --role` decide whose cues count: tag your own voice `self` (and your manager
 `boss`), and the extractor tracks what you promised, ranking boss-requested items higher.
+`--min-words N` tunes the fragment filter for the run (fragments such as "I'll do that" are
+dropped; default `[commitments] min_words`, else 2; 0 disables).
 
 ### `whosaid roll-up` — index, audit, and the action-item corpus
 
@@ -194,7 +196,11 @@ whosaid roll-up ./meetings --action-items
   `CM-NNN` ids that never renumber, the same 0.82 text-similarity dedupe and 0.10 near-miss
   review band, grouped by status then speaker, with `**[boss]**` marking boss-requested items.
   Hand edits in `_COMMITMENTS.md` (mark one `done`, retitle, merge via `(merged CM-NNN)`) fold
-  back on the next roll-up, exactly like the action-item corpus.
+  back on the next roll-up, exactly like the action-item corpus. The fold applies the same
+  `[commitments] min_words` fragment rule as extraction, so per-meeting files written before
+  the filter (or by a hook) never put "I'll do that" into the corpus: skipped entries are
+  listed under _Dropped fragments (review)_ and kept in `_commitments.json` as `dropped`;
+  `CM` items already in the corpus are never touched.
 - **Personal worklist** `_WORKLIST-<Owner>.md`: whenever a commitments corpus or owner-attributed
   action items exist, roll-up also writes the owner's open items ranked into P1/P2/P3 (see
   [Dev-commitments](#dev-commitments)). The owner is `--owner NAME`, else the `self`-roled
@@ -313,6 +319,7 @@ boss = []                        # the default list, so omit a key to keep the b
 deadline_cues = ["today", "tonight", "tomorrow", "eod", "end of day", "this week", "next week"]
 blocking_cues = ["blocking", "blocked", "urgent", "asap", "critical", "hotfix", "prod", "outage", "customer", "release", "ship"]
 embed_threshold = 0.90           # cosine at or above this is a duplicate (with [search] embed)
+min_words = 2                    # content words a commitment clause needs; 0 keeps every fragment
 [commitments.weights]            # score = sum of the signals that fired
 boss = 5
 blocking = 4
@@ -441,6 +448,31 @@ commitment was a different speaker asking or directing ("can you…", "please…
 records `requested_by` — priority `high` when that speaker's role is `boss`. A pluggable hook
 (`--hook CMD` on the commitments subcommand, or `WHOSAID_COMMITMENTS_HOOK`) can replace the
 heuristic; it receives the transcript on stdin plus `WHOSAID_SPEAKERS` and `WHOSAID_ROLES`.
+
+**What gets dropped.** A cue alone is not a commitment: "I'll do that", "I'll check", "I'll
+bring that up" carry nothing to act on (the thing promised lives in the previous turn), so
+they would only clutter the worklist as rows with no object that never dedupe against the real
+item. The extractor therefore requires at least `[commitments] min_words` content words per
+clause (default 2), where content words are what is left after removing a stoplist of pronouns
+(including the cue itself), determiners, particles, prepositions, auxiliaries and fillers: "I'll
+bump the version" has two (`bump`, `version`); "I'll see what I can do" has one; "I'll do that"
+has none. One content word is enough when the item has a `requested_by` or names a deadline or
+urgency (`today`, `tomorrow`, `this week`, `by Friday`, `urgent`, `blocking`), since the request
+supplies the object: after "Can you own the rollout?", "I'll own it" is kept. Clause hygiene
+runs first: a stuttered cue collapses ("I'll I'll start investigating that while I" becomes
+"I'll start investigating that"), a clause ends at a subordinator (`while`, `because`, `if`,
+`when`, `unless`, `until`, `which`, ...: "I can create an Epic if needed" becomes "I can create
+an Epic"), and a dangling trailing pronoun or preposition is trimmed. Set `min_words = 0` to
+keep every clause, or pass `--min-words N` on `whosaid ingest` for one run.
+
+**Seeing the near misses.** Dropped clauses are reported the way low-similarity merges are:
+each meeting's `commitments.md` ends with a _Dropped fragments (review)_ section (`- (Alice_Example)
+I'll check @ 00:00:22 (fragment: 1 content word, min 2)`) mirrored as `dropped` in
+`commitments.json`, and the extractor logs `dropped N fragment(s) (min_words=2)`. Roll-up
+applies the same rule when folding, so older `commitments.json` files never seed fragments into
+the corpus; its skips land under _Dropped fragments (review)_ in `_COMMITMENTS.md` and persist
+in `_commitments.json`. If a real commitment shows up there, lower `min_words` in
+`whosaid.toml` and re-run (`roll-up --rebuild` re-folds every meeting).
 
 The corpus works exactly like the action-item corpus: stable `CM-NNN` ids that never renumber,
 the same 0.82 text-similarity dedupe with a 0.10 near-miss review band, and hand edits in
@@ -905,8 +937,10 @@ sidecar's `roles` key, and the `[role]` card label — no model download require
 
 `./test/commitments_test.sh` covers the dev-commitments extractor and corpus offline: cue,
 negation, and question handling, `self`-role gating, boss-requested priority, the `CM-NNN`
-roll-up dedupe and hand-edit reconcile, and the semantic dedupe under `WHOSAID_EMBED_FAKE=1`
-versus the difflib fallback when the embed server is unreachable; no model download required.
+roll-up dedupe and hand-edit reconcile, the semantic dedupe under `WHOSAID_EMBED_FAKE=1`
+versus the difflib fallback when the embed server is unreachable, and the fragment filter
+(clause hygiene, `min_words` at extraction and at fold, `--min-words`, the `[commitments]
+min_words` key, and the dropped-fragments review sections); no model download required.
 
 `./test/worklist_test.sh` covers the ranked worklist offline: every tier rule, ordering, why
 strings, owner resolution (`--owner`, `me`, the toml owner, aliases), the CM + AI union and its
