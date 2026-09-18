@@ -58,6 +58,17 @@ def main() -> None:
     if "creation_time" not in source:
         fail(f"source.creation_time key missing (null is fine, absent is not): {source}")
 
+    labels = data.get("local_labels", {})
+    if not isinstance(labels, dict):
+        fail(f"local_labels must be an object keyed by cluster id, got {type(labels).__name__}")
+    for cluster, entry in labels.items():
+        if not isinstance(entry, dict) or set(entry) != {"name", "note"}:
+            fail(f"local_labels['{cluster}'] must have exactly ['name', 'note'], got {entry}")
+        if not isinstance(entry["name"], str) or not entry["name"]:
+            fail(f"local_labels['{cluster}'].name must be a non-empty string: {entry}")
+        if entry["note"] is not None and not isinstance(entry["note"], str):
+            fail(f"local_labels['{cluster}'].note must be a string or null: {entry}")
+
     named = sum(1 for e in matches if e["matched"])
     print(f"sidecar schema OK: {len(matches)} match record(s), {named} matched; "
           f"source duration {dur}s, creation_time={source['creation_time']!r}")

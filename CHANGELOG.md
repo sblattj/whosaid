@@ -8,30 +8,19 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ### Added
 
-- **Speaker role tags.** Registry entries (`~/.config/whosaid/speakers.json`) may carry an
-  optional lowercase `"role"` — conventional set `self`/`boss`/`peer`/`report`/`external`,
-  free-form tags allowed — set with `whosaid relabel <base> --role NAME=ROLE` (repeatable;
-  also `--save-role` on the diarizer and a `roles` map on the MCP `whosaid_relabel` tool) and
-  preserved when a voiceprint is re-saved. Roles surface as `# Role: NAME = ROLE` header lines
-  in `<base>.speakers.txt`, a `NAME  [role]` label on speaker cards, and a top-level `"roles"`
-  key in the sidecar (omitted when empty); `whosaid_list_speakers` reports each entry's role
-  and the `whosaid_transcribe` result carries `roles`. Semantics downstream: `self` marks the
-  user's own voice, and a `boss`-roled speaker's requests rank higher (action items,
-  dev-commitments).
-- **Dev-commitments extractor.** `lib/workspace.py commitments --transcript T --json-out F`
-  (and `whosaid ingest --commitments`) extracts the first-person commitments the `self`-roled
-  speaker made: clause-initial cues (`i'll`, `i will`, `i plan to`, `let me`, `i owe`, …) via
-  a stdlib heuristic, negations (`i won't`/`i can't`) kept but flagged `negative`, question
-  clauses skipped — into per-meeting `commitments.md`/`commitments.json`. When the preceding
-  turn is a different speaker asking or directing, the item records `requested_by`, priority
-  `high` when that speaker's role is `boss`. A `--hook CMD` (env `WHOSAID_COMMITMENTS_HOOK`)
-  can replace the heuristic, mirroring the action-items hook contract.
 - **`_COMMITMENTS.md` / `_commitments.json` corpus.** Roll-up folds each meeting's
   `commitments.json` into stable `CM-NNN` ids (never renumbered) with the same 0.82 difflib
   dedupe and 0.10 near-miss review band as action items, grouped by status then speaker,
   `**[boss]**` marking boss-requested items; hand edits in the rendered `_COMMITMENTS.md`
   reconcile back on the next run. `_workspace.json` points at the corpus via
   `commitments_corpus` and `_INDEX.md` gains a conditional one-line open/total count.
+- **Transcript-only labels: `whosaid relabel <base> SPEAKER_04=Alice --no-save [--note TEXT]`
+  (GitHub issue #19).** Renames the cluster in the sidecar and re-renders the transcript + speaker
+  cards without ever writing to the registry — for the speaker the conversation makes obvious but
+  whose cluster is a poor voiceprint (a 176-turn mixed cluster would have degraded Alice's enrolled
+  print). The label is stored in the sidecar under `local_labels`, so it survives `relabel --auto`
+  and `whosaid samples`, and each card is marked `Alice_Example  (transcript-only label; registry
+  untouched)`. The `whosaid_relabel` MCP tool gains `no_save`, `force`, and `note` parameters.
 
 ### Changed
 
@@ -41,6 +30,13 @@ All notable changes to whosaid are documented here. This project adheres to
   resource.
 
 ### Fixed
+
+- **Silent registry replacement on relabel (GitHub issue #19).** Relabeling or `--save-speaker`-ing
+  a cluster onto a name already in the registry used to overwrite that person's saved voiceprint
+  without warning, even when the new cluster barely resembled it. Replacing an existing print whose
+  similarity to the new cluster is below the match threshold (default 0.50) now refuses with
+  `matches 'X' current print at 0.NN; replacing it. Pass --force or use --no-save.` unless `--force`
+  is passed.
 
 - **MCP `serverInfo.version` was empty (GitHub issue #14).** `whosaid mcp` now passes
   `__version__` to the SDK 2.x server so clients see `1.2.0` instead of an empty string; SDK 1.x,
