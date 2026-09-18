@@ -471,10 +471,17 @@ def provision_interpreter(dry: bool) -> str:
         return str(AGENT_BIN)
     log(f"provisioning the dedicated interpreter {AGENT_BIN} from {base} ...")
     shutil.rmtree(AGENT_DIR, ignore_errors=True)
-    subprocess.run([base, "-m", "venv", "--copies", str(AGENT_DIR)], check=True)
-    (AGENT_DIR / "bin/python3").rename(AGENT_BIN)
-    for stray in (AGENT_DIR / "bin").glob("python*"):
-        stray.unlink()
+    try:
+        subprocess.run([base, "-m", "venv", "--copies", str(AGENT_DIR)], check=True)
+        (AGENT_DIR / "bin/python3").rename(AGENT_BIN)
+        for stray in (AGENT_DIR / "bin").glob("python*"):
+            stray.unlink()
+    except (subprocess.CalledProcessError, OSError) as e:
+        raise SystemExit(
+            f"whosaid: could not provision {AGENT_BIN} from {base} ({e}); "
+            f"pass --interpreter PATH to reuse an interpreter you already have, or set "
+            f"WHOSAID_WATCH_AGENT_DIR to a writable location"
+        ) from None
     subprocess.run(["codesign", "-f", "-s", "-", str(AGENT_BIN)],
                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     if not (AGENT_BIN.is_file() and os.access(AGENT_BIN, os.X_OK)):

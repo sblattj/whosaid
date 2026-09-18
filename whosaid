@@ -297,9 +297,9 @@ WORKSPACE SEARCH
              <ws>/_WIKI.md. Steps run in order: search, graph, wiki; the first
              failure stops the run and is named. --rebuild drops and recreates
              the database; the file is always safe to delete.
-  search     --mode exact (FTS5: words, "phrases", AND/OR/NOT; default when no
-             embeddings exist), meaning (nearest embeddings), or hybrid (both,
-             fused; the default when embeddings exist). --speaker and --meeting
+  search     --mode exact (FTS5: words, "phrases", AND/OR/NOT; the default),
+             meaning (nearest embeddings), or hybrid (both, fused). meaning and
+             hybrid fall back to exact when Ollama is down. --speaker and --meeting
              narrow the hits, -k caps them, --json prints one object per hit.
              Each hit prints "[meeting @ HH:MM:SS] Speaker: ...snippet...".
   context    The verbatim turns --before (default 60 s) and --after (default

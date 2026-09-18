@@ -472,7 +472,9 @@ def test_resources(tmp: Path) -> None:
             text = fn(bad)
             check("SECRET" not in text, f"{fn.__name__}({bad!r}) must never read outside the workspace")
             check("invalid meeting folder" in text, f"{fn.__name__}({bad!r}) must reject: {text}")
-    check("SECRET" not in mcp_server.meeting_transcript("outside") or True, "sibling folder is inside ws; fine")
+    text = mcp_server.meeting_transcript("outside")
+    check("SECRET" not in text and "no meeting folder" in text,
+          f"a plain name resolves inside ws only, never to the sibling folder: {text}")
 
     check(mcp_server._safe_folder("2026-01-05-0900") and mcp_server._safe_folder("standup notes"), "normal names pass")
     check(not mcp_server._safe_folder(None), "None is not a folder")
