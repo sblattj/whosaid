@@ -86,6 +86,23 @@ All notable changes to whosaid are documented here. This project adheres to
   subcommand's `--min-words N` / `--ws DIR` override the toml; `min_words = 0` disables the
   filter.
 
+- **Worklist cues ignored negation, treated bare nouns as blocking, and never expired
+  relative deadlines (GitHub issue #21).** `cue_hit` now skips a cue that has a negator within
+  the three words before it in the same clause, so "send non-urgent questions to the channel",
+  "not blocking", "no rush", and "isn't critical" no longer rank P1 with `blocking=urgent`
+  ("not done yet, this is urgent" still does: the comma starts a new clause); the negator list
+  is the new `[commitments] negators` key. The bare nouns `prod`, `production`, `release`,
+  `ship`, `customer`, `customers` leave the default blocking list in favour of phrases (`prod
+  issue`, `production is down`, `release blocker`, `blocking the release`, `before we ship`,
+  `customer escalation`, `customer is waiting`, …); a workspace can add the nouns back through
+  `[commitments] blocking_cues`. Relative deadline cues (`today`, `tomorrow`, `this week`,
+  `next week`, `by friday`, `the 14th`, `sept 3`, `9/3`, ISO dates) now resolve against the
+  date of the meeting the item was last seen in (`resolve_deadline`); once that date is behind
+  today the why column says `overdue=YYYY-MM-DD` instead of `due=today`, the new `overdue`
+  weight (default 1) replaces `deadline`, and the item is no longer P1 on the deadline alone.
+  Cues with no calendar meaning (`this sprint`, `before the demo`) still never expire.
+  `WHOSAID_TODAY=YYYY-MM-DD` pins today for tests and replays.
+
 - **Silent registry replacement on relabel (GitHub issue #19).** Relabeling or `--save-speaker`-ing
   a cluster onto a name already in the registry used to overwrite that person's saved voiceprint
   without warning, even when the new cluster barely resembled it. Replacing an existing print whose

@@ -1547,9 +1547,13 @@ Roles tag who each speaker IS to the user, so commitments can be ranked:
   into the commitment as "(also AI-NNN)"). Tiers: P1 = boss-requested, a
   blocking/urgency cue, a deadline cue, or 3+ meetings; P2 = 2 meetings,
   requested by anyone, or a strong cue in the latest meeting; P3 = the rest;
-  negated items never P1. Score, why strings and the cue lists come from
-  whosaid.toml [commitments] (boss, deadline_cues, blocking_cues,
-  strong_cues, weak_cues, weights, embed_threshold). Deterministic, no LLM.
+  negated items never P1. A cue right after a negator ("non-urgent", "not
+  blocking") does not count, and a relative deadline ("today", "by friday")
+  that has passed since the meeting it was said in shows as
+  overdue=YYYY-MM-DD and no longer earns P1. Score, why strings and the cue
+  lists come from whosaid.toml [commitments] (boss, deadline_cues,
+  blocking_cues, negators, strong_cues, weak_cues, weights,
+  embed_threshold). Deterministic, no LLM.
 
 ## Long audio runs in parallel
 Recordings over ~15 min (900 s) auto-chunk: the file is split into windows,
