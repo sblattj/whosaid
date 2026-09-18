@@ -22,6 +22,9 @@
 #   7. hand-edit reconcile: [open] -> [done] survives a re-run
 #   8. determinism: a second roll-up run is byte-identical
 #   9. workspace with NO commitments: no Commitments section, no corpus files
+#  10. semantic dedupe: a reworded commitment difflib scores far below 0.82
+#      folds under WHOSAID_EMBED_FAKE=1 (bag-of-words cosine) and stays a
+#      separate item when the embed server is unreachable (difflib fallback)
 #
 # macOS/BSD only: BSD grep/sed, bash 3.2 (no associative arrays). Python
 # checker scripts are written to files (not inline in "$( ... )") because
@@ -38,6 +41,12 @@ WS_PY="$REPO/lib/workspace.py"
 PASS=0
 TEST_FAILED=0
 TMP="$(mktemp -d)"
+
+# Hermetic dedupe: roll-up would ask a live Ollama on 127.0.0.1:11434 for
+# embeddings if one answered. A closed port keeps every fold below difflib-only
+# (section 10 opts into the fake embedder explicitly).
+export WHOSAID_OLLAMA="http://127.0.0.1:9"
+unset WHOSAID_EMBED_FAKE
 
 cleanup() {
   if [ "$TEST_FAILED" -eq 0 ]; then
@@ -425,6 +434,89 @@ assert_absent "$EMPTYWS/_commitments.json" \
   "no _commitments.json is created when no commitments exist"
 assert_absent "$EMPTYWS/_COMMITMENTS.md" \
   "no _COMMITMENTS.md is created when no commitments exist"
+
+# ---------------------------------------------------------------------------
+# 10. Semantic dedupe: a reworded commitment whose difflib ratio sits far
+#     below 0.82 stays a separate item when the embed server is unreachable
+#     (WHOSAID_OLLAMA is a closed port: difflib fallback) and folds into the
+#     first item under WHOSAID_EMBED_FAKE=1 (bag-of-words cosine >= 0.90).
+# ---------------------------------------------------------------------------
+echo "-- semantic dedupe: difflib fallback vs fake embeddings --"
+
+SEMWS="$TMP/ws-sem"
+mkdir -p "$SEMWS/2026-09-15-0900" "$SEMWS/2026-09-16-1000"
+cat > "$SEMWS/2026-09-15-0900/commitments.json" <<'EOF'
+{
+  "roles": {"Alice": "self"},
+  "items": [
+    {"speaker": "Alice", "speaker_role": "self",
+     "text": "I'll write the rollout runbook for the platform team", "time": "00:00:04",
+     "cue": "i'll", "negative": false, "priority": "normal"}
+  ]
+}
+EOF
+cat > "$SEMWS/2026-09-16-1000/commitments.json" <<'EOF'
+{
+  "roles": {"Alice": "self"},
+  "items": [
+    {"speaker": "Alice", "speaker_role": "self",
+     "text": "for the platform team I'll write the rollout runbook", "time": "00:00:09",
+     "cue": "i'll", "negative": false, "priority": "normal"}
+  ]
+}
+EOF
+
+# fixture sanity: difflib must miss the pair, the fake embedder must catch it
+cat > "$TMP/check_sem_fixture.py" <<'PY'
+import sys
+sys.path.insert(0, sys.argv[1])
+import workspace as w
+a = w.normalize_text("I'll write the rollout runbook for the platform team")
+b = w.normalize_text("for the platform team I'll write the rollout runbook")
+r = w.similarity(a, b)
+assert r < 0.82, "reworded fixture scores %r on difflib; expected < 0.82" % r
+c = w.cosine(w.fake_embed(a), w.fake_embed(b))
+assert c >= 0.90, "reworded fixture scores %r on fake cosine; expected >= 0.90" % c
+print("ok")
+PY
+SEMFIX="$(run_pycheck "$TMP/check_sem_fixture.py" "$REPO/lib")" || fail "semantic fixture sanity check crashed"
+assert_eq "$SEMFIX" "ok" "reworded fixture: difflib < 0.82, fake-embedding cosine >= 0.90"
+
+run_ws rollup "$SEMWS"
+assert_eq "$RC" 0 "rollup (embed server unreachable) exit code"
+printf '%s\n' "$ERR" > "$TMP/sem_fallback.err"
+assert_has "not reachable" "$TMP/sem_fallback.err" \
+  "roll-up logs the difflib-only fallback when Ollama is unreachable"
+cat > "$TMP/check_sem_fallback.py" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1] + "/_commitments.json"))
+assert [it["id"] for it in d["items"]] == ["CM-001", "CM-002"], d["items"]
+assert all(len(it["occurrences"]) == 1 for it in d["items"]), d["items"]
+print("ok")
+PY
+SEMFALL="$(run_pycheck "$TMP/check_sem_fallback.py" "$SEMWS")" || fail "fallback corpus check crashed"
+assert_eq "$SEMFALL" "ok" "difflib fallback keeps the reworded commitment as its own CM-002"
+
+export WHOSAID_EMBED_FAKE=1
+run_ws rollup "$SEMWS" --rebuild
+unset WHOSAID_EMBED_FAKE
+assert_eq "$RC" 0 "rollup --rebuild (fake embeddings) exit code"
+printf '%s\n' "$ERR" > "$TMP/sem_fake.err"
+assert_has "fake embeddings" "$TMP/sem_fake.err" \
+  "roll-up logs the fake-embedding rule under WHOSAID_EMBED_FAKE=1"
+cat > "$TMP/check_sem_fake.py" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1] + "/_commitments.json"))
+assert [it["id"] for it in d["items"]] == ["CM-001"], d["items"]
+assert [o["meeting"] for o in d["items"][0]["occurrences"]] == \
+    ["2026-09-15-0900", "2026-09-16-1000"], d["items"][0]
+assert d["items"][0]["cue"] == "i'll" and d["items"][0]["negative"] is False, d["items"][0]
+print("ok")
+PY
+SEMFAKE="$(run_pycheck "$TMP/check_sem_fake.py" "$SEMWS")" || fail "fake-embedding corpus check crashed"
+assert_eq "$SEMFAKE" "ok" "fake embeddings fold the reworded commitment into CM-001 (2 occurrences)"
+assert_has "(2×): I'll write the rollout runbook for the platform team" "$SEMWS/_COMMITMENTS.md" \
+  "_COMMITMENTS.md renders the semantically merged item once"
 
 # ---------------------------------------------------------------------------
 echo ""

@@ -66,6 +66,7 @@ Subcommands (the `whosaid` bash CLI shells out to this module via
 
   rollup <workspace-dir> [--action-items] [-o INDEX.md] [--action-items-out F]
          [--commitments-out F] [--similarity-threshold F] [--rebuild]
+         [--owner NAME|me] [--all-owners]
       The workspace aggregate. Two JSON state files live in the workspace dir:
         _workspace.json    manifest: one entry per dated meeting folder
         _action-items.json living deduplicated action-item corpus
@@ -107,8 +108,40 @@ Subcommands (the `whosaid` bash CLI shells out to this module via
       once any exist. Meeting folders without commitments.json roll up
       exactly as before.
 
+      Dedupe in both corpora is difflib first and, when a loopback Ollama
+      answers and [search] embed is on, embedding cosine too: two texts fold
+      when difflib >= the threshold OR cosine >= [commitments] embed_threshold
+      (default 0.90), so rewordings difflib misses still fold. Any embedding
+      failure falls back to difflib only for the run. WHOSAID_EMBED_FAKE=1
+      swaps in a deterministic bag-of-words embedder (tests only).
+
+      The roll-up also writes _WORKLIST-<Owner>.md: the owner's open items
+      from both corpora, ranked into P1/P2/P3 (see worklist below). --owner
+      picks the owner (default "me": the self-roled speaker, else [workspace]
+      owner); --all-owners writes one file per participant.
+
+  worklist <workspace-dir> [--owner NAME|me] [--all-owners] [--json] [-o FILE]
+      "What did I sign up for, across every meeting, ranked" (issue #13).
+      Reads _commitments.json and _action-items.json without folding anything
+      and prints the owner's worklist as markdown (or --json). Items: the
+      CM-NNN commitments the owner made plus the AI-NNN action items they own
+      (name match, '_' and ' ' interchangeable, plus [workspace] aliases); an
+      action item that reads like one of the owner's commitments folds into
+      that line as "(also AI-NNN)". Deterministic, no LLM. Tiers:
+        P1  boss-requested, a blocking/urgency cue, a deadline cue, or seen
+            in 3+ meetings
+        P2  seen in 2 meetings, requested by anyone, or a strong cue
+            ("I'll own/take/send...", "I will", "I promise") in the latest
+            meeting
+        P3  everything else
+      Negated items ("I won't") are never P1 and score a penalty. Within a
+      tier: score desc, last_seen desc, id. Cue lists, the boss list and the
+      weights come from whosaid.toml [commitments] (boss, deadline_cues,
+      blocking_cues, strong_cues, weak_cues, weights, embed_threshold).
+
 Everything stays LOCAL: stdlib only, no third-party imports, no network
-(the ollama engine talks only to Ollama on 127.0.0.1).
+(the ollama engine and the optional dedupe embeddings talk only to Ollama
+on 127.0.0.1).
 """
 
 from __future__ import annotations
@@ -117,10 +150,13 @@ import argparse
 import difflib
 import hashlib
 import json
+import math
 import os
 import re
 import subprocess
 import sys
+import urllib.parse
+import urllib.request
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -1037,10 +1073,15 @@ def reconcile_from_md(items: list[ActionItem], md_text: str) -> None:
 def fold_meeting(meeting_folder: str, bullets: list[tuple],
                  items: list[ActionItem], next_id: list[int],
                  threshold: float = SIMILARITY_THRESHOLD,
-                 near_misses: list[tuple[str, str, float]] | None = None) -> list[ActionItem]:
+                 near_misses: list[tuple[str, str, float]] | None = None,
+                 matcher: "TextMatcher | None" = None) -> list[ActionItem]:
     """Bullets are (line, owner, text) or (line, owner, text, section); a
     section becomes the type of a new item, or of a matched item that has
-    none yet (hand-set types were reconciled before folding and win)."""
+    none yet (hand-set types were reconciled before folding and win).
+    `matcher` (optional) adds the embedding rule on top of the difflib
+    threshold; without one this is the historical difflib-only fold."""
+    if matcher is not None:
+        matcher.prime([e[2] for e in bullets] + [it.text for it in items])
     for entry in bullets:
         line_no, owner, text = entry[:3]
         section = str(entry[3]) if len(entry) > 3 else ""
@@ -1050,8 +1091,10 @@ def fold_meeting(meeting_folder: str, bullets: list[tuple],
         match: ActionItem | None = None
         best_below: tuple[float, ActionItem] | None = None
         for it in items:
-            ratio = similarity(norm, normalize_text(it.text))
-            if ratio >= threshold and match is None:
+            it_norm = normalize_text(it.text)
+            ratio = similarity(norm, it_norm)
+            hit = ratio >= threshold if matcher is None else matcher.matches(norm, it_norm, ratio)
+            if hit and match is None:
                 match = it
             elif it.status != "merged" and threshold - NEAR_MISS_BAND <= ratio < threshold:
                 if best_below is None or ratio > best_below[0]:
@@ -1163,6 +1206,12 @@ class CommitmentItem:
     md_status: str = ""
     md_text: str = ""
     md_speaker: str = ""
+    # Ranking inputs (worklist): the extractor's cue, its negation flag and
+    # the requester's role. Additive with defaults, so corpora written before
+    # they existed still load.
+    cue: str = ""
+    negative: bool = False
+    requested_by_role: str = ""
     occurrences: list[Occurrence] = field(default_factory=list)
 
 
@@ -1176,8 +1225,9 @@ def load_commitments_corpus(ws: Path) -> dict:
                 item["occurrences"] = [Occurrence(**o) for o in item.get("occurrences", [])]
                 item.setdefault("status", "open")
                 for key in ("speaker", "priority", "requested_by", "merged_into",
-                            "md_status", "md_text", "md_speaker"):
+                            "md_status", "md_text", "md_speaker", "cue", "requested_by_role"):
                     item.setdefault(key, "")
+                item["negative"] = bool(item.get("negative", False))
             return data
     except FileNotFoundError:
         pass
@@ -1285,18 +1335,30 @@ def reconcile_commitments_from_md(items: list[CommitmentItem], md_text: str) -> 
 def fold_commitments(meeting_folder: str, entries: list[dict],
                      items: list[CommitmentItem], next_id: list[int],
                      threshold: float = SIMILARITY_THRESHOLD,
-                     near_misses: list[tuple[str, str, float]] | None = None) -> list[CommitmentItem]:
+                     near_misses: list[tuple[str, str, float]] | None = None,
+                     matcher: "TextMatcher | None" = None) -> list[CommitmentItem]:
+    """Fold one meeting's commitments.json entries into the corpus. The
+    ranking inputs (cue, negative, requested_by_role) ride along on new items;
+    on a match a stronger cue, a positive re-statement, or a first requester
+    upgrades the item, so the worklist sees the best evidence across meetings.
+    `matcher` (optional) adds the embedding rule; see fold_meeting."""
+    if matcher is not None:
+        matcher.prime([str(e.get("text", "")) for e in entries] + [it.text for it in items])
     for n, entry in enumerate(entries, start=1):
         text = str(entry.get("text", ""))
         norm = normalize_text(text)
         if not norm:
             continue
         speaker = str(entry.get("speaker", ""))
+        cue = str(entry.get("cue", "") or "")
+        negative = bool(entry.get("negative", False))
         match: CommitmentItem | None = None
         best_below: tuple[float, CommitmentItem] | None = None
         for it in items:
-            ratio = similarity(norm, normalize_text(it.text))
-            if ratio >= threshold and match is None:
+            it_norm = normalize_text(it.text)
+            ratio = similarity(norm, it_norm)
+            hit = ratio >= threshold if matcher is None else matcher.matches(norm, it_norm, ratio)
+            if hit and match is None:
                 match = it
             elif it.status != "merged" and threshold - NEAR_MISS_BAND <= ratio < threshold:
                 if best_below is None or ratio > best_below[0]:
@@ -1307,6 +1369,8 @@ def fold_commitments(meeting_folder: str, entries: list[dict],
                 id=f"CM-{next_id[0]:03d}", text=text, speaker=speaker,
                 priority=entry.get("priority") or "normal",
                 requested_by=entry.get("requested_by", "") or "",
+                requested_by_role=str(entry.get("requested_by_role", "") or ""),
+                cue=cue, negative=negative,
                 first_seen=meeting_folder, last_seen=meeting_folder,
                 occurrences=[Occurrence(meeting=meeting_folder, line=int(entry.get("line", n)))],
             )
@@ -1319,6 +1383,13 @@ def fold_commitments(meeting_folder: str, entries: list[dict],
                 target.speaker = speaker
             if entry.get("priority") == "high":
                 target.priority = "high"
+            if not target.requested_by and entry.get("requested_by"):
+                target.requested_by = str(entry["requested_by"])
+                target.requested_by_role = str(entry.get("requested_by_role", "") or "")
+            if not target.cue or (cue_strength(cue) == "strong" and cue_strength(target.cue) != "strong"):
+                target.cue = cue or target.cue
+            if target.negative and not negative:
+                target.negative = False  # restated positively later: no longer a refusal
             target.last_seen = max(target.last_seen, meeting_folder)
             if not any(o.meeting == meeting_folder for o in target.occurrences):
                 target.occurrences.append(Occurrence(meeting=meeting_folder, line=int(entry.get("line", n))))
@@ -1371,6 +1442,664 @@ def render_commitments_md(ws: Path, items: list[CommitmentItem],
     return "\n".join(lines)
 
 
+# ---- dedupe matcher: difflib plus optional loopback embeddings -----------------------
+
+EMBED_THRESHOLD = 0.90       # cosine at or above which two texts are the same item
+EMBED_TIMEOUT = 20.0         # seconds for the one batched /api/embed call
+FAKE_EMBED_DIMS = 512
+LOOPBACK_HOSTS = ("127.0.0.1", "localhost", "::1")
+
+
+def _wsconfig():
+    """Lazy sibling import (lib/wsconfig.py) so importing this module needs
+    nothing new; falls back to a path insert when run from another cwd."""
+    try:
+        import wsconfig
+    except ImportError:
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        import wsconfig
+    return wsconfig
+
+
+def unit_vector(vec) -> list[float]:
+    n = math.sqrt(sum(float(x) * float(x) for x in vec)) or 1.0
+    return [float(x) / n for x in vec]
+
+
+def cosine(a: list[float], b: list[float]) -> float:
+    return sum(x * y for x, y in zip(a, b))
+
+
+def fake_embed(norm_text: str) -> list[float]:
+    """Deterministic bag-of-words hashing embedder (WHOSAID_EMBED_FAKE=1, tests
+    only): each token bumps one of FAKE_EMBED_DIMS buckets picked by sha1, so
+    word order is ignored and cosine tracks shared vocabulary. It stands in
+    for a real model so the semantic fold path is testable offline."""
+    vec = [0.0] * FAKE_EMBED_DIMS
+    for tok in norm_text.split():
+        vec[int(hashlib.sha1(tok.encode("utf-8")).hexdigest(), 16) % FAKE_EMBED_DIMS] += 1.0
+    return unit_vector(vec)
+
+
+class TextMatcher:
+    """Decides whether two normalized texts are the same item.
+
+    difflib is always on (ratio >= threshold, exactly the historical rule);
+    when embeddings are available a cosine >= embed_threshold also counts,
+    which catches rewordings difflib misses ("write the runbook for the
+    platform team" vs "for the platform team write the runbook"). Vectors
+    come from one batched POST to a loopback Ollama /api/embed per prime()
+    and are cached for the run; any failure flips the matcher to difflib
+    only for the rest of the run, so a flaky model never changes fold
+    results half-way through. The near-miss review band stays difflib."""
+
+    def __init__(self, threshold: float = SIMILARITY_THRESHOLD,
+                 embed_threshold: float = EMBED_THRESHOLD, url: str = "",
+                 model: str = "", mode: str = "difflib",
+                 timeout: float = EMBED_TIMEOUT) -> None:
+        self.threshold = threshold
+        self.embed_threshold = embed_threshold
+        self.url = url.rstrip("/")
+        self.model = model
+        self.mode = mode  # "difflib" | "embed" | "fake"
+        self.timeout = timeout
+        self._vectors: dict[str, list[float]] = {}
+
+    @property
+    def semantic(self) -> bool:
+        return self.mode in ("embed", "fake")
+
+    def prime(self, texts) -> None:
+        """Embed every not-yet-cached text in one call (no-op for difflib)."""
+        if not self.semantic:
+            return
+        todo = sorted({normalize_text(t) for t in texts} - set(self._vectors) - {""})
+        if not todo:
+            return
+        if self.mode == "fake":
+            for t in todo:
+                self._vectors[t] = fake_embed(t)
+            return
+        try:
+            vecs = self._post_embed(todo)
+        except Exception as e:  # noqa: BLE001
+            log(f"WARN embeddings unavailable ({e}); dedupe falls back to difflib only")
+            self.mode = "difflib"
+            self._vectors.clear()
+            return
+        for t, v in zip(todo, vecs):
+            self._vectors[t] = unit_vector(v)
+
+    def _post_embed(self, texts: list[str]) -> list:
+        body = json.dumps({"model": self.model, "input": texts}).encode("utf-8")
+        req = urllib.request.Request(f"{self.url}/api/embed", body,
+                                     {"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=self.timeout) as r:
+            data = json.loads(r.read().decode("utf-8"))
+        vecs = data.get("embeddings") if isinstance(data, dict) else None
+        if not isinstance(vecs, list) or len(vecs) != len(texts):
+            raise ValueError("unexpected /api/embed response shape")
+        return vecs
+
+    def cosine(self, a_norm: str, b_norm: str) -> float | None:
+        """Cosine of two normalized texts, or None when embeddings are off."""
+        if not self.semantic:
+            return None
+        if a_norm not in self._vectors or b_norm not in self._vectors:
+            self.prime([a_norm, b_norm])
+        va, vb = self._vectors.get(a_norm), self._vectors.get(b_norm)
+        if va is None or vb is None:
+            return None
+        return cosine(va, vb)
+
+    def matches(self, a_norm: str, b_norm: str, ratio: float) -> bool:
+        """The fold rule: difflib ratio >= threshold OR cosine >= embed_threshold."""
+        if ratio >= self.threshold:
+            return True
+        c = self.cosine(a_norm, b_norm)
+        return c is not None and c >= self.embed_threshold
+
+
+def build_matcher(cfg: dict, threshold: float) -> TextMatcher:
+    """Pick the dedupe mode for this run and say so once: fake embeddings
+    under WHOSAID_EMBED_FAKE=1 (tests), real ones when [search] embed is on
+    and a loopback Ollama answers /api/tags, otherwise difflib only. Only
+    127.0.0.1/localhost is ever contacted: a remote [search] ollama URL keeps
+    dedupe local."""
+    embed_threshold = float(commitments_config(cfg).get("embed_threshold", EMBED_THRESHOLD))
+    if os.environ.get("WHOSAID_EMBED_FAKE") == "1":
+        log(f"dedupe: difflib >= {threshold} or fake embeddings >= {embed_threshold} "
+            "(WHOSAID_EMBED_FAKE=1)")
+        return TextMatcher(threshold, embed_threshold, mode="fake")
+    search = cfg.get("search") if isinstance(cfg.get("search"), dict) else {}
+    url = str(search.get("ollama") or "").rstrip("/")
+    model = str(search.get("embed_model") or "")
+    if not search.get("embed", False) or not url or not model:
+        log(f"dedupe: difflib >= {threshold} (embeddings off)")
+        return TextMatcher(threshold, embed_threshold)
+    host = urllib.parse.urlsplit(url).hostname or ""
+    if host not in LOOPBACK_HOSTS:
+        log(f"dedupe: difflib >= {threshold} (embeddings only from a loopback Ollama; "
+            f"[search] ollama points at {host})")
+        return TextMatcher(threshold, embed_threshold)
+    if not _wsconfig().ollama_up(url):
+        log(f"dedupe: difflib >= {threshold} (Ollama at {url} not reachable)")
+        return TextMatcher(threshold, embed_threshold)
+    log(f"dedupe: difflib >= {threshold} or {model} cosine >= {embed_threshold} ({url})")
+    return TextMatcher(threshold, embed_threshold, url=url, model=model, mode="embed")
+
+
+# ---- worklist: ranking + per-owner view (issue #13) ----------------------------------
+
+# Module defaults for whosaid.toml [commitments]; every key is overridable.
+# Cue lists are literal phrases matched word-bounded and case-insensitively.
+WORKLIST_DEFAULTS: dict = {
+    "boss": [],                       # requester names that count as boss
+    "deadline_cues": ["today", "tonight", "tomorrow", "eod", "end of day", "end of the day",
+                      "eow", "end of week", "end of the week", "this week", "next week",
+                      "this sprint", "before the demo", "before the release"],
+    "blocking_cues": ["blocking", "blocked", "blocker", "unblock", "urgent", "asap",
+                      "critical", "hotfix", "prod", "production", "outage", "incident",
+                      "customer", "customers", "release", "ship"],
+    "strong_cues": ["i'll own", "i'll take", "i'll send", "i'll get", "i'll follow up",
+                    "i'll pick up", "i'll", "i will", "i shall", "i promise", "i owe",
+                    "count on me", "leave it with me"],
+    "weak_cues": ["i can", "i could", "let me", "i plan to", "i'm going to", "i am going to"],
+    "embed_threshold": EMBED_THRESHOLD,
+    "weights": {"boss": 5, "blocking": 4, "deadline": 4, "repeat": 2, "recent": 1,
+                "strong": 1, "requested": 1, "negative": -3},
+}
+TIERS = ("P1", "P2", "P3")
+# Structural deadline shapes that stay on regardless of the literal cue list:
+# "by friday", "before the 14th", "on sept 3", "by 9/20", any ISO date.
+_WEEKDAY = r"(?:mon|tue|tues|wed|wednes|thu|thur|thurs|fri|sat|satur|sun)(?:day)?"
+_MONTH = r"(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*"
+DEADLINE_DATE_RE = re.compile(
+    r"\b(?:by|before|on|until|due|for)\s+"
+    r"(?:" + _WEEKDAY + r"|the \d{1,2}(?:st|nd|rd|th)|"
+    + _MONTH + r"\s+\d{1,2}(?:st|nd|rd|th)?|\d{1,2}/\d{1,2})\b"
+    r"|\b\d{4}-\d{2}-\d{2}\b",
+    re.IGNORECASE,
+)
+WORKLIST_FILE_PREFIX = "_WORKLIST-"
+
+
+def commitments_config(cfg: dict) -> dict:
+    """WORKLIST_DEFAULTS overlaid with whosaid.toml [commitments]: lists
+    replace, the weights table merges key by key, and a comma string is
+    tolerated for any list."""
+    raw = cfg.get("commitments") if isinstance(cfg.get("commitments"), dict) else {}
+    out = {k: (list(v) if isinstance(v, list) else v) for k, v in WORKLIST_DEFAULTS.items()}
+    out["weights"] = dict(WORKLIST_DEFAULTS["weights"])
+    for key, value in raw.items():
+        if key == "weights" and isinstance(value, dict):
+            for wk, wv in value.items():
+                try:
+                    num = float(wv)
+                except (TypeError, ValueError):
+                    log(f"WARN [commitments] weights.{wk} is not a number; ignored")
+                    continue
+                out["weights"][str(wk)] = int(num) if num.is_integer() else num
+        elif key in ("boss", "deadline_cues", "blocking_cues", "strong_cues", "weak_cues"):
+            if isinstance(value, str):
+                value = [v.strip() for v in value.split(",") if v.strip()]
+            out[key] = [str(v).strip().lower() for v in value if str(v).strip()]
+        elif key == "embed_threshold":
+            try:
+                out[key] = float(value)
+            except (TypeError, ValueError):
+                log("WARN [commitments] embed_threshold is not a number; using the default")
+        else:
+            out[key] = value
+    return out
+
+
+def cue_hit(text: str, cues: list[str]) -> str:
+    """First cue phrase found word-bounded in text (case-insensitive), else ''."""
+    low = text.lower()
+    for cue in cues:
+        if cue and re.search(r"(?<![a-z0-9])" + re.escape(cue) + r"(?![a-z0-9])", low):
+            return cue
+    return ""
+
+
+def deadline_cue(text: str, cues: list[str]) -> str:
+    """A literal deadline phrase or a structural date ("by friday", "on
+    sept 3", 2026-09-30) found in text, else ''."""
+    hit = cue_hit(text, cues)
+    if hit:
+        return hit
+    m = DEADLINE_DATE_RE.search(text)
+    return m.group(0).lower() if m else ""
+
+
+def cue_strength(cue: str, strong: list[str] | None = None,
+                 weak: list[str] | None = None) -> str:
+    """'strong' | 'weak' | '' for an extractor cue ("i'll send" -> strong,
+    "let me" -> weak, '' for items without a cue such as action items)."""
+    c = (cue or "").strip().lower()
+    if not c:
+        return ""
+    if c in (strong if strong is not None else WORKLIST_DEFAULTS["strong_cues"]):
+        return "strong"
+    if c in (weak if weak is not None else WORKLIST_DEFAULTS["weak_cues"]):
+        return "weak"
+    return ""
+
+
+def name_key(name: str) -> str:
+    """Case-folded name with '_' and whitespace runs collapsed to one space."""
+    return " ".join(re.sub(r"[_\s]+", " ", str(name or "")).strip().lower().split())
+
+
+def same_person(a: str, b: str) -> bool:
+    """Speaker labels are the identity: case-insensitive, '_' and ' '
+    interchangeable, and a single-token name matches the other's first
+    token ("Bob" is "Bob_Example"; "Bob_Example" is not "Bob_Other")."""
+    ka, kb = name_key(a), name_key(b)
+    if not ka or not kb:
+        return False
+    if ka == kb:
+        return True
+    ta, tb = ka.split(), kb.split()
+    return (len(ta) == 1 and ta[0] == tb[0]) or (len(tb) == 1 and tb[0] == ta[0])
+
+
+class OwnerMatcher:
+    """Does an action item's owner label belong to `owner`? Exact-name rule
+    from same_person, plus the [workspace] aliases rule action_items.py
+    already uses for turn text (word-bounded, trailing [a-z]* so "Ali" also
+    matches "Alicia" as transcribed)."""
+
+    def __init__(self, owner: str, aliases: list[str] | None = None) -> None:
+        self.owner = owner
+        self.alias_re = None
+        if aliases:
+            try:
+                from action_items import compile_name_re
+            except ImportError:
+                sys.path.insert(0, str(Path(__file__).resolve().parent))
+                from action_items import compile_name_re
+            self.alias_re = compile_name_re([str(a) for a in aliases])
+
+    def owns(self, label: str) -> bool:
+        if same_person(label, self.owner):
+            return True
+        return self.alias_re is not None and bool(self.alias_re.search(str(label or "")))
+
+
+def find_self_speaker(ws: Path) -> str:
+    """The speaker tagged role 'self' in the newest meeting that names one:
+    the per-meeting commitments.json 'roles' map first, then '# Role:'
+    headers in *.speakers.txt. Newest first so a renamed voice wins."""
+    folders = sorted((p for p in ws.iterdir() if p.is_dir() and DATE_DIR_RE.match(p.name)),
+                     key=lambda p: p.name, reverse=True)
+    for folder in folders:
+        roles: dict = {}
+        cj = folder / "commitments.json"
+        if cj.is_file():
+            try:
+                data = json.loads(cj.read_text())
+                roles = data.get("roles") if isinstance(data, dict) else {}
+                roles = roles if isinstance(roles, dict) else {}
+            except Exception:  # noqa: BLE001
+                roles = {}
+        if not roles:
+            for sp in sorted(folder.glob("*.speakers.txt")):
+                try:
+                    roles.update(parse_roles(sp.read_text()))
+                except OSError:
+                    continue
+        for name, role in roles.items():
+            if str(role or "").strip().lower() == "self":
+                return str(name)
+    return ""
+
+
+def resolve_owner(ws: Path, cfg: dict, requested: str | None) -> str:
+    """--owner NAME as given; --owner me (or nothing) is the self-roled
+    speaker, else [workspace] owner from whosaid.toml, else ''."""
+    want = (requested or "").strip()
+    if want and want.lower() != "me":
+        return want
+    return find_self_speaker(ws) or str(cfg.get("workspace", {}).get("owner") or "").strip()
+
+
+def owner_aliases(owner: str, cfg: dict) -> list[str]:
+    """[workspace] aliases belong to the configured owner: apply them when
+    the resolved owner is that person (or no owner is configured)."""
+    wcfg = cfg.get("workspace", {}) if isinstance(cfg.get("workspace"), dict) else {}
+    cfg_owner = str(wcfg.get("owner") or "").strip()
+    aliases = wcfg.get("aliases") or []
+    if isinstance(aliases, str):
+        aliases = [a.strip() for a in aliases.split(",")]
+    if cfg_owner and not same_person(owner, cfg_owner):
+        return []
+    return [str(a) for a in aliases if str(a).strip()]
+
+
+def _cm_entry(it: CommitmentItem) -> dict:
+    return {
+        "id": it.id, "source": "commitments", "text": it.text, "status": it.status,
+        "open": it.status == "open", "merged_into": it.merged_into,
+        "first_seen": it.first_seen, "last_seen": it.last_seen,
+        "meetings": {o.meeting for o in it.occurrences} or ({it.first_seen} if it.first_seen else set()),
+        "requested_by": it.requested_by, "requested_by_role": it.requested_by_role,
+        "priority": it.priority, "cue": it.cue, "negative": bool(it.negative),
+        "type": "", "also": [], "_norm": normalize_text(it.text),
+    }
+
+
+def _ai_entry(it: ActionItem) -> dict:
+    return {
+        "id": it.id, "source": "action-items", "text": it.text, "status": it.status,
+        "open": it.status in ("open", "ongoing"), "merged_into": it.merged_into,
+        "first_seen": it.first_seen, "last_seen": it.last_seen,
+        "meetings": {o.meeting for o in it.occurrences} or ({it.first_seen} if it.first_seen else set()),
+        "requested_by": "", "requested_by_role": "", "priority": "normal", "cue": "",
+        "negative": False, "type": it.type, "also": [], "_norm": normalize_text(it.text),
+    }
+
+
+def worklist_entries(owner: str, cm_items: list[CommitmentItem], ai_items: list[ActionItem],
+                     matcher: TextMatcher, aliases: list[str] | None = None) -> list[dict]:
+    """The owner's items from both corpora as entry dicts: every CM item the
+    owner spoke plus every AI item they own. An action item that reads like
+    one of the owner's commitments (same matcher rule as folding) is not a
+    second line: it folds into the commitment as "(also AI-NNN)" and lends
+    it its meetings. Merged items ride along for the history section."""
+    om = OwnerMatcher(owner, aliases)
+    mine_cm = [it for it in cm_items if same_person(it.speaker, owner)]
+    mine_ai = [it for it in ai_items if om.owns(it.owner)]
+    entries = [_cm_entry(it) for it in mine_cm]
+    hosts = [e for e in entries if e["status"] != "merged"]
+    matcher.prime([e["text"] for e in hosts] + [it.text for it in mine_ai])
+    for ai in mine_ai:
+        e = _ai_entry(ai)
+        host = None
+        if ai.status != "merged" and e["_norm"]:
+            for cand in hosts:
+                if matcher.matches(e["_norm"], cand["_norm"], similarity(e["_norm"], cand["_norm"])):
+                    host = cand
+                    break
+        if host is None:
+            entries.append(e)
+            continue
+        host["also"].append(ai.id)
+        host["meetings"] |= e["meetings"]
+        host["first_seen"] = min(host["first_seen"] or e["first_seen"], e["first_seen"] or host["first_seen"])
+        host["last_seen"] = max(host["last_seen"], e["last_seen"])
+        if not host["type"] and e["type"]:
+            host["type"] = e["type"]
+    return entries
+
+
+def latest_meeting(*folded_lists) -> str:
+    """The most recent meeting folder name any corpus has folded ('' when none)."""
+    names = [str(m) for lst in folded_lists for m in (lst or [])]
+    return max(names) if names else ""
+
+
+class Ranker:
+    """Deterministic tiering, one place for the rule so the md header, the
+    JSON and the docs agree. Signals: boss-requested, blocking cue, deadline
+    cue, repeat (distinct meetings), recency (last_seen is the latest folded
+    meeting), cue strength, requested-by-anyone, negation. Tier:
+      P1  boss or blocking or deadline or 3+ meetings
+      P2  2 meetings, or requested by anyone, or a strong cue in the latest meeting
+      P3  the rest
+    A negated item is never P1 (it drops to P2) and scores the negative
+    weight. Score = the sum of the weights of the signals that fired
+    (repeat counts per extra meeting)."""
+
+    def __init__(self, cfg: dict, latest: str, leadership: list[str] | None = None) -> None:
+        c = commitments_config(cfg)
+        self.cfg = c
+        self.weights = c["weights"]
+        self.latest = latest
+        self.boss_names = list(c["boss"])
+        if leadership is None:
+            groups = cfg.get("groups") if isinstance(cfg.get("groups"), dict) else {}
+            leadership = groups.get("leadership") or []
+        self.leadership = [str(n) for n in leadership if str(n).strip()]
+
+    def is_boss(self, e: dict) -> bool:
+        if e["priority"] == "high" or e["requested_by_role"].strip().lower() == "boss":
+            return True
+        who = e["requested_by"]
+        if who and any(same_person(who, b) for b in self.boss_names):
+            return True
+        # [groups] leadership stands in for registry roles when the item has none.
+        if who and not e["requested_by_role"] and any(same_person(who, b) for b in self.leadership):
+            return True
+        return "leadership" in (e.get("type") or "").lower()
+
+    def rank(self, e: dict) -> None:
+        """Set tier/score/why on the entry in place."""
+        w = self.weights
+        why: list[str] = []
+        score = 0
+        n = len(e["meetings"]) or 1
+        boss = self.is_boss(e)
+        blocking = cue_hit(e["text"], self.cfg["blocking_cues"])
+        due = deadline_cue(e["text"], self.cfg["deadline_cues"])
+        recent = bool(self.latest) and e["last_seen"] == self.latest
+        strength = cue_strength(e["cue"], self.cfg["strong_cues"], self.cfg["weak_cues"])
+        requested = bool(e["requested_by"])
+        if boss:
+            why.append("boss")
+            score += w.get("boss", 0)
+        if blocking:
+            why.append(f"blocking={blocking}")
+            score += w.get("blocking", 0)
+        if due:
+            why.append(f"due={due}")
+            score += w.get("deadline", 0)
+        if n >= 2:
+            why.append(f"{n} meetings")
+            score += w.get("repeat", 0) * (n - 1)
+        if recent:
+            why.append("latest meeting")
+            score += w.get("recent", 0)
+        if strength == "strong":
+            why.append("strong cue")
+            score += w.get("strong", 0)
+        if requested and not boss:
+            why.append(f"asked by {e['requested_by']}")
+            score += w.get("requested", 0)
+        if e["negative"]:
+            why.append("negative")
+            score += w.get("negative", 0)
+        p1 = boss or bool(blocking) or bool(due) or n >= 3
+        p2 = n == 2 or requested or (strength == "strong" and recent)
+        if p1 and not e["negative"]:
+            tier = "P1"
+        elif p1 or p2:
+            tier = "P2"
+        else:
+            tier = "P3"
+        e["tier"], e["score"], e["why"] = tier, score, why
+
+
+def rank_entries(entries: list[dict], ranker: Ranker) -> None:
+    """Rank open entries; history entries keep tier '' so consumers never
+    mistake a done item for a P1. Then order: open by tier, score desc,
+    last_seen desc, id; history by last_seen desc, id."""
+    for e in entries:
+        if e["open"]:
+            ranker.rank(e)
+        else:
+            e["tier"], e["score"], e["why"] = "", 0, []
+    entries.sort(key=lambda e: (
+        0 if e["open"] else 1,
+        TIERS.index(e["tier"]) if e["tier"] in TIERS else len(TIERS),
+        -e["score"], _desc(e["last_seen"]), e["id"],
+    ))
+
+
+def _desc(s: str) -> tuple:
+    """Sort key that orders strings descending inside an ascending sort."""
+    return tuple(-ord(ch) for ch in s)
+
+
+def worklist_payload(owner: str, entries: list[dict], generated_from: list[str]) -> dict:
+    """The --json shape (also what the MCP whosaid_worklist tool returns)."""
+    items = []
+    for e in entries:
+        items.append({
+            "id": e["id"], "source": e["source"], "text": e["text"], "status": e["status"],
+            "tier": e["tier"], "score": e["score"], "why": list(e["why"]),
+            "first_seen": e["first_seen"], "last_seen": e["last_seen"],
+            "occurrences": len(e["meetings"]), "requested_by": e["requested_by"],
+            "negative": bool(e["negative"]), "also": list(e["also"]),
+            "merged_into": e["merged_into"],
+        })
+    return {"owner": owner, "generated_from": list(generated_from), "items": items}
+
+
+def worklist_line(e: dict) -> str:
+    """One item line. The '- **ID** [status] span (n×)' prefix is the same
+    shape _COMMITMENTS.md / _ACTION-ITEMS.md use, so a line pasted there
+    still parses; tier and why come after the count, before the ': '."""
+    if e["status"] == "merged":
+        return f"- **{e['id']}** [merged → {e['merged_into']}]: {e['text']}"
+    span = e["first_seen"] if e["first_seen"] == e["last_seen"] else f"{e['first_seen']} → {e['last_seen']}"
+    n = len(e["meetings"]) or 1
+    meta = f"{span} ({n}×)"
+    if e["tier"]:
+        meta += " " + " · ".join([e["tier"]] + e["why"])
+    also = f" (also {', '.join(e['also'])})" if e["also"] else ""
+    return f"- **{e['id']}** [{e['status']}] {meta}: {e['text']}{also}"
+
+
+def render_worklist_md(owner: str, entries: list[dict], generated_from: list[str]) -> str:
+    lines = [f"# Worklist: {owner}", "",
+             "_Generated view, rebuilt on every roll-up (and by `whosaid commitments`) from "
+             "`_commitments.json` and `_action-items.json`: edit `_COMMITMENTS.md` or "
+             "`_ACTION-ITEMS.md` instead, ids never renumber. Tiers: P1 = boss-requested, "
+             "a blocking/urgency cue, a deadline cue, or seen in 3+ meetings; P2 = seen in "
+             "2 meetings, requested by anyone, or a strong cue in the latest meeting; "
+             "P3 = the rest; negated items are never P1. Within a tier: score, then "
+             "most recent, then id._", ""]
+    if generated_from:
+        span = generated_from[0] if len(generated_from) == 1 \
+            else f"{generated_from[0]} → {generated_from[-1]}"
+        lines += [f"_Built from {len(generated_from)} meeting(s): {span}._", ""]
+    open_entries = [e for e in entries if e["open"]]
+    history = [e for e in entries if not e["open"]]
+    for tier in TIERS:
+        lines += [f"## {tier}", ""]
+        tiered = [e for e in open_entries if e["tier"] == tier]
+        if not tiered:
+            lines += ["_none_", ""]
+            continue
+        lines += [worklist_line(e) for e in tiered]
+        lines.append("")
+    lines += ["## Done / history", ""]
+    if history:
+        lines += [worklist_line(e) for e in history]
+    else:
+        lines.append("_none_")
+    lines.append("")
+    return "\n".join(lines)
+
+
+def worklist_filename(owner: str) -> str:
+    safe = re.sub(r"[^A-Za-z0-9_-]+", "_", owner.strip()).strip("_") or "owner"
+    return f"{WORKLIST_FILE_PREFIX}{safe}.md"
+
+
+def worklist_participants(cm_items: list[ActionItem | CommitmentItem], ai_items: list[ActionItem],
+                          owner: str = "", cfg: dict | None = None) -> list[str]:
+    """Every distinct speaker/owner label across both corpora, the resolved
+    owner first, then first-seen order; labels that are the same person
+    under same_person (or one of the owner's aliases) collapse onto the
+    first spelling, so "Ali" never gets a worklist of its own."""
+    out: list[str] = [owner] if owner else []
+    om = OwnerMatcher(owner, owner_aliases(owner, cfg or {})) if owner else None
+    for label in [it.speaker for it in cm_items] + [it.owner for it in ai_items]:
+        label = (label or "").strip()
+        if not label or any(same_person(label, have) for have in out):
+            continue
+        if om is not None and om.owns(label):
+            continue
+        out.append(label)
+    return out
+
+
+def build_worklist(owner: str, cm_items: list[CommitmentItem], ai_items: list[ActionItem],
+                   cfg: dict, matcher: TextMatcher, generated_from: list[str]) -> tuple[list[dict], dict]:
+    """(ranked entries, --json payload) for one owner."""
+    ranker = Ranker(cfg, latest_meeting(generated_from))
+    entries = worklist_entries(owner, cm_items, ai_items, matcher, owner_aliases(owner, cfg))
+    rank_entries(entries, ranker)
+    return entries, worklist_payload(owner, entries, generated_from)
+
+
+def write_worklists(ws: Path, cfg: dict, matcher: TextMatcher, cm_items: list[CommitmentItem],
+                    ai_items: list[ActionItem], generated_from: list[str],
+                    owner_arg: str | None, all_owners: bool) -> None:
+    """Roll-up hook: _WORKLIST-<Owner>.md for the resolved owner whenever
+    there is anything to rank, plus one per participant with --all-owners.
+    A missing owner is a NOTE, never a failed roll-up."""
+    owner = resolve_owner(ws, cfg, owner_arg)
+    targets = worklist_participants(cm_items, ai_items, owner, cfg) if all_owners \
+        else ([owner] if owner else [])
+    if not owner and cm_items and not all_owners:
+        log("NOTE worklist skipped: no owner (tag a 'self' role, set [workspace] owner "
+            "in whosaid.toml, or pass --owner)")
+    for who in targets:
+        entries, _ = build_worklist(who, cm_items, ai_items, cfg, matcher, generated_from)
+        if not entries and not (who == owner and cm_items):
+            continue
+        out = ws / worklist_filename(who)
+        changed = write_if_changed(out, render_worklist_md(who, entries, generated_from))
+        counts = {t: sum(1 for e in entries if e["open"] and e["tier"] == t) for t in TIERS}
+        log(f"worklist ({who}: " + ", ".join(f"{t} {counts[t]}" for t in TIERS)
+            + f") -> {out.name}" + ("" if changed else " (unchanged)"))
+
+
+def cmd_worklist(args: argparse.Namespace) -> int:
+    ws = Path(args.workspace_dir)
+    if not ws.is_dir():
+        log(f"worklist: workspace dir not found: {ws}")
+        return 1
+    cfg = _wsconfig().load_config(ws)
+    cm_data = load_commitments_corpus(ws)
+    ai_data = load_corpus(ws)
+    cm_items = commitments_to_items(cm_data)
+    ai_items = corpus_to_items(ai_data)
+    generated_from = sorted(set(cm_data.get("folded_meetings", [])) | set(ai_data.get("folded_meetings", [])))
+    threshold = float(cm_data.get("similarity_threshold") or ai_data.get("similarity_threshold")
+                      or SIMILARITY_THRESHOLD)
+    matcher = build_matcher(cfg, threshold)
+
+    owner = resolve_owner(ws, cfg, args.owner)
+    if args.all_owners:
+        owners = worklist_participants(cm_items, ai_items, owner, cfg)
+    else:
+        if not owner:
+            log("worklist: no owner: pass --owner NAME, tag a 'self' role, or set "
+                "[workspace] owner in whosaid.toml")
+            return 1
+        owners = [owner]
+    built = [build_worklist(who, cm_items, ai_items, cfg, matcher, generated_from) for who in owners]
+    if args.json:
+        if args.all_owners:
+            text = json.dumps({"owners": [payload for _, payload in built]}, indent=2) + "\n"
+        else:
+            text = json.dumps(built[0][1], indent=2) + "\n"
+    else:
+        text = "\n".join(render_worklist_md(who, entries, generated_from)
+                         for who, (entries, _) in zip(owners, built))
+    if args.out:
+        write_if_changed(Path(args.out), text)
+        log(f"worklist -> {args.out}")
+    else:
+        sys.stdout.write(text)
+    return 0
+
+
 def cmd_rollup(args: argparse.Namespace) -> int:
     if not 0.5 <= args.similarity_threshold <= 1.0:
         log(f"rollup: --similarity-threshold must be between 0.5 and 1.0 "
@@ -1390,6 +2119,11 @@ def cmd_rollup(args: argparse.Namespace) -> int:
         manifest_data = load_manifest(ws)
         corpus_data = load_corpus(ws)
         commitments_data = load_commitments_corpus(ws)
+
+    # whosaid.toml drives the dedupe mode ([search] embed/ollama), the
+    # worklist owner and its cue lists ([workspace], [groups], [commitments]).
+    cfg = _wsconfig().load_config(ws)
+    matcher = build_matcher(cfg, args.similarity_threshold)
 
     prev_meetings = manifest_to_meetings(manifest_data)
     dated: list[Path] = []
@@ -1432,7 +2166,7 @@ def cmd_rollup(args: argparse.Namespace) -> int:
             bullets = parse_bullets_with_sections(md_path.read_text())
             log(f"folding {folder.name}/action-items.md ({len(bullets)} item(s))")
             fold_meeting(folder.name, bullets, items, next_id,
-                         args.similarity_threshold, near_misses)
+                         args.similarity_threshold, near_misses, matcher)
             folded.add(folder.name)
     dupes = possible_duplicates(items, near_misses, args.similarity_threshold)
     ai_md = render_action_items_md(ws, items, dupes)
@@ -1480,7 +2214,7 @@ def cmd_rollup(args: argparse.Namespace) -> int:
             continue
         log(f"folding {folder.name}/commitments.json ({len(entries)} item(s))")
         fold_commitments(folder.name, entries, cm_items, cm_next_id,
-                         args.similarity_threshold, cm_near_misses)
+                         args.similarity_threshold, cm_near_misses, matcher)
         cm_folded.add(folder.name)
     cm_dupes = possible_duplicates(cm_items, cm_near_misses, args.similarity_threshold)
     cm_md = render_commitments_md(ws, cm_items, cm_dupes)
@@ -1497,6 +2231,8 @@ def cmd_rollup(args: argparse.Namespace) -> int:
             {
                 "id": it.id, "text": it.text, "speaker": it.speaker,
                 "priority": it.priority, "requested_by": it.requested_by,
+                "requested_by_role": it.requested_by_role,
+                "cue": it.cue, "negative": bool(it.negative),
                 "status": it.status, "first_seen": it.first_seen, "last_seen": it.last_seen,
                 "merged_into": it.merged_into,
                 "occurrences": [vars(o) for o in it.occurrences],
@@ -1505,6 +2241,11 @@ def cmd_rollup(args: argparse.Namespace) -> int:
             for it in cm_items
         ],
     }
+
+    # The worklist is a view over both corpora: regenerated every run, never
+    # reconciled, so it is written after the corpora settle.
+    write_worklists(ws, cfg, matcher, cm_items, items, sorted(cm_folded | folded),
+                    args.owner, args.all_owners)
 
     speakers_texts = {
         m.folder: "\n".join(
@@ -1629,7 +2370,27 @@ def build_parser() -> argparse.ArgumentParser:
                          "are listed as possible duplicates")
     pr.add_argument("--rebuild", action="store_true",
                     help="reset manifest + corpus and rebuild from folders")
+    pr.add_argument("--owner", default=None,
+                    help="whose _WORKLIST-<Owner>.md to write: a speaker label, or 'me' "
+                         "(default): the self-roled speaker, else [workspace] owner")
+    pr.add_argument("--all-owners", action="store_true",
+                    help="also write one _WORKLIST-<Owner>.md per participant")
     pr.set_defaults(func=cmd_rollup)
+
+    pw = sub.add_parser("worklist", help="ranked per-owner worklist over the commitments "
+                                         "and action-item corpora (no folding; a view)")
+    pw.add_argument("workspace_dir", help="workspace directory holding _commitments.json "
+                                          "and/or _action-items.json")
+    pw.add_argument("--owner", default=None,
+                    help="a speaker label, or 'me' (default): the self-roled speaker, "
+                         "else [workspace] owner in whosaid.toml")
+    pw.add_argument("--all-owners", action="store_true",
+                    help="every participant's worklist (markdown: concatenated; "
+                         "--json: {\"owners\": [...]})")
+    pw.add_argument("--json", action="store_true",
+                    help="emit {owner, generated_from, items: [...]} instead of markdown")
+    pw.add_argument("-o", "--out", default=None, help="write to FILE instead of stdout")
+    pw.set_defaults(func=cmd_worklist)
     return p
 
 
