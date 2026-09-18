@@ -181,7 +181,11 @@ Not exposed here: `enroll` and `record` are interactive microphone operations th
 Meeting workspace (search across many transcripts): point the server at a workspace directory by launching it with WHOSAID_WORKSPACE=<dir>, or pass `workspace` on each call; there is no cwd fallback. Flow: whosaid_search (turn-level hits with meeting folder + timestamp) -> whosaid_context (the verbatim minute around one hit; do not read whole transcripts) -> whosaid_items / whosaid_item / whosaid_person for action items and per-person commitments. whosaid_meetings, whosaid_prs and whosaid_speakers list what the graph knows; whosaid_workspace_status says whether the index exists. The index (_search.db, _WIKI.md) is built by `whosaid index <ws>` from the CLI or the watcher, never from here: every workspace tool is read-only. Resources: whosaid://workspace/wiki, whosaid://workspace/action-items, whosaid://workspace/index, whosaid://workspace/meeting/{folder}/transcript and whosaid://workspace/meeting/{folder}/action-items. Everything stays local (SQLite FTS5 plus optional embeddings from a localhost Ollama)."""
 
 
-mcp = _Server(name="whosaid", instructions=SERVER_INSTRUCTIONS)
+try:
+    # SDK 2.x MCPServer reports `version` in serverInfo; 1.x FastMCP has no such parameter.
+    mcp = _Server(name="whosaid", instructions=SERVER_INSTRUCTIONS, version=__version__)
+except TypeError:
+    mcp = _Server(name="whosaid", instructions=SERVER_INSTRUCTIONS)
 
 
 # ---------------------------------------------------------------------------
