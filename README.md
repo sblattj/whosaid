@@ -311,12 +311,14 @@ embed = true                     # false: exact search only, never contact Ollam
 [commitments]                    # optional; ranks _WORKLIST-<Owner>.md. A list you set replaces
 boss = []                        # the default list, so omit a key to keep the built-in cues.
 deadline_cues = ["today", "tonight", "tomorrow", "eod", "end of day", "this week", "next week"]
-blocking_cues = ["blocking", "blocked", "urgent", "asap", "critical", "hotfix", "prod", "outage", "customer", "release", "ship"]
+blocking_cues = ["blocking", "blocked", "urgent", "asap", "critical", "hotfix", "outage", "prod issue", "release blocker", "customer escalation"]
+negators = ["not", "no", "non", "never", "isn't", "won't", "don't", "without", "hardly"]
 embed_threshold = 0.90           # cosine at or above this is a duplicate (with [search] embed)
 [commitments.weights]            # score = sum of the signals that fired
 boss = 5
 blocking = 4
 deadline = 4
+overdue = 1                      # replaces deadline once a relative deadline has passed
 repeat = 2                       # per extra meeting
 recent = 1
 strong = 1
@@ -461,7 +463,7 @@ and ranks what is open. Deterministic, no LLM:
 
 | Tier | Rule |
 |---|---|
-| **P1** | boss-requested (`priority high`, requester role `boss`, `[commitments] boss`, or a `[groups] leadership` name when no role is recorded), a blocking/urgency cue (`blocking`, `urgent`, `asap`, `prod`, `outage`, `customer`, `release`, `ship`, …), a deadline cue (`tomorrow`, `eod`, `by Friday`, `next week`, an ISO date, …), or seen in 3+ meetings |
+| **P1** | boss-requested (`priority high`, requester role `boss`, `[commitments] boss`, or a `[groups] leadership` name when no role is recorded), a blocking/urgency cue (`blocking`, `urgent`, `asap`, `hotfix`, `outage`, `prod issue`, `release blocker`, `customer escalation`, …), a deadline cue (`tomorrow`, `eod`, `by Friday`, `next week`, an ISO date, …) that has not already passed, or seen in 3+ meetings |
 | **P2** | seen in 2 meetings, requested by anyone, or a strong cue (`i'll own`, `i will`, `i promise`, `i owe`, …) in the latest meeting |
 | **P3** | the rest (weak cues such as `i can`, `let me`, `i plan to` earn nothing) |
 
@@ -471,6 +473,31 @@ score (sum of the signal weights), then most recent, then id, and every line say
 ```text
 - **CM-002** [open] 2026-09-14-1802 → 2026-09-21-1802 (2×) P1 · boss · due=tomorrow · 2 meetings: update the exec deck (also AI-012)
 ```
+
+Three rules keep the cues honest (GitHub issue #21):
+
+- **Negation.** A cue with a negator in the three words before it, inside the same clause, does
+  not fire: "send non-urgent questions to the channel", "not blocking anyone", "no rush", "isn't
+  really critical", "won't block us" earn nothing, while "not done yet, this is urgent" still
+  does (the comma starts a new clause). The negator list is `[commitments] negators` (default
+  `not`, `no`, `non`, `never`, `isn't`, `aren't`, `wasn't`, `won't`, `don't`, `doesn't`, `didn't`,
+  `without`, `nothing`, `hardly`, plus the apostrophe-free spellings a transcript may produce).
+- **Bare nouns are not emergencies.** `prod`, `production`, `release`, `ship`, `customer(s)` are
+  not blocking cues by default: "post it in the release chat" and "shipping version 2.5" are
+  plain work. The defaults carry phrases instead (`prod issue`, `production is down`, `release
+  blocker`, `blocking the release`, `before we ship`, `customer escalation`, `customer is
+  waiting`, …). A workspace where the bare noun really does mean pressure adds it back through
+  `[commitments] blocking_cues` (the list you set replaces the default, so include what you keep).
+- **Relative deadlines expire.** `today`, `tonight`, `eod`, `tomorrow`, `this week`, `eow`,
+  `next week`, `by Friday`, `before the 14th`, `on sept 3`, `by 9/20` and ISO dates resolve
+  against the date of the meeting the item was last seen in (`this week` is that week's Friday,
+  or the next Friday from a weekend; `next week` the Friday after that; `the 14th` rolls to the
+  next month once it has passed). While the resolved date is still ahead the line says
+  `due=<cue>` and the deadline counts toward P1; once it is behind today the line says
+  `overdue=YYYY-MM-DD`, the small `overdue` weight (default 1) replaces `deadline`, and the item
+  is no longer P1 on the deadline alone, so a "today" from two weeks ago sits below this
+  morning's real work. Cues with no calendar meaning (`this sprint`, `before the demo`, `before
+  the release`) never expire. `WHOSAID_TODAY=YYYY-MM-DD` pins "today" for tests and replays.
 
 Resolved and merged items sit under `## Done / history`. The file is a regenerated view (hand
 edits are overwritten on the next run; ids never renumber; the JSON corpora stay the source of
@@ -604,6 +631,7 @@ the absolute path to the `whosaid` script for `command` if it is not on the clie
 | `WHOSAID_ACTION_ITEMS_HOOK` | Default action-items hook for `ingest --action-items` (transcript on stdin, markdown on stdout), overridden by `--hook`. |
 | `WHOSAID_WORKSPACE` | Default meeting workspace for `index`, `search`, `context`, `graph`, `wiki`, `watch`, for the index-status line in `whosaid doctor`, and for the read-only workspace tools and resources of `whosaid mcp`. |
 | `WHOSAID_OWNER` | Whose action items a workspace tracks; overrides `[workspace] owner` in `whosaid.toml`. |
+| `WHOSAID_TODAY` | `YYYY-MM-DD` the worklist treats as today when deciding whether a relative deadline (`today`, `tomorrow`, `by Friday`, …) is overdue (default: the clock). |
 | `WHOSAID_OLLAMA` | Ollama base URL for embeddings and the built-in summarizer (default: `http://127.0.0.1:11434`). Localhost is the only supported destination. |
 | `WHOSAID_SUMMARIZER_MODEL` | Ollama model for `--engine ollama` (default: `qwen2.5:14b`); overrides `[summarizer] model`. |
 | `WHOSAID_BIN` | The `whosaid` command the watcher runs (default: the script that launched `whosaid watch`). |

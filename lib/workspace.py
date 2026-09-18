@@ -134,10 +134,17 @@ Subcommands (the `whosaid` bash CLI shells out to this module via
             ("I'll own/take/send...", "I will", "I promise") in the latest
             meeting
         P3  everything else
-      Negated items ("I won't") are never P1 and score a penalty. Within a
-      tier: score desc, last_seen desc, id. Cue lists, the boss list and the
-      weights come from whosaid.toml [commitments] (boss, deadline_cues,
-      blocking_cues, strong_cues, weak_cues, weights, embed_threshold).
+      Negated items ("I won't") are never P1 and score a penalty. A cue with
+      a negator in the three words before it in the same clause ("non-urgent",
+      "not blocking", "no rush") does not count. A relative deadline ("today",
+      "tomorrow", "this week", "by friday") resolves against the date of the
+      meeting the item was last seen in; once that date is behind today
+      (WHOSAID_TODAY=YYYY-MM-DD overrides the clock) the why column says
+      overdue=YYYY-MM-DD, the small `overdue` weight replaces `deadline`, and
+      the item is no longer P1 on the deadline alone. Within a tier: score
+      desc, last_seen desc, id. Cue lists, the boss list and the weights come
+      from whosaid.toml [commitments] (boss, deadline_cues, blocking_cues,
+      negators, strong_cues, weak_cues, weights, embed_threshold).
 
 Everything stays LOCAL: stdlib only, no third-party imports, no network
 (the ollama engine and the optional dedupe embeddings talk only to Ollama
@@ -158,7 +165,7 @@ import sys
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -1602,23 +1609,39 @@ def build_matcher(cfg: dict, threshold: float) -> TextMatcher:
 
 # Module defaults for whosaid.toml [commitments]; every key is overridable.
 # Cue lists are literal phrases matched word-bounded and case-insensitively.
+# A cue preceded by one of `negators` within NEGATION_WINDOW words in the
+# same clause does not count (issue #21). Bare nouns (prod, release, ship,
+# customer) are not blocking cues by default: they name channels and versions
+# as often as emergencies; a workspace can add them back through
+# [commitments] blocking_cues.
 WORKLIST_DEFAULTS: dict = {
     "boss": [],                       # requester names that count as boss
     "deadline_cues": ["today", "tonight", "tomorrow", "eod", "end of day", "end of the day",
                       "eow", "end of week", "end of the week", "this week", "next week",
                       "this sprint", "before the demo", "before the release"],
     "blocking_cues": ["blocking", "blocked", "blocker", "unblock", "urgent", "asap",
-                      "critical", "hotfix", "prod", "production", "outage", "incident",
-                      "customer", "customers", "release", "ship"],
+                      "critical", "hotfix", "outage", "incident",
+                      "prod issue", "production issue", "prod is down", "production is down",
+                      "release blocker", "blocking the release", "before we ship",
+                      "customer escalation", "customer is waiting"],
+    "negators": ["not", "no", "non", "never", "isn't", "isnt", "aren't", "wasn't", "won't",
+                 "wont", "don't", "dont", "doesn't", "didn't", "without", "nothing", "hardly"],
     "strong_cues": ["i'll own", "i'll take", "i'll send", "i'll get", "i'll follow up",
                     "i'll pick up", "i'll", "i will", "i shall", "i promise", "i owe",
                     "count on me", "leave it with me"],
     "weak_cues": ["i can", "i could", "let me", "i plan to", "i'm going to", "i am going to"],
     "embed_threshold": EMBED_THRESHOLD,
-    "weights": {"boss": 5, "blocking": 4, "deadline": 4, "repeat": 2, "recent": 1,
+    "weights": {"boss": 5, "blocking": 4, "deadline": 4, "overdue": 1, "repeat": 2, "recent": 1,
                 "strong": 1, "requested": 1, "negative": -3},
 }
+CUE_LIST_KEYS = ("boss", "deadline_cues", "blocking_cues", "negators", "strong_cues", "weak_cues")
 TIERS = ("P1", "P2", "P3")
+# Negation: a clause ends at , ; : ! ? or a period that does not start a
+# decimal ("2.5"); a negator counts when it is one of the last
+# NEGATION_WINDOW word tokens of the clause before the cue.
+NEGATION_WINDOW = 3
+CLAUSE_SPLIT_RE = re.compile(r"[,;:!?\n]|\.(?!\d)")
+WORD_TOKEN_RE = re.compile(r"[a-z0-9']+")
 # Structural deadline shapes that stay on regardless of the literal cue list:
 # "by friday", "before the 14th", "on sept 3", "by 9/20", any ISO date.
 _WEEKDAY = r"(?:mon|tue|tues|wed|wednes|thu|thur|thurs|fri|sat|satur|sun)(?:day)?"
@@ -1649,7 +1672,7 @@ def commitments_config(cfg: dict) -> dict:
                     log(f"WARN [commitments] weights.{wk} is not a number; ignored")
                     continue
                 out["weights"][str(wk)] = int(num) if num.is_integer() else num
-        elif key in ("boss", "deadline_cues", "blocking_cues", "strong_cues", "weak_cues"):
+        elif key in CUE_LIST_KEYS:
             if isinstance(value, str):
                 value = [v.strip() for v in value.split(",") if v.strip()]
             out[key] = [str(v).strip().lower() for v in value if str(v).strip()]
@@ -1663,23 +1686,162 @@ def commitments_config(cfg: dict) -> dict:
     return out
 
 
-def cue_hit(text: str, cues: list[str]) -> str:
-    """First cue phrase found word-bounded in text (case-insensitive), else ''."""
-    low = text.lower()
+def _cue_text(text: str) -> str:
+    """Lower-cased text with curly apostrophes straightened so "isn’t" is
+    the negator "isn't"."""
+    return text.lower().replace("’", "'")
+
+
+def negated_before(low: str, start: int, negators: list[str] | None) -> bool:
+    """True when one of `negators` sits within the last NEGATION_WINDOW word
+    tokens before offset `start` of `low` with no clause boundary in between:
+    "send non-urgent questions" (non + hyphen), "not a blocker", "no longer
+    blocking", "isn't really urgent". "not done yet, this is urgent" is not
+    negated: the comma starts a new clause."""
+    if not negators:
+        return False
+    clause = CLAUSE_SPLIT_RE.split(low[:start])[-1]
+    window = " ".join(WORD_TOKEN_RE.findall(clause)[-NEGATION_WINDOW:])
+    if not window:
+        return False
+    for neg in negators:
+        neg = str(neg).strip().lower()
+        if neg and re.search(r"(?<![a-z0-9'])" + re.escape(neg) + r"(?![a-z0-9'])", window):
+            return True
+    return False
+
+
+def cue_hit(text: str, cues: list[str], negators: list[str] | None = None) -> str:
+    """First cue phrase found word-bounded in text (case-insensitive) that
+    is not negated (see negated_before), else ''. A hyphen is a word
+    boundary, so "non-urgent" is the token "non" before "urgent"."""
+    low = _cue_text(text)
     for cue in cues:
-        if cue and re.search(r"(?<![a-z0-9])" + re.escape(cue) + r"(?![a-z0-9])", low):
-            return cue
+        if not cue:
+            continue
+        pat = re.compile(r"(?<![a-z0-9])" + re.escape(cue) + r"(?![a-z0-9])")
+        for m in pat.finditer(low):
+            if not negated_before(low, m.start(), negators):
+                return cue
     return ""
 
 
-def deadline_cue(text: str, cues: list[str]) -> str:
+def deadline_cue(text: str, cues: list[str], negators: list[str] | None = None) -> str:
     """A literal deadline phrase or a structural date ("by friday", "on
-    sept 3", 2026-09-30) found in text, else ''."""
-    hit = cue_hit(text, cues)
+    sept 3", 2026-09-30) found in text, else ''. Negated phrases ("not
+    tomorrow") are skipped the same way cue_hit skips them."""
+    hit = cue_hit(text, cues, negators)
     if hit:
         return hit
-    m = DEADLINE_DATE_RE.search(text)
-    return m.group(0).lower() if m else ""
+    low = _cue_text(text)
+    for m in DEADLINE_DATE_RE.finditer(low):
+        if not negated_before(low, m.start(), negators):
+            return m.group(0)
+    return ""
+
+
+# Relative deadline resolution (issue #21): a cue becomes a calendar date
+# relative to the meeting it was said in, so "today" said two weeks ago can
+# expire. Cues with no calendar meaning ("this sprint", "before the demo")
+# stay unresolved and never expire.
+_SAME_DAY_CUES = ("today", "tonight", "eod", "end of day", "end of the day")
+_THIS_WEEK_CUES = ("this week", "eow", "end of week", "end of the week")
+_WEEKDAY_INDEX = {"mon": 0, "tue": 1, "tues": 1, "wed": 2, "wednes": 2, "thu": 3, "thur": 3,
+                  "thurs": 3, "fri": 4, "sat": 5, "satur": 5, "sun": 6}
+_MONTH_INDEX = {"jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6, "jul": 7,
+                "aug": 8, "sep": 9, "sept": 9, "oct": 10, "nov": 11, "dec": 12}
+_DEADLINE_PREP_RE = re.compile(r"^(?:by|before|on|until|due|for)\s+")
+_WEEKDAY_CUE_RE = re.compile(r"^(mon|tues|tue|wednes|wed|thurs|thur|thu|fri|satur|sat|sun)(?:day)?$")
+_DAY_OF_MONTH_RE = re.compile(r"^the (\d{1,2})(?:st|nd|rd|th)?$")
+_MONTH_DAY_RE = re.compile(r"^([a-z]+)\s+(\d{1,2})(?:st|nd|rd|th)?$")
+_NUMERIC_DATE_RE = re.compile(r"^(\d{1,2})/(\d{1,2})$")
+
+
+def _friday_on_or_after(day: date) -> date:
+    """The Friday of `day`'s week: `day` itself on a Friday, the coming
+    Friday otherwise (a Saturday or Sunday rolls to the next week's)."""
+    return day + timedelta(days=(4 - day.weekday()) % 7)
+
+
+def _safe_date(year: int, month: int, day: int) -> date | None:
+    try:
+        return date(year, month, day)
+    except ValueError:
+        return None
+
+
+def resolve_deadline(cue: str, meeting_day: date | None) -> date | None:
+    """The calendar date a deadline cue means when said on `meeting_day`,
+    or None when the cue has no calendar meaning (or there is no meeting
+    day). today/tonight/eod -> meeting_day; tomorrow -> +1; this week/eow ->
+    that week's Friday; next week -> the Friday after that; "by friday" ->
+    the first Friday on or after meeting_day; "the 12th" -> that day of the
+    month, or of the next month when already past; "sept 3" / "9/3" -> that
+    date in meeting_day's year; an ISO date -> itself."""
+    if meeting_day is None:
+        return None
+    c = " ".join(_cue_text(cue or "").split())
+    if not c:
+        return None
+    if c in _SAME_DAY_CUES:
+        return meeting_day
+    if c == "tomorrow":
+        return meeting_day + timedelta(days=1)
+    if c in _THIS_WEEK_CUES:
+        return _friday_on_or_after(meeting_day)
+    if c == "next week":
+        return _friday_on_or_after(meeting_day) + timedelta(days=7)
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", c):
+        try:
+            return date.fromisoformat(c)
+        except ValueError:
+            return None
+    rest = _DEADLINE_PREP_RE.sub("", c)
+    m = _WEEKDAY_CUE_RE.match(rest)
+    if m:
+        target = _WEEKDAY_INDEX[m.group(1)]
+        return meeting_day + timedelta(days=(target - meeting_day.weekday()) % 7)
+    m = _DAY_OF_MONTH_RE.match(rest)
+    if m:
+        dom = int(m.group(1))
+        year, month = meeting_day.year, meeting_day.month
+        for _ in range(3):
+            candidate = _safe_date(year, month, dom)
+            if candidate is not None and candidate >= meeting_day:
+                return candidate
+            month += 1
+            if month > 12:
+                month, year = 1, year + 1
+        return None
+    m = _MONTH_DAY_RE.match(rest)
+    if m:
+        month = next((v for k, v in _MONTH_INDEX.items() if m.group(1).startswith(k)), None)
+        return _safe_date(meeting_day.year, month, int(m.group(2))) if month else None
+    m = _NUMERIC_DATE_RE.match(rest)
+    if m:
+        return _safe_date(meeting_day.year, int(m.group(1)), int(m.group(2)))
+    return None
+
+
+def meeting_day_of(folder: str) -> date | None:
+    """The calendar date in a meeting folder name (YYYY-MM-DD-HHMM, see
+    DATE_DIR_RE), or None when the name is not a dated folder."""
+    name = str(folder or "")
+    if not DATE_DIR_RE.match(name):
+        return None
+    return _safe_date(int(name[0:4]), int(name[5:7]), int(name[8:10]))
+
+
+def worklist_today() -> date:
+    """Today for deadline expiry: WHOSAID_TODAY=YYYY-MM-DD when set (tests,
+    replaying an old workspace), else the clock."""
+    raw = os.environ.get("WHOSAID_TODAY", "").strip()
+    if raw:
+        try:
+            return date.fromisoformat(raw)
+        except ValueError:
+            log(f"WARN WHOSAID_TODAY={raw!r} is not YYYY-MM-DD; using the clock")
+    return date.today()
 
 
 def cue_strength(cue: str, strong: list[str] | None = None,
@@ -1859,13 +2021,21 @@ class Ranker:
       P3  the rest
     A negated item is never P1 (it drops to P2) and scores the negative
     weight. Score = the sum of the weights of the signals that fired
-    (repeat counts per extra meeting)."""
+    (repeat counts per extra meeting). Cues carry the configured negators,
+    so "non-urgent" and "not blocking" fire nothing. A relative deadline
+    cue resolves against the item's last_seen meeting day (resolve_deadline);
+    when that date is before `today` the item is overdue: why says
+    overdue=YYYY-MM-DD, the `overdue` weight replaces `deadline`, and the
+    deadline no longer makes it P1. `today` defaults to the clock; callers
+    pass worklist_today() so WHOSAID_TODAY pins it."""
 
-    def __init__(self, cfg: dict, latest: str, leadership: list[str] | None = None) -> None:
+    def __init__(self, cfg: dict, latest: str, leadership: list[str] | None = None,
+                 today: date | None = None) -> None:
         c = commitments_config(cfg)
         self.cfg = c
         self.weights = c["weights"]
         self.latest = latest
+        self.today = today if today is not None else date.today()
         self.boss_names = list(c["boss"])
         if leadership is None:
             groups = cfg.get("groups") if isinstance(cfg.get("groups"), dict) else {}
@@ -1883,6 +2053,14 @@ class Ranker:
             return True
         return "leadership" in (e.get("type") or "").lower()
 
+    def overdue_on(self, due: str, last_seen: str) -> date | None:
+        """The resolved date of a deadline cue when it is already behind
+        today, else None (unresolvable cues and future dates never expire)."""
+        if not due:
+            return None
+        resolved = resolve_deadline(due, meeting_day_of(last_seen))
+        return resolved if resolved is not None and resolved < self.today else None
+
     def rank(self, e: dict) -> None:
         """Set tier/score/why on the entry in place."""
         w = self.weights
@@ -1890,8 +2068,10 @@ class Ranker:
         score = 0
         n = len(e["meetings"]) or 1
         boss = self.is_boss(e)
-        blocking = cue_hit(e["text"], self.cfg["blocking_cues"])
-        due = deadline_cue(e["text"], self.cfg["deadline_cues"])
+        negators = self.cfg["negators"]
+        blocking = cue_hit(e["text"], self.cfg["blocking_cues"], negators)
+        due = deadline_cue(e["text"], self.cfg["deadline_cues"], negators)
+        overdue = self.overdue_on(due, e["last_seen"])
         recent = bool(self.latest) and e["last_seen"] == self.latest
         strength = cue_strength(e["cue"], self.cfg["strong_cues"], self.cfg["weak_cues"])
         requested = bool(e["requested_by"])
@@ -1901,7 +2081,10 @@ class Ranker:
         if blocking:
             why.append(f"blocking={blocking}")
             score += w.get("blocking", 0)
-        if due:
+        if overdue is not None:
+            why.append(f"overdue={overdue.isoformat()}")
+            score += w.get("overdue", 0)
+        elif due:
             why.append(f"due={due}")
             score += w.get("deadline", 0)
         if n >= 2:
@@ -1919,7 +2102,7 @@ class Ranker:
         if e["negative"]:
             why.append("negative")
             score += w.get("negative", 0)
-        p1 = boss or bool(blocking) or bool(due) or n >= 3
+        p1 = boss or bool(blocking) or (bool(due) and overdue is None) or n >= 3
         p2 = n == 2 or requested or (strength == "strong" and recent)
         if p1 and not e["negative"]:
             tier = "P1"
@@ -1988,8 +2171,10 @@ def render_worklist_md(owner: str, entries: list[dict], generated_from: list[str
              "`_ACTION-ITEMS.md` instead, ids never renumber. Tiers: P1 = boss-requested, "
              "a blocking/urgency cue, a deadline cue, or seen in 3+ meetings; P2 = seen in "
              "2 meetings, requested by anyone, or a strong cue in the latest meeting; "
-             "P3 = the rest; negated items are never P1. Within a tier: score, then "
-             "most recent, then id._", ""]
+             "P3 = the rest; negated items are never P1. A cue right after a negator "
+             "(non-urgent, not blocking) does not count; a relative deadline that has "
+             "passed since the meeting it was said in shows as overdue=YYYY-MM-DD and "
+             "no longer earns P1. Within a tier: score, then most recent, then id._", ""]
     if generated_from:
         span = generated_from[0] if len(generated_from) == 1 \
             else f"{generated_from[0]} → {generated_from[-1]}"
@@ -2037,9 +2222,11 @@ def worklist_participants(cm_items: list[ActionItem | CommitmentItem], ai_items:
 
 
 def build_worklist(owner: str, cm_items: list[CommitmentItem], ai_items: list[ActionItem],
-                   cfg: dict, matcher: TextMatcher, generated_from: list[str]) -> tuple[list[dict], dict]:
-    """(ranked entries, --json payload) for one owner."""
-    ranker = Ranker(cfg, latest_meeting(generated_from))
+                   cfg: dict, matcher: TextMatcher, generated_from: list[str],
+                   today: date | None = None) -> tuple[list[dict], dict]:
+    """(ranked entries, --json payload) for one owner. `today` pins deadline
+    expiry (callers pass worklist_today(); None means the clock)."""
+    ranker = Ranker(cfg, latest_meeting(generated_from), today=today)
     entries = worklist_entries(owner, cm_items, ai_items, matcher, owner_aliases(owner, cfg))
     rank_entries(entries, ranker)
     return entries, worklist_payload(owner, entries, generated_from)
@@ -2057,8 +2244,9 @@ def write_worklists(ws: Path, cfg: dict, matcher: TextMatcher, cm_items: list[Co
     if not owner and cm_items and not all_owners:
         log("NOTE worklist skipped: no owner (tag a 'self' role, set [workspace] owner "
             "in whosaid.toml, or pass --owner)")
+    today = worklist_today()
     for who in targets:
-        entries, _ = build_worklist(who, cm_items, ai_items, cfg, matcher, generated_from)
+        entries, _ = build_worklist(who, cm_items, ai_items, cfg, matcher, generated_from, today)
         if not entries and not (who == owner and cm_items):
             continue
         out = ws / worklist_filename(who)
@@ -2092,7 +2280,9 @@ def cmd_worklist(args: argparse.Namespace) -> int:
                 "[workspace] owner in whosaid.toml")
             return 1
         owners = [owner]
-    built = [build_worklist(who, cm_items, ai_items, cfg, matcher, generated_from) for who in owners]
+    today = worklist_today()
+    built = [build_worklist(who, cm_items, ai_items, cfg, matcher, generated_from, today)
+             for who in owners]
     if args.json:
         if args.all_owners:
             text = json.dumps({"owners": [payload for _, payload in built]}, indent=2) + "\n"

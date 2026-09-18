@@ -326,18 +326,24 @@ COMMITMENTS
   own (name match; '_' and ' ' interchangeable; [workspace] aliases too); an
   action item that reads like one of the commitments folds into that line as
   "(also AI-NNN)". Tiers, deterministic and LLM-free:
-    P1  boss-requested, a blocking/urgency cue (prod, outage, customer, ...),
-        a deadline cue (tomorrow, eod, by friday, 2026-09-30, ...), or seen
-        in 3+ meetings
+    P1  boss-requested, a blocking/urgency cue (urgent, outage, prod issue,
+        customer escalation, ...), a deadline cue (tomorrow, eod, by friday,
+        2026-09-30, ...), or seen in 3+ meetings
     P2  seen in 2 meetings, requested by anyone, or a strong cue ("I'll own",
         "I will", "I promise") in the latest meeting
     P3  everything else; negated items ("I won't") are never P1
+  A cue right after a negator in the same clause (non-urgent, not blocking,
+  no rush) does not count. A relative deadline (today, tomorrow, this week,
+  by friday) resolves against the meeting it was said in; once that date is
+  behind today the line says overdue=YYYY-MM-DD instead of due=..., the
+  small overdue weight replaces deadline, and the item is no longer P1 on
+  the deadline alone (WHOSAID_TODAY=YYYY-MM-DD pins today).
   Within a tier: score, then most recent, then id. whosaid.toml [commitments]
   overrides the lists and weights: boss = [...], deadline_cues, blocking_cues,
-  strong_cues, weak_cues, weights.{boss,blocking,deadline,repeat,recent,strong,
-  requested,negative}, embed_threshold. Roll-up writes the same view to
-  <ws>/_WORKLIST-<Owner>.md; ids never renumber; edit _COMMITMENTS.md or
-  _ACTION-ITEMS.md, not the worklist.
+  negators, strong_cues, weak_cues, weights.{boss,blocking,deadline,overdue,
+  repeat,recent,strong,requested,negative}, embed_threshold. Roll-up writes
+  the same view to <ws>/_WORKLIST-<Owner>.md; ids never renumber; edit
+  _COMMITMENTS.md or _ACTION-ITEMS.md, not the worklist.
   --owner NAME|me     A speaker label, or me (default): the 'self'-roled
                       speaker, else [workspace] owner.
   --all-owners        Every participant (markdown concatenated; --json wraps
@@ -425,6 +431,9 @@ ENV OVERRIDES
                       tools of 'whosaid mcp'.
   WHOSAID_OWNER        Whose action items a workspace tracks (overrides
                       whosaid.toml [workspace] owner).
+  WHOSAID_TODAY        YYYY-MM-DD the worklist treats as today when deciding
+                      whether a relative deadline is overdue (default: the
+                      clock).
   WHOSAID_OLLAMA       Ollama base URL for embeddings and the built-in summarizer
                       (default: http://127.0.0.1:11434; localhost only).
   WHOSAID_SUMMARIZER_MODEL  Ollama model for the built-in action-items engine
