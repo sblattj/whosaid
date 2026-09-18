@@ -26,6 +26,10 @@ WATCH_PY="$REPO/lib/watch.py"
 PASS=0
 TEST_FAILED=0
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/whosaid-watch-test.XXXXXX")"
+# the watcher resolves paths, so compare against the physical temp dir
+# (macOS /var and /tmp are symlinks into /private; a trailing slash in
+# TMPDIR would also leave a doubled separator in the argv assertions)
+TMP="$(cd "$TMP" && pwd -P)"
 
 cleanup() {
   if [ "$TEST_FAILED" -eq 0 ]; then
@@ -194,7 +198,8 @@ assert_eq "$RC" 0 "ingest run exits 0"
 CALLS="$(calls)"
 assert_eq "$(printf '%s\n' "$CALLS" | wc -l | tr -d ' ')" 4 "two ingests + roll-up + index"
 assert_eq "$(printf '%s\n' "$CALLS" | sed -n 1p | cut -d' ' -f1)" "ingest" "first call is ingest"
-assert_text "^ingest $WS2/\.watch_staging/old1\.m4a --into $WS2 --folder-by created --action-items --engine mlx --accurate" "$CALLS" "ingest argv (staged copy, --into, --folder-by created, --action-items, engine, accurate)"
+assert_text "^ingest $WS2/\.watch_staging/old1\.m4a --into $WS2 --folder-by created --action-items --commitments --engine mlx --accurate" "$CALLS" "ingest argv (staged copy, --into, --folder-by created, --action-items, --commitments, engine, accurate)"
+assert_text "^ingest .* --commitments" "$CALLS" "ingest always passes --commitments (dev-commitments ride along)"
 assert_text "^ingest $WS2/\.watch_staging/old2\.m4a --into $WS2 " "$CALLS" "second ingest argv"
 assert_eq "$(printf '%s\n' "$CALLS" | sed -n 3p | cut -d' ' -f1-3)" "roll-up $WS2 --action-items" "roll-up follows the ingests"
 assert_eq "$(printf '%s\n' "$CALLS" | sed -n 4p | cut -d' ' -f1-2)" "index $WS2" "index follows roll-up"

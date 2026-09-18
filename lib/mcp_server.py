@@ -178,11 +178,11 @@ Typical workflow: whosaid_transcribe -> read the speaker cards in the result -> 
 
 Speakers can carry role tags (self/boss/peer/report/external) set via whosaid_relabel's `roles` param; roles appear in speaker cards and transcripts and tell you whose commitments matter most (boss ranks higher). "self" is the user's own voice.
 
-Dev-commitments = the cross-meeting corpus of commitments the self-roled speaker made to others/team. Extracted per-meeting into commitments.md/commitments.json (via `python3 lib/workspace.py commitments --transcript T --json-out F`, or `whosaid ingest --commitments`), then rolled up into _COMMITMENTS.md/_commitments.json with stable CM-NNN ids.
+Dev-commitments = the cross-meeting corpus of commitments the self-roled speaker made to others/team. Extracted per-meeting into commitments.md/commitments.json (via `python3 lib/workspace.py commitments --transcript T --json-out F`, or `whosaid ingest --commitments`), then rolled up into _COMMITMENTS.md/_commitments.json with stable CM-NNN ids. whosaid_worklist(owner="me") answers "what did I sign up for, ranked": the owner's commitments plus the action items they own, tiered P1/P2/P3 (boss-requested, blocking or deadline cues, repeat across meetings, recency, cue strength) with a score and why strings; the same view the roll-up writes to _WORKLIST-<Owner>.md.
 
 Not exposed here: `enroll` and `record` are interactive microphone operations that need a live terminal. Run them from the `whosaid` CLI. The first transcribe downloads ~1.5 GB of models; run whosaid_doctor to check readiness. Full flag/env/long-audio reference: read the whosaid://guide resource.
 
-Meeting workspace (search across many transcripts): point the server at a workspace directory by launching it with WHOSAID_WORKSPACE=<dir>, or pass `workspace` on each call; there is no cwd fallback. Flow: whosaid_search (turn-level hits with meeting folder + timestamp) -> whosaid_context (the verbatim minute around one hit; do not read whole transcripts) -> whosaid_items / whosaid_item / whosaid_person for action items and per-person commitments. whosaid_meetings, whosaid_prs and whosaid_speakers list what the graph knows; whosaid_workspace_status says whether the index exists. The index (_search.db, _WIKI.md) is built by `whosaid index <ws>` from the CLI or the watcher, never from here: every workspace tool is read-only. Resources: whosaid://workspace/wiki, whosaid://workspace/action-items, whosaid://workspace/index, whosaid://workspace/meeting/{folder}/transcript and whosaid://workspace/meeting/{folder}/action-items. Everything stays local (SQLite FTS5 plus optional embeddings from a localhost Ollama)."""
+Meeting workspace (search across many transcripts): point the server at a workspace directory by launching it with WHOSAID_WORKSPACE=<dir>, or pass `workspace` on each call; there is no cwd fallback. Flow: whosaid_search (turn-level hits with meeting folder + timestamp) -> whosaid_context (the verbatim minute around one hit; do not read whole transcripts) -> whosaid_items / whosaid_item / whosaid_person for action items and per-person commitments; whosaid_worklist for one person's ranked P1/P2/P3 worklist across both corpora. whosaid_meetings, whosaid_prs and whosaid_speakers list what the graph knows; whosaid_workspace_status says whether the index exists. The index (_search.db, _WIKI.md) is built by `whosaid index <ws>` from the CLI or the watcher, never from here: every workspace tool is read-only. Resources: whosaid://workspace/wiki, whosaid://workspace/action-items, whosaid://workspace/index, whosaid://workspace/meeting/{folder}/transcript and whosaid://workspace/meeting/{folder}/action-items. Everything stays local (SQLite FTS5 plus optional embeddings from a localhost Ollama)."""
 
 
 try:
@@ -935,6 +935,7 @@ def whosaid_samples(
 LIB_DIR = REPO_DIR / "lib"
 SEARCH_PY = LIB_DIR / "search.py"
 GRAPH_PY = LIB_DIR / "graph.py"
+WORKSPACE_PY = LIB_DIR / "workspace.py"
 WS_TIMEOUT = 60.0  # seconds: local SQLite plus, for meaning search, one localhost Ollama call
 
 WORKSPACE_FILES = ("_WIKI.md", "_ACTION-ITEMS.md", "_INDEX.md")
@@ -1106,6 +1107,17 @@ _DESC_WS_SPEAKERS = (
     "of whosaid_person. Read-only."
 )
 
+_DESC_WS_WORKLIST = (
+    "Ranked personal worklist (GitHub issue #13): what `owner` signed up for across every "
+    "meeting, from the roll-up corpora (dev-commitments CM-NNN plus the action items AI-NNN "
+    "they own), each item tiered P1/P2/P3 with a numeric score and short why strings. "
+    "P1 = boss-requested, a blocking/urgency cue, a deadline cue, or seen in 3+ meetings; "
+    "P2 = seen in 2 meetings, requested by anyone, or a strong cue in the latest meeting; "
+    "P3 = the rest; negated items are never P1. owner is a speaker label or 'me' (the "
+    "self-roled speaker, else the whosaid.toml [workspace] owner). Deterministic, no LLM, "
+    "same view as _WORKLIST-<Owner>.md. Read-only. Keywords: my worklist, what did I "
+    "promise, what did I sign up for, my priorities, ranked commitments."
+)
 _DESC_WS_STATUS = (
     "Read-only health check for a meeting workspace: whether the search index (_search.db) "
     "exists and what it holds (meetings, turns, embeddings), whether the rendered _WIKI.md, "
@@ -1385,6 +1397,42 @@ def whosaid_workspace_status(workspace: Optional[str] = None) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# 16) whosaid_worklist
+# ---------------------------------------------------------------------------
+@mcp.tool(name="whosaid_worklist", description=_DESC_WS_WORKLIST, annotations=_read_only())
+def whosaid_worklist(owner: str = "me", workspace: Optional[str] = None) -> dict:
+    """Shell `workspace.py worklist <ws> --owner <owner> --json`.
+
+    Returns {"ok", "workspace", "owner", "generated_from": [meetings], "items": [...],
+    "count"}, each item {id, source, text, status, tier, score, why, first_seen,
+    last_seen, occurrences, requested_by, negative, also}. Reads _commitments.json
+    and _action-items.json only (the roll-up writes them), never the index.
+    """
+    ws, err = _resolve_ws(workspace)
+    if err:
+        return err
+    who = (owner or "").strip() or "me"
+    payload, err = _run_ws(WORKSPACE_PY, ["worklist", ws, "--owner", who], ws)
+    if err:
+        # _run_ws's default hint points at the search index, which this view never reads.
+        err["hint"] = (
+            f"run: whosaid roll-up {ws} --action-items (builds the corpora); pass owner="
+            "<speaker label> when no 'self' role or [workspace] owner is set"
+        )
+        return err
+    data = payload if isinstance(payload, dict) else {}
+    items = data.get("items") if isinstance(data.get("items"), list) else []
+    return {
+        "ok": True,
+        "workspace": str(ws),
+        "owner": data.get("owner") or who,
+        "generated_from": data.get("generated_from") or [],
+        "items": items,
+        "count": len(items),
+    }
+
+
+# ---------------------------------------------------------------------------
 # Resource: whosaid://guide (on-demand deep detail — not in the always-loaded schema)
 # ---------------------------------------------------------------------------
 _GUIDE = """# whosaid — deep reference (whosaid://guide)
@@ -1488,7 +1536,20 @@ Roles tag who each speaker IS to the user, so commitments can be ranked:
 - The workspace roll-up folds each meeting's commitments.json into
   `_COMMITMENTS.md` / `_commitments.json` with stable `CM-NNN` ids (never
   renumbered; difflib dedupe, like the action-items corpus) — boss-requested
-  items flagged, boss requests ranking highest for follow-up.
+  items flagged, boss requests ranking highest for follow-up. Dedupe also
+  accepts embedding cosine >= [commitments] embed_threshold (0.90) when a
+  loopback Ollama answers and [search] embed is on; otherwise difflib only.
+- **Worklist**: whosaid_worklist(owner="me") (CLI: `whosaid commitments <ws>
+  [--owner NAME|me] [--all-owners] [--json]`; the roll-up writes the same
+  view to `_WORKLIST-<Owner>.md`) ranks the owner's open CM-NNN commitments
+  plus the AI-NNN action items they own (name match with '_'/' '
+  interchangeable, plus [workspace] aliases; a look-alike action item folds
+  into the commitment as "(also AI-NNN)"). Tiers: P1 = boss-requested, a
+  blocking/urgency cue, a deadline cue, or 3+ meetings; P2 = 2 meetings,
+  requested by anyone, or a strong cue in the latest meeting; P3 = the rest;
+  negated items never P1. Score, why strings and the cue lists come from
+  whosaid.toml [commitments] (boss, deadline_cues, blocking_cues,
+  strong_cues, weak_cues, weights, embed_threshold). Deterministic, no LLM.
 
 ## Long audio runs in parallel
 Recordings over ~15 min (900 s) auto-chunk: the file is split into windows,

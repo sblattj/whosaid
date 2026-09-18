@@ -349,6 +349,38 @@ def test_workspace_status(ws: Path, fake: FakeRunner) -> None:
     check(out["meeting_folders"] == 0 and "no owner" in out["summary"], f"bare summary: {out['summary']}")
 
 
+def test_worklist(ws: Path, fake: FakeRunner) -> None:
+    w = str(ws.resolve())
+    payload = {"owner": "Alice_Example", "generated_from": ["2026-01-05-0900"],
+               "items": [{"id": "CM-001", "source": "commitments", "tier": "P1", "score": 5,
+                          "why": ["boss"], "text": "send the deck", "status": "open"}]}
+    fake.queue.append((payload, None))
+    out = mcp_server.whosaid_worklist()
+    script, args, _ = fake.last()
+    check(script == "workspace.py" and args == ["worklist", w, "--owner", "me"], f"worklist argv: {script} {args}")
+    check(out["ok"] is True and out["owner"] == "Alice_Example", f"worklist owner: {out}")
+    check(out["items"] == payload["items"] and out["count"] == 1, f"worklist items: {out}")
+    check(out["generated_from"] == ["2026-01-05-0900"], f"worklist generated_from: {out}")
+
+    fake.queue.append(({"owner": "Bob_Example", "generated_from": [], "items": []}, None))
+    out = mcp_server.whosaid_worklist(owner=" Bob_Example ")
+    check(fake.last()[1] == ["worklist", w, "--owner", "Bob_Example"], f"worklist owner argv: {fake.last()[1]}")
+    check(out["count"] == 0 and out["items"] == [], f"empty worklist: {out}")
+
+    fake.queue.append(({"owner": "Alice_Example", "generated_from": [], "items": []}, None))
+    mcp_server.whosaid_worklist(owner="   ")
+    check(fake.last()[1][-1] == "me", "blank owner falls back to me")
+
+    fake.queue.append((None, {"ok": False, "error": "worklist: no owner", "hint": "run: whosaid index x"}))
+    out = mcp_server.whosaid_worklist()
+    check(out["ok"] is False and out["error"] == "worklist: no owner", f"worklist error passthrough: {out}")
+    check("roll-up" in out["hint"] and "whosaid index" not in out["hint"], f"worklist hint names roll-up, not the index: {out['hint']}")
+
+    before = len(fake.calls)
+    out = mcp_server.whosaid_worklist(workspace=str(ws.parent / "nope"))
+    check(out["ok"] is False and len(fake.calls) == before, "bad workspace never reaches the runner")
+
+
 # ---------------------------------------------------------------------------
 # The real runner against fake CLIs
 # ---------------------------------------------------------------------------
@@ -537,6 +569,7 @@ def test_registration() -> None:
     new_tools = {
         "whosaid_search", "whosaid_context", "whosaid_items", "whosaid_item", "whosaid_person",
         "whosaid_meetings", "whosaid_prs", "whosaid_speakers", "whosaid_workspace_status",
+        "whosaid_worklist",
     }
     if SDK == "stub":
         registered = set(mcp_server.mcp.tools)
@@ -584,6 +617,7 @@ def main() -> None:
             test_context(ws, fake)
             test_graph_tools(ws, fake)
             test_workspace_status(ws, fake)
+            test_worklist(ws, fake)
 
             mcp_server._run_ws = real_runner
             clear_env()

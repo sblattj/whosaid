@@ -151,8 +151,14 @@ USAGE
                                         meeting folder (idempotent by content
                                         hash; skips anything already ingested).
   whosaid roll-up <dir> [--action-items] [--similarity-threshold F] [--rebuild]
-                        [--index]       Rebuild the workspace index, audit, and
-                                        action-item corpus.
+                        [--index] [--owner NAME|me] [--all-owners]
+                                        Rebuild the workspace index, audit,
+                                        action-item corpus, dev-commitments corpus,
+                                        and the ranked _WORKLIST-<Owner>.md.
+  whosaid commitments <ws> [--owner NAME|me] [--all-owners] [--json] [-o FILE]
+                                        Print the ranked worklist (P1/P2/P3) of
+                                        what one person signed up for, across
+                                        every meeting, from the roll-up corpora.
   whosaid index <ws> [--no-embed] [--rebuild]
                                         Build <ws>/_search.db (full text, optional
                                         embeddings, entity graph) and <ws>/_WIKI.md.
@@ -302,8 +308,44 @@ ROLL-UP FLAGS
   --rebuild           Reset manifest + corpus, rebuild from folders on disk.
   Roll-up also maintains the dev-commitments corpus — _COMMITMENTS.md +
   _commitments.json (CM-NNN ids) — automatically when per-meeting commitments
-  (from ingest --commitments) exist.
+  (from ingest --commitments) exist, and regenerates _WORKLIST-<Owner>.md
+  (see COMMITMENTS). Dedupe in both corpora is difflib >= the threshold OR,
+  when whosaid.toml [search] embed is on and Ollama answers on 127.0.0.1,
+  embedding cosine >= [commitments] embed_threshold (default 0.90); any
+  embedding failure falls back to difflib for the run.
+  --owner NAME|me     Whose worklist to write (default me: the speaker with the
+                      'self' role, else whosaid.toml [workspace] owner).
+  --all-owners        Also write one _WORKLIST-<Owner>.md per participant.
   --index             Run 'whosaid index <ws>' after the roll-up.
+
+COMMITMENTS
+  whosaid commitments <ws> [--owner NAME|me] [--all-owners] [--json] [-o FILE]
+  "What did I sign up for, across every meeting, ranked": a view over the
+  roll-up corpora (_commitments.json + _action-items.json), never a store.
+  Items are the owner's CM-NNN commitments plus the AI-NNN action items they
+  own (name match; '_' and ' ' interchangeable; [workspace] aliases too); an
+  action item that reads like one of the commitments folds into that line as
+  "(also AI-NNN)". Tiers, deterministic and LLM-free:
+    P1  boss-requested, a blocking/urgency cue (prod, outage, customer, ...),
+        a deadline cue (tomorrow, eod, by friday, 2026-09-30, ...), or seen
+        in 3+ meetings
+    P2  seen in 2 meetings, requested by anyone, or a strong cue ("I'll own",
+        "I will", "I promise") in the latest meeting
+    P3  everything else; negated items ("I won't") are never P1
+  Within a tier: score, then most recent, then id. whosaid.toml [commitments]
+  overrides the lists and weights: boss = [...], deadline_cues, blocking_cues,
+  strong_cues, weak_cues, weights.{boss,blocking,deadline,repeat,recent,strong,
+  requested,negative}, embed_threshold. Roll-up writes the same view to
+  <ws>/_WORKLIST-<Owner>.md; ids never renumber; edit _COMMITMENTS.md or
+  _ACTION-ITEMS.md, not the worklist.
+  --owner NAME|me     A speaker label, or me (default): the 'self'-roled
+                      speaker, else [workspace] owner.
+  --all-owners        Every participant (markdown concatenated; --json wraps
+                      them as {"owners": [...]}).
+  --json              {owner, generated_from, items: [{id, source, text, status,
+                      tier, score, why, first_seen, last_seen, occurrences,
+                      requested_by, negative, also}]}.
+  -o, --out FILE      Write there instead of stdout.
 
 WORKSPACE SEARCH
   <ws> is the meeting workspace directory. Every search command also accepts it
@@ -346,8 +388,8 @@ WATCH
   whosaid watch status    [--into <ws> | --label L] [--json]
   install writes a launchd LaunchAgent that watches --source (default: the macOS
   Voice Memos store) and, once a recording's mtime has been stable, stages it
-  out of the TCC-protected store and runs 'whosaid ingest --action-items', then
-  roll-up and index. --seed marks the recordings already there as done. Full
+  out of the TCC-protected store and runs 'whosaid ingest --action-items
+  --commitments', then roll-up and index. --seed marks the recordings already there as done. Full
   Disk Access is granted to ONE dedicated, ad-hoc-signed interpreter the
   installer provisions; --interpreter PATH reuses a binary you already granted.
   --source works for any folder, not just Voice Memos. uninstall --purge also
@@ -1429,10 +1471,12 @@ cmd_rollup() {
     case "$1" in
       --action-items)     py_args+=("$1"); shift ;;
       --rebuild)          py_args+=("$1"); shift ;;
+      --all-owners)       py_args+=("$1"); shift ;;
       --index)            want_index=1; shift ;;
       -o|--out)           py_args+=("$1" "$2"); shift 2 ;;
       --action-items-out) py_args+=("$1" "$2"); shift 2 ;;
       --similarity-threshold) py_args+=("$1" "$2"); shift 2 ;;
+      --owner)            py_args+=("$1" "$2"); shift 2 ;;
       -h|--help)          cmd_help; exit 0 ;;
       -*)                 log "unknown option: $1"; cmd_help; exit 1 ;;
       *)                  if [[ -z "$wsdir" ]]; then wsdir="$1"; else log "roll-up: unexpected arg '$1'"; exit 1; fi; shift ;;
@@ -1443,6 +1487,17 @@ cmd_rollup() {
   if [[ "$want_index" == "1" ]]; then
     cmd_index "$wsdir"
   fi
+}
+
+# whosaid commitments <ws> [--owner NAME|me] [--all-owners] [--json] [-o FILE]
+# The ranked personal worklist (issue #13): a read-only view over the roll-up
+# corpora, printed on demand. Same rules and output as the _WORKLIST-<Owner>.md
+# the roll-up writes; `python3 lib/workspace.py worklist` does the work.
+cmd_commitments() {
+  want_help "$@" && { help_section "COMMITMENTS"; return 0; }
+  require_module "$REPO_DIR/lib/workspace.py" commitments
+  [[ $# -eq 0 || "${1:-}" == -* ]] && { log "commitments: need a workspace directory. e.g. whosaid commitments meetings/ --owner me"; exit 1; }
+  exec python3 "$REPO_DIR/lib/workspace.py" worklist "$@"
 }
 
 # ---- workspace search / graph / wiki / watch / memos (issue #14) ----------------
@@ -1638,6 +1693,9 @@ case "${1:-}" in
     ;;
   roll-up|rollup)
     cmd_rollup "${@:2}"
+    ;;
+  commitments|worklist)
+    cmd_commitments "${@:2}"
     ;;
   index)
     cmd_index "${@:2}"

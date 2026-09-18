@@ -28,6 +28,12 @@ PASS=0
 TEST_FAILED=0
 TMP="$(mktemp -d)"
 
+# Hermetic roll-up: the corpus dedupe would ask a live Ollama on 127.0.0.1:11434
+# for embeddings if one answered. Point it at a port nobody listens on so the
+# fold results below never depend on a local model.
+export WHOSAID_OLLAMA="http://127.0.0.1:9"
+unset WHOSAID_EMBED_FAKE
+
 cleanup() {
   if [ "$TEST_FAILED" -eq 0 ]; then
     rm -rf "$TMP"
@@ -112,6 +118,10 @@ for token in \
   'whosaid wiki <ws>' \
   'whosaid watch run\|install\|uninstall\|status' \
   'whosaid memos list\|pull\|delete\|shortcut-recipe' \
+  'whosaid commitments <ws>' \
+  '_WORKLIST-<Owner>\.md' \
+  '\-\-all-owners' \
+  '^COMMITMENTS$' \
   '^WORKSPACE SEARCH$' \
   '^WATCH$' \
   '--engine E' \
@@ -191,6 +201,13 @@ assert_text '\-\-engine E' "$OUT" "'whosaid ingest --help' documents --engine"
 run_w roll-up --help
 assert_eq "$RC" 0 "'whosaid roll-up --help' exits 0"
 assert_text "Run 'whosaid index <ws>' after the roll-up" "$OUT" "'whosaid roll-up --help' documents --index"
+run_w commitments --help
+assert_eq "$RC" 0 "'whosaid commitments --help' exits 0"
+assert_text '^COMMITMENTS$' "$OUT" "'whosaid commitments --help' prints the COMMITMENTS section"
+assert_text 'P1  boss-requested' "$OUT" "'whosaid commitments --help' documents the tiers"
+run_w commitments
+assert_eq "$RC" 1 "'whosaid commitments' without a workspace exits 1"
+assert_text 'need a workspace directory' "$OUT" "'whosaid commitments' without a workspace prints a usage hint"
 
 # ---------------------------------------------------------------------------
 # 4. End-to-end over a synthetic workspace (needs lib/search.py + lib/graph.py).
@@ -249,6 +266,14 @@ else
   # audit flags the missing audio but exits 0.
   run_w roll-up "$WS" --action-items
   assert_eq "$RC" 0 "roll-up on the synthetic workspace exits 0"
+  assert_file "$WS/_WORKLIST-Alice_Example.md" "roll-up wrote the owner's _WORKLIST-<Owner>.md ([workspace] owner)"
+  run_w commitments "$WS" --json
+  assert_eq "$RC" 0 "'whosaid commitments <ws> --json' exits 0 (output: $OUT)"
+  assert_text '"owner": "Alice_Example"' "$OUT" "'whosaid commitments' resolves the owner from whosaid.toml"
+  assert_text '"source": "action-items"' "$OUT" "'whosaid commitments' lists the owner's action items"
+  run_w commitments "$WS" --owner Bob_Example
+  assert_eq "$RC" 0 "'whosaid commitments <ws> --owner NAME' exits 0"
+  assert_text '^# Worklist: Bob_Example$' "$OUT" "'whosaid commitments --owner' renders that person's worklist"
   assert_file "$WS/_workspace.json" "roll-up wrote the manifest"
   assert_file "$WS/_ACTION-ITEMS.md" "roll-up wrote the corpus"
 

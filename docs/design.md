@@ -138,6 +138,27 @@ boss-requested ones, hand edits in the rendered markdown reconciled back on the 
 `_workspace.json` points at it via `commitments_corpus`; `_INDEX.md` gains a one-line
 open/total count.
 
+**Worklist.** `_WORKLIST-<Owner>.md` (written by roll-up whenever a commitments corpus or
+owner-attributed action items exist; `whosaid commitments <ws>` prints it on demand, `--json`
+for scripts and the MCP `whosaid_worklist` tool) is the ranked, per-owner union of `CM-NNN`
+items the owner made and `AI-NNN` items assigned to them (`OwnerMatcher`: case-insensitive,
+`_`/space interchangeable, plus `[workspace] aliases` via `compile_name_re`). `Ranker` is
+deterministic and config-driven (`WORKLIST_DEFAULTS` overlaid with `[commitments]`): P1 for
+boss-requested (priority `high`, requester role `boss`, `[commitments] boss`, or `[groups]
+leadership` when no role is recorded), a blocking/urgency cue, a deadline cue (literal list plus
+`DEADLINE_DATE_RE` for "by friday", "on sept 3", ISO dates), or 3+ meetings; P2 for 2 meetings,
+any requester, or a strong cue in the latest meeting; P3 otherwise; negated items never P1.
+Score is the sum of the signal weights, ordering within a tier is score, last_seen, id, and each
+line keeps the corpus prefix (`- **CM-002** [open] span (2×) P1 · boss · due=tomorrow: text`)
+so `parse_commitments_md` still reads it. The file is a regenerated view, never reconciled;
+`--all-owners` writes one per participant. Owner resolution: `--owner NAME`, else the `self`
+role in the newest meeting (`commitments.json` roles, then `# Role:` headers), else
+`[workspace] owner`. Dedupe across meetings and across the two sources goes through one
+`TextMatcher`: difflib at the corpus threshold OR embedding cosine at `embed_threshold` (0.90)
+when Ollama answers on a loopback URL with `[search] embed` on, one batched `/api/embed` call per
+run; `WHOSAID_EMBED_FAKE=1` swaps in a bag-of-words hashing embedder so tests need no model, and
+any failure falls back to difflib with one log line.
+
 ### `whosaid doctor`
 
 Re-runs the capability checks read-only and reports: arch/OS, brew/ffmpeg/uv versions, Whisper and
@@ -263,7 +284,8 @@ lists audio files in the source (the macOS Voice Memos store by default, any `--
 otherwise), skips those recorded in `<ws>/.watch_state.json` (keyed name:size), waits until a
 file's mtime has been stable for `stable_seconds` (bounded by `max_wait_seconds`, then rescans),
 copies it into `<ws>/.watch_staging/`, and runs `whosaid ingest <copy> --into <ws> --folder-by
-created --action-items`, then `roll-up --action-items` and `index`. A `.watch.lock` prevents
+created --action-items --commitments`, then `roll-up --action-items` (which also refreshes the
+worklist) and `index`. A `.watch.lock` prevents
 overlapping passes; stdout/stderr go to `<ws>/.watch.log`. Exit codes: 0 ok, 1 error, 2
 usage/verification, 3 cannot read the source (Full Disk Access missing).
 
@@ -302,7 +324,10 @@ The workspace layer is covered offline, with placeholder speakers and no Ollama:
 wiki, `roll-up --index`, `doctor`, and a stub `ingest --index` on a synthetic two-meeting
 workspace), `test/search_test.sh`, `test/graph_test.py`, `test/action_items_test.py` (fake model
 server), `test/watch_test.sh` (temp source folder, stub `whosaid`), and
-`test/mcp_workspace_tools_test.py`.
+`test/mcp_workspace_tools_test.py`. `test/commitments_test.sh` covers the extractor, the corpus,
+and the semantic dedupe (fake embedder versus difflib fallback); `test/worklist_test.sh` covers
+the ranked worklist (tier rules, ordering, owner resolution, the CM + AI union, the regenerated
+view, `--all-owners`, `--json`, and the `whosaid commitments` launcher command).
 
 ## Non-goals (v1)
 
