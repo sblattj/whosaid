@@ -6,6 +6,12 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ## [Unreleased]
 
+### Fixed
+
+- **MCP `serverInfo.version` was empty (GitHub issue #14).** `whosaid mcp` now passes
+  `__version__` to the SDK 2.x server so clients see `1.2.0` instead of an empty string; SDK 1.x,
+  which has no such parameter, keeps working unchanged.
+
 ## [1.2.0] - 2026-09-17
 
 ### Added
