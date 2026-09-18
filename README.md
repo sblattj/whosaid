@@ -97,7 +97,8 @@ command without copying or duplicating the implementation.
 | `whosaid relabel <base> --auto` | Re-apply naming to an existing transcript with no assignments: re-runs registry matching + the absorb pass over the cached sidecar and rewrites the transcript + cards. Picks up voices enrolled after the transcript was made, and folds phantom cluster splits of one person into a single speaker. No re-transcription, no re-diarization. In a meeting workspace the base is `transcript`. See [Speaker identity: enrollment clips vs. the registry](#speaker-identity-enrollment-clips-vs-the-registry). |
 | `whosaid samples <base> [-o DIR] [--audio FILE] [--per-speaker N] [--seconds S] [--json]` | Export one short representative WAV per speaker cluster — the longest diarized segment, clamped to `--seconds` (default 8) — so you can listen and confirm an identity before trusting an auto-label or enrolling. Cuts from the sidecar's own `source.path`, or an explicit `--audio FILE` for a sidecar written before that metadata existed. |
 | `whosaid ingest <audio>… --into DIR [--action-items] [--engine E] [--index]` | Transcribe a batch into dated meeting folders (idempotent by content hash). `--engine` picks the action-item summarizer, `--index` runs roll-up + index afterwards. See [Meeting workspaces](#meeting-workspaces). |
-| `whosaid roll-up <ws> [--action-items] [--index]` | Rebuild the workspace index (`_INDEX.md`), audit, and the deduplicated action-item corpus; `--index` then rebuilds the search index too. |
+| `whosaid roll-up <ws> [--action-items] [--index] [--owner NAME\|me] [--all-owners]` | Rebuild the workspace index (`_INDEX.md`), audit, the deduplicated action-item and dev-commitments corpora, and the owner's ranked `_WORKLIST-<Owner>.md`; `--index` then rebuilds the search index too. |
+| `whosaid commitments <ws> [--owner NAME\|me] [--all-owners] [--json] [-o FILE]` | Print the ranked personal worklist (P1/P2/P3) on demand from the corpora, without a roll-up. See [Dev-commitments](#dev-commitments). |
 | `whosaid index <ws> [--no-embed] [--rebuild]` | Build `<ws>/_search.db` (full text, optional embeddings, entity graph) and `<ws>/_WIKI.md`. See [Search your meetings](#search-your-meetings). |
 | `whosaid search <ws> "<query>" [--mode exact\|meaning\|hybrid] [--speaker S] [--meeting M] [-k N] [--json]` | Search every speaker-labeled transcript; each hit is a meeting, a timestamp, a speaker, and a snippet. |
 | `whosaid context <ws> <meeting> <HH:MM:SS> [--before S] [--after S] [--json]` | The verbatim turns around a moment, for reading a hit in place. |
@@ -193,6 +194,18 @@ whosaid roll-up ./meetings --action-items
   review band, grouped by status then speaker, with `**[boss]**` marking boss-requested items.
   Hand edits in `_COMMITMENTS.md` (mark one `done`, retitle, merge via `(merged CM-NNN)`) fold
   back on the next roll-up, exactly like the action-item corpus.
+- **Personal worklist** `_WORKLIST-<Owner>.md`: whenever a commitments corpus or owner-attributed
+  action items exist, roll-up also writes the owner's open items ranked into P1/P2/P3 (see
+  [Dev-commitments](#dev-commitments)). The owner is `--owner NAME`, else the `self`-roled
+  speaker, else `[workspace] owner`; `--all-owners` writes one file per participant. It is a
+  regenerated view, never reconciled: edit the corpora, not the worklist.
+
+Dedupe is text similarity (difflib, the `--similarity-threshold` above) and, when a local
+Ollama answers on `127.0.0.1` with `[search] embed = true`, also embedding cosine: two texts
+match when either the difflib ratio or the `[search] embed_model` cosine clears its threshold
+(`[commitments] embed_threshold`, default 0.90), so "I'll write the rollout runbook for the
+platform team" and "for the platform team write the rollout runbook" fold into one item. No
+Ollama, `embed = false`, or a non-loopback URL means difflib only, with one log line saying so.
 
 Roll-up is incremental and append-only by default: re-running with nothing new writes nothing.
 `--rebuild` is the escape hatch — it resets the manifest and corpus and regenerates both from the
@@ -294,6 +307,21 @@ ollama = "http://127.0.0.1:11434"
 embed_model = "nomic-embed-text"
 embed = true                     # false: exact search only, never contact Ollama
 
+[commitments]                    # optional; ranks _WORKLIST-<Owner>.md. A list you set replaces
+boss = []                        # the default list, so omit a key to keep the built-in cues.
+deadline_cues = ["today", "tonight", "tomorrow", "eod", "end of day", "this week", "next week"]
+blocking_cues = ["blocking", "blocked", "urgent", "asap", "critical", "hotfix", "prod", "outage", "customer", "release", "ship"]
+embed_threshold = 0.90           # cosine at or above this is a duplicate (with [search] embed)
+[commitments.weights]            # score = sum of the signals that fired
+boss = 5
+blocking = 4
+deadline = 4
+repeat = 2                       # per extra meeting
+recent = 1
+strong = 1
+requested = 1
+negative = -3
+
 [watch]
 source = ""                      # folder to watch (default: the macOS Voice Memos store)
 ```
@@ -338,7 +366,8 @@ fast and roughly twice as noisy. Ollama is only ever contacted on `127.0.0.1`.
 Record a meeting in Voice Memos, walk away, and have it transcribed, summarized, and searchable a
 few minutes after you press stop. `whosaid watch` is a launchd LaunchAgent that watches a folder
 (the macOS Voice Memos store by default) and pushes each new recording through
-`whosaid ingest --action-items`, then `roll-up`, then `index`.
+`whosaid ingest --action-items --commitments`, then `roll-up` (which also refreshes the
+worklist), then `index`.
 
 ```bash
 whosaid watch install --into ~/meetings --seed      # install; mark the memos already there as done
@@ -420,6 +449,39 @@ the same 0.82 text-similarity dedupe with a 0.10 near-miss review band, and hand
 - **CM-002** [open] (Stephen) 2026-09-14-1802 → 2026-09-21-1802 (2×): **[boss]** update the exec deck
 ```
 
+### The ranked worklist: `_WORKLIST-<Owner>.md` and `whosaid commitments`
+
+The corpus answers "what did I promise"; the worklist answers "what should I do first". Every
+roll-up (and `whosaid commitments <ws>` on demand) takes the union of the owner's commitments
+(`CM-NNN`, speaker = owner) and the action items assigned to them (`AI-NNN`, owner matched
+case-insensitively with `_`/space interchangeable, plus `[workspace] aliases`), folds the two
+sources together (an action item that restates a commitment appears once, as `(also AI-012)`),
+and ranks what is open. Deterministic, no LLM:
+
+| Tier | Rule |
+|---|---|
+| **P1** | boss-requested (`priority high`, requester role `boss`, `[commitments] boss`, or a `[groups] leadership` name when no role is recorded), a blocking/urgency cue (`blocking`, `urgent`, `asap`, `prod`, `outage`, `customer`, `release`, `ship`, …), a deadline cue (`tomorrow`, `eod`, `by Friday`, `next week`, an ISO date, …), or seen in 3+ meetings |
+| **P2** | seen in 2 meetings, requested by anyone, or a strong cue (`i'll own`, `i will`, `i promise`, `i owe`, …) in the latest meeting |
+| **P3** | the rest (weak cues such as `i can`, `let me`, `i plan to` earn nothing) |
+
+A negated commitment (`i won't`) is never P1 and carries a penalty. Within a tier the order is
+score (sum of the signal weights), then most recent, then id, and every line says why:
+
+```text
+- **CM-002** [open] 2026-09-14-1802 → 2026-09-21-1802 (2×) P1 · boss · due=tomorrow · 2 meetings: update the exec deck (also AI-012)
+```
+
+Resolved and merged items sit under `## Done / history`. The file is a regenerated view (hand
+edits are overwritten on the next run; ids never renumber; the JSON corpora stay the source of
+truth), so close or retitle items in `_COMMITMENTS.md` / `_ACTION-ITEMS.md`. The owner is
+`--owner NAME`, or `--owner me` (the default): the speaker with role `self` in the newest
+meeting's `commitments.json` or `# Role:` header, else `[workspace] owner` / `WHOSAID_OWNER`.
+`--all-owners` writes one file per participant. `whosaid commitments <ws> --json` emits
+`{owner, generated_from, items: [{id, source, text, status, tier, score, why, first_seen,
+last_seen, occurrences, requested_by, negative, …}]}` for scripts and the MCP tool. Cue lists,
+boss names, weights, and the embedding threshold are overridable in `whosaid.toml`
+`[commitments]` (see the example under [Search your meetings](#search-your-meetings)).
+
 ## Use it from an AI agent (MCP)
 
 whosaid's local, private, GPU transcription and speaker diarization are also exposed as MCP tools,
@@ -472,6 +534,7 @@ index` (or the watcher) owns writes, and the tools only read `_search.db`.
 | `whosaid_prs` | Pull-request numbers mentioned in speech or in the notes. |
 | `whosaid_speakers` | Talk share per speaker across the workspace. |
 | `whosaid_workspace_status` | Whether the index exists, how many turns it holds, and whether Ollama is reachable. |
+| `whosaid_worklist` | The owner's ranked worklist (P1/P2/P3 with score and why) from the commitments and action-item corpora, the `whosaid commitments --json` payload; `owner` defaults to `me`. |
 
 Resources, all reading `WHOSAID_WORKSPACE`: `whosaid://workspace/wiki` (`_WIKI.md`),
 `whosaid://workspace/action-items` (`_ACTION-ITEMS.md`), `whosaid://workspace/index`
@@ -826,8 +889,14 @@ preservation across registry re-saves, the `# Role:` header lines in `.speakers.
 sidecar's `roles` key, and the `[role]` card label — no model download required.
 
 `./test/commitments_test.sh` covers the dev-commitments extractor and corpus offline: cue,
-negation, and question handling, `self`-role gating, boss-requested priority, and the `CM-NNN`
-roll-up dedupe and hand-edit reconcile — no model download required.
+negation, and question handling, `self`-role gating, boss-requested priority, the `CM-NNN`
+roll-up dedupe and hand-edit reconcile, and the semantic dedupe under `WHOSAID_EMBED_FAKE=1`
+versus the difflib fallback when the embed server is unreachable; no model download required.
+
+`./test/worklist_test.sh` covers the ranked worklist offline: every tier rule, ordering, why
+strings, owner resolution (`--owner`, `me`, the toml owner, aliases), the CM + AI union and its
+cross-source dedupe, `_WORKLIST-<Owner>.md` as a regenerated view, `--all-owners`, `--json`, and
+the `whosaid commitments` launcher command.
 
 ## License
 

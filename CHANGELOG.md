@@ -32,8 +32,42 @@ All notable changes to whosaid are documented here. This project adheres to
   `**[boss]**` marking boss-requested items; hand edits in the rendered `_COMMITMENTS.md`
   reconcile back on the next run. `_workspace.json` points at the corpus via
   `commitments_corpus` and `_INDEX.md` gains a conditional one-line open/total count.
+- **Ranked personal worklist (closes the gap left by GitHub issue #13).** Roll-up writes
+  `_WORKLIST-<Owner>.md` whenever a commitments corpus or owner-attributed action items exist:
+  the union of the owner's `CM-NNN` commitments and the `AI-NNN` action items assigned to them
+  (owner matched case-insensitively, `_`/space interchangeable, plus `[workspace] aliases`;
+  an action item restating a commitment folds into it as `(also AI-NNN)`), ranked
+  deterministically into `## P1` / `## P2` / `## P3` with a score and a short why per line
+  (`P1 · boss · due=tomorrow · 3 meetings`), resolved items under `## Done / history`. P1 =
+  boss-requested, a blocking/urgency cue, a deadline cue, or 3+ meetings; P2 = 2 meetings,
+  requested by anyone, or a strong cue in the latest meeting; P3 = the rest; negated
+  commitments are never P1. The owner is `--owner NAME`, else the `self`-roled speaker, else
+  `[workspace] owner`; `--all-owners` writes one file per participant. The file is a
+  regenerated view (never reconciled); ids never renumber; the JSON corpora stay the source of
+  truth. Cue lists, boss names, weights, and the embedding threshold are overridable under
+  `[commitments]` in `whosaid.toml`.
+- **`whosaid commitments <ws> [--owner NAME|me] [--all-owners] [--json] [-o FILE]`.** Prints
+  the worklist on demand from the corpora without a roll-up (`whosaid worklist` is an alias);
+  `--json` emits `{owner, generated_from, items: [{id, source, text, status, tier, score, why,
+  first_seen, last_seen, occurrences, requested_by, negative}]}`.
+- **Semantic dedupe.** Commitment folding, action-item folding, and the worklist union share
+  one matcher: difflib at the corpus threshold OR embedding cosine at `[commitments]
+  embed_threshold` (default 0.90) when Ollama answers on a loopback `[search] ollama` URL with
+  `[search] embed` on (`[search] embed_model`, one batched `/api/embed` call per run). No
+  Ollama, `embed = false`, a non-loopback URL, or any failure falls back to difflib only with
+  one log line; `WHOSAID_EMBED_FAKE=1` swaps in a deterministic bag-of-words embedder for tests.
+- **Watcher extracts commitments.** `whosaid watch` now runs `ingest --action-items
+  --commitments`, so the corpus and the worklist stay current hands-free.
 
 ### Changed
+
+- **MCP `whosaid_worklist(workspace, owner="me")`.** A read-only tool returning the
+  `whosaid commitments --json` payload, plus worklist guidance in the server instructions and
+  the `whosaid://guide` resource.
+- **`_commitments.json` items carry `cue`, `negative`, and `requested_by_role`** (additive;
+  older corpora load with defaults) so the worklist can rank without re-reading transcripts.
+  Folding adopts the first requester and the strongest cue seen for a repeated commitment.
+- **`whosaid roll-up` accepts `--owner NAME|me` and `--all-owners`** to pick the worklist owner.
 
 - **MCP server surfaces for roles and commitments.** A `roles` param on `whosaid_relabel`,
   role reporting in `whosaid_list_speakers`, a `roles` key in the `whosaid_transcribe` result,
