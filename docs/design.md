@@ -27,7 +27,7 @@ whosaid              # CLI dispatcher (bash): setup | install | enroll | record 
 bootstrap.sh         # capability check, dependency install, model pre-download
 lib/transcribe_mlx.py  # MLX Whisper runner (hallucination-hardened)
 lib/diarize_sherpa.py  # diarization + voice-ref cluster naming
-lib/workspace.py     # meeting workspaces: ingest (dated, idempotent folders), action-items, roll-up
+lib/workspace.py     # meeting workspaces: ingest (dated, idempotent folders), action-items, dev-commitments, roll-up
 lib/wsconfig.py      # workspace resolution ($WHOSAID_WORKSPACE, cwd) + whosaid.toml + env overrides
 lib/search.py        # _search.db: FTS5 over every turn, optional Ollama embeddings; query/context/status
 lib/graph.py         # entity tables in _search.db (people, meetings, items, commitments, PRs); views; _WIKI.md
@@ -109,6 +109,34 @@ worker count and window length.
 `<base>.diarization.json` sidecar, rewrites `<base>.speakers.txt` and `<base>.speaker-cards.txt`
 with the new names, and saves each named voiceprint to the local registry — so that person is
 auto-named in future transcripts. No re-transcription, no re-diarization.
+
+**Role tags.** A registry entry may carry an optional lowercase `"role"` (conventional set
+`self`, `boss`, `peer`, `report`, `external`; free-form allowed). Set at relabel time with
+`--role NAME=ROLE` (repeatable) and preserved when the voiceprint is re-saved, a role renders
+as `NAME  [role]` on the speaker card, `# Role: NAME = ROLE` headers in `.speakers.txt`, and a
+top-level `"roles"` map in the sidecar. `self` marks the user's own voice; boss-roled
+speakers' requests rank higher downstream (dev-commitments).
+
+## Dev-commitments
+
+`lib/workspace.py commitments --transcript T --json-out F` (and `whosaid ingest
+--commitments`) extracts, per meeting, the first-person commitments the `self`-roled speaker
+made. The extractor is a stdlib heuristic — no LLM, no network: a clause starting with a
+first-person cue (`i'll`, `i will`, `i plan to`, `let me`, `i owe`, …) records the clause;
+negations (`i won't`/`i can't`) are kept flagged `negative`, and question clauses are skipped.
+Roles gate it: with roles present only the `self` speaker's cues count; without them every
+speaker's do (legacy transcripts). When the preceding turn is a different speaker asking or
+directing ("can you", "please", …), the item records `requested_by`, priority `high` when
+that speaker's role is `boss`. A `--hook CMD` (env `WHOSAID_COMMITMENTS_HOOK`) can replace
+the heuristic, mirroring the action-items hook contract (transcript on stdin, `WHOSAID_ROLES`
+added).
+
+Per-meeting `commitments.md`/`commitments.json` fold, at roll-up, into the corpus
+`_COMMITMENTS.md`/`_commitments.json` — stable `CM-NNN` ids, the same 0.82 difflib dedupe and
+0.10 near-miss band as action items, grouped by status then speaker with `**[boss]**` marking
+boss-requested ones, hand edits in the rendered markdown reconciled back on the next run.
+`_workspace.json` points at it via `commitments_corpus`; `_INDEX.md` gains a one-line
+open/total count.
 
 ### `whosaid doctor`
 

@@ -119,7 +119,7 @@ USAGE
   whosaid mcp                          Run the MCP server (stdio) for AI agents / Claude.
   whosaid <audio> [<audio> ...] [flags]
                                         Transcribe (and by default diarize) file(s).
-  whosaid relabel <base> SPEAKER_02=Jane [SPEAKER_03=Bob ...] [-o DIR]
+  whosaid relabel <base> SPEAKER_02=Jane [SPEAKER_03=Bob ...] [--role NAME=ROLE] [-o DIR]
   whosaid relabel <base> --auto [--absorb-threshold F] [-o DIR]
                                         Name clusters from the speaker cards and
                                         remember them for future transcripts; --auto
@@ -133,8 +133,8 @@ USAGE
                                         an identity before trusting an auto-label
                                         or enrolling.
   whosaid ingest <audio> [<audio> ...] --into DIR [--folder-by created|mtime]
-                                        [--tz ZONE] [--action-items] [--hook CMD]
-                                        [flags]
+                                        [--tz ZONE] [--action-items] [--commitments]
+                                        [--hook CMD] [flags]
                                         Transcribe each file into its own dated
                                         meeting folder (idempotent by content
                                         hash; skips anything already ingested).
@@ -215,7 +215,12 @@ RELABEL FLAGS
                       the transcript was made — no re-diarization.
   --absorb-threshold F  Absorb-pass cosine threshold for --auto (default 0.85).
   --match-threshold F  Registry/ref match cosine threshold for --auto (alias
-                      --ref-threshold; default 0.50). Clusters under it stay SPEAKER_NN.
+                       --ref-threshold; default 0.50). Clusters under it stay SPEAKER_NN.
+  --role NAME=ROLE     Tag a named speaker with a role, repeatable (e.g.
+                       --role Karen=boss). Conventional roles: self, boss, peer,
+                       report, external (free-form allowed). Roles rank action
+                       items (boss higher) and mark your own voice (self) so the
+                       dev-commitments corpus knows which commitments are yours.
   -o, --outdir DIR    Where the sidecar/outputs live (default: alongside <base>).
 
 SAMPLES FLAGS
@@ -262,6 +267,9 @@ INGEST FLAGS
   --engine E          Action-items engine: auto (default; Ollama when it is up,
                       else hook, else a skeleton) | ollama (the built-in local
                       summarizer) | hook | none. Implies --action-items.
+  --commitments       Also extract dev commitments for each ingested meeting
+                      (speaker roles from relabel --role rank and own them;
+                      default hook: $WHOSAID_COMMITMENTS_HOOK).
   --hook CMD          Action-items hook for this run (default: $WHOSAID_ACTION_ITEMS_HOOK).
   --index             After every file is ingested, run
                       'whosaid roll-up <ws> --action-items' then 'whosaid index <ws>'
@@ -280,6 +288,9 @@ ROLL-UP FLAGS
                       Dedupe similarity threshold, 0.5–1.0 (default: 0.82).
                       Pairs within 0.10 below it are listed for review.
   --rebuild           Reset manifest + corpus, rebuild from folders on disk.
+  Roll-up also maintains the dev-commitments corpus — _COMMITMENTS.md +
+  _commitments.json (CM-NNN ids) — automatically when per-meeting commitments
+  (from ingest --commitments) exist.
   --index             Run 'whosaid index <ws>' after the roll-up.
 
 WORKSPACE SEARCH
@@ -1083,19 +1094,22 @@ resolve_sidecar() {
 
 # ---- relabel -----------------------------------------------------------------
 # After reading the speaker cards, put real names on clusters and remember them.
-#   whosaid relabel <base|sidecar.diarization.json> SPEAKER_02=Jane SPEAKER_03=Bob [-o DIR]
+#   whosaid relabel <base|sidecar.diarization.json> SPEAKER_02=Jane SPEAKER_03=Bob
+#                    [--role NAME=ROLE ...] [-o DIR]
 # Applies names to the cached diarization sidecar (no re-transcription), persists
 # each named voiceprint to the local registry (~/.config/whosaid/speakers.json by
 # default) so the person is auto-named in future transcripts, and rewrites the
 # speaker-labeled transcript + cards.
 cmd_relabel() {
-  local target="" outdir="" auto=0 specs=() extra=()
+  local target="" outdir="" auto=0 specs=() extra=() roles=()
   while [[ $# -gt 0 ]]; do
     case "$1" in
       -o|--outdir) outdir="$2"; shift 2 ;;
       --auto)      auto=1; shift ;;
       --absorb-threshold) extra+=(--absorb-threshold "$2"); shift 2 ;;
       --ref-threshold|--match-threshold) extra+=(--ref-threshold "$2"); shift 2 ;;
+      --role)       [[ "$2" == *=* ]] || { log "relabel: --role wants NAME=ROLE (e.g. --role Karen=boss)"; exit 1; }
+                    roles+=(--save-role "$2"); shift 2 ;;
       *=*)         specs+=(--save-speaker "$1"); shift ;;
       *)           if [[ -z "$target" ]]; then target="$1"; else log "relabel: unexpected arg '$1'"; exit 1; fi; shift ;;
     esac
@@ -1111,7 +1125,7 @@ cmd_relabel() {
   log "relabel: using sidecar $sidecar"
   [[ "$auto" -eq 1 ]] && extra+=(--auto)
   uv run --quiet --with sherpa-onnx --with numpy python "$DIARIZER" \
-    --relabel "$sidecar" --outdir "$sdir" ${specs[@]+"${specs[@]}"} ${extra[@]+"${extra[@]}"}
+    --relabel "$sidecar" --outdir "$sdir" ${specs[@]+"${specs[@]}"} ${extra[@]+"${extra[@]}"} ${roles[@]+"${roles[@]}"}
 }
 
 # ---- samples ------------------------------------------------------------------
@@ -1157,8 +1171,8 @@ cmd_samples() {
 
 # ---- ingest / roll-up (issue #2: meeting workspace) ----------------------------
 # whosaid ingest <audio...> --into DIR [--folder-by created|mtime] [--tz ZONE]
-#                [--action-items] [--engine E] [--hook CMD] [--index]
-#                [transcribe flags...]
+#                [--action-items] [--engine E] [--commitments] [--hook CMD]
+#                [--index] [transcribe flags...]
 # Transcribe each file into <into>/<YYYY-MM-DD-HHMM>/ with base name "transcript"
 # and keep the source audio beside it so roll-up's audit can hash it. Idempotent:
 # a file whose sha256 already appears in <into>/_workspace.json (written by
@@ -1167,7 +1181,7 @@ cmd_samples() {
 # --engine picks the action-items engine (auto|ollama|hook|none; issue #14) and
 # implies --action-items; --index runs roll-up + index once every file is in.
 cmd_ingest() {
-  local into="" folder_by="created" tz_arg="" want_action_items=0 hook="" engine="" want_index=0
+  local into="" folder_by="created" tz_arg="" want_action_items=0 hook="" engine="" want_index=0 want_commitments=0
   local passthrough=() AUDIO=()
 
   while [[ $# -gt 0 ]]; do
@@ -1177,6 +1191,7 @@ cmd_ingest() {
       --tz)           tz_arg="$2"; shift 2 ;;
       --action-items) want_action_items=1; shift ;;
       --engine)       engine="$2"; want_action_items=1; shift 2 ;;
+      --commitments)  want_commitments=1; shift ;;
       --hook)         hook="$2"; shift 2 ;;
       --index)        want_index=1; shift ;;
       # ingest owns the output layout and base name
@@ -1355,6 +1370,21 @@ except BaseException:
           || log "WARN action items failed for $fname (continuing)"
       else
         log "WARN no transcript found in $fname; skipping action items"
+      fi
+    fi
+
+    if [[ "$want_commitments" == "1" ]]; then
+      local transcript="$folder/transcript.speakers.txt"
+      if [[ ! -s "$transcript" ]]; then
+        transcript="$folder/transcript.txt"
+        log "NOTE no speaker-labeled transcript in $fname; using the plain transcript for commitments"
+      fi
+      if [[ -s "$transcript" ]]; then
+        local cm_args=(commitments --transcript "$transcript" --json-out "$folder/commitments.json")
+        python3 "$REPO_DIR/lib/workspace.py" "${cm_args[@]}" \
+          || log "WARN commitments failed for $fname (continuing)"
+      else
+        log "WARN no transcript found in $fname; skipping commitments"
       fi
     fi
     log "✓ ingested $fname/"

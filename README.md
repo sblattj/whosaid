@@ -120,8 +120,9 @@ whosaid enroll Alice --from meeting.m4a --ss 3:20 --t 20   # or --to 3:40
 
 One-off transcriptions are files; a recurring meeting series is a corpus. The meeting-workspace
 layer gives that corpus a home: every recording is transcribed into a dated folder, each meeting
-can carry generated action items, and one roll-up produces the index, the audit, and a living
-action-item list across all of them — still entirely offline.
+can carry generated action items and dev commitments, and one roll-up produces the index, the
+audit, a living action-item list, and the dev-commitments corpus across all of them — still
+entirely offline.
 
 ### `whosaid ingest` — a batch into dated folders
 
@@ -161,6 +162,11 @@ searchable in the same command:
 whosaid ingest weekly/*.m4a --into ./meetings --engine ollama --index
 ```
 
+With `--commitments`, each meeting also gets a `commitments.md` — the first-person commitments
+*you* made in it (see [Dev-commitments](#dev-commitments)). Roles set once via
+`whosaid relabel --role` decide whose cues count: tag your own voice `self` (and your manager
+`boss`), and the extractor tracks what you promised, ranking boss-requested items higher.
+
 ### `whosaid roll-up` — index, audit, and the action-item corpus
 
 ```bash
@@ -170,7 +176,8 @@ whosaid roll-up ./meetings --action-items
 - **Coverage index** — `_INDEX.md` holds one row per meeting (created date, duration, and whether
   it is transcribed, diarized, and has action items), plus a nothing-missing audit that flags
   orphan directories and stale manifest entries, and a recurring-topics section that surfaces
-  themes appearing across meetings. Both output paths are overridable with `-o` and
+  themes appearing across meetings. Once any dev commitments exist, a one-line open/total count
+  section is appended too. Both output paths are overridable with `-o` and
   `--action-items-out`.
 - **Action-item corpus** — with `--action-items`, `_ACTION-ITEMS.md` deduplicates items across
   meetings (by text similarity; threshold `--similarity-threshold`, 0.5–1.0, default 0.82) and
@@ -180,18 +187,26 @@ whosaid roll-up ./meetings --action-items
   per-meeting snapshot. Items can carry a free-form type, rendered in parens after the status,
   and pairs scoring just under the threshold are surfaced in a _Possible duplicates (review)_
   section at the end.
+- **Dev-commitments corpus** — each meeting's `commitments.json` (from `ingest
+  --commitments`) folds into `_COMMITMENTS.md` automatically whenever any exists: stable
+  `CM-NNN` ids that never renumber, the same 0.82 text-similarity dedupe and 0.10 near-miss
+  review band, grouped by status then speaker, with `**[boss]**` marking boss-requested items.
+  Hand edits in `_COMMITMENTS.md` (mark one `done`, retitle, merge via `(merged CM-NNN)`) fold
+  back on the next roll-up, exactly like the action-item corpus.
 
 Roll-up is incremental and append-only by default: re-running with nothing new writes nothing.
 `--rebuild` is the escape hatch — it resets the manifest and corpus and regenerates both from the
 folders on disk.
 
-State is two plain JSON files in the workspace directory, `_workspace.json` (the manifest) and
-`_action-items.json` (the corpus; it also records the `similarity_threshold` in effect). Both are
-safe to read and hand-edit — marking an item `resolved` by hand is the intended way to close one
-the extractor phrased wrong. Hand edits made directly in `_ACTION-ITEMS.md` are folded back on
-the next roll-up and survive re-runs: statuses, types, retitles, and `(merged AI-NNN)` merge
-annotations (the merged item stays at its id, rendered collapsed as `[merged → AI-NNN]`). Only
-`--rebuild` discards them. `--index` runs `whosaid index <ws>` right after the roll-up.
+State is plain JSON in the workspace directory — `_workspace.json` (the manifest; it points at
+the dev-commitments corpus via `commitments_corpus`) and `_action-items.json` (the corpus; it
+also records the `similarity_threshold` in effect), plus the parallel `_commitments.json`.
+All are safe to read and hand-edit — marking an item `resolved` by hand is the intended way to
+close one the extractor phrased wrong. Hand edits made directly in `_ACTION-ITEMS.md` (and,
+same contract, `_COMMITMENTS.md`) are folded back on the next roll-up and survive re-runs:
+statuses, types, retitles, and `(merged AI-NNN)` merge annotations (the merged item stays at
+its id, rendered collapsed as `[merged → AI-NNN]`). Only `--rebuild` discards them. `--index`
+runs `whosaid index <ws>` right after the roll-up.
 
 ## Search your meetings
 
@@ -380,6 +395,31 @@ there is no `--force` path that does. `shortcut-recipe` builds and signs that Sh
 when signing is available; on a Mac with no iCloud account it prints the one-action recipe to
 build by hand in the Shortcuts app (`--no-sign` prints the recipe only).
 
+## Dev-commitments
+
+A dev-commitment is a first-person promise the **self**-roled speaker made to someone else
+("I'll send the migration plan by Friday"). Each meeting's transcript yields a
+`commitments.md` + `commitments.json`; roll-up folds those into one living corpus,
+`_COMMITMENTS.md` / `_commitments.json` — so "what did I promise across this whole series?"
+has a single answer.
+
+Extraction is a stdlib heuristic, no LLM and no network: a clause starting with a first-person
+cue (`i'll`, `i will`, `i plan to`, `let me`, `i owe`, …) records the clause; negations
+(`i won't`, `i can't`) are kept but flagged `negative`, and question clauses are skipped. Roles
+drive it: with roles set only the `self` speaker's cues count, and when the turn before a
+commitment was a different speaker asking or directing ("can you…", "please…"), the item
+records `requested_by` — priority `high` when that speaker's role is `boss`. A pluggable hook
+(`--hook CMD` on the commitments subcommand, or `WHOSAID_COMMITMENTS_HOOK`) can replace the
+heuristic; it receives the transcript on stdin plus `WHOSAID_SPEAKERS` and `WHOSAID_ROLES`.
+
+The corpus works exactly like the action-item corpus: stable `CM-NNN` ids that never renumber,
+the same 0.82 text-similarity dedupe with a 0.10 near-miss review band, and hand edits in
+`_COMMITMENTS.md` folded back on the next roll-up. An item's rendered shape:
+
+```text
+- **CM-002** [open] (Stephen) 2026-09-14-1802 → 2026-09-21-1802 (2×): **[boss]** update the exec deck
+```
+
 ## Use it from an AI agent (MCP)
 
 whosaid's local, private, GPU transcription and speaker diarization are also exposed as MCP tools,
@@ -403,8 +443,8 @@ Add it to your MCP client config:
 | Tool | What it does |
 |---|---|
 | `whosaid_transcribe` | Transcribes + diarizes an audio file and writes the labeled transcript, speaker cards, and a sidecar for relabeling. |
-| `whosaid_relabel` | Names `SPEAKER_NN` clusters and remembers them — saved to the local registry and auto-applied to every future transcript. |
-| `whosaid_list_speakers` | Read-only: lists enrolled voices and registry names already known. |
+| `whosaid_relabel` | Names `SPEAKER_NN` clusters and remembers them — saved to the local registry and auto-applied to every future transcript. Optional `roles` ({Name: role}) tags speakers (self/boss/peer/report/external). |
+| `whosaid_list_speakers` | Read-only: lists enrolled voices and registry names (with role tags) already known. |
 | `whosaid_doctor` | Read-only readiness check — models cached, deps present, mic/audio devices — run this first when a transcribe fails. |
 | `whosaid_enroll_from_file` | Enrolls a named voice from an existing audio clip, no mic needed. |
 | `whosaid_samples` | Exports one short representative WAV per speaker cluster (longest segment, clamped to `seconds`) so you can listen and confirm an identity before trusting a label. |
@@ -503,6 +543,7 @@ the absolute path to the `whosaid` script for `command` if it is not on the clie
 | `WHOSAID_OLLAMA` | Ollama base URL for embeddings and the built-in summarizer (default: `http://127.0.0.1:11434`). Localhost is the only supported destination. |
 | `WHOSAID_SUMMARIZER_MODEL` | Ollama model for `--engine ollama` (default: `qwen2.5:14b`); overrides `[summarizer] model`. |
 | `WHOSAID_BIN` | The `whosaid` command the watcher runs (default: the script that launched `whosaid watch`). |
+| `WHOSAID_COMMITMENTS_HOOK` | Default hook for dev-commitments extraction (`ingest --commitments`), overridden per-run by `--hook`. Receives the transcript on stdin plus `WHOSAID_SPEAKERS`/`WHOSAID_ROLES`. |
 | `HF_HOME` | Hugging Face cache location (where the Whisper model lands). |
 | `SHERPA_DIARIZE_CACHE` | Diarization model cache location (default: `~/.cache/sherpa-diarization`). |
 
@@ -524,6 +565,15 @@ with no extra step: the embedding is always current for whichever model is activ
 keyed by the embedding `model` it was saved under, so switching `DIARIZE_EMB_NAME` silently
 orphans every registry entry for the old model — they don't error, they just stop matching —
 until you relabel again under the new model.
+
+**Role tags.** A registry entry may carry an optional `"role"` string — the conventional set is
+`self`, `boss`, `peer`, `report`, `external`, and free-form lowercase tags are allowed. Set one
+with `whosaid relabel <base> --role Karen=boss` (repeatable) or the `roles` map on the MCP
+`whosaid_relabel` tool; it is stored on the registry entry, preserved when the voiceprint is
+re-saved, and rendered as `# Role: Karen = boss` header lines in `<base>.speakers.txt`, a
+`Karen  [boss]` label on the speaker card, and a top-level `"roles"` key in the sidecar.
+Roles carry semantics downstream: `self` marks your own voice, and a `boss`-roled speaker's
+requests rank higher in action items and the [dev-commitments](#dev-commitments) corpus.
 
 **Which one actually names a cluster.** `name_clusters()` (`lib/diarize_sherpa.py`) runs three
 passes in order, and a later pass only touches a cluster the earlier ones left unnamed: (1)
@@ -604,7 +654,7 @@ speakers as a single-pass run while finishing several times faster. Pass `--no-c
 | `<base>.tsv` | Tab-separated segments with timestamps. |
 | `<base>.json` | Full Whisper segment output. |
 | `<base>.rttm` | Raw diarization turns, standard RTTM format. |
-| `<base>.speakers.txt` | Speaker-labeled transcript: Whisper text merged with diarization turns and enrollment names. |
+| `<base>.speakers.txt` | Speaker-labeled transcript: Whisper text merged with diarization turns and enrollment names; carries `# Role: NAME = ROLE` header lines when speakers have role tags. |
 | `<base>.speaker-cards.txt` | One card per speaker with turn count, talk time, and representative snippets — read it to identify who each `SPEAKER_NN` is, then name them with `whosaid relabel`. |
 | `<base>.diarization.json` | Cached segments + per-cluster voiceprints, so `whosaid relabel` can rename and persist speakers without re-diarizing. Also carries `registry_matches` and `source` (below). |
 | `<base>.samples/` | Created on demand by `whosaid samples <base>`: one short representative WAV per speaker cluster (`SPEAKER_NN[-Name].wav`), for a quick human listen before trusting an auto-label. |
@@ -623,13 +673,18 @@ files are generated and safe to delete; the dotfiles are the watcher's working s
 | `whosaid.toml` | Optional per-workspace settings (owner, groups, summarizer, search, watch). The one file here you write by hand. |
 | `.watch_state.json`, `.watch.lock`, `.watch_staging/`, `.watch.log` | `whosaid watch` state: recordings already handled, the overlap guard, copies staged out of the Voice Memos store, and the agent's log. |
 
-The sidecar's two machine-readable extras, so a consumer never has to scrape stderr or shell out to
+The sidecar's three machine-readable extras, so a consumer never has to scrape stderr or shell out to
 `ffprobe`:
 
 | Sidecar key | Contents |
 |---|---|
 | `registry_matches` | One record per naming decision, **including near-misses**: `{"cluster": "SPEAKER_03", "name": "Alice", "similarity": 0.919, "threshold": 0.5, "matched": true, "pass": "registry"}`. `pass` is `registry`, `ref`, or `absorb`; `matched: false` means the cluster stayed `SPEAKER_NN` because `similarity < threshold`. Refreshed by `whosaid relabel --auto`, and also printed in the transcribe JSON line. |
 | `source` | Recording provenance: `{"path": "/abs/path.m4a", "duration_seconds": 1834.2, "creation_time": "2026-09-14T18:02:11.000000Z"}`. `creation_time` is the container tag, or `null` when the file carries none. |
+| `roles` | Optional — present only when at least one speaker carries a registry role: `{"Karen": "boss"}`. Read by downstream consumers such as the commitments extractor. |
+
+In a meeting workspace, `ingest --commitments` additionally writes per-meeting
+`commitments.md` / `commitments.json`, which `roll-up` folds into the workspace-level
+`_COMMITMENTS.md` / `_commitments.json` corpus — see [Dev-commitments](#dev-commitments).
 
 **Match confidence and the threshold.** Auto-naming only asserts a name when the cluster's cosine
 similarity to a known voiceprint reaches `--match-threshold` (default `0.50`); below it the cluster
@@ -765,6 +820,14 @@ placeholder speakers and `--no-embed` so Ollama is never contacted:
 - `./test/watch_test.sh` covers `lib/watch.py` against a temp source folder and a stub
   `whosaid`: the stable-mtime wait, staging, state, `--seed`, `--dry-run`, and the plist.
 - `python3 test/mcp_descriptions_test.py` also checks the new read-only workspace tools.
+
+`./test/roles_test.sh` covers speaker role tags offline: `--role`/`--save-role` validation, role
+preservation across registry re-saves, the `# Role:` header lines in `.speakers.txt`, the
+sidecar's `roles` key, and the `[role]` card label — no model download required.
+
+`./test/commitments_test.sh` covers the dev-commitments extractor and corpus offline: cue,
+negation, and question handling, `self`-role gating, boss-requested priority, and the `CM-NNN`
+roll-up dedupe and hand-edit reconcile — no model download required.
 
 ## License
 

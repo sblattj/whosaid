@@ -47,8 +47,25 @@ Subcommands (the `whosaid` bash CLI shells out to this module via
       intact. --ws names the workspace whose whosaid.toml applies (default:
       the transcript's parent's parent).
 
+  commitments --transcript <path.speakers.txt> --json-out F [--hook CMD] [--roles JSON]
+      Per-meeting dev commitments: first-person commitment cues ("I'll ...",
+      "I will ...", "I plan to ...") extracted from the speaker-attributed
+      transcript by a stdlib heuristic (no LLM). Roles come from '# Role:
+      NAME = ROLE' header lines after the '# Speakers (N):' header (self,
+      boss, peer, report, external): with roles present only the "self"
+      speaker's cues count — the commitments the dev owes; with no roles
+      every speaker's first-person cues count (legacy transcripts).
+      Negated cues ("I won't", "I can't") record negative:true. A cue whose
+      clause is a question is skipped. When the immediately preceding turn
+      is a different speaker asking a question or an imperative ("can you",
+      "please", ...), the item records requested_by — priority "high" when
+      that speaker's role is boss, else "normal". --hook (or
+      WHOSAID_COMMITMENTS_HOOK) mirrors the action-items hook contract and
+      adds WHOSAID_ROLES (compact JSON {name: role}); its stdout becomes
+      commitments.md, written next to --json-out. Exits 0 either way.
+
   rollup <workspace-dir> [--action-items] [-o INDEX.md] [--action-items-out F]
-         [--similarity-threshold F] [--rebuild]
+         [--commitments-out F] [--similarity-threshold F] [--rebuild]
       The workspace aggregate. Two JSON state files live in the workspace dir:
         _workspace.json    manifest: one entry per dated meeting folder
         _action-items.json living deduplicated action-item corpus
@@ -80,6 +97,16 @@ Subcommands (the `whosaid` bash CLI shells out to this module via
       <details> block (the summarizer's verbatim evidence) and "- none"
       placeholders are not items and are never folded.
 
+      A parallel dev-commitments corpus rides along: each meeting's
+      commitments.json (written by the commitments subcommand) folds into
+      _commitments.json (ids CM-001..., stable, never renumbered, same 0.82
+      dedupe + 0.10 near-miss band, same hand-edit reconcile from
+      _COMMITMENTS.md — grouped by status then speaker, **[boss]** marking
+      boss-requested items). _workspace.json points at it via
+      "commitments_corpus"; _INDEX.md gains a one-line open/total count
+      once any exist. Meeting folders without commitments.json roll up
+      exactly as before.
+
 Everything stays LOCAL: stdlib only, no third-party imports, no network
 (the ollama engine talks only to Ollama on 127.0.0.1).
 """
@@ -109,6 +136,12 @@ DATE_DIR_RE = re.compile(r"^\d{4}-\d{2}-\d{2}-\d{4}(?:-\d+)?$")
 TURN_BRACKET_RE = re.compile(r"^\[\d{1,3}:\d{2}(?::\d{2})?\]\s+([^\n:]+?):\s")
 TURN_PAREN_RE = re.compile(r"^([A-Za-z][\w .'/-]*?)\s*\(\d{1,3}:\d{2}(?::\d{2})?\):\s")
 SPEAKERS_HEADER_RE = re.compile(r"^#\s+Speakers?\s*\(\d+\)\s*:\s*(.+)$", re.IGNORECASE)
+# '# Role: NAME = ROLE' header lines (anywhere after the '# Speakers (N):'
+# line) tag speakers with roles: self, boss, peer, report, external.
+ROLE_HEADER_RE = re.compile(r"^#\s+Role:\s*(?P<name>.+?)\s*=\s*(?P<role>\S.*?)\s*$")
+# Commitment extraction walks the same "[HH:MM:SS] Name: text" turns; this
+# variant also captures the timestamp and the text after the speaker colon.
+TURN_TIME_RE = re.compile(r"^\[(?P<time>\d{1,3}:\d{2}(?::\d{2})?)\]\s+(?P<name>[^\n:]+?):\s(?P<text>.*)$")
 BULLET_RE = re.compile(
     r"^\s*[-*]\s+(?:[-x]\s+)?(?:\*\*(?P<owner>[^*]+?)\s*:?\*\*\s*:?\s+)?(?P<text>\S.*)$"
 )
@@ -117,6 +150,8 @@ SIMILARITY_THRESHOLD = 0.82
 # merged) under "## Possible duplicates (review)".
 NEAR_MISS_BAND = 0.10
 STATUSES = ("open", "ongoing", "resolved")
+# Commitment corpus statuses (rendered _COMMITMENTS.md groups: open, done).
+CM_STATUSES = ("open", "done")
 # Rendered _ACTION-ITEMS.md item lines: "- **AI-001** [status] (type) span
 # (n×): text", optionally carrying "(merged AI-NNN, ...)" hand-merge notes
 # (before the ": " or trailing the text) and the collapsed merged rendering
@@ -132,6 +167,19 @@ HEADING_RE = re.compile(r"^\s{0,3}(?P<hashes>#{1,6})\s+(?P<text>.*?)\s*#*\s*$")
 HEADING_NUM_RE = re.compile(r"^\d+[.)]\s+")
 HEADING_PAREN_RE = re.compile(r"\s*\([^()]*\)\s*$")
 ENGINES = ("auto", "ollama", "hook", "none")
+# Rendered _COMMITMENTS.md item lines mirror the _ACTION-ITEMS.md shape with
+# CM- ids; the speaker rides in the paren slot the action-item parser reads
+# as the type.
+MD_CM_ITEM_RE = re.compile(r"^- \*\*(?P<id>CM-\d{3,})\*\* \[(?P<status>[^\]]*)\](?P<rest>.*)$")
+MD_CM_MERGE_NOTE_RE = re.compile(r"\((?P<ids>merged CM-\d{3,}(?:, ?CM-\d{3,})*)\)")
+MD_CM_MERGED_STATUS_RE = re.compile(r"^merged → (CM-\d{3,})$")
+# Per-meeting commitments.md bullets: "- [ ] (SPEAKER) text  — TIME" with an
+# HTML-comment metadata marker on the following line.
+CM_BULLET_RE = re.compile(
+    r"^\s*-\s+\[(?P<box>[ x])\]\s+\((?P<speaker>[^)]*)\)\s+(?P<text>.+?)\s+—\s+"
+    r"(?P<time>\d{1,3}:\d{2}(?::\d{2})?)\s*$"
+)
+CM_META_RE = re.compile(r"^<!--\s*cm:\s*(?P<meta>\{.*\})\s*-->$")
 
 STOPWORDS = frozenset(
     """
@@ -251,6 +299,18 @@ def parse_speakers(transcript_text: str) -> list[str]:
         if m:
             seen.setdefault(m.group(1).strip(), None)
     return list(seen)
+
+
+def parse_roles(transcript_text: str) -> dict[str, str]:
+    """'{name: role}' from '# Role: NAME = ROLE' header lines (self, boss,
+    peer, report, external). Later lines win; the speakers-header shape is
+    untouched."""
+    roles: dict[str, str] = {}
+    for line in transcript_text.splitlines():
+        m = ROLE_HEADER_RE.match(line)
+        if m:
+            roles[m.group("name").strip()] = m.group("role").strip()
+    return roles
 
 
 def parse_bullets(markdown: str) -> list[tuple[int, str, str]]:
@@ -461,6 +521,220 @@ def cmd_action_items(args: argparse.Namespace) -> int:
     return 0
 
 
+# ---- commitments -------------------------------------------------------------------
+
+# First-person commitment cues, longest-first so specific forms win over
+# their prefixes. Matched only at clause starts: the start of the turn, or
+# right after a comma/semicolon/colon, an em dash, or a coordinating
+# conjunction.
+COMMITMENT_NEGATIVE_CUES = frozenset(("i won't", "i can't", "i cant"))
+COMMITMENT_CUE_RE = re.compile(
+    r"(?:^|[,;:]\s*|\s—\s|\b(?:and|but|or|so|then)\s+)"
+    r"(?P<cue>i won't|i can't|i cant|i'm going to|i am going to|i plan to|"
+    r"i'll follow up|i'll pick up|i'll take|i'll send|i'll get|i'll own|i'll|"
+    r"i will|i shall|i can|i could|i promise|count on me|leave it with me|"
+    r"let me|i owe)(?![a-z])",
+    re.IGNORECASE,
+)
+# A clause runs from its cue to the next boundary: a comma/semicolon/colon,
+# a sentence terminator, or a coordinating conjunction.
+CLAUSE_END_RE = re.compile(r"\s+(?:and|but|or|so|then)\s+|[,;:.!?](?:\s|$)")
+# Imperative cues in the immediately preceding turn that make the following
+# commitment an answer to a request.
+REQUEST_CUES = ("can you", "could you", "please", "need you to", "have you", "will you")
+
+
+def iter_turns(transcript_text: str) -> list[tuple[str, str, str]]:
+    """[(time, speaker, text)] for each [HH:MM:SS] Name: text turn.
+    Continuation lines (up to the blank line between turns) join the turn's
+    text; '#' header lines are skipped."""
+    turns: list[tuple[str, str, str]] = []
+    cur: list[str] | None = None
+
+    def flush() -> None:
+        if cur is not None:
+            turns.append((cur[0], cur[1], " ".join(cur[2:])))
+
+    for line in transcript_text.splitlines():
+        if line.lstrip().startswith("#"):
+            continue
+        m = TURN_TIME_RE.match(line)
+        if m:
+            flush()
+            cur = [m.group("time"), m.group("name").strip(), m.group("text")]
+            continue
+        if not line.strip():
+            flush()
+            cur = None
+        elif cur is not None:
+            cur.append(line.strip())
+    flush()
+    return turns
+
+
+def extract_commitments(transcript_text: str, roles: dict | None = None) -> list[dict]:
+    """First-person commitments from speaker-attributed turns. With truthy
+    roles only the 'self'-role speaker's cues count; without them any
+    speaker's do (legacy transcripts). Cues inside question clauses are
+    skipped; when the immediately preceding turn is a different speaker
+    asking a question or an imperative, the item records requested_by —
+    priority 'high' when that speaker's role is boss, else 'normal'."""
+    gate = bool(roles)
+    out: list[dict] = []
+    seen: set[tuple[str, str]] = set()
+    prev: tuple[str, str, str] | None = None
+    for time, speaker, text in iter_turns(transcript_text):
+        role = roles.get(speaker) if gate else None
+        if gate and (role or "").strip().lower() != "self":
+            prev = (time, speaker, text)
+            continue
+        for m in COMMITMENT_CUE_RE.finditer(text):
+            cue = m.group("cue").lower()
+            end_m = CLAUSE_END_RE.search(text, m.start("cue"))
+            clause = text[m.start("cue"):end_m.start() if end_m else len(text)].strip()
+            if not clause or (end_m and end_m.group(0)[0] == "?"):
+                continue  # empty clause, or a question — not a commitment
+            key = (speaker, normalize_text(clause))
+            if key in seen:
+                continue
+            seen.add(key)
+            requested_by = requested_by_role = ""
+            priority = "normal"
+            if prev is not None and prev[1] != speaker:
+                ptext = prev[2].lower()
+                if prev[2].rstrip().endswith("?") or any(c in ptext for c in REQUEST_CUES):
+                    requested_by = prev[1]
+                    requested_by_role = (roles.get(prev[1]) or "") if gate else ""
+                    if requested_by_role.strip().lower() == "boss":
+                        priority = "high"
+            item = {
+                "speaker": speaker,
+                "speaker_role": role,
+                "text": clause,
+                "time": time,
+                "cue": cue,
+                "negative": cue in COMMITMENT_NEGATIVE_CUES,
+                "priority": priority,
+            }
+            if requested_by:
+                item["requested_by"] = requested_by
+                item["requested_by_role"] = requested_by_role
+            out.append(item)
+        prev = (time, speaker, text)
+    return out
+
+
+def commitments_markdown(folder: str, items: list[dict]) -> str:
+    lines = [f"# Commitments — {folder}", "",
+             "_dev-commitments: first-person commitments extracted from the "
+             "speaker-labeled transcript (stdlib heuristic, no LLM)._", ""]
+    if not items:
+        lines += ["_No commitments detected._", ""]
+        return "\n".join(lines)
+    for it in items:
+        text = it["text"] + (" (boss-requested)" if it.get("priority") == "high" else "")
+        lines.append(f"- [ ] ({it['speaker']}) {text}  — {it['time']}")
+        meta = {k: it[k] for k in ("speaker", "speaker_role", "text", "time", "cue",
+                                   "negative", "priority", "requested_by",
+                                   "requested_by_role") if k in it}
+        lines.append("<!-- cm: " + json.dumps(meta) + " -->")
+    lines.append("")
+    return "\n".join(lines)
+
+
+def parse_commitment_bullets(markdown: str) -> list[dict]:
+    """Rendered commitments.md bullets -> item dicts. '- [ ] (SPEAKER) text
+    — TIME' lines parse; a following '<!-- cm: {...} -->' comment restores
+    the full metadata when present."""
+    out: list[dict] = []
+    lines = markdown.splitlines()
+    for i, line in enumerate(lines):
+        m = CM_BULLET_RE.match(line)
+        if not m:
+            continue
+        item = {"speaker": m.group("speaker").strip(), "speaker_role": None,
+                "text": m.group("text").strip(), "time": m.group("time"),
+                "cue": "", "negative": False, "priority": "normal"}
+        if item["text"].endswith(" (boss-requested)"):
+            item["text"] = item["text"][: -len(" (boss-requested)")].rstrip()
+            item["priority"] = "high"
+        nxt = lines[i + 1].strip() if i + 1 < len(lines) else ""
+        cm = CM_META_RE.match(nxt)
+        if cm:
+            try:
+                meta = json.loads(cm.group("meta"))
+            except ValueError:
+                meta = None
+            if isinstance(meta, dict):
+                item.update(meta)
+        out.append(item)
+    return out
+
+
+def cmd_commitments(args: argparse.Namespace) -> int:
+    transcript = Path(args.transcript)
+    if not transcript.is_file():
+        log(f"commitments: transcript not found: {transcript}")
+        return 1
+    text = transcript.read_text()
+    speakers = parse_speakers(text)
+
+    roles = None
+    if args.roles:
+        try:
+            raw = Path(args.roles[1:]).read_text() if args.roles.startswith("@") else args.roles
+            roles = json.loads(raw)
+        except Exception as e:  # noqa: BLE001
+            log(f"WARN commitments: --roles unreadable ({e}); using '# Role:' headers")
+            roles = None
+    if roles is None:
+        roles = parse_roles(text)
+
+    hook = args.hook or os.environ.get("WHOSAID_COMMITMENTS_HOOK", "")
+    source = "heuristic"
+    markdown = ""
+    items: list[dict] = []
+    if hook:
+        env = dict(os.environ)
+        env["WHOSAID_TRANSCRIPT_PATH"] = str(transcript.resolve())
+        env["WHOSAID_SPEAKERS"] = ",".join(speakers)
+        env["WHOSAID_ROLES"] = json.dumps(roles, separators=(",", ":"))
+        try:
+            proc = subprocess.run(
+                hook, shell=True, input=text, env=env,
+                capture_output=True, text=True,
+            )
+        except OSError as e:  # noqa: BLE001
+            log(f"WARN commitments hook failed to start ({e}); using heuristic")
+            proc = None
+        if proc is not None and proc.returncode == 0 and proc.stdout.strip():
+            source = "hook"
+            markdown = proc.stdout
+        elif proc is not None:
+            tail = (proc.stderr or "").strip().splitlines()[-1:] or ["(no stderr)"]
+            log(f"WARN commitments hook exited {proc.returncode}: {tail[0]}; using heuristic")
+    if source == "heuristic":
+        items = extract_commitments(text, roles)
+        markdown = commitments_markdown(transcript.parent.name, items)
+    else:
+        items = parse_commitment_bullets(markdown)
+
+    md_out = Path(args.json_out).parent / "commitments.md"
+    wrote = write_if_changed(md_out, markdown if markdown.endswith("\n") else markdown + "\n")
+    log(f"commitments ({source}) -> {md_out}" + (" (unchanged)" if not wrote else ""))
+
+    payload = {
+        "transcript": str(transcript),
+        "md_out": str(md_out),
+        "source": source,
+        "speakers": speakers,
+        "roles": roles,
+        "items": items,
+    }
+    write_if_changed(Path(args.json_out), json.dumps(payload, indent=2) + "\n")
+    return 0
+
+
 # ---- rollup: manifest -------------------------------------------------------------
 
 @dataclass
@@ -474,6 +748,7 @@ class Meeting:
     has_json: bool = False
     has_speakers: bool = False
     has_action_items: bool = False
+    has_commitments: bool = False
     ingested_at: str = ""
 
 
@@ -510,6 +785,7 @@ def scan_meeting(folder: Path, previous: Meeting | None) -> Meeting:
     m.has_json = any(n.endswith(".json") for n in files)
     m.has_speakers = any(n.endswith(".speakers.txt") for n in files)
     m.has_action_items = any(n == "action-items.md" for n in files)
+    m.has_commitments = any(n == "commitments.json" for n in files)
     return m
 
 
@@ -566,7 +842,8 @@ def recurring_topics(speakers_texts: dict[str, str]) -> list[tuple[str, int, int
 
 
 def render_index(ws: Path, meetings: list[Meeting], orphans: list[str], stale: list[str],
-                 topics: list[tuple[str, int, int]]) -> str:
+                 topics: list[tuple[str, int, int]],
+                 commitments: tuple[int, int] | None = None) -> str:
     lines = [f"# Meeting workspace index — {ws.resolve()}", "",
              f"{len(meetings)} meeting(s).", "", "## Meetings", "",
              "| Meeting | Created | Duration | Transcribed | Diarized | Action items |",
@@ -603,6 +880,11 @@ def render_index(ws: Path, meetings: list[Meeting], orphans: list[str], stale: l
     if problems == 0:
         lines.append("- nothing missing: every dated folder has a manifest entry, source, "
                      "transcript, speaker labels, and action items.")
+    if commitments and commitments[1]:
+        open_cm, total_cm = commitments
+        lines += ["", "## Commitments", "",
+                  f"dev-commitments: {open_cm} open of {total_cm} total "
+                  "(see _COMMITMENTS.md)."]
     lines += ["", "## Recurring topics", ""]
     if topics:
         lines.append("_Terms appearing in the speaker-labeled transcripts of ≥2 meetings._")
@@ -865,6 +1147,230 @@ def render_action_items_md(ws: Path, items: list[ActionItem],
     return "\n".join(lines)
 
 
+# ---- rollup: commitment corpus ------------------------------------------------------
+
+@dataclass
+class CommitmentItem:
+    id: str
+    text: str
+    speaker: str = ""
+    status: str = "open"
+    priority: str = "normal"
+    requested_by: str = ""
+    first_seen: str = ""
+    last_seen: str = ""
+    merged_into: str = ""
+    md_status: str = ""
+    md_text: str = ""
+    md_speaker: str = ""
+    occurrences: list[Occurrence] = field(default_factory=list)
+
+
+def load_commitments_corpus(ws: Path) -> dict:
+    try:
+        data = json.loads((ws / "_commitments.json").read_text())
+        if isinstance(data, dict) and isinstance(data.get("items"), list):
+            data.setdefault("next_id", 1)
+            data.setdefault("folded_meetings", [])
+            for item in data["items"]:
+                item["occurrences"] = [Occurrence(**o) for o in item.get("occurrences", [])]
+                item.setdefault("status", "open")
+                for key in ("speaker", "priority", "requested_by", "merged_into",
+                            "md_status", "md_text", "md_speaker"):
+                    item.setdefault(key, "")
+            return data
+    except FileNotFoundError:
+        pass
+    except Exception as e:  # noqa: BLE001
+        log(f"WARN _commitments.json unreadable ({e}); starting a fresh corpus")
+    return {"next_id": 1, "folded_meetings": [], "items": []}
+
+
+def commitments_to_items(data: dict) -> list[CommitmentItem]:
+    return [CommitmentItem(**item) for item in data.get("items", [])]
+
+
+def parse_commitments_md(md_text: str) -> dict[str, dict]:
+    """Rendered _COMMITMENTS.md item lines -> {id: {status, speaker, text,
+    merged_into, merged_ids}}. Mirrors parse_action_items_md: count parens
+    are skipped, hand-merge notes '(merged CM-NNN, ...)' are honored both
+    before the ': ' and trailing the item text, and the remaining paren
+    group is the speaker."""
+    out: dict[str, dict] = {}
+    for line in md_text.splitlines():
+        m = MD_CM_ITEM_RE.match(line)
+        if not m:
+            continue
+        meta, _, text = m.group("rest").partition(": ")
+        merged_ids: list[str] = []
+        note = MD_CM_MERGE_NOTE_RE.search(text)
+        if note and not text[note.end():].strip():
+            merged_ids = re.findall(r"CM-\d{3,}", note.group("ids"))
+            text = text[:note.start()].rstrip()
+        speaker = ""
+        for group in MD_PAREN_RE.findall(meta):
+            if MD_COUNT_RE.match(group):
+                continue
+            if MD_CM_MERGE_NOTE_RE.fullmatch(f"({group})"):
+                merged_ids = re.findall(r"CM-\d{3,}", group) + merged_ids
+                continue
+            speaker = group
+        status = m.group("status")
+        merged_into = ""
+        ms = MD_CM_MERGED_STATUS_RE.match(status)
+        if ms:
+            status, merged_into = "merged", ms.group(1)
+        out[m.group("id")] = {"status": status, "speaker": speaker, "text": text,
+                              "merged_into": merged_into, "merged_ids": merged_ids}
+    return out
+
+
+def reconcile_commitments_from_md(items: list[CommitmentItem], md_text: str) -> None:
+    """Fold hand edits from the rendered _COMMITMENTS.md back onto the
+    corpus, mirroring reconcile_from_md: statuses, speakers, retitles, and
+    '(merged CM-NNN)' merge notes win over the extracted fields; each
+    curated field applies only when it changed in the md since the last
+    render (item.md_*)."""
+    parsed = parse_commitments_md(md_text)
+    by_id = {it.id: it for it in items}
+
+    def merge_into(survivor: CommitmentItem | None, merged_id: str) -> None:
+        merged = by_id.get(merged_id)
+        if merged is None:
+            log(f"WARN _COMMITMENTS.md names unknown id {merged_id}; ignored")
+            return
+        if survivor is None or merged is survivor:
+            return
+        if merged.status == "merged":
+            if merged.merged_into != survivor.id:
+                log(f"WARN {merged_id} already merged into {merged.merged_into}; "
+                    f"not re-merging into {survivor.id}")
+            return
+        have = {(o.meeting, o.line) for o in survivor.occurrences}
+        survivor.occurrences += [o for o in merged.occurrences if (o.meeting, o.line) not in have]
+        survivor.first_seen = min(survivor.first_seen, merged.first_seen)
+        survivor.last_seen = max(survivor.last_seen, merged.last_seen)
+        merged.status, merged.merged_into = "merged", survivor.id
+        log(f"  ~ {merged_id} merged into {survivor.id} (hand edit)")
+
+    for line_id in sorted(parsed):
+        entry = parsed[line_id]
+        it = by_id.get(line_id)
+        if it is None:
+            log(f"WARN _COMMITMENTS.md lists unknown id {line_id}; ignored")
+            continue
+        for merged_id in entry["merged_ids"]:
+            merge_into(it, merged_id)
+        if entry["merged_into"]:
+            merge_into(by_id.get(entry["merged_into"]), line_id)
+
+    for it in items:
+        entry = parsed.get(it.id)
+        if entry is None:
+            log(f"NOTE {it.id} absent from _COMMITMENTS.md; kept")
+            continue
+        if it.status != "merged" and entry["status"] and entry["status"] != it.status \
+                and entry["status"] != it.md_status:
+            log(f"  ~ {it.id} status {it.status!r} -> {entry['status']!r} (hand edit)")
+            it.status = entry["status"]
+        if entry["text"] and entry["text"] != it.text and entry["text"] != it.md_text:
+            log(f"  ~ {it.id} retitled (hand edit): {entry['text']}")
+            it.text = entry["text"]
+        if it.status != "merged" and entry["speaker"] != it.speaker \
+                and entry["speaker"] != it.md_speaker:
+            log(f"  ~ {it.id} speaker -> {entry['speaker']!r} (hand edit)")
+            it.speaker = entry["speaker"]
+
+
+def fold_commitments(meeting_folder: str, entries: list[dict],
+                     items: list[CommitmentItem], next_id: list[int],
+                     threshold: float = SIMILARITY_THRESHOLD,
+                     near_misses: list[tuple[str, str, float]] | None = None) -> list[CommitmentItem]:
+    for n, entry in enumerate(entries, start=1):
+        text = str(entry.get("text", ""))
+        norm = normalize_text(text)
+        if not norm:
+            continue
+        speaker = str(entry.get("speaker", ""))
+        match: CommitmentItem | None = None
+        best_below: tuple[float, CommitmentItem] | None = None
+        for it in items:
+            ratio = similarity(norm, normalize_text(it.text))
+            if ratio >= threshold and match is None:
+                match = it
+            elif it.status != "merged" and threshold - NEAR_MISS_BAND <= ratio < threshold:
+                if best_below is None or ratio > best_below[0]:
+                    best_below = (ratio, it)
+        target = match
+        if target is None:
+            item = CommitmentItem(
+                id=f"CM-{next_id[0]:03d}", text=text, speaker=speaker,
+                priority=entry.get("priority") or "normal",
+                requested_by=entry.get("requested_by", "") or "",
+                first_seen=meeting_folder, last_seen=meeting_folder,
+                occurrences=[Occurrence(meeting=meeting_folder, line=int(entry.get("line", n)))],
+            )
+            next_id[0] += 1
+            items.append(item)
+            target = item
+            log(f"  + {item.id} (new): {text}")
+        else:
+            if not target.speaker and speaker:
+                target.speaker = speaker
+            if entry.get("priority") == "high":
+                target.priority = "high"
+            target.last_seen = max(target.last_seen, meeting_folder)
+            if not any(o.meeting == meeting_folder for o in target.occurrences):
+                target.occurrences.append(Occurrence(meeting=meeting_folder, line=int(entry.get("line", n))))
+            log(f"  = {target.id} (dedup, {len(target.occurrences)}×): {text}")
+        if best_below is not None and near_misses is not None:
+            near_misses.append((target.id, best_below[1].id, best_below[0]))
+    return items
+
+
+def render_commitments_md(ws: Path, items: list[CommitmentItem],
+                          dupes: list[tuple[str, str, float]] | None = None) -> str:
+    lines = [f"# Commitments — {ws.resolve()}", "",
+             "dev-commitments: commitments self made across meetings. Living "
+             "corpus, deduplicated across meetings. Ids are stable and never "
+             "renumbered; hand edits (status, speaker, retitle, merges) survive "
+             "re-runs. Grouped by status, then speaker; **[boss]** marks "
+             "boss-requested items.", ""]
+    if not items:
+        lines += ["_No commitments yet._", ""]
+        return "\n".join(lines)
+    groups: dict[str, dict[str, list[CommitmentItem]]] = {}
+    for it in items:
+        groups.setdefault(it.status, {}).setdefault(it.speaker or "(unattributed)", []).append(it)
+    for status in CM_STATUSES + tuple(s for s in groups if s not in CM_STATUSES):
+        if status not in groups:
+            continue
+        lines.append(f"## {status}")
+        lines.append("")
+        for speaker in sorted(groups[status]):
+            lines.append(f"### {speaker}")
+            lines.append("")
+            for it in groups[status][speaker]:
+                if it.status == "merged":
+                    lines.append(f"- **{it.id}** [merged → {it.merged_into}] "
+                                 f"({len(it.occurrences)}×): {it.text}")
+                else:
+                    span = it.first_seen if it.first_seen == it.last_seen else f"{it.first_seen} → {it.last_seen}"
+                    boss = "**[boss]** " if it.priority == "high" else ""
+                    lines.append(f"- **{it.id}** [{it.status}] ({it.speaker}) {span} "
+                                 f"({len(it.occurrences)}×): {boss}{it.text}")
+            lines.append("")
+    if dupes:
+        texts = {it.id: it.text for it in items}
+        lines += ["## Possible duplicates (review)", "",
+                  "_Pairs scoring within 0.10 below the similarity threshold — "
+                  "merge by hand if truly alike._", ""]
+        for a, b, ratio in dupes:
+            lines.append(f"- {a} ↔ {b} ({ratio:.2f}): \"{texts[b]}\"")
+        lines.append("")
+    return "\n".join(lines)
+
+
 def cmd_rollup(args: argparse.Namespace) -> int:
     if not 0.5 <= args.similarity_threshold <= 1.0:
         log(f"rollup: --similarity-threshold must be between 0.5 and 1.0 "
@@ -879,9 +1385,11 @@ def cmd_rollup(args: argparse.Namespace) -> int:
         log("--rebuild: resetting manifest + corpus and rebuilding from folders")
         manifest_data = {"meetings": []}
         corpus_data = {"next_id": 1, "folded_meetings": [], "items": []}
+        commitments_data = {"next_id": 1, "folded_meetings": [], "items": []}
     else:
         manifest_data = load_manifest(ws)
         corpus_data = load_corpus(ws)
+        commitments_data = load_commitments_corpus(ws)
 
     prev_meetings = manifest_to_meetings(manifest_data)
     dated: list[Path] = []
@@ -899,7 +1407,8 @@ def cmd_rollup(args: argparse.Namespace) -> int:
     manifest_data = {
         "meetings": [
             {k: v for k, v in vars(m).items() if v is not None} for m in meetings
-        ]
+        ],
+        "commitments_corpus": "_commitments.json",
     }
 
     items = corpus_to_items(corpus_data)
@@ -946,13 +1455,66 @@ def cmd_rollup(args: argparse.Namespace) -> int:
         ],
     }
 
+    cm_items = commitments_to_items(commitments_data)
+    cm_next_id = [int(commitments_data.get("next_id", 1))]
+    cm_folded: set[str] = set(commitments_data.get("folded_meetings", []))
+    cm_out = Path(args.commitments_out) if args.commitments_out else ws / "_COMMITMENTS.md"
+
+    if not args.rebuild and cm_out.is_file():
+        log(f"reconciling hand edits from {cm_out.name}")
+        reconcile_commitments_from_md(cm_items, cm_out.read_text())
+
+    cm_near_misses: list[tuple[str, str, float]] = []
+    for folder in dated:
+        cj_path = folder / "commitments.json"
+        if not cj_path.is_file():
+            continue
+        if folder.name in cm_folded:
+            log(f"  {folder.name}: commitments already folded (skipping)")
+            continue
+        try:
+            cj_data = json.loads(cj_path.read_text())
+            entries = cj_data.get("items", []) if isinstance(cj_data, dict) else []
+        except Exception as e:  # noqa: BLE001
+            log(f"WARN {folder.name}/commitments.json unreadable ({e}); skipped")
+            continue
+        log(f"folding {folder.name}/commitments.json ({len(entries)} item(s))")
+        fold_commitments(folder.name, entries, cm_items, cm_next_id,
+                         args.similarity_threshold, cm_near_misses)
+        cm_folded.add(folder.name)
+    cm_dupes = possible_duplicates(cm_items, cm_near_misses, args.similarity_threshold)
+    cm_md = render_commitments_md(ws, cm_items, cm_dupes)
+    for it in cm_items:
+        it.md_status, it.md_text = it.status, it.text
+        if it.priority == "high" and it.status != "merged":
+            it.md_text = f"**[boss]** {it.text}"
+        it.md_speaker = it.speaker if it.status != "merged" else ""
+    commitments_data = {
+        "next_id": cm_next_id[0],
+        "similarity_threshold": args.similarity_threshold,
+        "folded_meetings": sorted(cm_folded),
+        "items": [
+            {
+                "id": it.id, "text": it.text, "speaker": it.speaker,
+                "priority": it.priority, "requested_by": it.requested_by,
+                "status": it.status, "first_seen": it.first_seen, "last_seen": it.last_seen,
+                "merged_into": it.merged_into,
+                "occurrences": [vars(o) for o in it.occurrences],
+                "md_status": it.md_status, "md_text": it.md_text, "md_speaker": it.md_speaker,
+            }
+            for it in cm_items
+        ],
+    }
+
     speakers_texts = {
         m.folder: "\n".join(
             p.read_text() for p in sorted((ws / m.folder).glob("*.speakers.txt"))
         )
         for m in meetings if m.has_speakers
     }
-    index_md = render_index(ws, meetings, orphans, stale, recurring_topics(speakers_texts))
+    open_cm = sum(1 for it in cm_items if it.status == "open")
+    index_md = render_index(ws, meetings, orphans, stale, recurring_topics(speakers_texts),
+                            commitments=(open_cm, len(cm_items)))
 
     index_out = Path(args.out) if args.out else ws / "_INDEX.md"
     changed = write_if_changed(index_out, index_md)
@@ -968,6 +1530,14 @@ def cmd_rollup(args: argparse.Namespace) -> int:
         changed_ai = write_if_changed(ai_out, ai_md)
     else:
         changed_corpus = changed_ai = False
+    cm_corpus_out = ws / "_commitments.json"
+    if cm_items or cm_corpus_out.exists():
+        changed_cm_corpus = write_if_changed(
+            cm_corpus_out, json.dumps(commitments_data, indent=2) + "\n"
+        )
+        changed_cm = write_if_changed(cm_out, cm_md)
+    else:
+        changed_cm_corpus = changed_cm = False
 
     log(f"index -> {index_out}" + ("" if changed else " (unchanged)"))
     log(f"manifest ({len(meetings)} meetings) -> {manifest_out}"
@@ -976,6 +1546,8 @@ def cmd_rollup(args: argparse.Namespace) -> int:
         log(f"corpus ({len(items)} items, next id AI-{next_id[0]:03d}) -> {corpus_out}")
     elif args.action_items:
         log(f"corpus unchanged ({len(items)} items)")
+    if changed_cm_corpus or changed_cm:
+        log(f"commitments ({len(cm_items)} items, next id CM-{cm_next_id[0]:03d}) -> {cm_corpus_out}")
     if stale:
         log(f"NOTE {len(stale)} stale manifest entr(ies); re-run with --rebuild to drop them")
     return 0
@@ -1024,6 +1596,22 @@ def build_parser() -> argparse.ArgumentParser:
                           "(default: the transcript's parent's parent)")
     pai.set_defaults(func=cmd_action_items)
 
+    pcm = sub.add_parser(
+        "commitments", help="per-meeting dev commitments (first-person cues from "
+                            "the self-role speaker); pluggable hook like action-items")
+    pcm.add_argument("--transcript", required=True,
+                     help="speaker-labeled transcript (*.speakers.txt)")
+    pcm.add_argument("--json-out", required=True,
+                     help="parsed commitments JSON output path (commitments.md is "
+                          "written alongside it)")
+    pcm.add_argument("--hook", default=None,
+                     help="shell command producing markdown from stdin "
+                          "(default: $WHOSAID_COMMITMENTS_HOOK, else stdlib heuristic)")
+    pcm.add_argument("--roles", default=None,
+                     help="roles JSON '{name: role}' string or @path "
+                          "(default: '# Role:' headers in the transcript)")
+    pcm.set_defaults(func=cmd_commitments)
+
     pr = sub.add_parser("rollup", help="aggregate a meeting workspace: coverage index, "
                                        "audit, recurring topics, action-item corpus")
     pr.add_argument("workspace_dir", help="workspace directory of dated meeting folders")
@@ -1033,6 +1621,8 @@ def build_parser() -> argparse.ArgumentParser:
                     help="index markdown path (default: <workspace>/_INDEX.md)")
     pr.add_argument("--action-items-out", default=None,
                     help="corpus markdown path (default: <workspace>/_ACTION-ITEMS.md)")
+    pr.add_argument("--commitments-out", default=None,
+                    help="commitments corpus markdown path (default: <workspace>/_COMMITMENTS.md)")
     pr.add_argument("--similarity-threshold", type=float, default=SIMILARITY_THRESHOLD,
                     help="difflib ratio at or above which two items fold together "
                          "(0.5-1.0, default: %(default)s); pairs within 0.10 below it "

@@ -7,5 +7,6 @@ recordings/*
 __pycache__/
 .codex/
 .claude/
+.opencode/
 # generated codebase-memory atlas output (analysis artifact, not source)
 .cbm-atlas/
