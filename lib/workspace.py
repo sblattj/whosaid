@@ -125,6 +125,20 @@ Subcommands (the `whosaid` bash CLI shells out to this module via
       rendered as "Dropped fragments (review)" in _COMMITMENTS.md; CM items
       already in the corpus are never touched.
 
+      The same corpus is also the id authority for the commitment bullets
+      the summarizer writes into each meeting's action-items.md (issue #23,
+      the "- **Owner** [Requester HH:MM:SS] text" grammar lib/graph.py
+      parses): bullets whose owner is the meeting's self-roled speaker fold
+      through the same TextMatcher, so a bullet and the spoken clause it
+      summarizes become ONE CM item with TWO occurrences — one
+      source "transcript" (from the turn), one source "action-items"
+      (t_sec from the bullet's bracket) — while bullets from other owners
+      never enter this corpus. Every occurrence carries source, meeting,
+      line, t_sec, owner, requester, requester_role, text, cue, negative;
+      the item keeps ai_refs (the AI-NNN ids written on its bullets) so the
+      graph views can join. _COMMITMENTS.md renders one indented sighting
+      line per occurrence under any item seen in action-items.md.
+
       Dedupe in both corpora is difflib first and, when a loopback Ollama
       answers and [search] embed is on, embedding cosine too: two texts fold
       when difflib >= the threshold OR cosine >= [commitments] embed_threshold
@@ -240,6 +254,25 @@ CM_BULLET_RE = re.compile(
     r"(?P<time>\d{1,3}:\d{2}(?::\d{2})?)\s*$"
 )
 CM_META_RE = re.compile(r"^<!--\s*cm:\s*(?P<meta>\{.*\})\s*-->$")
+# Commitment bullets inside a per-meeting action-items.md (issue #23):
+# "- **Owner** [Requester HH:MM:SS] text" (the shape the summarizer and
+# hooks write), plus the legacy "**[Requester HH:MM:SS] Title.**" whose
+# owner defaults to the meeting's self speaker. This grammar mirrors the
+# parser lib/graph.py carried before #23 unified the corpora (its
+# BULLET_RE/NEW_RE/LEGACY_RE/parse_bracket at 25df5b0); the graph views now
+# read the CM corpus JSON instead of re-parsing the markdown, so THIS is
+# the one parser — keep the shapes in sync if it changes. Times inside the
+# bracket are MM:SS or H:MM:SS ("/" lists and ranges just yield several
+# matches); the requester is the first word-ish token before the first
+# time or comma (capitalized-only in legacy brackets, so notes like
+# '[implicit]' are not people).
+CM_DOC_TIME_RE = re.compile(r"\d{1,2}:\d{2}(?::\d{2})?")
+CM_DOC_TOKEN_RE = re.compile(r"[A-Za-z][\w.'-]*")
+CM_DOC_STRICT_TOKEN_RE = re.compile(r"[A-Z][\w.'-]*")
+CM_DOC_BULLET_RE = re.compile(r"^\s*[-*]\s+(?P<body>\S.*)$")
+CM_DOC_OWNER_RE = re.compile(r"^\*\*(?P<owner>[^*\[\]]+?)\s*:?\*\*\s*:?\s*\[(?P<br>[^\]]*)\]\s*(?P<text>.*)$")
+CM_DOC_LEGACY_RE = re.compile(r"^\*\*\[(?P<br>[^\]]*)\]\s*(?P<title>[^*]*?)\s*\*\*(?P<rest>.*)$")
+CM_DOC_AI_ID_RE = re.compile(r"\bAI-\d{3,}\b")
 
 STOPWORDS = frozenset(
     """
@@ -370,6 +403,30 @@ def parse_roles(transcript_text: str) -> dict[str, str]:
         m = ROLE_HEADER_RE.match(line)
         if m:
             roles[m.group("name").strip()] = m.group("role").strip()
+    return roles
+
+
+def meeting_roles(folder: Path) -> dict:
+    """One meeting folder's '{name: role}' map: its commitments.json 'roles'
+    block first, then '# Role:' headers across its *.speakers.txt (later
+    files win). The same source order find_self_speaker scans, factored out
+    so the action-items fold gates on the same self-role logic the
+    transcript path uses."""
+    roles: dict = {}
+    cj = folder / "commitments.json"
+    if cj.is_file():
+        try:
+            data = json.loads(cj.read_text())
+            roles = data.get("roles") if isinstance(data, dict) else {}
+            roles = roles if isinstance(roles, dict) else {}
+        except Exception:  # noqa: BLE001
+            roles = {}
+    if not roles:
+        for sp in sorted(folder.glob("*.speakers.txt")):
+            try:
+                roles.update(parse_roles(sp.read_text()))
+            except OSError:
+                continue
     return roles
 
 
@@ -1350,6 +1407,39 @@ def render_action_items_md(ws: Path, items: list[ActionItem],
 # ---- rollup: commitment corpus ------------------------------------------------------
 
 @dataclass
+class CmOccurrence:
+    """One sighting of a commitment, in the unified shape every source maps
+    onto (issue #23 — the contract the graph views join against):
+      source          "transcript" (the commitments.json heuristic) or
+                      "action-items" (an action-items.md commitment bullet,
+                      parsed with lib/graph.py's grammar)
+      meeting, line   the dated folder and the 1-based line (a transcript
+                      occurrence's line is its entry ordinal in the
+                      meeting's commitments.json; a bullet's is its line in
+                      action-items.md)
+      t_sec           the transcript turn / bullet bracket timestamp, None
+                      when the bullet carried none
+      owner           the speaker who made the commitment
+      requester,      who asked for it: the bullet's [Requester ...] slot or
+      requester_role  the preceding-turn context, None when unknown (the
+                      role comes from the meeting's roles map)
+      text, cue,      what was said; cue/negative are extractor output and
+      negative        are None/False for bullets
+    Corpora written before the split load as transcript sightings (the
+    legacy corpus was transcript-only)."""
+    source: str = "transcript"
+    meeting: str = ""
+    line: int = 0
+    t_sec: int | None = None
+    owner: str = ""
+    requester: str | None = None
+    requester_role: str | None = None
+    text: str = ""
+    cue: str | None = None
+    negative: bool = False
+
+
+@dataclass
 class CommitmentItem:
     id: str
     text: str
@@ -1369,7 +1459,10 @@ class CommitmentItem:
     cue: str = ""
     negative: bool = False
     requested_by_role: str = ""
-    occurrences: list[Occurrence] = field(default_factory=list)
+    # AI-NNN ids written on this item's action-items.md bullets (comma-
+    # joined, mirroring graph.py's commitment rows); "" when none.
+    ai_refs: str = ""
+    occurrences: list[CmOccurrence] = field(default_factory=list)
 
 
 def load_commitments_corpus(ws: Path) -> dict:
@@ -1379,10 +1472,11 @@ def load_commitments_corpus(ws: Path) -> dict:
             data.setdefault("next_id", 1)
             data.setdefault("folded_meetings", [])
             for item in data["items"]:
-                item["occurrences"] = [Occurrence(**o) for o in item.get("occurrences", [])]
+                item["occurrences"] = [CmOccurrence(**o) for o in item.get("occurrences", [])]
                 item.setdefault("status", "open")
                 for key in ("speaker", "priority", "requested_by", "merged_into",
-                            "md_status", "md_text", "md_speaker", "cue", "requested_by_role"):
+                            "md_status", "md_text", "md_speaker", "cue", "requested_by_role",
+                            "ai_refs"):
                     item.setdefault(key, "")
                 item["negative"] = bool(item.get("negative", False))
             raw_dropped = data.get("dropped")
@@ -1492,6 +1586,84 @@ def reconcile_commitments_from_md(items: list[CommitmentItem], md_text: str) -> 
             it.speaker = entry["speaker"]
 
 
+def tsec_or_none(time_str) -> int | None:
+    """'HH:MM:SS'/'MM:SS' -> seconds via wsconfig.tsec; None when absent or
+    not a plain clock (hook payloads could carry anything)."""
+    tok = str(time_str or "").strip()
+    if not re.fullmatch(r"\d{1,3}(?::\d{2}){1,2}", tok):
+        return None
+    return _wsconfig().tsec(tok)
+
+
+def merge_ai_refs(a: str, b: str) -> str:
+    """Union of two comma-joined AI-NNN lists, comma-joined sorted — the
+    same shape graph.py writes on its commitment rows."""
+    ids = {s for s in (a or "").split(",") if s} | {s for s in (b or "").split(",") if s}
+    return ",".join(sorted(ids))
+
+
+def _clean_md(s: str) -> str:
+    return re.sub(r"\*\*|`", "", s).strip()
+
+
+def parse_cm_bracket(br: str, strict: bool = False) -> tuple[str, list[str]]:
+    """The '[Requester HH:MM:SS]' slot of a commitment bullet -> (requester,
+    times). '[Bob 12:01 / 14:30]' -> ('Bob', ['12:01', '14:30']); '[Bob
+    46:36-47:35]' takes both ends; '[12:01]' -> ('', ['12:01']); '[inferred]'
+    -> ('', ['inferred']); a bracket with no parsable time ('[Bob,
+    implicit]') -> ('Bob', ['']), one row with no timestamp. strict=True
+    (legacy brackets) requires a capital first letter so bracket notes are
+    not mistaken for names."""
+    s = br.strip()
+    if s.lower() == "inferred":
+        return "", ["inferred"]
+    times = CM_DOC_TIME_RE.findall(s)
+    cut = len(s)
+    if m := CM_DOC_TIME_RE.search(s):
+        cut = m.start()
+    comma = s.find(",")
+    if 0 <= comma < cut:
+        cut = comma
+    head = s[:cut].strip(" ~\t")
+    tok = (CM_DOC_STRICT_TOKEN_RE if strict else CM_DOC_TOKEN_RE).match(head)
+    return (tok.group(0) if tok else ""), (times or [""])
+
+
+def parse_action_items_commitments(md_text: str, meeting: str,
+                                   default_owner: str) -> list[dict]:
+    """The commitment bullets of one action-items.md -> rows ({meeting,
+    line, owner, requester, t_sec, text, ai_refs}), one row per timestamp
+    in the bracket (mirroring the pre-#23 graph parser; see the CM_DOC_*
+    regex block). ai_refs holds the AI-NNN ids written on the line.
+    default_owner is the self speaker legacy '**[...] Title.**' bullets
+    attribute their owner to."""
+    out: list[dict] = []
+    for n, raw in enumerate(md_text.splitlines(), 1):
+        bm = CM_DOC_BULLET_RE.match(raw)
+        if not bm:
+            continue
+        body = bm.group("body").strip()
+        if m := CM_DOC_OWNER_RE.match(body):
+            owner = _clean_md(m.group("owner"))
+            who, times = parse_cm_bracket(m.group("br"))
+            requester, text = (who or owner), _clean_md(m.group("text"))
+        elif m := CM_DOC_LEGACY_RE.match(body):
+            who, times = parse_cm_bracket(m.group("br"), strict=True)
+            owner = default_owner
+            requester = who or default_owner
+            text = _clean_md(m.group("title")) or _clean_md(m.group("rest"))
+        else:
+            continue
+        refs = ",".join(sorted(set(CM_DOC_AI_ID_RE.findall(raw))))
+        for tok in times:
+            out.append({
+                "meeting": meeting, "line": n, "owner": owner, "requester": requester,
+                "t_sec": _wsconfig().tsec(tok) if tok and tok != "inferred" else None,
+                "text": text, "ai_refs": refs,
+            })
+    return out
+
+
 def fold_commitments(meeting_folder: str, entries: list[dict],
                      items: list[CommitmentItem], next_id: list[int],
                      threshold: float = SIMILARITY_THRESHOLD,
@@ -1527,6 +1699,14 @@ def fold_commitments(meeting_folder: str, entries: list[dict],
         speaker = str(entry.get("speaker", ""))
         cue = str(entry.get("cue", "") or "")
         negative = bool(entry.get("negative", False))
+        requester = str(entry.get("requested_by") or "") if entry.get("requested_by") else ""
+        occ = CmOccurrence(
+            source="transcript", meeting=meeting_folder, line=int(entry.get("line", n)),
+            t_sec=tsec_or_none(entry.get("time")), owner=speaker,
+            requester=requester or None,
+            requester_role=(str(entry.get("requested_by_role") or "") or None) if requester else None,
+            text=text, cue=cue or None, negative=negative,
+        )
         found, need = fragment_check(text, min_words, bool(entry.get("requested_by")))
         if found < need:
             reason = fragment_reason(found, need)
@@ -1556,7 +1736,7 @@ def fold_commitments(meeting_folder: str, entries: list[dict],
                 requested_by_role=str(entry.get("requested_by_role", "") or ""),
                 cue=cue, negative=negative,
                 first_seen=meeting_folder, last_seen=meeting_folder,
-                occurrences=[Occurrence(meeting=meeting_folder, line=int(entry.get("line", n)))],
+                occurrences=[occ],
             )
             next_id[0] += 1
             items.append(item)
@@ -1575,8 +1755,92 @@ def fold_commitments(meeting_folder: str, entries: list[dict],
             if target.negative and not negative:
                 target.negative = False  # restated positively later: no longer a refusal
             target.last_seen = max(target.last_seen, meeting_folder)
-            if not any(o.meeting == meeting_folder for o in target.occurrences):
-                target.occurrences.append(Occurrence(meeting=meeting_folder, line=int(entry.get("line", n))))
+            # Per-source sighting rule: a transcript entry of this meeting
+            # lands once (near-dup re-statements collapse, as always), but
+            # an action-items occurrence of the same meeting never blocks
+            # it — the two sources are different sightings (issue #23).
+            if not any(o.meeting == meeting_folder and o.source == "transcript"
+                       for o in target.occurrences):
+                target.occurrences.append(occ)
+            log(f"  = {target.id} (dedup, {len(target.occurrences)}×): {text}")
+        if best_below is not None and near_misses is not None:
+            near_misses.append((target.id, best_below[1].id, best_below[0]))
+    return items
+
+
+def fold_action_items(meeting_folder: str, rows: list[dict],
+                      items: list[CommitmentItem], next_id: list[int],
+                      threshold: float = SIMILARITY_THRESHOLD,
+                      near_misses: list[tuple[str, str, float]] | None = None,
+                      matcher: "TextMatcher | None" = None,
+                      roles: dict | None = None) -> list[CommitmentItem]:
+    """Fold one meeting's action-items.md commitment rows (graph.py's
+    parse_commitments output, already filtered to the self-roled owner)
+    into the corpus (issue #23): the same TextMatcher threshold and 0.10
+    near-miss band as the transcript path, so a bullet and the spoken
+    clause it summarizes become ONE item with a second occurrence whose
+    t_sec is the bullet's bracket timestamp; an unmatched bullet starts a
+    new CM item carrying the bullet's requester (role looked up in `roles`,
+    the meeting's roles map) and the AI-NNN ids written on the line. Bullets
+    are summarizer-curated text, so the [commitments] min_words fragment
+    filter does not apply here. A bullet with several timestamps yields one
+    occurrence each (same line, different t_sec), mirroring graph.py's one
+    row per timestamp."""
+    roles = roles or {}
+    if matcher is not None:
+        matcher.prime([str(r.get("text", "")) for r in rows] + [it.text for it in items])
+    for row in rows:
+        text = str(row.get("text", ""))
+        norm = normalize_text(text)
+        if not norm:
+            continue
+        owner = str(row.get("owner", "") or "")
+        requester = str(row.get("requester", "") or "")
+        t_sec = row.get("t_sec")
+        line = int(row.get("line", 0) or 0)
+        refs = str(row.get("ai_refs", "") or "")
+        occ = CmOccurrence(
+            source="action-items", meeting=meeting_folder, line=line,
+            t_sec=int(t_sec) if isinstance(t_sec, int) else None, owner=owner,
+            requester=requester or None, requester_role=(role_of(roles, requester) or None) if requester else None,
+            text=text, cue=None, negative=False,
+        )
+        match: CommitmentItem | None = None
+        best_below: tuple[float, CommitmentItem] | None = None
+        for it in items:
+            it_norm = normalize_text(it.text)
+            ratio = similarity(norm, it_norm)
+            hit = ratio >= threshold if matcher is None else matcher.matches(norm, it_norm, ratio)
+            if hit and match is None:
+                match = it
+            elif it.status != "merged" and threshold - NEAR_MISS_BAND <= ratio < threshold:
+                if best_below is None or ratio > best_below[0]:
+                    best_below = (ratio, it)
+        target = match
+        if target is None:
+            item = CommitmentItem(
+                id=f"CM-{next_id[0]:03d}", text=text, speaker=owner,
+                priority="normal", requested_by=requester,
+                requested_by_role=role_of(roles, requester) if requester else "",
+                ai_refs=refs,
+                first_seen=meeting_folder, last_seen=meeting_folder,
+                occurrences=[occ],
+            )
+            next_id[0] += 1
+            items.append(item)
+            target = item
+            log(f"  + {item.id} (new, action-items): {text}")
+        else:
+            if not target.speaker and owner:
+                target.speaker = owner
+            if requester and not target.requested_by:
+                target.requested_by = requester
+                target.requested_by_role = role_of(roles, requester)
+            target.ai_refs = merge_ai_refs(target.ai_refs, refs)
+            target.last_seen = max(target.last_seen, meeting_folder)
+            if not any(o.source == "action-items" and o.meeting == meeting_folder
+                       and o.line == line and o.t_sec == occ.t_sec for o in target.occurrences):
+                target.occurrences.append(occ)
             log(f"  = {target.id} (dedup, {len(target.occurrences)}×): {text}")
         if best_below is not None and near_misses is not None:
             near_misses.append((target.id, best_below[1].id, best_below[0]))
@@ -1617,6 +1881,16 @@ def render_commitments_md(ws: Path, items: list[CommitmentItem],
                     boss = "**[boss]** " if it.priority == "high" else ""
                     lines.append(f"- **{it.id}** [{it.status}] ({it.speaker}) {span} "
                                  f"({len(it.occurrences)}×): {boss}{it.text}")
+                # Items seen in action-items.md (issue #23) list their
+                # sightings — one indented line per occurrence, both
+                # sources, so the (n×) count is auditable. Transcript-only
+                # items render exactly as before; the sub-lines carry no
+                # CM id, so the hand-edit reconcile never reads them.
+                if any(o.source == "action-items" for o in it.occurrences):
+                    for o in it.occurrences:
+                        when = f" @ {_wsconfig().hms(o.t_sec)}" if o.t_sec is not None else ""
+                        where = f" (line {o.line})" if o.source == "action-items" else ""
+                        lines.append(f"  - {o.meeting} {o.source}{when}{where}")
             lines.append("")
     if dupes:
         texts = {it.id: it.text for it in items}
@@ -2069,6 +2343,20 @@ def same_person(a: str, b: str) -> bool:
     return (len(ta) == 1 and ta[0] == tb[0]) or (len(tb) == 1 and tb[0] == ta[0])
 
 
+def role_of(roles: dict, name: str) -> str:
+    """The roles-map role of a speaker label: exact hit first, else the
+    first same_person match ('Bob' finds 'Bob_Example' = boss), so the
+    plain names a summarizer writes still resolve. '' when unknown."""
+    if not name:
+        return ""
+    if name in roles:
+        return str(roles.get(name) or "")
+    for n, r in roles.items():
+        if same_person(name, n):
+            return str(r or "")
+    return ""
+
+
 class OwnerMatcher:
     """Does an action item's owner label belong to `owner`? Exact-name rule
     from same_person, plus the [workspace] aliases rule action_items.py
@@ -2099,22 +2387,7 @@ def find_self_speaker(ws: Path) -> str:
     folders = sorted((p for p in ws.iterdir() if p.is_dir() and DATE_DIR_RE.match(p.name)),
                      key=lambda p: p.name, reverse=True)
     for folder in folders:
-        roles: dict = {}
-        cj = folder / "commitments.json"
-        if cj.is_file():
-            try:
-                data = json.loads(cj.read_text())
-                roles = data.get("roles") if isinstance(data, dict) else {}
-                roles = roles if isinstance(roles, dict) else {}
-            except Exception:  # noqa: BLE001
-                roles = {}
-        if not roles:
-            for sp in sorted(folder.glob("*.speakers.txt")):
-                try:
-                    roles.update(parse_roles(sp.read_text()))
-                except OSError:
-                    continue
-        for name, role in roles.items():
+        for name, role in meeting_roles(folder).items():
             if str(role or "").strip().lower() == "self":
                 return str(name)
     return ""
@@ -2598,21 +2871,44 @@ def cmd_rollup(args: argparse.Namespace) -> int:
     cm_dropped_before = len(cm_dropped)
     for folder in dated:
         cj_path = folder / "commitments.json"
-        if not cj_path.is_file():
+        ai_path = folder / "action-items.md"
+        if not cj_path.is_file() and not ai_path.is_file():
             continue
         if folder.name in cm_folded:
             log(f"  {folder.name}: commitments already folded (skipping)")
             continue
-        try:
-            cj_data = json.loads(cj_path.read_text())
-            entries = cj_data.get("items", []) if isinstance(cj_data, dict) else []
-        except Exception as e:  # noqa: BLE001
-            log(f"WARN {folder.name}/commitments.json unreadable ({e}); skipped")
-            continue
-        log(f"folding {folder.name}/commitments.json ({len(entries)} item(s))")
-        fold_commitments(folder.name, entries, cm_items, cm_next_id,
-                         args.similarity_threshold, cm_near_misses, matcher, cm_cues,
-                         cm_dropped)
+        if cj_path.is_file():
+            try:
+                cj_data = json.loads(cj_path.read_text())
+                entries = cj_data.get("items", []) if isinstance(cj_data, dict) else []
+            except Exception as e:  # noqa: BLE001
+                log(f"WARN {folder.name}/commitments.json unreadable ({e}); skipped")
+                continue
+            log(f"folding {folder.name}/commitments.json ({len(entries)} item(s))")
+            fold_commitments(folder.name, entries, cm_items, cm_next_id,
+                             args.similarity_threshold, cm_near_misses, matcher, cm_cues,
+                             cm_dropped)
+        # Issue #23: the same corpus also owns the action-items.md
+        # commitment bullets the summarizer writes (the grammar graph.py
+        # parses). Only bullets whose owner is the meeting's self-roled
+        # speaker fold — the same self gate the transcript path applies —
+        # so other people's asks stay in the AI corpus, not this one.
+        if ai_path.is_file():
+            roles = meeting_roles(folder)
+            self_names = [n for n, r in roles.items() if str(r or "").strip().lower() == "self"]
+            if not self_names:
+                log(f"  {folder.name}: action-items.md commitments skipped "
+                    "(no self-roled speaker in this meeting)")
+            else:
+                rows = parse_action_items_commitments(ai_path.read_text(), folder.name,
+                                                      self_names[0])
+                rows = [r for r in rows
+                        if any(same_person(str(r.get("owner") or ""), n) for n in self_names)]
+                if rows:
+                    log(f"folding {folder.name}/action-items.md "
+                        f"({len(rows)} self-owned commitment bullet(s))")
+                    fold_action_items(folder.name, rows, cm_items, cm_next_id,
+                                      args.similarity_threshold, cm_near_misses, matcher, roles)
         cm_folded.add(folder.name)
     if len(cm_dropped) > cm_dropped_before:
         log(f"dropped {len(cm_dropped) - cm_dropped_before} fragment(s) at fold "
@@ -2636,7 +2932,7 @@ def cmd_rollup(args: argparse.Namespace) -> int:
                 "requested_by_role": it.requested_by_role,
                 "cue": it.cue, "negative": bool(it.negative),
                 "status": it.status, "first_seen": it.first_seen, "last_seen": it.last_seen,
-                "merged_into": it.merged_into,
+                "merged_into": it.merged_into, "ai_refs": it.ai_refs,
                 "occurrences": [vars(o) for o in it.occurrences],
                 "md_status": it.md_status, "md_text": it.md_text, "md_speaker": it.md_speaker,
             }

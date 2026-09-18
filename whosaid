@@ -16,7 +16,7 @@
 #   whosaid index <ws>              Build the workspace search index, graph, and wiki.
 #   whosaid search <ws> "<q>"       Exact / meaning / hybrid search over every transcript.
 #   whosaid context <ws> <mtg> <t>  Verbatim turns around a timestamp.
-#   whosaid graph <ws> <view>       items | item ID | person [Name] | prs | meetings | speakers.
+#   whosaid graph <ws> <view>       items | item ID | person [Name] | prs | meetings | speakers | commitments.
 #   whosaid wiki <ws>               Regenerate <ws>/_WIKI.md from the graph.
 #   whosaid watch <sub>             run | install | uninstall | status: hands-free ingest (launchd).
 #   whosaid memos <sub>             list | pull | delete | shortcut-recipe: Voice Memos helpers.
@@ -167,8 +167,10 @@ USAGE
                                         Search every speaker-labeled transcript.
   whosaid context <ws> <meeting> <HH:MM:SS> [--before S] [--after S] [--json]
                                         The verbatim turns around a timestamp.
-  whosaid graph <ws> items|item ID|person [Name]|prs|meetings|speakers [--json]
-                                        Entity views over the workspace.
+  whosaid graph <ws> items|item ID|person [Name]|prs|meetings|speakers|commitments [--json]
+                                        Entity views over the workspace; commitments
+                                        lists the unified CM table
+                                        (--owner/--source/--status filters).
   whosaid wiki <ws> [--stdout] [-o FILE]
                                         Regenerate the wiki from the graph.
   whosaid watch run|install|uninstall|status [--into <ws>] [flags]
@@ -1611,13 +1613,13 @@ cmd_context() {
   exec python3 "$SEARCH_PY" context "$@"
 }
 
-# whosaid graph <ws> items|item ID|person [Name]|prs|meetings|speakers [flags]
+# whosaid graph <ws> items|item ID|person [Name]|prs|meetings|speakers|commitments [flags]
 # The view keyword may come first (no <ws>) or second (after <ws>). speakers is
 # a search.py view (talk share needs the segment table); the rest are graph.py.
-GRAPH_VIEWS="items item person prs meetings speakers build"
+GRAPH_VIEWS="items item person prs meetings speakers commitments build"
 cmd_graph() {
   if want_help "$@"; then help_section "WORKSPACE SEARCH"; exit 0; fi
-  local usage="usage: whosaid graph <ws> items|item AI-NNN|person [Name]|prs|meetings|speakers [--json]"
+  local usage="usage: whosaid graph <ws> items|item AI-NNN|person [Name]|prs|meetings|speakers|commitments [--json]"
   [[ $# -eq 0 ]] && { log "graph: need a view. $usage"; exit 1; }
 
   local ws="" view=""

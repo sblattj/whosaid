@@ -1,17 +1,20 @@
 #!/usr/bin/env python3
 """
 Offline test for lib/graph.py (GitHub issue #14: entity graph + generated wiki;
-issue #13: the per-owner commitments view).
+issue #13: the per-owner commitments view; issue #23: the commitment table is
+the CM corpus flattened, one row per occurrence).
 
 Builds a synthetic workspace in a temp dir: one dated meeting folder (in the
 manifest) and one hand-named folder (manifest-less, with a diarization sidecar),
 speaker-labeled transcripts with placeholder names, a small action-item corpus
-(open / merged / contingent), and per-meeting action-items.md files covering
-every accepted commitment bullet shape. The FTS5 `seg` table is created here
-directly (same columns lib/search.py writes), so this test does not depend on
-the search module. Then it runs the real CLI (`python3 lib/graph.py ...`) and
-asserts every table, every view's JSON, the wiki markdown, the exit-1 paths,
-build idempotence, and that build waits on a busy database.
+(open / merged / contingent), a new-shape CM commitment corpus (_commitments.json
+with source-carrying occurrences), and per-meeting action-items.md files. The
+FTS5 `seg` table is created here directly (same columns lib/search.py writes),
+so this test does not depend on the search module. Then it runs the real CLI
+(`python3 lib/graph.py ...`) and asserts every table, every view's JSON, the
+`commitments` subcommand and its filters, the wiki markdown, the exit-1 paths,
+old-shape/missing corpora degrading cleanly, build idempotence, and that build
+waits on a busy database.
 
 Run:  python3 test/graph_test.py
 """
@@ -142,6 +145,78 @@ SIDECAR = {
     "segments": [],
 }
 
+# New-shape CM corpus (issue #23): item-level id/status/ai_refs/merged_into,
+# occurrences carrying source + meeting + line + t_sec + owner + requester
+# (+role) + text + cue + negative. Every fixture commitment is owned by Alice;
+# Bob asked for CM-001/CM-002, Carol for CM-005/CM-006.
+CM_CORPUS = {
+    "next_id": 7, "folded_meetings": [M1, M2],
+    "items": [
+        {"id": "CM-001", "text": "Ship the schema fix", "speaker": "Alice_Example",
+         "status": "open", "priority": "high", "requested_by": "Bob_Example",
+         "merged_into": "", "ai_refs": ["AI-001", "AI-002"],
+         "occurrences": [
+             {"source": "transcript", "meeting": M1, "line": 6, "t_sec": 740,
+              "owner": "Alice_Example", "requester": "Bob_Example", "requester_role": "peer",
+              "text": "yes, I will ship it after lunch.", "cue": "will", "negative": False},
+             {"source": "action-items", "meeting": M1, "line": 5, "t_sec": 721,
+              "owner": "Alice_Example", "requester": "Bob_Example", "requester_role": "",
+              "text": "Ship the schema fix", "cue": "", "negative": False},
+         ]},
+        {"id": "CM-002", "text": "Write the design note for the registry",
+         "speaker": "Alice_Example", "status": "open", "requested_by": "Bob_Example",
+         "merged_into": "", "ai_refs": ["AI-003"],
+         "occurrences": [
+             {"source": "action-items", "meeting": M1, "line": 6, "t_sec": 870,
+              "owner": "Alice_Example", "requester": "Bob_Example",
+              "text": "Write the design note for the registry"},
+             {"source": "action-items", "meeting": M1, "line": 6, "t_sec": 910,
+              "owner": "Alice_Example", "requester": "Bob_Example",
+              "text": "Write the design note for the registry"},
+         ]},
+        {"id": "CM-003", "text": "Review the open pull requests",
+         "speaker": "Alice_Example", "status": "ongoing", "merged_into": "", "ai_refs": [],
+         "occurrences": [
+             {"source": "action-items", "meeting": M1, "line": 10, "t_sec": 1200,
+              "owner": "Alice_Example", "requester": "",
+              "text": "Review the open pull requests", "cue": "will"}]},
+        {"id": "CM-004", "text": "Read the onboarding docs",
+         "speaker": "Alice_Example", "status": "open", "merged_into": "", "ai_refs": [],
+         "occurrences": [
+             {"source": "action-items", "meeting": M1, "line": 11, "t_sec": None,
+              "owner": "Alice_Example", "requester": "",
+              "text": "Read the onboarding docs", "cue": "inferred"}]},
+        {"id": "CM-005", "text": "Get onboarded to the repos",
+         "speaker": "Alice_Example", "status": "done", "merged_into": "", "ai_refs": [],
+         "occurrences": [
+             {"source": "transcript", "meeting": M2, "line": 5, "t_sec": 150,
+              "owner": "Alice_Example", "requester": "Carol_Example", "requester_role": "boss",
+              "text": "I will get onboarded to the repos first.", "cue": "will", "negative": False},
+             {"source": "action-items", "meeting": M2, "line": 5, "t_sec": 3861,
+              "owner": "Alice_Example", "requester": "Carol_Example",
+              "text": "Get onboarded to the repos."},
+         ]},
+        {"id": "CM-006", "text": "Apply the merge test",
+         "speaker": "Alice_Example", "status": "merged", "merged_into": "CM-005", "ai_refs": [],
+         "occurrences": [
+             {"source": "action-items", "meeting": M2, "line": 6, "t_sec": 941,
+              "owner": "Alice_Example", "requester": "Carol_Example",
+              "text": "Apply the merge test", "negative": False},
+             {"source": "action-items", "meeting": M2, "line": 6, "t_sec": 1129,
+              "owner": "Alice_Example", "requester": "Carol_Example",
+              "text": "Apply the merge test", "cue": "before", "negative": True},
+         ]},
+    ],
+}
+
+# Pre-#23 corpus: occurrences were {meeting, line} only, no source/t_sec/owner.
+OLD_CM_CORPUS = {
+    "next_id": 2, "folded_meetings": [M1],
+    "items": [{"id": "CM-001", "text": "Old-style commitment", "speaker": "Alice_Example",
+               "status": "done", "merged_into": "",
+               "occurrences": [{"meeting": M1, "line": 5}]}],
+}
+
 
 def make_workspace(root: Path) -> Path:
     ws = root / "ws"
@@ -154,6 +229,7 @@ def make_workspace(root: Path) -> Path:
     (ws / M2 / "action-items.md").write_text(M2_ACTION_ITEMS)
     (ws / "_workspace.json").write_text(json.dumps(MANIFEST, indent=2))
     (ws / "_action-items.json").write_text(json.dumps(CORPUS, indent=2))
+    (ws / "_commitments.json").write_text(json.dumps(CM_CORPUS, indent=2))
     (ws / "_ACTION-ITEMS.md").write_text(CORPUS_MD)
     (ws / "_ignored").mkdir()                      # underscore folders are never meetings
     (ws / "_ignored" / "x.speakers.txt").write_text("[00:00:01] Nobody: skip me\n")
@@ -218,34 +294,29 @@ def rows(ws: Path, sql: str, *params) -> list[tuple]:
 def test_unit_parsing() -> None:
     check(graph.DATE_DIR_RE.pattern == workspace.DATE_DIR_RE.pattern,
           "graph.DATE_DIR_RE drifted from workspace.DATE_DIR_RE")
-    check(graph.parse_bracket("Bob 46:36–47:35", strict=True) == ("Bob", ["46:36", "47:35"]),
-          "legacy range bracket takes both ends")
-    check(graph.parse_bracket("Bob ~47–48 / 52:xx", strict=True) == ("Bob", [""]),
-          "legacy bracket with no parsable time yields one no-time row")
-    check(graph.parse_bracket("Bob, implicit", strict=True) == ("Bob", [""]), "name before comma")
-    check(graph.parse_bracket("implicit", strict=True) == ("", [""]), "lowercase note is not a name")
-    check(graph.parse_bracket("SPEAKER_06 13:46", strict=True) == ("SPEAKER_06", ["13:46"]),
-          "SPEAKER_NN counts as a name")
-    check(graph.parse_bracket("Bob 18:57 / 20:00 / 20:57", strict=True)[1] == ["18:57", "20:00", "20:57"],
-          "slash-separated times")
-    check(graph.parse_bracket("inferred") == ("", ["inferred"]), "[inferred]")
-    check(graph.parse_bracket("00:20:00") == ("", ["00:20:00"]), "bare time")
-    cms = graph.parse_commitments(M2_ACTION_ITEMS, M2, "")
-    check([c["owner"] for c in cms] == [""] * 8, "legacy owner is '' without a configured owner")
-    cms = graph.parse_commitments(M2_ACTION_ITEMS, M2, "Alice_Example")
-    check(len(cms) == 8, f"expected 8 legacy rows, got {len(cms)}")
-    check(all(c["owner"] == "Alice_Example" for c in cms), "legacy owner is the configured owner")
-    check([c["requester"] for c in cms][:6] == ["Carol_Example"] * 6, "legacy bracket name is the requester")
-    check(cms[6]["requester"] == "Alice_Example" and cms[6]["t_str"] == "0:41:00",
-          "legacy bare-time bullet: requester = owner")
-    check(cms[7]["requester"] == "SPEAKER_02", "legacy SPEAKER_NN requester")
-    check(cms[5]["t_str"] == "" and cms[5]["t_sec"] is None and cms[5]["line"] == 8, "no-time legacy row")
-    check(cms[0]["text"] == "Get onboarded to the repos." and cms[0]["t_sec"] == 3861, "legacy title + t_sec")
+    check(graph.fmt_t(721) == "12:01" and graph.fmt_t(3861) == "1:04:21",
+          "fmt_t renders MM:SS and H:MM:SS")
+    check(graph.fmt_t(None) == "" and graph.fmt_t(0) == "00:00" and graph.fmt_t(3600) == "1:00:00",
+          "fmt_t edge cases (no time, zero, exactly one hour)")
     check(graph.iso_utc("2026-09-03T15:00:00.000000Z") == "2026-09-03T15:00:00Z", "iso_utc normalizes")
     check(graph.iso_utc("") is None and graph.iso_utc("garbage") == "garbage", "iso_utc passthrough")
     check(graph.minutes_of(1500.0) == 25 and graph.minutes_of(None) is None, "minutes_of")
     check(graph.name_match("Alice_Example", "alice") and graph.name_match("Alice", "Alice_Example")
           and not graph.name_match("Bob_Example", "Alice"), "name_match")
+    deduped = graph.dedupe_commitments([
+        {"id": "CM-001", "owner": "A", "requester": "B", "requester_role": "", "text": "t",
+         "cue": "", "negative": False, "status": "open", "ai_refs": ["AI-001"], "merged_into": "",
+         "source": "transcript", "meeting": "m1", "line": 1, "t_sec": 30},
+        {"id": "CM-001", "owner": "A", "requester": "B", "requester_role": "", "text": "t",
+         "cue": "", "negative": False, "status": "open", "ai_refs": ["AI-001"], "merged_into": "",
+         "source": "action-items", "meeting": "m2", "line": 9, "t_sec": None},
+    ])
+    check(deduped == [{"id": "CM-001", "owner": "A", "requester": "B", "requester_role": "",
+                       "text": "t", "cue": "", "negative": False, "status": "open",
+                       "ai_refs": ["AI-001"], "merged_into": "", "occ": 2,
+                       "sources": ["action-items", "transcript"], "meetings": ["m1", "m2"],
+                       "at": [["m1", 30], ["m2", None]]}],
+          f"dedupe_commitments collapses to one entry per id: {deduped}")
 
 
 def test_exit_paths(root: Path) -> None:
@@ -260,7 +331,8 @@ def test_exit_paths(root: Path) -> None:
     p = run("build", str(empty))
     check(p.returncode == 1 and "seg" in p.stderr and "whosaid index" in p.stderr,
           f"build without seg -> exit 1 hint: {p.stderr}")
-    for view in (["items"], ["prs"], ["meetings"], ["person"], ["item", "AI-001"], ["wiki", "--stdout"]):
+    for view in (["items"], ["commitments"], ["prs"], ["meetings"], ["person"],
+                 ["item", "AI-001"], ["wiki", "--stdout"]):
         p = run(view[0], str(empty), *view[1:])
         check(p.returncode == 1 and "whosaid index" in p.stderr, f"{view} without graph tables -> exit 1")
     p = run("item", str(empty), "bogus")
@@ -281,12 +353,14 @@ def test_empty_corpus(root: Path) -> None:
     check(p.returncode == 0, f"empty build: {p.stderr}")
     check(p.stdout.strip() == "built graph: 0 person · 0 meeting · 0 action_item · 0 occurrence "
                               "· 0 commitment · 0 pr_mention", f"empty summary: {p.stdout!r}")
+    check("commitment table is empty" in p.stderr, f"missing corpus logs one line: {p.stderr}")
     p = run("wiki", str(ws), "--stdout")
     check(p.returncode == 0, f"empty wiki: {p.stderr}")
     for needle in ("# Workspace wiki (generated)", "_No meetings indexed yet._", "_No action items yet._",
                    "_No named speakers yet", "_No PR references yet._", "0 segments · 0 meetings"):
         check(needle in p.stdout, f"empty wiki lacks {needle!r}")
     check(run_json("items", str(ws), "--json") == [], "empty items")
+    check(run_json("commitments", str(ws), "--json") == [], "empty commitments (missing corpus)")
     check(run_json("person", str(ws), "--json") == [], "empty people")
     check(run_json("prs", str(ws), "--json") == [], "empty prs")
     check(run_json("meetings", str(ws), "--json") == [], "empty meetings")
@@ -296,7 +370,7 @@ def test_build(ws: Path, n_seg: int) -> None:
     p = run("build", str(ws))
     check(p.returncode == 0, f"build failed: {p.stderr}")
     check(p.stdout.strip() == "built graph: 4 person · 2 meeting · 3 action_item · 3 occurrence "
-                              "· 13 commitment · 5 pr_mention", f"summary: {p.stdout!r}")
+                              "· 10 commitment · 5 pr_mention", f"summary: {p.stdout!r}")
     check(n_seg == 11, f"fixture should index 11 turns, got {n_seg}")
 
     people = rows(ws, "SELECT name, turns, meetings, named FROM person ORDER BY turns DESC, name")
@@ -317,28 +391,32 @@ def test_build(ws: Path, n_seg: int) -> None:
     occ = rows(ws, "SELECT * FROM occurrence ORDER BY id, meeting, line")
     check(occ == [("AI-001", M1, 5), ("AI-002", M1, 5), ("AI-003", M1, 6)], f"occurrence: {occ}")
 
-    cms = rows(ws, "SELECT meeting, line, owner, requester, t_sec, t_str, text, ai_refs "
-                   "FROM commitment WHERE meeting=? ORDER BY line, t_sec", M1)
+    # the commitment table is the CM corpus flattened: one row per occurrence,
+    # item-level status/ai_refs/merged_into stamped onto every sighting
+    cms = rows(ws, "SELECT * FROM commitment ORDER BY id, meeting, t_sec IS NULL, t_sec, line")
+    ref12 = '["AI-001", "AI-002"]'
     check(cms == [
-        (M1, 5, "Alice_Example", "Bob_Example", 721, "00:12:01",
-         'Ship the schema fix (AI-001). "we need that fix" PR #42', "AI-001,AI-002"),
-        (M1, 6, "Alice_Example", "Bob_Example", 870, "00:14:30", "Write the design note for the registry", "AI-003"),
-        (M1, 6, "Alice_Example", "Bob_Example", 910, "00:15:10", "Write the design note for the registry", "AI-003"),
-        (M1, 10, "Alice_Example", "Alice_Example", 1200, "00:20:00", "Review the open pull requests", ""),
-        (M1, 11, "Alice_Example", "Alice_Example", None, "inferred", "Read the onboarding docs", ""),
-    ], f"commitment ({M1}): {cms}")
-    cms2 = rows(ws, "SELECT line, owner, requester, t_sec, t_str, text FROM commitment WHERE meeting=? "
-                    "ORDER BY line, t_sec", M2)
-    check(cms2 == [
-        (5, "", "Carol_Example", 3861, "1:04:21", "Get onboarded to the repos."),
-        (6, "", "Carol_Example", 941, "15:41", "Apply the merge test"),
-        (6, "", "Carol_Example", 1129, "18:49", "Apply the merge test"),
-        (7, "", "Carol_Example", 2796, "46:36", "Draft the pillars design"),
-        (7, "", "Carol_Example", 2855, "47:35", "Draft the pillars design"),
-        (8, "", "Carol_Example", None, "", "Bring the design doc"),
-        (12, "", "", 2460, "0:41:00", "Move standup to 7am"),
-        (13, "", "SPEAKER_02", 826, "13:46", '"I have a PR open to fix that"'),
-    ], f"commitment ({M2}, no configured owner): {cms2}")
+        ("CM-001", "action-items", M1, 5, 721, "Alice_Example", "Bob_Example", "",
+         "Ship the schema fix", "", 0, "open", ref12, ""),
+        ("CM-001", "transcript", M1, 6, 740, "Alice_Example", "Bob_Example", "peer",
+         "yes, I will ship it after lunch.", "will", 0, "open", ref12, ""),
+        ("CM-002", "action-items", M1, 6, 870, "Alice_Example", "Bob_Example", "",
+         "Write the design note for the registry", "", 0, "open", '["AI-003"]', ""),
+        ("CM-002", "action-items", M1, 6, 910, "Alice_Example", "Bob_Example", "",
+         "Write the design note for the registry", "", 0, "open", '["AI-003"]', ""),
+        ("CM-003", "action-items", M1, 10, 1200, "Alice_Example", "", "",
+         "Review the open pull requests", "will", 0, "ongoing", "[]", ""),
+        ("CM-004", "action-items", M1, 11, None, "Alice_Example", "", "",
+         "Read the onboarding docs", "inferred", 0, "open", "[]", ""),
+        ("CM-005", "transcript", M2, 5, 150, "Alice_Example", "Carol_Example", "boss",
+         "I will get onboarded to the repos first.", "will", 0, "done", "[]", ""),
+        ("CM-005", "action-items", M2, 5, 3861, "Alice_Example", "Carol_Example", "",
+         "Get onboarded to the repos.", "", 0, "done", "[]", ""),
+        ("CM-006", "action-items", M2, 6, 941, "Alice_Example", "Carol_Example", "",
+         "Apply the merge test", "", 0, "merged", "[]", "CM-005"),
+        ("CM-006", "action-items", M2, 6, 1129, "Alice_Example", "Carol_Example", "",
+         "Apply the merge test", "before", 1, "merged", "[]", "CM-005"),
+    ], f"commitment: {cms}")
 
     prs = rows(ws, "SELECT pr, source, meeting, detail FROM pr_mention ORDER BY pr, source, meeting, detail")
     check(prs == [
@@ -350,16 +428,46 @@ def test_build(ws: Path, n_seg: int) -> None:
     ], f"pr_mention: {prs}")
 
 
-def test_rebuild_with_owner(ws: Path) -> None:
-    (ws / "whosaid.toml").write_text('[workspace]\nowner = "Alice_Example"\n')
+def test_corpus_shapes(root: Path) -> None:
+    """Pre-#23 (meeting+line-only occurrences) and missing/unreadable corpora
+    must load or degrade cleanly, never fail the build."""
+    ws = make_workspace(root / "shapes")
+    make_seg(ws)
+    (ws / "_commitments.json").write_text(json.dumps(OLD_CM_CORPUS, indent=2))
+    p = run("build", str(ws))
+    check(p.returncode == 0 and "1 commitment" in p.stdout, f"old-shape corpus builds: {p.stdout}{p.stderr}")
+    cms = rows(ws, "SELECT * FROM commitment")
+    check(cms == [("CM-001", "", M1, 5, None, "", "", "", "Old-style commitment",
+                   "", 0, "done", "[]", "")],
+          f"old-shape row is occurrence defaults with the item's text/status: {cms}")
+
+    (ws / "_commitments.json").write_text("{ not json")
+    p = run("build", str(ws))
+    check(p.returncode == 0 and "0 commitment" in p.stdout and "unreadable" in p.stderr,
+          f"unreadable corpus -> empty table + warn: {p.stdout}{p.stderr}")
+
+    (ws / "_commitments.json").unlink()
+    p = run("build", str(ws))
+    check(p.returncode == 0 and "0 commitment" in p.stdout
+          and "commitment table is empty" in p.stderr,
+          f"missing corpus -> empty table + one log line: {p.stdout}{p.stderr}")
+    check(run_json("commitments", str(ws), "--json") == [], "commitments view on an empty table")
+
+
+def test_rebuild_with_owner(root: Path) -> None:
+    """The [workspace].owner config fed the old md re-parse; the unified table
+    takes owners from the corpus, so a different toml owner must not rewrite
+    them, and rebuilds stay idempotent."""
+    ws = make_workspace(root / "rebuild")
+    make_seg(ws)
+    check(run("build", str(ws)).returncode == 0, "first build")
+    (ws / "whosaid.toml").write_text('[workspace]\nowner = "Bob_Example"\n')
     p = run("build", str(ws))
     check(p.returncode == 0, f"rebuild failed: {p.stderr}")
     first = dump(ws)
-    check(len(first["commitment"]) == 13, "rebuild keeps 13 commitments (no duplicates)")
+    check(len(first["commitment"]) == 10, "rebuild keeps 10 commitment occurrences (no duplicates)")
     owners = rows(ws, "SELECT DISTINCT owner FROM commitment")
-    check(owners == [("Alice_Example",)], f"configured owner applied to legacy rows: {owners}")
-    self_row = rows(ws, "SELECT requester FROM commitment WHERE meeting=? AND line=12", M2)
-    check(self_row == [("Alice_Example",)], "legacy bare-time bullet: requester = configured owner")
+    check(owners == [("Alice_Example",)], f"owners come from the corpus, not the toml: {owners}")
     p = run("build", str(ws))
     check(p.returncode == 0 and dump(ws) == first, "third build is byte-identical (idempotent)")
 
@@ -386,6 +494,46 @@ def test_busy_wait(ws: Path) -> None:
     check(time.monotonic() - started >= 0.5, "build waited for the lock instead of failing fast")
 
 
+def test_commitments_view(ws: Path) -> None:
+    """The new subcommand: the merged table with --owner/--source/--status filters."""
+    cms = run_json("commitments", str(ws), "--json")
+    check(len(cms) == 10 and [c["id"] for c in cms] == sorted(c["id"] for c in cms),
+          "commitments lists every occurrence, id order")
+    check(cms[0] == {"id": "CM-001", "source": "action-items", "meeting": M1, "line": 5,
+                     "t_sec": 721, "owner": "Alice_Example", "requester": "Bob_Example",
+                     "requester_role": "", "text": "Ship the schema fix", "cue": "",
+                     "negative": False, "status": "open", "ai_refs": ["AI-001", "AI-002"],
+                     "merged_into": ""}, f"commitments[0] shape: {cms[0]}")
+    check(cms[1]["source"] == "transcript" and cms[1]["requester_role"] == "peer",
+          "transcript occurrence carries its role")
+    check(cms[9]["negative"] is True and cms[9]["merged_into"] == "CM-005",
+          "negative + merged_into survive the round trip")
+
+    p = run("commitments", str(ws))
+    check(p.returncode == 0 and "CM-001" in p.stdout and f"{M1}@12:01" in p.stdout
+          and "Alice_Example" in p.stdout and p.stdout.rstrip().endswith("10 commitment occurrence(s)."),
+          f"commitments human: {p.stdout}")
+
+    bob = run_json("commitments", str(ws), "--owner", "alice_example", "--json")
+    check([c["id"] for c in bob] == ["CM-001"] * 2 + ["CM-002"] * 2 + ["CM-003", "CM-004"]
+          + ["CM-005"] * 2 + ["CM-006"] * 2, "--owner is a name_match substring")
+    check(run_json("commitments", str(ws), "--owner", "nobody", "--json") == [], "--owner with no hits")
+
+    tr = run_json("commitments", str(ws), "--source", "transcript", "--json")
+    check([(c["id"], c["t_sec"]) for c in tr] == [("CM-001", 740), ("CM-005", 150)],
+          f"--source transcript: {tr}")
+    ai = run_json("commitments", str(ws), "--source", "action-items", "--json")
+    check(len(ai) == 8 and all(c["source"] == "action-items" for c in ai), "--source action-items")
+    check(len(run_json("commitments", str(ws), "--source", "action_items", "--json")) == 8,
+          "--source treats '_' and '-' as the same")
+    check(run_json("commitments", str(ws), "--source", "email", "--json") == [], "--source with no hits")
+
+    merged = run_json("commitments", str(ws), "--status", "MERGED", "--json")
+    check([c["id"] for c in merged] == ["CM-006", "CM-006"], "--status is a case-insensitive substring")
+    check(len(run_json("commitments", str(ws), "--owner", "alice", "--source", "transcript",
+                       "--status", "open", "--json")) == 1, "filters stack")
+
+
 def test_views(ws: Path) -> None:
     items = run_json("items", str(ws), "--json")
     check([it["id"] for it in items] == ["AI-001", "AI-002", "AI-003"], "items order")
@@ -408,10 +556,11 @@ def test_views(ws: Path) -> None:
 
     d = run_json("item", str(ws), "AI-003", "--json")
     check(d["status"] == "contingent" and d["occurrences"] == [{"meeting": M1, "line": 6}], "item occurrences")
-    check([(c["t_str"], c["requester"], c["line"]) for c in d["commitments"]]
-          == [("00:14:30", "Bob_Example", 6), ("00:15:10", "Bob_Example", 6)], f"item commitments: {d}")
+    check([(c["id"], c["t_sec"], c["source"]) for c in d["commitments"]]
+          == [("CM-002", 870, "action-items"), ("CM-002", 910, "action-items")],
+          f"item commitments: {d}")
     p = run("item", str(ws), "AI-001")
-    check(p.returncode == 0 and f"[{M1} @ 00:12:01] Alice_Example:" in p.stdout
+    check(p.returncode == 0 and "CM-001 [open] [" + M1 + " @ 12:01] Alice_Example:" in p.stdout
           and "asked by Bob_Example" in p.stdout and f"{M1}:5" in p.stdout, f"item human: {p.stdout}")
     p = run("item", str(ws), "AI-999")
     check(p.returncode == 1 and "AI-999" in p.stderr, "unknown id -> exit 1")
@@ -427,28 +576,31 @@ def test_views(ws: Path) -> None:
 
     bob = run_json("person", str(ws), "Bob", "--json")
     check([p["name"] for p in bob["people"]] == ["Bob_Example"], "person Bob matched")
-    check([(c["t_str"], c["line"]) for c in bob["requested"]] == [("00:12:01", 5), ("00:14:30", 6), ("00:15:10", 6)],
-          f"Bob requested: {bob['requested']}")
+    check([e["id"] for e in bob["requested"]] == ["CM-001", "CM-002"],
+          f"Bob requested, deduped per CM id: {bob['requested']}")
+    check(bob["requested"][0]["occ"] == 2 and bob["requested"][0]["sources"] == ["action-items", "transcript"],
+          "a repeated commitment keeps its occurrence count and sources")
+    check(bob["requested"][0]["at"] == [[M1, 721], [M1, 740]], "deduped entry lists meeting+time pairs")
     check([it["id"] for it in bob["requested_items"]] == ["AI-001", "AI-002", "AI-003"], "Bob requested items")
     check(bob["owned"] == [] and bob["owned_items"] == [], "Bob owns nothing")
 
     alice = run_json("person", str(ws), "alice_example", "--json")
     check(alice["requested"] == [] and alice["requested_items"] == [], "Alice made no asks of others")
-    check(len(alice["owned"]) == 13, f"Alice owns every commitment: {len(alice['owned'])}")
-    check([c["meeting"] for c in alice["owned"]][:8] == [M2] * 8 and alice["owned"][8]["meeting"] == M1,
-          "owned grouped newest meeting first (sidecar-dated hand-named folder is newer)")
-    check([c["t_str"] for c in alice["owned"]][:8]
-          == ["13:46", "15:41", "18:49", "0:41:00", "46:36", "47:35", "1:04:21", ""],
-          f"owned times ascending, no-time last: {[c['t_str'] for c in alice['owned']][:8]}")
+    check([e["id"] for e in alice["owned"]] == ["CM-005", "CM-006", "CM-001", "CM-002", "CM-003", "CM-004"],
+          f"Alice owns every CM id, newest meeting first: {[e['id'] for e in alice['owned']]}")
+    check(alice["owned"][0]["requester_role"] == "boss" and alice["owned"][0]["status"] == "done",
+          "entry fields come from the newest occurrence's row")
     check([it["id"] for it in alice["owned_items"]] == ["AI-001", "AI-002", "AI-003"], "Alice owned items")
     p = run("person", str(ws), "Alice")
-    check(p.returncode == 0 and "Owned by Alice_Example" in p.stdout and "(asked by Bob_Example)" in p.stdout
-          and "(asked by Carol_Example)" in p.stdout and "(no time)" in p.stdout and M2 in p.stdout,
-          f"person human: {p.stdout}")
+    check(p.returncode == 0 and "Owned by Alice_Example (what they signed up for): 6 commitment(s) "
+          "across 2 meeting(s)" in p.stdout and "CM-001 [open] (2x)" in p.stdout
+          and f"{M1}@12:01 · {M1}@12:20" in p.stdout and "(asked by Bob_Example)" in p.stdout
+          and "(asked by Carol_Example)" in p.stdout and "AI-001 [open]" in p.stdout
+          and f"{M2}@1:04:21" in p.stdout, f"person human: {p.stdout}")
 
     carol = run_json("person", str(ws), "Carol", "--json")
-    check(len(carol["requested"]) == 6 and carol["requested_items"] == [] and carol["owned"] == [],
-          f"Carol requested 6 legacy commitments: {carol}")
+    check([e["id"] for e in carol["requested"]] == ["CM-005", "CM-006"] and carol["owned"] == [],
+          f"Carol requested the planning commitments: {carol}")
     p = run("person", str(ws), "Nobody_Example", "--json")
     check(p.returncode == 1 and json.loads(p.stdout)["people"] == [], "no match -> exit 1, empty JSON")
 
@@ -481,13 +633,13 @@ def test_wiki(ws: Path, root: Path) -> None:
         "# Workspace wiki (generated)",
         "Do not hand-edit",
         "`whosaid index`",
-        "**Corpus:** 11 segments · 2 meetings · 4 speakers · 3 action items · 13 timestamped commitments · 5 PR refs.",
+        "**Corpus:** 11 segments · 2 meetings · 4 speakers · 3 action items · 10 commitment occurrences · 5 PR refs.",
         f"| `{M1}` | 2026-09-01T14:00:00Z | 30m | yes | 8 | yes |",
         f"| `{M2}` | 2026-09-03T15:00:00Z | 25m | no | 3 | yes |",
         "### Open (1)", "### Contingent (1)", "### Merged (1)",
         "- **AI-001** (leadership ask, owner: Alice_Example, asked by: Bob_Example, " + M1 + ") Ship the schema fix",
-        f"    cited: `{M1}@00:12:01`",
-        f"    cited: `{M1}@00:14:30`  `{M1}@00:15:10`",
+        f"    cited: `CM-001 {M1}@12:01`  `CM-001 {M1}@12:20`",
+        f"    cited: `CM-002 {M1}@14:30`  `CM-002 {M1}@15:10`",
         "- **AI-002** (-, owner: Alice_Example, asked by: Bob_Example, merged into AI-001) Ship the schema fix today",
         "| Alice_Example | 5 | 2 | - |",
         "| Bob_Example | 4 | 1 | AI-001, AI-002, AI-003 |",
@@ -516,11 +668,13 @@ def main() -> int:
         test_unit_parsing()
         test_exit_paths(root)
         test_empty_corpus(root)
+        test_corpus_shapes(root)
         ws = make_workspace(root)
         n_seg = make_seg(ws)
         test_build(ws, n_seg)
-        test_rebuild_with_owner(ws)
+        test_rebuild_with_owner(root)
         test_busy_wait(ws)
+        test_commitments_view(ws)
         test_views(ws)
         test_wiki(ws, root)
         ok = True
