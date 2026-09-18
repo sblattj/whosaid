@@ -118,7 +118,12 @@ USAGE
   whosaid version | --version | -V     Print the installed version.
   whosaid mcp                          Run the MCP server (stdio) for AI agents / Claude.
   whosaid <audio> [<audio> ...] [flags]
+  whosaid transcribe <audio> [<audio> ...] [flags]
                                         Transcribe (and by default diarize) file(s).
+                                        `transcribe` is an optional alias for the
+                                        default action (it matches the name of
+                                        the whosaid_transcribe MCP tool) and
+                                        changes nothing.
   whosaid relabel <base> SPEAKER_02=Jane [SPEAKER_03=Bob ...] [--role NAME=ROLE] [-o DIR]
   whosaid relabel <base> --auto [--absorb-threshold F] [-o DIR]
                                         Name clusters from the speaker cards and
@@ -1659,6 +1664,13 @@ case "${1:-}" in
     ;;
   help|-h|--help|"")
     cmd_help
+    ;;
+  transcribe)
+    # Explicit alias for the default action (#18): `whosaid transcribe FILE ...`
+    # behaves exactly like `whosaid FILE ...` and matches the whosaid_transcribe
+    # MCP tool name. The token must be stripped here or cmd_transcribe collects
+    # it as a second input file.
+    cmd_transcribe "${@:2}"
     ;;
   *)
     cmd_transcribe "$@"

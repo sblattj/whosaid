@@ -46,6 +46,12 @@ All notable changes to whosaid are documented here. This project adheres to
   `__version__` to the SDK 2.x server so clients see `1.2.0` instead of an empty string; SDK 1.x,
   which has no such parameter, keeps working unchanged.
 
+- **`whosaid transcribe FILE` was parsed as two input files (GitHub issue #18).** `transcribe` is
+  now an explicit alias for the default action: `whosaid transcribe meeting.m4a --speakers 7`
+  behaves exactly like `whosaid meeting.m4a --speakers 7`. This also fixes the misleading errors
+  `--name only works with a single input` and `file not found: transcribe`. Help and README
+  document the alias.
+
 ## [1.2.0] - 2026-09-17
 
 ### Added
