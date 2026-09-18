@@ -153,6 +153,27 @@ def main() -> None:
         f"list_speakers must keep no params: {ls_schema}",
     )
 
+    # --- relabel transcript-only mode (GitHub issue #19) ---
+    rprops = dumps["whosaid_relabel"]["inputSchema"]["properties"]
+    check(
+        rprops["no_save"].get("type") == "boolean" and rprops["no_save"].get("default") is False,
+        f"relabel no_save must be boolean defaulting to false: {rprops.get('no_save')}",
+    )
+    check(
+        rprops["force"].get("type") == "boolean" and rprops["force"].get("default") is False,
+        f"relabel force must be boolean defaulting to false: {rprops.get('force')}",
+    )
+    check(
+        "note" in rprops and "note" not in rreq,
+        f"relabel note must be an optional string param: {rprops.get('note')}",
+    )
+    check(
+        "no_save=true" in d_relabel and "transcript-only" in d_relabel,
+        "relabel desc must describe the transcript-only (no_save) mode",
+    )
+    check("provenance" in d_relabel, "relabel desc must describe note as provenance")
+    check("force=true" in d_relabel, "relabel desc must describe what force overrides")
+
     # --- readOnlyHint annotations ---
     doc_ann = dumps["whosaid_doctor"].get("annotations") or {}
     ls_ann = dumps["whosaid_list_speakers"].get("annotations") or {}

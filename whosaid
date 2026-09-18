@@ -130,6 +130,13 @@ USAGE
                                         remember them for future transcripts; --auto
                                         re-applies registry + absorb naming over the
                                         cached sidecar with no re-transcription.
+  whosaid relabel <base> SPEAKER_NN=Name --no-save [--note TEXT]
+                                        Transcript-only label: rename in the sidecar
+                                        and outputs, never touch the registry; the
+                                        label survives relabel --auto and is marked on
+                                        the speaker cards. Replacing a registry print
+                                        whose similarity to the cluster is below the
+                                        match threshold requires --force.
   whosaid samples <base> [-o DIR] [--audio FILE] [--per-speaker N]
                   [--seconds S] [--json]
                                         Export one short representative WAV per
@@ -1146,7 +1153,9 @@ resolve_sidecar() {
 # Applies names to the cached diarization sidecar (no re-transcription), persists
 # each named voiceprint to the local registry (~/.config/whosaid/speakers.json by
 # default) so the person is auto-named in future transcripts, and rewrites the
-# speaker-labeled transcript + cards.
+# speaker-labeled transcript + cards. Transcript-only labels via --no-save rename
+# the sidecar + outputs without touching the registry, survive `--auto`, and are
+# marked on the speaker cards.
 cmd_relabel() {
   local target="" outdir="" auto=0 specs=() extra=() roles=()
   while [[ $# -gt 0 ]]; do
@@ -1157,6 +1166,9 @@ cmd_relabel() {
       --ref-threshold|--match-threshold) extra+=(--ref-threshold "$2"); shift 2 ;;
       --role)       [[ "$2" == *=* ]] || { log "relabel: --role wants NAME=ROLE (e.g. --role Karen=boss)"; exit 1; }
                     roles+=(--save-role "$2"); shift 2 ;;
+      --no-save)   extra+=(--no-save); shift ;;
+      --force)     extra+=(--force); shift ;;
+      --note)      extra+=(--note "$2"); shift 2 ;;
       *=*)         specs+=(--save-speaker "$1"); shift ;;
       *)           if [[ -z "$target" ]]; then target="$1"; else log "relabel: unexpected arg '$1'"; exit 1; fi; shift ;;
     esac

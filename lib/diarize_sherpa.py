@@ -748,7 +748,7 @@ def build_turns(segs: list, whisper_json: str | None) -> list:
 def render_outputs(outdir: Path, base: str, segs: list, speakers: list, names: dict,
                    turns: list, snippets_n: int, detect_mode: str,
                    emb_name: str = EMB_NAME, count_warning: str | None = None,
-                   roles: dict | None = None) -> None:
+                   roles: dict | None = None, local_names: set | None = None) -> None:
     """Write RTTM, the speaker-labeled transcript, and the human-facing speaker cards."""
     talk = {sp: 0.0 for sp in speakers}
     nturns = {sp: 0 for sp in speakers}
@@ -815,6 +815,8 @@ def render_outputs(outdir: Path, base: str, segs: list, speakers: list, names: d
         role_tag = f"  [{roles[fn]}]" if roles and fn in roles else ""
         if fn in clusters:            # unnamed: final name IS the cluster id
             label = f"{fn}  (UNIDENTIFIED)"
+        elif fn in (local_names or set()):
+            label = f"{fn}{role_tag}  (transcript-only label; registry untouched)"
         elif len(clusters) > 1:
             label = f"{fn}{role_tag}  ({', '.join(clusters)})"
         else:
@@ -975,6 +977,34 @@ def name_clusters(cluster_emb: dict, ref_threshold: float, absorb_threshold: flo
     return names
 
 
+def save_print_guarded(reg: dict, cluster: str, person: str, emb_vec, emb_model: str,
+                       base: str, ref_threshold: float, force: bool) -> None:
+    """Replace person's registry print with this cluster's embedding (#19).
+
+    Refuses the replacement when the cluster barely matches the print it is
+    about to overwrite (cosine < ref_threshold) — that is how a clean print
+    gets swapped for a mixed cluster. --force overrides; --no-save avoids
+    this path entirely.
+    """
+    cur = next((s for s in reg.get("speakers", [])
+                if s.get("name") == person and s.get("model") == emb_model
+                and s.get("embedding")), None)
+    if not force and cur is not None:
+        def unit(v):
+            v = np.asarray(v, dtype=np.float32)
+            return v / (np.linalg.norm(v) + 1e-9)
+        sim = float(np.dot(unit(emb_vec), unit(cur["embedding"])))
+        if sim < ref_threshold:
+            sys.exit(f"diarize: FATAL registry: {cluster} matches '{person}' current print "
+                     f"at {sim:.2f}; replacing it. Pass --force or use --no-save.")
+    reg["speakers"] = [s for s in reg.get("speakers", [])
+                       if not (s.get("name") == person and s.get("model") == emb_model)]
+    # _registry_entry preserves unknown keys (e.g. "role") from the entry the
+    # guard inspected, so a guarded re-save never drops a role tag.
+    reg["speakers"].append(_registry_entry(person, emb_model, emb_vec.tolist(), base, old=cur))
+    log(f"registry: saved {cluster} as '{person}' -> {SPEAKER_DB}")
+
+
 def do_relabel(args) -> None:
     """Apply new cluster->name assignments from a cached sidecar, persist voiceprints
     to the registry, and re-render the transcript + cards. No re-diarization."""
@@ -982,6 +1012,7 @@ def do_relabel(args) -> None:
     data = json.loads(sidecar.read_text())
     base = data["base"]
     outdir = Path(args.outdir) if args.outdir else sidecar.parent
+    outdir.mkdir(parents=True, exist_ok=True)
     segs = data["segments"]
     speakers = sorted({s["speaker"] for s in segs})
     names = dict(data.get("names", {sp: sp for sp in speakers}))
@@ -990,6 +1021,8 @@ def do_relabel(args) -> None:
 
     reg = load_registry()
     explicit_roles: dict[str, str] = {}  # --save-role targets (sidecar even w/o entry)
+    local_labels = dict(data.get("local_labels", {}))
+    wrote_registry = False
     for spec in args.save_speaker:
         if "=" not in spec:
             sys.exit(f"diarize: FATAL bad relabel spec (want CLUSTER=NAME): {spec}")
@@ -997,18 +1030,18 @@ def do_relabel(args) -> None:
         if cluster not in speakers:
             sys.exit(f"diarize: FATAL relabel: unknown cluster '{cluster}' (have: {', '.join(speakers)})")
         names[cluster] = person
-        if cluster in cluster_emb:
-            # Match the entry being replaced so unknown keys (e.g. "role") survive.
-            old = next((s for s in reg.get("speakers", [])
-                        if s.get("name") == person and s.get("model") == emb_model), None)
-            reg["speakers"] = [s for s in reg.get("speakers", [])
-                               if not (s.get("name") == person and s.get("model") == emb_model)]
-            reg["speakers"].append(_registry_entry(
-                person, emb_model, cluster_emb[cluster].tolist(), base, old=old))
-            log(f"registry: saved {cluster} as '{person}' -> {SPEAKER_DB}")
+        if getattr(args, "no_save", False):
+            local_labels[cluster] = {"name": person, "note": getattr(args, "note", None)}
+            log(f"relabel: labeled {cluster} as '{person}' (transcript-only; registry untouched)")
+        elif cluster in cluster_emb:
+            save_print_guarded(reg, cluster, person, cluster_emb[cluster], emb_model, base,
+                               args.ref_threshold, getattr(args, "force", False))
+            local_labels.pop(cluster, None)
+            wrote_registry = True
         else:
             log(f"WARN relabel: no voiceprint cached for {cluster}; renamed in transcript but not persisted")
-    save_registry(reg)
+    if wrote_registry:
+        save_registry(reg)
 
     # ---- --save-role NAME=ROLE: tag speakers in the registry (and the sidecar
     # below) so downstream agents can rank action items (boss > self > others).
@@ -1074,11 +1107,13 @@ def do_relabel(args) -> None:
         data["roles"] = roles
     else:
         data.pop("roles", None)  # never leave a stale roles map behind
+    data["local_labels"] = local_labels
     sidecar.write_text(json.dumps(data, indent=2))
     turns = build_turns(segs, data.get("whisper_json"))
     render_outputs(outdir, base, segs, speakers, names, turns, args.snippets,
                    detect_mode, emb_name=emb_model,
-                   count_warning=data.get("count_warning"), roles=roles or None)
+                   count_warning=data.get("count_warning"), roles=roles or None,
+                   local_names={v["name"] for v in local_labels.values()})
     print(json.dumps({"num_speakers": len(speakers), "clusters": names, "relabeled": True}))
 
 
@@ -1134,6 +1169,14 @@ def main() -> None:
                          f"{', '.join(VALID_ROLES)} — free-form lowercase tags allowed; "
                          f"an empty ROLE removes the tag. The speaker must already be "
                          f"in the registry (or be saved via --save-speaker in the same run).")
+    ap.add_argument("--no-save", action="store_true",
+                    help="with --save-speaker/--relabel: label the cluster in the sidecar and "
+                         "outputs only; never write the speaker registry")
+    ap.add_argument("--force", action="store_true",
+                    help="with --save-speaker/--relabel: replace a registry print even when "
+                         "the new cluster's similarity to it is below the match threshold")
+    ap.add_argument("--note", default=None, metavar="TEXT",
+                    help="with --no-save: short provenance note stored with each local label")
     ap.add_argument("--no-registry", action="store_true",
                     help="do not auto-name clusters from the local speaker registry")
     ap.add_argument("--snippets", type=int, default=3,
@@ -1379,8 +1422,10 @@ def main() -> None:
                   registry_entries, ref_voices, names, report=registry_matches)
 
     # ---- persist identified speakers to the local registry (--save-speaker) ----
+    local_labels: dict = {}
     if args.save_speaker:
         reg = load_registry()
+        wrote_registry = False
         for spec in args.save_speaker:
             if "=" not in spec:
                 sys.exit(f"diarize: FATAL bad --save-speaker (want CLUSTER=NAME): {spec}")
@@ -1389,16 +1434,18 @@ def main() -> None:
             if cluster not in cluster_emb:
                 sys.exit(f"diarize: FATAL --save-speaker: no voiceprint for cluster '{cluster}' "
                          f"(have: {', '.join(sorted(cluster_emb))})")
-            emb = cluster_emb[cluster].tolist()
-            # Match the entry being replaced so unknown keys (e.g. "role") survive.
-            old = next((s for s in reg.get("speakers", [])
-                        if s.get("name") == person and s.get("model") == EMB_NAME), None)
-            reg["speakers"] = [s for s in reg.get("speakers", [])
-                               if not (s.get("name") == person and s.get("model") == EMB_NAME)]
-            reg["speakers"].append(_registry_entry(person, EMB_NAME, emb, base, old=old))
+            if getattr(args, "no_save", False):
+                names[cluster] = person
+                local_labels[cluster] = {"name": person, "note": getattr(args, "note", None)}
+                log(f"relabel: labeled {cluster} as '{person}' (transcript-only; registry untouched)")
+                continue
+            save_print_guarded(reg, cluster, person, cluster_emb[cluster], EMB_NAME, base,
+                               args.ref_threshold, getattr(args, "force", False))
             names[cluster] = person
-            log(f"registry: saved {cluster} as '{person}' -> {SPEAKER_DB}")
-        save_registry(reg)
+            local_labels.pop(cluster, None)
+            wrote_registry = True
+        if wrote_registry:
+            save_registry(reg)
 
     # ---- per-speaker roles (registry "role" tags) for rendering + the sidecar ----
     roles: dict[str, str] = {}
@@ -1414,7 +1461,8 @@ def main() -> None:
     # ---- render RTTM + speaker-labeled transcript + snippet cards ----
     turns = build_turns(segs, args.whisper_json)
     render_outputs(outdir, base, segs, speakers, names, turns, args.snippets, detect_mode,
-                   count_warning=count_warning, roles=roles or None)
+                   count_warning=count_warning, roles=roles or None,
+                   local_names={v["name"] for v in local_labels.values()})
 
     # ---- sidecar: segments + voiceprints so `whosaid relabel` is instant later ----
     sidecar = outdir / f"{base}.diarization.json"
@@ -1423,6 +1471,7 @@ def main() -> None:
         "emb_model": EMB_NAME,
         "num_speakers": len(speakers),
         "names": names,
+        "local_labels": local_labels,
         "registry_matches": registry_matches,
         "source": source_metadata(args.audio),
         "detect_mode": detect_mode,

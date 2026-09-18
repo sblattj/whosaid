@@ -220,8 +220,12 @@ _DESC_RELABEL = (
     "assignments map) to instead re-apply registry matching + the absorb pass over the cached "
     "sidecar, which folds phantom cluster splits into their real speaker. Optionally pass "
     "`roles` ({Name: role} — self/boss/peer/report/external) to role-tag speakers in the "
-    "registry, cards, and transcripts. Keywords: rename speaker, "
-    "label speaker, assign name, identify voice, who is SPEAKER_00, correct labels."
+    "registry, cards, and transcripts. Pass no_save=true for a transcript-only label: sidecar "
+    "+ outputs are renamed but the registry is untouched (composes with auto=true); note adds "
+    "a provenance string stored with each local label; force=true overrides the guard that "
+    "refuses replacing a registry print whose similarity to the cluster is below "
+    "match_threshold. Keywords: rename speaker, label speaker, assign name, identify voice, "
+    "who is SPEAKER_00, correct labels."
 )
 
 _DESC_LIST_SPEAKERS = (
@@ -478,6 +482,9 @@ def whosaid_relabel(
     auto: bool = False,
     match_threshold: Optional[float] = None,
     roles: Optional[dict[str, str]] = None,
+    no_save: bool = False,
+    force: bool = False,
+    note: Optional[str] = None,
 ) -> dict:
     """Name SPEAKER_NN clusters and persist them, by shelling `whosaid relabel`.
 
@@ -489,6 +496,12 @@ def whosaid_relabel(
     report, external; free-form allowed) and is passed through as repeatable
     `--role NAME=ROLE` flags; roles are saved to the registry and rendered in
     speaker cards and transcripts.
+
+    With no_save=True the labels are transcript-only: the sidecar and outputs
+    are renamed but the registry is untouched (composes with auto=True). note
+    is a provenance string stored with each local label. force=True overrides
+    the guard that refuses replacing a registry print when the cluster's
+    similarity to it is below the match threshold.
     """
     if not isinstance(assignments, dict) or (not assignments and not auto):
         return {
@@ -542,6 +555,12 @@ def whosaid_relabel(
         args += ["--match-threshold", str(match_threshold)]
     for name, role in role_specs:
         args += ["--role", f"{name}={role}"]
+    if no_save:
+        args.append("--no-save")
+    if force:
+        args.append("--force")
+    if note:
+        args += ["--note", note]
     if outdir:
         args += ["-o", outdir]
 
@@ -584,12 +603,14 @@ def whosaid_relabel(
             (f"Re-applied registry + absorb naming from the sidecar"
              + (f" plus {len(assignments)} explicit assignment(s)" if assignments else "")
              + (f", {len(role_specs)} role(s) applied" if role_specs else "")
-             + "." )
+             + "." + (" Transcript-only: registry untouched." if no_save else ""))
             if auto else
             (f"Renamed {len(assignments)} cluster(s)"
              + (f", tagged {len(role_specs)} role(s)" if role_specs else "")
-             + "; saved to the local speaker registry "
-             f"so they auto-name in future transcripts.")
+             + (" transcript-only — registry untouched"
+                if no_save else
+                "; saved to the local speaker registry so they auto-name in future transcripts")
+             + ".")
         ),
     }
 

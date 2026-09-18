@@ -9,7 +9,9 @@ construction, validation, and error-dict path is asserted in well under a
 second. The runner itself is exercised separately against tiny fake
 `search.py`/`graph.py` scripts in a temp dir (exit 0/1/2, bad JSON, timeout,
 missing script). Resources are read through the module functions with
-WHOSAID_WORKSPACE pointed at a temp workspace.
+WHOSAID_WORKSPACE pointed at a temp workspace. whosaid_relabel's flag
+construction (GitHub issue #19) is covered the same way: `_run_cli` is
+monkeypatched to record argv, so no real relabel ever runs.
 
 If the `mcp` SDK is not importable, a minimal stub of the names mcp_server uses
 (MCPServer.tool/.resource decorators and ToolAnnotations) is installed first, so
@@ -22,6 +24,7 @@ Run:
 
 import json
 import os
+import subprocess
 import sys
 import tempfile
 import types
@@ -454,6 +457,53 @@ def test_runner(tmp: Path) -> None:
 # ---------------------------------------------------------------------------
 # Resources
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# whosaid_relabel flags (GitHub issue #19): offline via a stubbed _run_cli
+# ---------------------------------------------------------------------------
+def test_relabel_flags() -> None:
+    calls: list[list] = []
+
+    def fake_cli(args, timeout=None):
+        calls.append([str(a) for a in args])
+        return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+    saved = mcp_server._run_cli
+    mcp_server._run_cli = fake_cli
+    try:
+        out = mcp_server.whosaid_relabel("rec", {"SPEAKER_00": "Jane"})
+        check(out["ok"] is True, f"plain relabel must succeed offline: {out}")
+        check(calls[-1] == ["relabel", "rec", "SPEAKER_00=Jane"],
+              f"plain relabel must not gain the new flags: {calls[-1]}")
+
+        out = mcp_server.whosaid_relabel(
+            "rec", {"SPEAKER_01": "Bob"},
+            no_save=True, force=True, note="from standup 2026-09-18",
+            match_threshold=0.4, outdir="/tmp/whosaid-test-out",
+        )
+        check(out["ok"] is True, f"flagged relabel must succeed offline: {out}")
+        check(calls[-1] == [
+            "relabel", "rec", "SPEAKER_01=Bob",
+            "--match-threshold", "0.4", "--no-save", "--force",
+            "--note", "from standup 2026-09-18", "-o", "/tmp/whosaid-test-out",
+        ], f"new flags must mirror the CLI surface in order: {calls[-1]}")
+        check("transcript-only" in out["summary"].lower(),
+              f"summary must admit no_save instead of claiming a registry save: {out['summary']}")
+        check(out["registry_path"], f"registry_path still reported: {out}")
+
+        before = len(calls)
+        out = mcp_server.whosaid_relabel("rec", {"BAD": "Jane"})
+        check(out["ok"] is False and len(calls) == before,
+              f"validation must reject bad keys before shelling: {out}")
+
+        mcp_server._run_cli = lambda args, timeout=None: subprocess.CompletedProcess(
+            args, 1, stdout="", stderr="cluster similarity to the registry print is below the match threshold")
+        out = mcp_server.whosaid_relabel("rec", {"SPEAKER_00": "Jane"}, force=True)
+        check(out["ok"] is False and "whosaid_doctor" in out["fix"],
+              f"CLI failure still surfaces as an error dict: {out}")
+    finally:
+        mcp_server._run_cli = saved
+
+
 def test_resources(tmp: Path) -> None:
     ws = make_workspace(tmp / "resources")
     outside = tmp / "resources" / "outside"
@@ -572,6 +622,7 @@ def main() -> None:
             mcp_server._run_ws = real_runner
             clear_env()
             test_runner(tmp)
+            test_relabel_flags()
             test_resources(tmp)
             test_registration()
         finally:

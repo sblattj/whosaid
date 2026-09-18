@@ -93,7 +93,8 @@ command without copying or duplicating the implementation.
 | `whosaid enroll <Name> --from FILE [--ss T] [--t D\|--to T] [--force]` | Extracts a clip from an existing recording instead of the mic (extract → verify → save, no interaction). `--ss`/`--t`/`--to` accept seconds or `M:SS`/`H:MM:SS`; same ≥15s/non-silent bar as mic enrollment. |
 | `whosaid record [--label L]` | Foreground mic capture to `recordings/<timestamp>[-label].m4a`, then transcribes automatically. |
 | `whosaid <audio>… [flags]` | The default command: transcribe + diarize + label one or more audio files. `whosaid transcribe <audio>…` is the same command written explicitly (matching the `whosaid_transcribe` MCP tool name). |
-| `whosaid relabel <base> SPEAKER_02=Jane …` | Put real names on clusters after reading the speaker cards. Rewrites the transcript + cards and saves each named voiceprint to the local registry for future transcripts. No re-transcription. |
+| `whosaid relabel <base> SPEAKER_02=Jane …` | Put real names on clusters after reading the speaker cards. Rewrites the transcript + cards and saves each named voiceprint to the local registry for future transcripts — refusing (unless `--force`) to overwrite an existing registry entry the new cluster doesn't match (similarity below the match threshold, default 0.50). No re-transcription. |
+| `whosaid relabel <base> SPEAKER_04=Alice --no-save [--note TEXT]` | Transcript-only label: renames the cluster in the transcript + cards and never writes to the registry. For a speaker the conversation makes obvious but whose cluster is a poor voiceprint — a long mixed cluster saved as that person would degrade their enrolled print. The label is kept in the sidecar (`local_labels`), survives `relabel --auto` and `whosaid samples`, and each card is marked `Alice_Example  (transcript-only label; registry untouched)`. See [Speaker identity: enrollment clips vs. the registry](#speaker-identity-enrollment-clips-vs-the-registry). |
 | `whosaid relabel <base> --auto` | Re-apply naming to an existing transcript with no assignments: re-runs registry matching + the absorb pass over the cached sidecar and rewrites the transcript + cards. Picks up voices enrolled after the transcript was made, and folds phantom cluster splits of one person into a single speaker. No re-transcription, no re-diarization. In a meeting workspace the base is `transcript`. See [Speaker identity: enrollment clips vs. the registry](#speaker-identity-enrollment-clips-vs-the-registry). |
 | `whosaid samples <base> [-o DIR] [--audio FILE] [--per-speaker N] [--seconds S] [--json]` | Export one short representative WAV per speaker cluster — the longest diarized segment, clamped to `--seconds` (default 8) — so you can listen and confirm an identity before trusting an auto-label or enrolling. Cuts from the sidecar's own `source.path`, or an explicit `--audio FILE` for a sidecar written before that metadata existed. |
 | `whosaid ingest <audio>… --into DIR [--action-items] [--engine E] [--index]` | Transcribe a batch into dated meeting folders (idempotent by content hash). `--engine` picks the action-item summarizer, `--index` runs roll-up + index afterwards. See [Meeting workspaces](#meeting-workspaces). |
@@ -650,6 +651,20 @@ voiceprint count and path; the MCP `whosaid_list_speakers` tool lists both at on
 `<base>.diarization.json`'s `registry_matches` records which pass named (or nearly named) every
 cluster, so you can tell exactly which mechanism fired — and `whosaid samples <base>` lets you
 listen to a clip per cluster to confirm a label before trusting either one.
+
+**Transcript-only labels (`relabel --no-save`).** Naming a cluster doesn't have to mean rewriting the
+registry. `whosaid relabel <base> SPEAKER_04=Alice_Example --no-save [--note TEXT]` renames the
+cluster in the transcript and cards only and never writes to the registry — what you want when the
+conversation makes the speaker obvious but the cluster doesn't represent one clean voice. That is
+GitHub issue #19's case: in a 7-person meeting, `SPEAKER_04` was identifiable as Alice from what she
+said, but her 176-turn cluster was a mixture of voices, and saving it would have replaced her
+enrolled print with a degraded one. The label is stored in the sidecar under `local_labels` (with the
+optional `--note` alongside it), so it survives `relabel --auto` and `whosaid samples`, and each
+speaker card reads `Alice_Example  (transcript-only label; registry untouched)` so the label's
+provenance is never in doubt. Related guard, on the other side of the same decision: the
+registry-writing paths (`relabel` with an assignment, `transcribe --save-speaker`) now refuse to
+replace an existing print whose similarity to the new cluster is below the match threshold (default
+0.50) — pass `--force` to overwrite deliberately, or `--no-save` to label this transcript only.
 
 ## How it works
 
