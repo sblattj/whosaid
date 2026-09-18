@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Pinning test for the whosaid MCP server (frozen spec v1.1.0).
+Pinning test for the whosaid MCP server (frozen spec v1.2.0).
 
 Enumerates the tools actually registered on the `mcp` server object and asserts
 the load-bearing tool names, description substrings, description lengths, param
@@ -8,6 +8,11 @@ enums, required-param sets, and readOnlyHint annotations. If any of these drift
 from the frozen spec, this test fails. The meeting-workspace tools and
 whosaid://workspace/... resources (GitHub issue #14) are pinned the same way;
 their behavior is covered offline by test/mcp_workspace_tools_test.py.
+
+v1.2.0 additions pinned here: whosaid_relabel's optional `roles` param, the
+"role(s)" description substrings on transcribe/relabel/list_speakers, and the
+roles + dev-commitments coverage in SERVER_INSTRUCTIONS. The tool-name SET
+stays the six v1.1.0 names.
 
 Run:
     uv run --with "mcp[cli]" python test/mcp_descriptions_test.py
@@ -88,6 +93,7 @@ def main() -> None:
     d_relabel = by_name["whosaid_relabel"].description or ""
     d_doctor = by_name["whosaid_doctor"].description or ""
     d_enroll = by_name["whosaid_enroll_from_file"].description or ""
+    d_list_speakers = by_name["whosaid_list_speakers"].description or ""
 
     # --- transcribe description substrings ---
     check("Apple-Silicon" in d_transcribe, "transcribe desc missing 'Apple-Silicon'")
@@ -97,6 +103,16 @@ def main() -> None:
     # --- relabel description substrings ---
     check("REMEMBER" in d_relabel, "relabel desc missing 'REMEMBER'")
     check("EVERY future transcript" in d_relabel, "relabel desc missing 'EVERY future transcript'")
+
+    # --- v1.2.0 roles coverage in the descriptions ---
+    check("role" in d_transcribe.lower(), "transcribe desc missing roles coverage ('role')")
+    check("`roles`" in d_relabel, "relabel desc missing the `roles` param mention")
+    check("role" in d_list_speakers.lower(), "list_speakers desc missing roles coverage ('role')")
+    check(
+        "role" in mcp_server.SERVER_INSTRUCTIONS.lower()
+        and "commitment" in mcp_server.SERVER_INSTRUCTIONS.lower(),
+        "SERVER_INSTRUCTIONS must cover both roles and dev-commitments",
+    )
 
     # --- doctor description substring ---
     check("Read-only readiness" in d_doctor, "doctor desc missing 'Read-only readiness'")
@@ -116,11 +132,25 @@ def main() -> None:
         set(tprops["accuracy"]["enum"]) == {"fast", "accurate"},
         f"transcribe accuracy enum mismatch: {tprops['accuracy'].get('enum')}",
     )
-    check("audio" in treq, f"transcribe 'audio' must be required, required={treq}")
+    check(
+        treq == {"audio"},
+        f"transcribe required set must stay exactly {{'audio'}}, got {treq}",
+    )
 
-    # --- relabel required set ---
+    # --- relabel input schema: v1.2.0 adds an OPTIONAL `roles` param; the
+    # --- required set must not change ---
+    rprops = dumps["whosaid_relabel"]["inputSchema"]["properties"]
     rreq = set(dumps["whosaid_relabel"]["inputSchema"].get("required", []))
     check(rreq == {"base", "assignments"}, f"relabel required mismatch: {rreq}")
+    check("roles" in rprops, f"relabel must expose an optional 'roles' param: {sorted(rprops)}")
+    check("roles" not in rreq, f"'roles' must stay optional, required={rreq}")
+
+    # --- list_speakers stays parameter-free ---
+    ls_schema = dumps["whosaid_list_speakers"]["inputSchema"]
+    check(
+        not ls_schema.get("properties") and not ls_schema.get("required"),
+        f"list_speakers must keep no params: {ls_schema}",
+    )
 
     # --- readOnlyHint annotations ---
     doc_ann = dumps["whosaid_doctor"].get("annotations") or {}

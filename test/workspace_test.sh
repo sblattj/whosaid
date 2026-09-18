@@ -970,6 +970,36 @@ assert_grep '\*\*AI-001\*\* \[open\] \(manager ask\) ' "$WS9/_ACTION-ITEMS.md" \
   "hand-edited type wins over the section-derived one"
 
 # ---------------------------------------------------------------------------
+# 18. Regression guard (dev-commitments): a roll-up over a workspace with NO
+#     commitments must not emit a Commitments section or commitments corpus.
+#     (test/commitments_test.sh covers the with-commitments path.)
+# ---------------------------------------------------------------------------
+echo "-- rollup without commitments --"
+
+WS10="$TMP/ws-no-commitments"
+make_meeting "$WS10" "2026-09-16-0703" "2026-09-16T14:03:17Z"
+cat > "$WS10/2026-09-16-0703/action-items.md" <<'EOF'
+# Action items — 2026-09-16-0703
+
+- **Alice:** send the draft out to the team today
+EOF
+
+run_ws rollup "$WS10" --action-items
+assert_eq "$RC" 0 "rollup (no commitments) exit code"
+if grep -q '^## Commitments' "$WS10/_INDEX.md"; then
+  fail "_INDEX.md must not carry a Commitments section when no commitments exist"
+fi
+PASS=$((PASS + 1))
+if [ -e "$WS10/_commitments.json" ]; then
+  fail "_commitments.json must not be created when no commitments exist"
+fi
+PASS=$((PASS + 1))
+if [ -e "$WS10/_COMMITMENTS.md" ]; then
+  fail "_COMMITMENTS.md must not be created when no commitments exist"
+fi
+PASS=$((PASS + 1))
+
+# ---------------------------------------------------------------------------
 echo ""
 echo "== PASS =="
 echo "$PASS check(s) passed, 0 failed"

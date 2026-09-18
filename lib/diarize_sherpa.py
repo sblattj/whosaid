@@ -81,8 +81,37 @@ def emb_friendly(name: str) -> str:
     return known.get(name, name)
 
 
+# Conventional per-speaker role tags for downstream consumers (e.g. ranking
+# action items: boss > self > others). Free-form lowercase tags are allowed —
+# this tuple documents the conventional set, it is not a whitelist.
+VALID_ROLES = ("self", "boss", "peer", "report", "external")
+
+
+def normalize_role(role: str) -> str:
+    """Normalize a role tag for storage: lowercase + strip; "" means no role."""
+    return role.strip().lower()
+
+
+def _registry_entry(name: str, model: str, embedding: list, added: str,
+                    old: dict | None = None, role: str | None = None) -> dict:
+    """Build a registry speaker entry, preserving unknown keys (e.g. "role")
+    from `old` when overwriting the same (name, model) speaker, then applying
+    `role` if given (an empty string removes the "role" key; None leaves it)."""
+    entry = {"name": name, "model": model, "embedding": embedding, "added": added}
+    if old:
+        entry.update({k: v for k, v in old.items() if k not in entry})
+    if role is not None:
+        if role:
+            entry["role"] = role
+        else:
+            entry.pop("role", None)
+    return entry
+
+
 def load_registry() -> dict:
-    """Return {"speakers": [{"name","model","embedding":[...],"added"}...]}."""
+    """Return {"speakers": [{"name","model","embedding":[...],"added",
+    optional "role": str}...]}. The schema is tolerant: unknown keys are kept,
+    and a speaker with no "role" simply has none (no migration needed)."""
     try:
         data = json.loads(SPEAKER_DB.read_text())
         if isinstance(data, dict) and isinstance(data.get("speakers"), list):
@@ -718,7 +747,8 @@ def build_turns(segs: list, whisper_json: str | None) -> list:
 
 def render_outputs(outdir: Path, base: str, segs: list, speakers: list, names: dict,
                    turns: list, snippets_n: int, detect_mode: str,
-                   emb_name: str = EMB_NAME, count_warning: str | None = None) -> None:
+                   emb_name: str = EMB_NAME, count_warning: str | None = None,
+                   roles: dict | None = None) -> None:
     """Write RTTM, the speaker-labeled transcript, and the human-facing speaker cards."""
     talk = {sp: 0.0 for sp in speakers}
     nturns = {sp: 0 for sp in speakers}
@@ -739,7 +769,11 @@ def render_outputs(outdir: Path, base: str, segs: list, speakers: list, names: d
             f.write(f"# Speaker-labeled transcript: {base}\n")
             f.write(f"# Diarization: sherpa-onnx (pyannote segmentation-3.0 + "
                     f"{emb_friendly(emb_name)}), local.\n")
-            f.write(f"# Speakers ({len(speakers)}): {', '.join(sorted(set(names.values())))}\n\n")
+            f.write(f"# Speakers ({len(speakers)}): {', '.join(sorted(set(names.values())))}\n")
+            if roles:  # per-speaker role tags (registry "role"); one line each
+                for nm in sorted(roles):
+                    f.write(f"# Role: {nm} = {roles[nm]}\n")
+            f.write("\n")
             for sp, start, texts in turns:
                 f.write(f"[{hms(start)}] {names[sp]}: {' '.join(texts)}\n\n")
         log(f"wrote {out_path} ({len(turns)} speaker turns)")
@@ -778,12 +812,13 @@ def render_outputs(outdir: Path, base: str, segs: list, speakers: list, names: d
         clusters = members[fn]
         g_turns = sum(nturns[sp] for sp in clusters)
         g_talk = sum(talk[sp] for sp in clusters)
+        role_tag = f"  [{roles[fn]}]" if roles and fn in roles else ""
         if fn in clusters:            # unnamed: final name IS the cluster id
             label = f"{fn}  (UNIDENTIFIED)"
         elif len(clusters) > 1:
-            label = f"{fn}  ({', '.join(clusters)})"
+            label = f"{fn}{role_tag}  ({', '.join(clusters)})"
         else:
-            label = fn
+            label = f"{fn}{role_tag}"
         lines.append("=" * 60)
         lines.append(f"{label}   —   {g_turns} turns, {hms(g_talk)} talk time")
         lines.append("=" * 60)
@@ -954,6 +989,7 @@ def do_relabel(args) -> None:
     emb_model = data.get("emb_model", EMB_NAME)
 
     reg = load_registry()
+    explicit_roles: dict[str, str] = {}  # --save-role targets (sidecar even w/o entry)
     for spec in args.save_speaker:
         if "=" not in spec:
             sys.exit(f"diarize: FATAL bad relabel spec (want CLUSTER=NAME): {spec}")
@@ -962,14 +998,46 @@ def do_relabel(args) -> None:
             sys.exit(f"diarize: FATAL relabel: unknown cluster '{cluster}' (have: {', '.join(speakers)})")
         names[cluster] = person
         if cluster in cluster_emb:
+            # Match the entry being replaced so unknown keys (e.g. "role") survive.
+            old = next((s for s in reg.get("speakers", [])
+                        if s.get("name") == person and s.get("model") == emb_model), None)
             reg["speakers"] = [s for s in reg.get("speakers", [])
                                if not (s.get("name") == person and s.get("model") == emb_model)]
-            reg["speakers"].append({"name": person, "model": emb_model,
-                                    "embedding": cluster_emb[cluster].tolist(), "added": base})
+            reg["speakers"].append(_registry_entry(
+                person, emb_model, cluster_emb[cluster].tolist(), base, old=old))
             log(f"registry: saved {cluster} as '{person}' -> {SPEAKER_DB}")
         else:
             log(f"WARN relabel: no voiceprint cached for {cluster}; renamed in transcript but not persisted")
     save_registry(reg)
+
+    # ---- --save-role NAME=ROLE: tag speakers in the registry (and the sidecar
+    # below) so downstream agents can rank action items (boss > self > others).
+    role_touched = False
+    for spec in args.save_role:
+        name, _, role = spec.partition("=")  # format validated in main()
+        name, role = name.strip(), normalize_role(role)
+        entry = next((s for s in reg.get("speakers", [])
+                      if s.get("name") == name and s.get("model") == emb_model), None)
+        if entry is None:
+            if name not in names.values():
+                print(json.dumps({
+                    "relabeled": True,
+                    "error": f"--save-role: no saved speaker '{name}' for model "
+                             f"{emb_model} (not in the registry and not assigned in "
+                             f"this run). Save the voiceprint first, e.g. "
+                             f"--save-speaker CLUSTER={name}",
+                }))
+                return
+        else:
+            if role:
+                entry["role"] = role
+            else:
+                entry.pop("role", None)
+            role_touched = True
+        if role:
+            explicit_roles[name] = role
+    if role_touched:
+        save_registry(reg)
 
     # --auto: re-run registry matching + absorb over the cached voiceprints, so a
     # sidecar produced before names were enrolled (or before the absorb pass
@@ -989,12 +1057,28 @@ def do_relabel(args) -> None:
                       registry_entries, [], names, report=registry_matches)
         data["registry_matches"] = registry_matches
 
+    # Final roles for the sidecar + rendering: explicit --save-role tags plus the
+    # registry role of every name this run ended up using (covers --auto naming).
+    roles: dict[str, str] = dict(explicit_roles)
+    for nm in set(names.values()) | set(explicit_roles):
+        if nm in roles:
+            continue
+        entry = next((s for s in reg.get("speakers", [])
+                      if s.get("name") == nm and s.get("model") == emb_model and s.get("role")),
+                     None)
+        if entry:
+            roles[nm] = entry["role"]
+
     data["names"] = names
+    if roles:
+        data["roles"] = roles
+    else:
+        data.pop("roles", None)  # never leave a stale roles map behind
     sidecar.write_text(json.dumps(data, indent=2))
     turns = build_turns(segs, data.get("whisper_json"))
     render_outputs(outdir, base, segs, speakers, names, turns, args.snippets,
                    detect_mode, emb_name=emb_model,
-                   count_warning=data.get("count_warning"))
+                   count_warning=data.get("count_warning"), roles=roles or None)
     print(json.dumps({"num_speakers": len(speakers), "clusters": names, "relabeled": True}))
 
 
@@ -1044,6 +1128,12 @@ def main() -> None:
     ap.add_argument("--save-speaker", action="append", default=[], metavar="CLUSTER=NAME",
                     help="persist a cluster's voiceprint under NAME in the local registry "
                          "(e.g. SPEAKER_02=Jane). Repeatable. Names it here and in future runs.")
+    ap.add_argument("--save-role", action="append", default=[], metavar="NAME=ROLE",
+                    help=f"tag a saved speaker with a role (e.g. --save-role Karen=boss; "
+                         f"repeatable; with --relabel). Conventional roles: "
+                         f"{', '.join(VALID_ROLES)} — free-form lowercase tags allowed; "
+                         f"an empty ROLE removes the tag. The speaker must already be "
+                         f"in the registry (or be saved via --save-speaker in the same run).")
     ap.add_argument("--no-registry", action="store_true",
                     help="do not auto-name clusters from the local speaker registry")
     ap.add_argument("--snippets", type=int, default=3,
@@ -1060,6 +1150,13 @@ def main() -> None:
     ap.add_argument("--ensure-models-only", action="store_true",
                     help="download/verify the sherpa models then exit; no audio needed")
     args = ap.parse_args()
+
+    for spec in args.save_role:
+        if "=" not in spec:
+            ap.error(f"--save-role wants NAME=ROLE (got {spec!r})")
+    if args.save_role and not args.relabel:
+        ap.error("--save-role works with --relabel (tag speakers when re-rendering "
+                 "a cached sidecar)")
 
     if args.ensure_models_only:
         ensure_models()
@@ -1293,22 +1390,35 @@ def main() -> None:
                 sys.exit(f"diarize: FATAL --save-speaker: no voiceprint for cluster '{cluster}' "
                          f"(have: {', '.join(sorted(cluster_emb))})")
             emb = cluster_emb[cluster].tolist()
+            # Match the entry being replaced so unknown keys (e.g. "role") survive.
+            old = next((s for s in reg.get("speakers", [])
+                        if s.get("name") == person and s.get("model") == EMB_NAME), None)
             reg["speakers"] = [s for s in reg.get("speakers", [])
                                if not (s.get("name") == person and s.get("model") == EMB_NAME)]
-            reg["speakers"].append({"name": person, "model": EMB_NAME,
-                                    "embedding": emb, "added": base})
+            reg["speakers"].append(_registry_entry(person, EMB_NAME, emb, base, old=old))
             names[cluster] = person
             log(f"registry: saved {cluster} as '{person}' -> {SPEAKER_DB}")
         save_registry(reg)
 
+    # ---- per-speaker roles (registry "role" tags) for rendering + the sidecar ----
+    roles: dict[str, str] = {}
+    if not args.no_registry:
+        reg_now = load_registry()
+        for nm in set(names.values()):
+            entry = next((s for s in reg_now.get("speakers", [])
+                          if s.get("name") == nm and s.get("model") == EMB_NAME and s.get("role")),
+                         None)
+            if entry:
+                roles[nm] = entry["role"]
+
     # ---- render RTTM + speaker-labeled transcript + snippet cards ----
     turns = build_turns(segs, args.whisper_json)
     render_outputs(outdir, base, segs, speakers, names, turns, args.snippets, detect_mode,
-                   count_warning=count_warning)
+                   count_warning=count_warning, roles=roles or None)
 
     # ---- sidecar: segments + voiceprints so `whosaid relabel` is instant later ----
     sidecar = outdir / f"{base}.diarization.json"
-    sidecar.write_text(json.dumps({
+    sidecar_data = {
         "base": base,
         "emb_model": EMB_NAME,
         "num_speakers": len(speakers),
@@ -1322,7 +1432,10 @@ def main() -> None:
         "segments": segs,
         "cluster_emb": {sp: cluster_emb[sp].tolist() for sp in cluster_emb},
         "whisper_json": str(Path(args.whisper_json).resolve()) if args.whisper_json else None,
-    }, indent=2))
+    }
+    if roles:  # omit the key entirely when no speaker carries a role
+        sidecar_data["roles"] = roles
+    sidecar.write_text(json.dumps(sidecar_data, indent=2))
 
     print(json.dumps({
         "num_speakers": len(speakers),

@@ -6,6 +6,40 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ## [Unreleased]
 
+### Added
+
+- **Speaker role tags.** Registry entries (`~/.config/whosaid/speakers.json`) may carry an
+  optional lowercase `"role"` — conventional set `self`/`boss`/`peer`/`report`/`external`,
+  free-form tags allowed — set with `whosaid relabel <base> --role NAME=ROLE` (repeatable;
+  also `--save-role` on the diarizer and a `roles` map on the MCP `whosaid_relabel` tool) and
+  preserved when a voiceprint is re-saved. Roles surface as `# Role: NAME = ROLE` header lines
+  in `<base>.speakers.txt`, a `NAME  [role]` label on speaker cards, and a top-level `"roles"`
+  key in the sidecar (omitted when empty); `whosaid_list_speakers` reports each entry's role
+  and the `whosaid_transcribe` result carries `roles`. Semantics downstream: `self` marks the
+  user's own voice, and a `boss`-roled speaker's requests rank higher (action items,
+  dev-commitments).
+- **Dev-commitments extractor.** `lib/workspace.py commitments --transcript T --json-out F`
+  (and `whosaid ingest --commitments`) extracts the first-person commitments the `self`-roled
+  speaker made: clause-initial cues (`i'll`, `i will`, `i plan to`, `let me`, `i owe`, …) via
+  a stdlib heuristic, negations (`i won't`/`i can't`) kept but flagged `negative`, question
+  clauses skipped — into per-meeting `commitments.md`/`commitments.json`. When the preceding
+  turn is a different speaker asking or directing, the item records `requested_by`, priority
+  `high` when that speaker's role is `boss`. A `--hook CMD` (env `WHOSAID_COMMITMENTS_HOOK`)
+  can replace the heuristic, mirroring the action-items hook contract.
+- **`_COMMITMENTS.md` / `_commitments.json` corpus.** Roll-up folds each meeting's
+  `commitments.json` into stable `CM-NNN` ids (never renumbered) with the same 0.82 difflib
+  dedupe and 0.10 near-miss review band as action items, grouped by status then speaker,
+  `**[boss]**` marking boss-requested items; hand edits in the rendered `_COMMITMENTS.md`
+  reconcile back on the next run. `_workspace.json` points at the corpus via
+  `commitments_corpus` and `_INDEX.md` gains a conditional one-line open/total count.
+
+### Changed
+
+- **MCP server surfaces for roles and commitments.** A `roles` param on `whosaid_relabel`,
+  role reporting in `whosaid_list_speakers`, a `roles` key in the `whosaid_transcribe` result,
+  and roles + dev-commitments guidance in the server instructions and the `whosaid://guide`
+  resource.
+
 ### Fixed
 
 - **MCP `serverInfo.version` was empty (GitHub issue #14).** `whosaid mcp` now passes

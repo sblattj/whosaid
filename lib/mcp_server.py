@@ -176,6 +176,10 @@ Output-file contract: each transcribe writes, using <base> = the input's basenam
 
 Typical workflow: whosaid_transcribe -> read the speaker cards in the result -> whosaid_samples if you want to LISTEN to a clip per cluster before trusting a name -> whosaid_relabel to put real names on the SPEAKER_NN clusters. Relabeling saves each name to a persistent local registry, so the same voice is auto-named in every later transcript. whosaid_list_speakers shows who is already known.
 
+Speakers can carry role tags (self/boss/peer/report/external) set via whosaid_relabel's `roles` param; roles appear in speaker cards and transcripts and tell you whose commitments matter most (boss ranks higher). "self" is the user's own voice.
+
+Dev-commitments = the cross-meeting corpus of commitments the self-roled speaker made to others/team. Extracted per-meeting into commitments.md/commitments.json (via `python3 lib/workspace.py commitments --transcript T --json-out F`, or `whosaid ingest --commitments`), then rolled up into _COMMITMENTS.md/_commitments.json with stable CM-NNN ids.
+
 Not exposed here: `enroll` and `record` are interactive microphone operations that need a live terminal. Run them from the `whosaid` CLI. The first transcribe downloads ~1.5 GB of models; run whosaid_doctor to check readiness. Full flag/env/long-audio reference: read the whosaid://guide resource.
 
 Meeting workspace (search across many transcripts): point the server at a workspace directory by launching it with WHOSAID_WORKSPACE=<dir>, or pass `workspace` on each call; there is no cwd fallback. Flow: whosaid_search (turn-level hits with meeting folder + timestamp) -> whosaid_context (the verbatim minute around one hit; do not read whole transcripts) -> whosaid_items / whosaid_item / whosaid_person for action items and per-person commitments. whosaid_meetings, whosaid_prs and whosaid_speakers list what the graph knows; whosaid_workspace_status says whether the index exists. The index (_search.db, _WIKI.md) is built by `whosaid index <ws>` from the CLI or the watcher, never from here: every workspace tool is read-only. Resources: whosaid://workspace/wiki, whosaid://workspace/action-items, whosaid://workspace/index, whosaid://workspace/meeting/{folder}/transcript and whosaid://workspace/meeting/{folder}/action-items. Everything stays local (SQLite FTS5 plus optional embeddings from a localhost Ollama)."""
@@ -201,7 +205,8 @@ _DESC_TRANSCRIBE = (
     "them, then call whosaid_relabel to name them (names then auto-apply to future "
     "transcripts). If you already know who was in the room, pass `expected_speakers` "
     "(names of voices you have enrolled) — clustering is then anchored to their "
-    "voiceprints, absentees are dropped, and nobody has to guess a count. Keywords: "
+    "voiceprints, absentees are dropped, and nobody has to guess a count. Any speaker "
+    "role tags (self/boss/…) come back under `roles`. Keywords: "
     "transcribe, diarize, speaker diarization, who spoke, meeting "
     "notes, call recording, whisper, voice attribution, subtitles, srt, vtt."
 )
@@ -213,7 +218,9 @@ _DESC_RELABEL = (
     "in place — no re-transcription, no re-diarization. Run whosaid_transcribe first, read its "
     "speaker cards to tell who is who, then map clusters to names. Pass auto=true (with an empty "
     "assignments map) to instead re-apply registry matching + the absorb pass over the cached "
-    "sidecar, which folds phantom cluster splits into their real speaker. Keywords: rename speaker, "
+    "sidecar, which folds phantom cluster splits into their real speaker. Optionally pass "
+    "`roles` ({Name: role} — self/boss/peer/report/external) to role-tag speakers in the "
+    "registry, cards, and transcripts. Keywords: rename speaker, "
     "label speaker, assign name, identify voice, who is SPEAKER_00, correct labels."
 )
 
@@ -221,7 +228,8 @@ _DESC_LIST_SPEAKERS = (
     "List the voices whosaid can already auto-name: enrolled clips in `voices/` plus "
     "voiceprints saved in the local speaker registry (~/.config/whosaid/speakers.json). "
     "Read-only. Call this before whosaid_relabel so you reuse an existing name instead of "
-    "creating a duplicate. Keywords: known speakers, enrolled voices, registry, recognized "
+    "creating a duplicate. Each registry entry carries its role tag (self/boss/…) when set. "
+    "Keywords: known speakers, enrolled voices, registry, recognized "
     "voices, who can it identify."
 )
 
@@ -367,6 +375,7 @@ def whosaid_transcribe(
     source_meta: Optional[dict] = None
     count_warning: Optional[str] = None
     count_estimate: Optional[dict] = None
+    roles: Optional[dict] = None
     if sidecar_path.exists():
         try:
             data = json.loads(sidecar_path.read_text())
@@ -376,6 +385,7 @@ def whosaid_transcribe(
             num_speakers = data.get("num_speakers")
             count_warning = data.get("count_warning")
             count_estimate = data.get("count_estimate")
+            roles = data.get("roles")
             if num_speakers is None:
                 num_speakers = len({s["speaker"] for s in data.get("segments", [])}) or None
         except Exception:  # noqa: BLE001
@@ -416,6 +426,7 @@ def whosaid_transcribe(
         "speaker_cards_txt": str(speaker_cards_path) if speaker_cards is not None else None,
         "sidecar_json": str(sidecar_path) if sidecar_path.exists() else None,
         "registry_matches": registry_matches,
+        "roles": roles,
         "source": source_meta,
         "duration_seconds": _probe_duration(audio),
         "num_speakers": num_speakers,
@@ -466,12 +477,18 @@ def whosaid_relabel(
     outdir: Optional[str] = None,
     auto: bool = False,
     match_threshold: Optional[float] = None,
+    roles: Optional[dict[str, str]] = None,
 ) -> dict:
     """Name SPEAKER_NN clusters and persist them, by shelling `whosaid relabel`.
 
     With auto=True the assignments map may be empty: whosaid re-applies registry
     matching + the absorb pass over the cached sidecar (no re-diarization),
     merging phantom cluster splits into their real speaker.
+
+    `roles` optionally maps Name -> role (conventional: self, boss, peer,
+    report, external; free-form allowed) and is passed through as repeatable
+    `--role NAME=ROLE` flags; roles are saved to the registry and rendered in
+    speaker cards and transcripts.
     """
     if not isinstance(assignments, dict) or (not assignments and not auto):
         return {
@@ -492,12 +509,39 @@ def whosaid_relabel(
             "fix": "keys must be SPEAKER_NN clusters and names must be [A-Za-z0-9_-]+",
         }
 
+    role_specs: list = []
+    if roles is not None:
+        if not isinstance(roles, dict):
+            return {
+                "ok": False,
+                "error": "roles must be a map of Name -> role (e.g. {'Karen':'boss'})",
+                "fix": "pass a dict like {'Karen':'boss'} (roles: self, boss, peer, report, external) or omit it",
+            }
+        bad_roles = []
+        for name, role in roles.items():
+            name = str(name).strip()
+            if not name:
+                bad_roles.append(f"empty name for role '{role}'")
+            elif not isinstance(role, str) or not role.strip():
+                bad_roles.append(f"role for '{name}' must be a non-empty string")
+            else:
+                role_specs.append((name, role.strip().lower()))
+        if bad_roles:
+            return {
+                "ok": False,
+                "error": "invalid roles: " + "; ".join(bad_roles),
+                "fix": "roles maps Name -> non-empty role string (e.g. {'Karen':'boss'}; "
+                       "conventional: self, boss, peer, report, external)",
+            }
+
     specs = [f"{k}={v}" for k, v in assignments.items()]
     args = ["relabel", base, *specs]
     if auto:
         args.append("--auto")
     if match_threshold is not None:
         args += ["--match-threshold", str(match_threshold)]
+    for name, role in role_specs:
+        args += ["--role", f"{name}={role}"]
     if outdir:
         args += ["-o", outdir]
 
@@ -533,14 +577,18 @@ def whosaid_relabel(
         "ok": True,
         "base": data_base,
         "renamed": dict(assignments),
+        "roles_applied": sorted(name for name, _ in role_specs),
         "speakers_txt": speakers_txt,
         "registry_path": str(_speaker_db()),
         "summary": (
             (f"Re-applied registry + absorb naming from the sidecar"
              + (f" plus {len(assignments)} explicit assignment(s)" if assignments else "")
+             + (f", {len(role_specs)} role(s) applied" if role_specs else "")
              + "." )
             if auto else
-            (f"Renamed {len(assignments)} cluster(s); saved to the local speaker registry "
+            (f"Renamed {len(assignments)} cluster(s)"
+             + (f", tagged {len(role_specs)} role(s)" if role_specs else "")
+             + "; saved to the local speaker registry "
              f"so they auto-name in future transcripts.")
         ),
     }
@@ -576,7 +624,7 @@ def whosaid_list_speakers() -> dict:
         try:
             data = json.loads(db.read_text())
             for s in data.get("speakers", []):
-                entry = {"name": s.get("name")}
+                entry = {"name": s.get("name"), "role": s.get("role")}
                 if s.get("model"):
                     entry["model"] = s.get("model")
                 registry_speakers.append(entry)
@@ -1392,6 +1440,35 @@ CLI-only transcribe flags (not surfaced as MCP params; use the resource/CLI):
   sidecar's `source` metadata, so it only works on a transcript made after
   GitHub issue #1 parts 2-3 (or re-transcribe an older one).
 
+## Speaker roles and dev-commitments
+Roles tag who each speaker IS to the user, so commitments can be ranked:
+- Registry entries may carry an optional `"role"` string. Conventional roles:
+  `self` (the user's own voice), `boss`, `peer`, `report`, `external` —
+  free-form values allowed.
+- Set them via whosaid_relabel's `roles` param ({Name: role}), or the CLI:
+  `whosaid relabel <base> SPEAKER_XX=Name ... --role NAME=ROLE` (repeatable;
+  forwarded to the diarizer as `--save-role`). Roles persist in the registry,
+  come back from whosaid_list_speakers and whosaid_transcribe (`roles` key),
+  and appear in the diarization sidecar's top-level `"roles": {name: role}`
+  (key omitted when empty).
+- `.speakers.txt` may carry `# Role: NAME = ROLE` header lines right after
+  the `# Speakers (N):` header; speaker cards render `NAME  [role]`.
+- **Dev-commitments** are the cross-meeting corpus of commitments the
+  `self`-roled speaker made to others/team. Per meeting:
+  `python3 lib/workspace.py commitments --transcript T --json-out F
+  [--hook CMD] [--roles JSON]` (env `WHOSAID_COMMITMENTS_HOOK`) writes
+  `commitments.md` + `commitments.json` next to the json-out. The stdlib
+  heuristic (no LLM) picks up first-person cues ("I'll ...", "I will ...",
+  "I plan to ..."); with roles present only the `self` speaker's cues count
+  (with no roles, every speaker's do — legacy transcripts); a cue requested
+  by a different speaker's question/imperative records `requested_by`, and
+  boss requests get priority "high". `whosaid ingest --commitments` runs it
+  during ingest.
+- The workspace roll-up folds each meeting's commitments.json into
+  `_COMMITMENTS.md` / `_commitments.json` with stable `CM-NNN` ids (never
+  renumbered; difflib dedupe, like the action-items corpus) — boss-requested
+  items flagged, boss requests ranking highest for follow-up.
+
 ## Long audio runs in parallel
 Recordings over ~15 min (900 s) auto-chunk: the file is split into windows,
 each window is segmented + embedded in its own process, then all voiceprints are
@@ -1410,6 +1487,8 @@ times faster with the same result. Tuning (CLI flags):
 - `WHOSAID_MATCH_THRESHOLD` — registry/reference match cosine threshold (default
   `0.50`); clusters below it stay `SPEAKER_NN`.
 - `WHOSAID_ABSORB_THRESHOLD` — absorb-pass cosine threshold (default `0.85`).
+- `WHOSAID_COMMITMENTS_HOOK` — external commitments extractor hook (replaces
+  the stdlib heuristic; receives WHOSAID_ROLES JSON).
 - `DIARIZE_EMB_NAME` — speaker-embedding model (default NeMo TitaNet-small,
   English-native; set the zh-cn 3D-Speaker model for Mandarin audio). Voiceprints
   are keyed by this model, so switching it re-enrolls speakers.
