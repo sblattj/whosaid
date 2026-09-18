@@ -48,6 +48,7 @@ Subcommands (the `whosaid` bash CLI shells out to this module via
       the transcript's parent's parent).
 
   commitments --transcript <path.speakers.txt> --json-out F [--hook CMD] [--roles JSON]
+              [--min-words N] [--ws DIR]
       Per-meeting dev commitments: first-person commitment cues ("I'll ...",
       "I will ...", "I plan to ...") extracted from the speaker-attributed
       transcript by a stdlib heuristic (no LLM). Roles come from '# Role:
@@ -59,7 +60,18 @@ Subcommands (the `whosaid` bash CLI shells out to this module via
       clause is a question is skipped. When the immediately preceding turn
       is a different speaker asking a question or an imperative ("can you",
       "please", ...), the item records requested_by — priority "high" when
-      that speaker's role is boss, else "normal". --hook (or
+      that speaker's role is boss, else "normal". Clause hygiene: a
+      stuttered cue collapses ("I'll I'll start" -> "I'll start"), the
+      clause ends at a subordinator (while, because, if, when, ...), and a
+      trailing dangling token drops. Fragments are filtered: a clause needs
+      at least N content words (tokens left after the COMMITMENT_STOPLIST
+      of pronouns, determiners, particles, auxiliaries and fillers), N from
+      --min-words, else [commitments] min_words in <ws>/whosaid.toml, else
+      2; 0 disables. One content word is enough when the item has a
+      requested_by or the clause carries a deadline/urgency phrase, since
+      the request supplies the object. Dropped clauses are listed under
+      "Dropped fragments (review)" in commitments.md and as "dropped" in the
+      JSON, so min_words can be tuned per workspace. --hook (or
       WHOSAID_COMMITMENTS_HOOK) mirrors the action-items hook contract and
       adds WHOSAID_ROLES (compact JSON {name: role}); its stdout becomes
       commitments.md, written next to --json-out. Exits 0 either way.
@@ -106,7 +118,12 @@ Subcommands (the `whosaid` bash CLI shells out to this module via
       boss-requested items). _workspace.json points at it via
       "commitments_corpus"; _INDEX.md gains a one-line open/total count
       once any exist. Meeting folders without commitments.json roll up
-      exactly as before.
+      exactly as before. The fold applies the same [commitments] min_words
+      fragment rule as extraction, so commitments.json files written before
+      the filter (or by a hook) never put "I'll do that" into the corpus:
+      skipped entries are recorded under "dropped" in _commitments.json and
+      rendered as "Dropped fragments (review)" in _COMMITMENTS.md; CM items
+      already in the corpus are never touched.
 
       Dedupe in both corpora is difflib first and, when a loopback Ollama
       answers and [search] embed is on, embedding cosine too: two texts fold
@@ -580,11 +597,104 @@ COMMITMENT_CUE_RE = re.compile(
     re.IGNORECASE,
 )
 # A clause runs from its cue to the next boundary: a comma/semicolon/colon,
-# a sentence terminator, or a coordinating conjunction.
-CLAUSE_END_RE = re.compile(r"\s+(?:and|but|or|so|then)\s+|[,;:.!?](?:\s|$)")
+# a sentence terminator, a coordinating conjunction, or a subordinator
+# ("I can create an Epic if needed" -> "I can create an Epic").
+CLAUSE_END_RE = re.compile(
+    r"\s+(?:and|but|or|so|then|while|because|if|when|unless|until|which|whereas|"
+    r"although|though)\s+|[,;:.!?](?:\s|$)"
+)
 # Imperative cues in the immediately preceding turn that make the following
 # commitment an answer to a request.
 REQUEST_CUES = ("can you", "could you", "please", "need you to", "have you", "will you")
+# Minimum-content filter (issue #22). A commitment clause has to carry
+# something to act on: at least COMMITMENT_MIN_WORDS content words, where
+# content words are the clause's tokens minus this stoplist of pronouns
+# (including the first-person cue heads), determiners, particles,
+# prepositions, auxiliaries and fillers. "I'll do that" has none; "I'll
+# check" has one; "I'll bump the version" has two. Overridable per
+# workspace via [commitments] min_words (0 disables).
+COMMITMENT_MIN_WORDS = 2
+COMMITMENT_STOPLIST = frozenset(
+    """
+    i i'll i'm i'd i've me my myself you your you're we we'll we're us our they
+    them their he him she her it it's its that that's this these those one ones
+    there there's here then up off out on in at to of for with about around over
+    back away into through from by as than the a an and or but so not no just
+    also too again really literally probably maybe definitely actually basically
+    kind sort like secondarily first sure yeah ok okay yes right well um uh hmm
+    oh some any all more much very bit little do does did don't doesn't didn't
+    be am is are was were been being go going gonna get got gets have has had
+    having can can't cant could will won't would should shall let let's what
+    which who how if when while because unless until whereas although though
+    """.split()
+)
+# A deadline or urgency phrase supplies the object a short clause lacks
+# ("I'll do it today" is actionable): one content word is enough then. Kept
+# small and local on purpose; the worklist cue lists are a ranking concern.
+FRAGMENT_RESCUE_RE = re.compile(
+    r"\b(?:today|tonight|tomorrow|this week|next week|eod|asap|urgent|blocking|blocked|"
+    r"(?:by|before)\s+(?:mon|tue|tues|wed|wednes|thu|thur|thurs|fri|sat|satur|sun)(?:day)?)\b",
+    re.IGNORECASE,
+)
+# Tokens that cannot end a commitment clause: a subject pronoun, determiner,
+# conjunction or preposition left dangling by a cut ("...that while i").
+DANGLING_TAIL = frozenset(
+    """
+    i i'll i'm i'd we we'll they he she the a an my our their and or but so then
+    to of for with on in at by from into if when while because unless until which
+    whereas although though um uh
+    """.split()
+)
+
+
+def content_words(text: str) -> list[str]:
+    """The tokens of text (lowercased, apostrophes kept inside words) that
+    are not in COMMITMENT_STOPLIST: the words that say what a commitment
+    is about."""
+    tokens = re.findall(r"[a-z0-9]+(?:'[a-z]+)?", text.lower().replace("’", "'"))
+    return [t for t in tokens if t not in COMMITMENT_STOPLIST]
+
+
+def fragment_check(text: str, min_words: int = COMMITMENT_MIN_WORDS,
+                   requested: bool = False) -> tuple[int, int]:
+    """(content words found, content words needed) for a commitment text.
+    Needed is min_words, lowered to 1 when someone asked for the item
+    (requested) or the text carries a deadline/urgency phrase, since the
+    request supplies the object; 0 means the filter is off. The item is a
+    fragment when found < needed."""
+    found = len(content_words(text))
+    need = max(0, int(min_words))
+    if need > 1 and (requested or FRAGMENT_RESCUE_RE.search(text)):
+        need = 1
+    return found, need
+
+
+def fragment_reason(found: int, need: int) -> str:
+    """The near-miss reason recorded for a dropped clause."""
+    return f"fragment: {found} content word{'' if found == 1 else 's'}, min {need}"
+
+
+def tidy_clause(clause: str, cue: str) -> str:
+    """Clause hygiene for the extractor. The clause starts with cue; a
+    stuttered cue collapses ("I'll I'll start investigating" -> "I'll start
+    investigating"), trailing DANGLING_TAIL tokens drop ("I'll send the
+    report to" -> "I'll send the report"; a "... that while i" tail that
+    CLAUSE_END_RE did not already cut loses "while i"), and a lowercase
+    leading pronoun is capitalized so "i can i can have these" renders as
+    "I can have these"."""
+    head, rest = clause[:len(cue)], clause[len(cue):].strip()
+    again = re.compile(r"^" + re.escape(cue) + r"(?![a-z])\s*", re.IGNORECASE)
+    while True:
+        m = again.match(rest)
+        if not m or not m.group(0):
+            break
+        rest = rest[m.end():]
+    words = rest.split()
+    while words and words[-1].lower().strip("'\".,;:!?") in DANGLING_TAIL:
+        words.pop()
+    if head[:1] == "i":
+        head = "I" + head[1:]
+    return (head + " " + " ".join(words)).strip()
 
 
 def iter_turns(transcript_text: str) -> list[tuple[str, str, str]]:
@@ -615,13 +725,20 @@ def iter_turns(transcript_text: str) -> list[tuple[str, str, str]]:
     return turns
 
 
-def extract_commitments(transcript_text: str, roles: dict | None = None) -> list[dict]:
+def extract_commitments(transcript_text: str, roles: dict | None = None,
+                        min_words: int = COMMITMENT_MIN_WORDS,
+                        dropped: list[tuple[str, str, str, str]] | None = None) -> list[dict]:
     """First-person commitments from speaker-attributed turns. With truthy
     roles only the 'self'-role speaker's cues count; without them any
     speaker's do (legacy transcripts). Cues inside question clauses are
     skipped; when the immediately preceding turn is a different speaker
     asking a question or an imperative, the item records requested_by —
-    priority 'high' when that speaker's role is boss, else 'normal'."""
+    priority 'high' when that speaker's role is boss, else 'normal'.
+    Every clause gets tidy_clause() hygiene, then fragment_check(): a
+    clause with fewer than min_words content words (one is enough when it
+    was requested or names a deadline/urgency; 0 disables) is not an item
+    and is appended to `dropped` as (speaker, time, clause, reason) when
+    the caller passes a list."""
     gate = bool(roles)
     out: list[dict] = []
     seen: set[tuple[str, str]] = set()
@@ -637,6 +754,7 @@ def extract_commitments(transcript_text: str, roles: dict | None = None) -> list
             clause = text[m.start("cue"):end_m.start() if end_m else len(text)].strip()
             if not clause or (end_m and end_m.group(0)[0] == "?"):
                 continue  # empty clause, or a question — not a commitment
+            clause = tidy_clause(clause, cue)
             key = (speaker, normalize_text(clause))
             if key in seen:
                 continue
@@ -650,6 +768,11 @@ def extract_commitments(transcript_text: str, roles: dict | None = None) -> list
                     requested_by_role = (roles.get(prev[1]) or "") if gate else ""
                     if requested_by_role.strip().lower() == "boss":
                         priority = "high"
+            found, need = fragment_check(clause, min_words, bool(requested_by))
+            if found < need:
+                if dropped is not None:
+                    dropped.append((speaker, time, clause, fragment_reason(found, need)))
+                continue
             item = {
                 "speaker": speaker,
                 "speaker_role": role,
@@ -667,21 +790,33 @@ def extract_commitments(transcript_text: str, roles: dict | None = None) -> list
     return out
 
 
-def commitments_markdown(folder: str, items: list[dict]) -> str:
+def commitments_markdown(folder: str, items: list[dict],
+                         dropped: list[tuple[str, str, str, str]] | None = None) -> str:
+    """Per-meeting commitments.md. `dropped` (from extract_commitments) is
+    rendered as a "Dropped fragments (review)" section whose lines are not
+    item bullets (no checkbox), so parse_commitment_bullets ignores them."""
     lines = [f"# Commitments — {folder}", "",
              "_dev-commitments: first-person commitments extracted from the "
              "speaker-labeled transcript (stdlib heuristic, no LLM)._", ""]
     if not items:
         lines += ["_No commitments detected._", ""]
-        return "\n".join(lines)
-    for it in items:
-        text = it["text"] + (" (boss-requested)" if it.get("priority") == "high" else "")
-        lines.append(f"- [ ] ({it['speaker']}) {text}  — {it['time']}")
-        meta = {k: it[k] for k in ("speaker", "speaker_role", "text", "time", "cue",
-                                   "negative", "priority", "requested_by",
-                                   "requested_by_role") if k in it}
-        lines.append("<!-- cm: " + json.dumps(meta) + " -->")
-    lines.append("")
+    else:
+        for it in items:
+            text = it["text"] + (" (boss-requested)" if it.get("priority") == "high" else "")
+            lines.append(f"- [ ] ({it['speaker']}) {text}  — {it['time']}")
+            meta = {k: it[k] for k in ("speaker", "speaker_role", "text", "time", "cue",
+                                       "negative", "priority", "requested_by",
+                                       "requested_by_role") if k in it}
+            lines.append("<!-- cm: " + json.dumps(meta) + " -->")
+        lines.append("")
+    if dropped:
+        lines += ["## Dropped fragments (review)", "",
+                  "_Clauses with too little content to act on ([commitments] min_words in "
+                  "whosaid.toml, or --min-words; 0 disables). Lower it if a real "
+                  "commitment is listed here._", ""]
+        for speaker, time, text, reason in dropped:
+            lines.append(f"- ({speaker}) {text} @ {time} ({reason})")
+        lines.append("")
     return "\n".join(lines)
 
 
@@ -733,10 +868,20 @@ def cmd_commitments(args: argparse.Namespace) -> int:
     if roles is None:
         roles = parse_roles(text)
 
+    # [commitments] min_words from the workspace's whosaid.toml (--ws, else
+    # the transcript's parent's parent), overridden by --min-words.
+    ws = Path(args.ws).expanduser() if getattr(args, "ws", None) else transcript.resolve().parent.parent
+    min_words = int(commitments_config(_wsconfig().load_config(ws))["min_words"])
+    if getattr(args, "min_words", None) is not None:
+        if args.min_words < 0:
+            log("WARN commitments: --min-words must be >= 0; using 0 (filter off)")
+        min_words = max(0, int(args.min_words))
+
     hook = args.hook or os.environ.get("WHOSAID_COMMITMENTS_HOOK", "")
     source = "heuristic"
     markdown = ""
     items: list[dict] = []
+    dropped: list[tuple[str, str, str, str]] = []
     if hook:
         env = dict(os.environ)
         env["WHOSAID_TRANSCRIPT_PATH"] = str(transcript.resolve())
@@ -757,8 +902,11 @@ def cmd_commitments(args: argparse.Namespace) -> int:
             tail = (proc.stderr or "").strip().splitlines()[-1:] or ["(no stderr)"]
             log(f"WARN commitments hook exited {proc.returncode}: {tail[0]}; using heuristic")
     if source == "heuristic":
-        items = extract_commitments(text, roles)
-        markdown = commitments_markdown(transcript.parent.name, items)
+        items = extract_commitments(text, roles, min_words, dropped)
+        markdown = commitments_markdown(transcript.parent.name, items, dropped)
+        if dropped:
+            log(f"dropped {len(dropped)} fragment(s) (min_words={min_words}); listed under "
+                "'Dropped fragments (review)' in commitments.md")
     else:
         items = parse_commitment_bullets(markdown)
 
@@ -772,7 +920,9 @@ def cmd_commitments(args: argparse.Namespace) -> int:
         "source": source,
         "speakers": speakers,
         "roles": roles,
+        "min_words": min_words,
         "items": items,
+        "dropped": [{"speaker": s, "time": t, "text": c, "reason": r} for s, t, c, r in dropped],
     }
     write_if_changed(Path(args.json_out), json.dumps(payload, indent=2) + "\n")
     return 0
@@ -1235,6 +1385,9 @@ def load_commitments_corpus(ws: Path) -> dict:
                             "md_status", "md_text", "md_speaker", "cue", "requested_by_role"):
                     item.setdefault(key, "")
                 item["negative"] = bool(item.get("negative", False))
+            raw_dropped = data.get("dropped")
+            data["dropped"] = ([d for d in raw_dropped if isinstance(d, dict)]
+                               if isinstance(raw_dropped, list) else [])
             return data
     except FileNotFoundError:
         pass
@@ -1344,16 +1497,22 @@ def fold_commitments(meeting_folder: str, entries: list[dict],
                      threshold: float = SIMILARITY_THRESHOLD,
                      near_misses: list[tuple[str, str, float]] | None = None,
                      matcher: "TextMatcher | None" = None,
-                     cues: dict | None = None) -> list[CommitmentItem]:
+                     cues: dict | None = None,
+                     dropped: list[dict] | None = None) -> list[CommitmentItem]:
     """Fold one meeting's commitments.json entries into the corpus. The
     ranking inputs (cue, negative, requested_by_role) ride along on new items;
     on a match a stronger cue, a positive re-statement, or a first requester
     upgrades the item, so the worklist sees the best evidence across meetings.
     `matcher` (optional) adds the embedding rule; see fold_meeting. `cues` is
     the commitments_config() mapping so "stronger" means the same thing here
-    as in Ranker (whosaid.toml strong_cues/weak_cues); default lists otherwise."""
+    as in Ranker (whosaid.toml strong_cues/weak_cues); default lists otherwise.
+    Its min_words drives the same fragment_check() as extraction: an entry
+    that fails is skipped (never a CM item), logged, and appended to
+    `dropped` as {meeting, speaker, time, text, reason} when a list is
+    passed. Items already in the corpus are never re-checked."""
     strong_cues = list((cues or WORKLIST_DEFAULTS)["strong_cues"])
     weak_cues = list((cues or WORKLIST_DEFAULTS)["weak_cues"])
+    min_words = int((cues or WORKLIST_DEFAULTS).get("min_words", COMMITMENT_MIN_WORDS))
 
     def strength(c: str) -> str:
         return cue_strength(c, strong_cues, weak_cues)
@@ -1368,6 +1527,15 @@ def fold_commitments(meeting_folder: str, entries: list[dict],
         speaker = str(entry.get("speaker", ""))
         cue = str(entry.get("cue", "") or "")
         negative = bool(entry.get("negative", False))
+        found, need = fragment_check(text, min_words, bool(entry.get("requested_by")))
+        if found < need:
+            reason = fragment_reason(found, need)
+            log(f"  - skipped ({reason}): {text}")
+            if dropped is not None:
+                dropped.append({"meeting": meeting_folder, "speaker": speaker,
+                                "time": str(entry.get("time", "") or ""),
+                                "text": text, "reason": reason})
+            continue
         match: CommitmentItem | None = None
         best_below: tuple[float, CommitmentItem] | None = None
         for it in items:
@@ -1416,7 +1584,11 @@ def fold_commitments(meeting_folder: str, entries: list[dict],
 
 
 def render_commitments_md(ws: Path, items: list[CommitmentItem],
-                          dupes: list[tuple[str, str, float]] | None = None) -> str:
+                          dupes: list[tuple[str, str, float]] | None = None,
+                          dropped: list[dict] | None = None) -> str:
+    """The corpus markdown. `dropped` (fold-time fragment near misses, the
+    corpus "dropped" list) renders as a review section whose lines carry no
+    CM id, so reconcile_commitments_from_md never reads them as items."""
     lines = [f"# Commitments — {ws.resolve()}", "",
              "dev-commitments: commitments self made across meetings. Living "
              "corpus, deduplicated across meetings. Ids are stable and never "
@@ -1425,7 +1597,6 @@ def render_commitments_md(ws: Path, items: list[CommitmentItem],
              "boss-requested items.", ""]
     if not items:
         lines += ["_No commitments yet._", ""]
-        return "\n".join(lines)
     groups: dict[str, dict[str, list[CommitmentItem]]] = {}
     for it in items:
         groups.setdefault(it.status, {}).setdefault(it.speaker or "(unattributed)", []).append(it)
@@ -1454,6 +1625,17 @@ def render_commitments_md(ws: Path, items: list[CommitmentItem],
                   "merge by hand if truly alike._", ""]
         for a, b, ratio in dupes:
             lines.append(f"- {a} ↔ {b} ({ratio:.2f}): \"{texts[b]}\"")
+        lines.append("")
+    if dropped:
+        lines += ["## Dropped fragments (review)", "",
+                  "_Entries skipped at fold for carrying too little to act on "
+                  "([commitments] min_words in whosaid.toml; 0 disables). Lower it "
+                  "and re-run (--rebuild re-folds every meeting) if a real commitment "
+                  "is listed here._", ""]
+        for d in dropped:
+            when = f" @ {d['time']}" if d.get("time") else ""
+            lines.append(f"- {d.get('meeting', '')} ({d.get('speaker', '')}) "
+                         f"{d.get('text', '')}{when} ({d.get('reason', 'fragment')})")
         lines.append("")
     return "\n".join(lines)
 
@@ -1631,6 +1813,7 @@ WORKLIST_DEFAULTS: dict = {
                     "count on me", "leave it with me"],
     "weak_cues": ["i can", "i could", "let me", "i plan to", "i'm going to", "i am going to"],
     "embed_threshold": EMBED_THRESHOLD,
+    "min_words": COMMITMENT_MIN_WORDS,  # extractor + fold fragment filter (issue #22)
     "weights": {"boss": 5, "blocking": 4, "deadline": 4, "overdue": 1, "repeat": 2, "recent": 1,
                 "strong": 1, "requested": 1, "negative": -3},
 }
@@ -1658,8 +1841,9 @@ WORKLIST_FILE_PREFIX = "_WORKLIST-"
 
 def commitments_config(cfg: dict) -> dict:
     """WORKLIST_DEFAULTS overlaid with whosaid.toml [commitments]: lists
-    replace, the weights table merges key by key, and a comma string is
-    tolerated for any list."""
+    replace, the weights table merges key by key, a comma string is
+    tolerated for any list, and min_words must be an integer >= 0 (0
+    disables the fragment filter)."""
     raw = cfg.get("commitments") if isinstance(cfg.get("commitments"), dict) else {}
     out = {k: (list(v) if isinstance(v, list) else v) for k, v in WORKLIST_DEFAULTS.items()}
     out["weights"] = dict(WORKLIST_DEFAULTS["weights"])
@@ -1681,6 +1865,15 @@ def commitments_config(cfg: dict) -> dict:
                 out[key] = float(value)
             except (TypeError, ValueError):
                 log("WARN [commitments] embed_threshold is not a number; using the default")
+        elif key == "min_words":
+            try:
+                num = -1 if isinstance(value, bool) else int(value)
+            except (TypeError, ValueError):
+                num = -1
+            if num < 0:
+                log("WARN [commitments] min_words must be an integer >= 0; using the default")
+            else:
+                out[key] = num
         else:
             out[key] = value
     return out
@@ -2399,6 +2592,10 @@ def cmd_rollup(args: argparse.Namespace) -> int:
         reconcile_commitments_from_md(cm_items, cm_out.read_text())
 
     cm_near_misses: list[tuple[str, str, float]] = []
+    # Fold-time fragment near misses live in the corpus JSON so the review
+    # section survives incremental runs (folded meetings are not re-read).
+    cm_dropped: list[dict] = list(commitments_data.get("dropped", []))
+    cm_dropped_before = len(cm_dropped)
     for folder in dated:
         cj_path = folder / "commitments.json"
         if not cj_path.is_file():
@@ -2414,10 +2611,15 @@ def cmd_rollup(args: argparse.Namespace) -> int:
             continue
         log(f"folding {folder.name}/commitments.json ({len(entries)} item(s))")
         fold_commitments(folder.name, entries, cm_items, cm_next_id,
-                         args.similarity_threshold, cm_near_misses, matcher, cm_cues)
+                         args.similarity_threshold, cm_near_misses, matcher, cm_cues,
+                         cm_dropped)
         cm_folded.add(folder.name)
+    if len(cm_dropped) > cm_dropped_before:
+        log(f"dropped {len(cm_dropped) - cm_dropped_before} fragment(s) at fold "
+            f"(min_words={cm_cues['min_words']}); listed under 'Dropped fragments (review)' "
+            f"in {cm_out.name}")
     cm_dupes = possible_duplicates(cm_items, cm_near_misses, args.similarity_threshold)
-    cm_md = render_commitments_md(ws, cm_items, cm_dupes)
+    cm_md = render_commitments_md(ws, cm_items, cm_dupes, cm_dropped)
     for it in cm_items:
         it.md_status, it.md_text = it.status, it.text
         if it.priority == "high" and it.status != "merged":
@@ -2441,6 +2643,8 @@ def cmd_rollup(args: argparse.Namespace) -> int:
             for it in cm_items
         ],
     }
+    if cm_dropped:
+        commitments_data["dropped"] = cm_dropped
 
     # The worklist is a view over both corpora: regenerated every run, never
     # reconciled, so it is written after the corpora settle.
@@ -2472,7 +2676,7 @@ def cmd_rollup(args: argparse.Namespace) -> int:
     else:
         changed_corpus = changed_ai = False
     cm_corpus_out = ws / "_commitments.json"
-    if cm_items or cm_corpus_out.exists():
+    if cm_items or cm_dropped or cm_corpus_out.exists():
         changed_cm_corpus = write_if_changed(
             cm_corpus_out, json.dumps(commitments_data, indent=2) + "\n"
         )
@@ -2551,6 +2755,14 @@ def build_parser() -> argparse.ArgumentParser:
     pcm.add_argument("--roles", default=None,
                      help="roles JSON '{name: role}' string or @path "
                           "(default: '# Role:' headers in the transcript)")
+    pcm.add_argument("--min-words", dest="min_words", type=int, default=None,
+                     help="content words a clause needs to count as a commitment; "
+                          "fragments such as \"I'll do that\" are dropped and listed "
+                          "for review (default: [commitments] min_words in whosaid.toml, "
+                          "else 2; 0 disables)")
+    pcm.add_argument("--ws", default=None,
+                     help="workspace dir whose whosaid.toml configures [commitments] "
+                          "(default: the transcript's parent's parent)")
     pcm.set_defaults(func=cmd_commitments)
 
     pr = sub.add_parser("rollup", help="aggregate a meeting workspace: coverage index, "

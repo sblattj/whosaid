@@ -65,6 +65,27 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ### Fixed
 
+- **Commitment fragments ("I'll do that", "I'll check") no longer become items (GitHub issue
+  #22).** The heuristic extractor accepted any non-empty cue clause, so a 15-meeting workspace
+  carried ten CM items of four words or fewer with nothing to act on, sitting in the worklist as
+  P2/P3 rows that could never dedupe against the real item. A clause now needs at least
+  `[commitments] min_words` content words (default 2; the tokens left after a stoplist of
+  pronouns, determiners, particles, prepositions, auxiliaries and fillers, so "I'll bump the
+  version" passes and "I'll see what I can do" does not); one is enough when the item has a
+  `requested_by` or names a deadline or urgency, since the request supplies the object. Clause
+  hygiene runs first: a stuttered cue collapses ("I'll I'll start investigating that while I"
+  becomes "I'll start investigating that"), clauses end at subordinators (`while`, `because`,
+  `if`, `when`, `unless`, `until`, `which`, `whereas`, `although`, `though`) as well as
+  `and/but/or/so/then`, and a dangling trailing pronoun or preposition is trimmed. Dropped
+  clauses are reported like near-miss merges: a _Dropped fragments (review)_ section in each
+  meeting's `commitments.md` (mirrored as `dropped` in `commitments.json`) plus a one-line
+  `dropped N fragment(s)` log. Roll-up applies the same rule at fold time, so older
+  `commitments.json` files never seed fragments into the corpus (skips land under _Dropped
+  fragments (review)_ in `_COMMITMENTS.md` and persist as `dropped` in `_commitments.json`);
+  existing `CM` items stay untouched. `whosaid ingest --min-words N` and the `commitments`
+  subcommand's `--min-words N` / `--ws DIR` override the toml; `min_words = 0` disables the
+  filter.
+
 - **Worklist cues ignored negation, treated bare nouns as blocking, and never expired
   relative deadlines (GitHub issue #21).** `cue_hit` now skips a cue that has a negator within
   the three words before it in the same clause, so "send non-urgent questions to the channel",

@@ -146,7 +146,7 @@ USAGE
                                         or enrolling.
   whosaid ingest <audio> [<audio> ...] --into DIR [--folder-by created|mtime]
                                         [--tz ZONE] [--action-items] [--commitments]
-                                        [--hook CMD] [flags]
+                                        [--min-words N] [--hook CMD] [flags]
                                         Transcribe each file into its own dated
                                         meeting folder (idempotent by content
                                         hash; skips anything already ingested).
@@ -288,6 +288,11 @@ INGEST FLAGS
   --commitments       Also extract dev commitments for each ingested meeting
                       (speaker roles from relabel --role rank and own them;
                       default hook: $WHOSAID_COMMITMENTS_HOOK).
+  --min-words N       Commitments: content words a clause needs to count
+                      (default: [commitments] min_words in whosaid.toml, else
+                      2; 0 disables). Fragments such as "I'll do that" are
+                      dropped and listed under "Dropped fragments (review)"
+                      in commitments.md instead. Implies --commitments.
   --hook CMD          Action-items hook for this run (default: $WHOSAID_ACTION_ITEMS_HOOK).
   --index             After every file is ingested, run
                       'whosaid roll-up <ws> --action-items' then 'whosaid index <ws>'
@@ -1239,8 +1244,8 @@ cmd_samples() {
 
 # ---- ingest / roll-up (issue #2: meeting workspace) ----------------------------
 # whosaid ingest <audio...> --into DIR [--folder-by created|mtime] [--tz ZONE]
-#                [--action-items] [--engine E] [--commitments] [--hook CMD]
-#                [--index] [transcribe flags...]
+#                [--action-items] [--engine E] [--commitments] [--min-words N]
+#                [--hook CMD] [--index] [transcribe flags...]
 # Transcribe each file into <into>/<YYYY-MM-DD-HHMM>/ with base name "transcript"
 # and keep the source audio beside it so roll-up's audit can hash it. Idempotent:
 # a file whose sha256 already appears in <into>/_workspace.json (written by
@@ -1250,6 +1255,7 @@ cmd_samples() {
 # implies --action-items; --index runs roll-up + index once every file is in.
 cmd_ingest() {
   local into="" folder_by="created" tz_arg="" want_action_items=0 hook="" engine="" want_index=0 want_commitments=0
+  local min_words=""
   local passthrough=() AUDIO=()
 
   while [[ $# -gt 0 ]]; do
@@ -1260,6 +1266,7 @@ cmd_ingest() {
       --action-items) want_action_items=1; shift ;;
       --engine)       engine="$2"; want_action_items=1; shift 2 ;;
       --commitments)  want_commitments=1; shift ;;
+      --min-words)    min_words="$2"; want_commitments=1; shift 2 ;;
       --hook)         hook="$2"; shift 2 ;;
       --index)        want_index=1; shift ;;
       # ingest owns the output layout and base name
@@ -1449,6 +1456,7 @@ except BaseException:
       fi
       if [[ -s "$transcript" ]]; then
         local cm_args=(commitments --transcript "$transcript" --json-out "$folder/commitments.json")
+        if [[ -n "$min_words" ]]; then cm_args+=(--min-words "$min_words"); fi
         python3 "$REPO_DIR/lib/workspace.py" "${cm_args[@]}" \
           || log "WARN commitments failed for $fname (continuing)"
       else
