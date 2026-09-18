@@ -14,7 +14,9 @@
 # Skips (exit 0, clear message) when python3 is missing. plutil (macOS) is
 # used to lint the dry-run plist when present, otherwise plistlib alone.
 # The launchctl-backed checks (status/uninstall) only run on macOS and only
-# ever name throwaway labels of this test's own.
+# ever name throwaway labels of this test's own. The SwiftBar menubar group
+# (issue #24) is pinned here only at the parser level (help lists it); its
+# real coverage, offline and via the env overrides, is test/menubar_test.py.
 
 set -euo pipefail
 
@@ -111,9 +113,12 @@ bash -n "$SCRIPT_PATH" || fail "bash -n failed on test/watch_test.sh"
 python3 -m py_compile "$WATCH_PY" || fail "python3 -m py_compile failed on lib/watch.py"
 run_watch --help
 assert_eq "$RC" 0 "watch.py --help exits 0"
-assert_text "run|install|uninstall|status|memos" "$OUT" "help lists the subcommands"
+assert_text "run|install|uninstall|status|memos|menubar" "$OUT" "help lists the subcommands"
 run_watch memos --help
 assert_text "list|pull|delete|shortcut-recipe" "$OUT" "memos help lists its subcommands"
+run_watch menubar --help
+assert_eq "$RC" 0 "menubar --help exits 0"
+assert_text "install.*uninstall.*status" "$OUT" "menubar help lists its subcommands"
 
 # ---------------------------------------------------------------------------
 # Fixtures: fake whosaid + fake shortcuts on PATH, isolated agent dir, no

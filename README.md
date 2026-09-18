@@ -415,6 +415,35 @@ Logs land in `<ws>/.watch.log` (launchd captures the watcher's stdout and stderr
 `uninstall` unloads and removes the agent; `--purge` also removes the dedicated interpreter and
 the workspace's `.watch_state.json`, `.watch.lock`, and `.watch_staging/`, never the log.
 
+### Menu bar glyph: `whosaid watch menubar` (SwiftBar)
+
+`whosaid watch menubar install [--workspace <ws>] [--interval 10s]` symlinks a stdlib-only
+SwiftBar plugin (`contrib/swiftbar/whosaid.10s.py`) into SwiftBar's plugin directory, so the
+watcher's state lives in your menu bar at a glance; `menubar uninstall` removes it and
+`menubar status` reports whether SwiftBar is installed and running and whether the plugin can
+read the Voice Memos store. `whosaid doctor` prints the same report.
+
+| glyph | meaning |
+|---|---|
+| 🎙 | idle, watching the store |
+| 🔴 REC | a memo is being recorded right now |
+| ⏳ 90s | new memo, waiting for the file to settle |
+| ⚙️ 3m | transcribing / diarizing / action items (elapsed) |
+| ✅ | ingested (held 30 min, then back to idle) |
+| ⚠️ | needs a look |
+| 🎙✗ | launch agent not loaded |
+
+The dropdown carries the stage log tail, the agent line, links to the workspace, the latest
+dated meeting folder, every `_WORKLIST-<Owner>.md`, and `_WIKI.md`, plus actions to follow the
+log, kick the watcher now (`launchctl kickstart -k`), and refresh or relaunch SwiftBar.
+
+Two platform notes the plugin cannot fix for you: reading the Voice Memos store requires
+**SwiftBar itself** to hold Full Disk Access (the watcher's grant is separate — the plugin
+shows the pane link and a relaunch action when the probe fails, because a fresh grant only
+applies after a relaunch); and on a notched display a new status item can land behind the
+notch — `defaults write com.ameba.SwiftBar "NSStatusItem Preferred Position <plugin path>"
+-float <n>` plus a relaunch fixes it.
+
 ## Voice Memos helpers: `whosaid memos`
 
 ```bash

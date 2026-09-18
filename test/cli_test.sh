@@ -116,7 +116,7 @@ for token in \
   'whosaid context <ws>' \
   'whosaid graph <ws>' \
   'whosaid wiki <ws>' \
-  'whosaid watch run\|install\|uninstall\|status' \
+  'whosaid watch run\|install\|uninstall\|status\|menubar' \
   'whosaid memos list\|pull\|delete\|shortcut-recipe' \
   'whosaid commitments <ws>' \
   '_WORKLIST-<Owner>\.md' \
