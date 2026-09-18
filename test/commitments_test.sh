@@ -29,6 +29,15 @@
 #      rule at extraction and at fold, the requested_by / deadline rescue,
 #      min_words=0, --min-words and [commitments] min_words, and the
 #      near-miss reporting in commitments.md/.json and _COMMITMENTS.md
+#  12. unified corpus (issue #23): the self speaker's action-items.md
+#      commitment bullets (graph.py's "- **Owner** [Requester HH:MM:SS]
+#      text" grammar) fold into the SAME CM corpus through the same
+#      matcher — a matching bullet and its spoken clause become ONE CM id
+#      with TWO occurrences (source transcript + action-items, the
+#      bullet's timestamp); other owners' bullets never enter; legacy
+#      bullets default the owner to self; a bullet with several timestamps
+#      yields one occurrence each; ai_refs ride along; ids stable across
+#      re-runs
 #
 # macOS/BSD only: BSD grep/sed, bash 3.2 (no associative arrays). Python
 # checker scripts are written to files (not inline in "$( ... )") because
@@ -840,6 +849,222 @@ FOLD0="$(run_pycheck "$TMP/check_frag_fold0.py" "$FWS")" || fail "min_words = 0 
 assert_eq "$FOLD0" "ok" "[commitments] min_words = 0 turns the fold-time filter off"
 assert_not_has "Dropped fragments" "$FWS/_COMMITMENTS.md" \
   "no review section when nothing was dropped"
+
+# ---------------------------------------------------------------------------
+# 12. Unified corpus (issue #23): action-items.md commitment bullets fold
+#     into the CM corpus next to the transcript clauses.
+# ---------------------------------------------------------------------------
+echo "-- unified corpus: action-items bullets fold in --"
+
+UWS="$TMP/ws-unified"
+UMTG="$UWS/2026-09-17-0900"
+mkdir -p "$UMTG"
+cat > "$UMTG/transcript.speakers.txt" <<'EOF'
+# Speaker-labeled transcript: transcript
+# Diarization: sherpa-onnx, local.
+# Speakers (3): Alice_Example, Bob_Example, Carol_Example
+# Role: Alice_Example = self
+# Role: Bob_Example = boss
+# Role: Carol_Example = peer
+
+[00:00:02] Bob_Example: Can you send the vendor report?
+
+[00:00:06] Alice_Example: I'll send the vendor report by Friday.
+
+[00:00:10] Carol_Example: I'll rotate the on-call schedule.
+EOF
+
+# The spoken commitment comes through the real extractor, not a hand-made
+# commitments.json, so the transcript occurrence is exactly what production
+# writes (boss-requested, cue, turn timestamp).
+run_ws commitments --transcript "$UMTG/transcript.speakers.txt" --json-out "$UMTG/commitments.json"
+assert_eq "$RC" 0 "unified fixture: commitments extraction exit code"
+
+cat > "$UMTG/action-items.md" <<'EOF'
+# Action items — 2026-09-17-0900
+
+## 1. Asks from leadership (Bob_Example)
+
+- **Alice_Example** [Bob_Example 00:00:08] Send the vendor report by Friday
+- **Carol_Example** [Bob_Example 00:00:12] Rotate the on-call schedule
+
+## 2. Alice_Example's own commitments
+
+- **Alice_Example** [Alice_Example 00:00:14] Draft the migration plan (AI-007)
+- **Alice_Example** [00:00:30 / 00:00:45] Post the load test results
+- **[Bob_Example 00:00:20] Book the review room.**
+- plain bullet that is not a commitment
+EOF
+
+# fixture sanity: the spoken clause and its bullet must land at/above 0.82
+cat > "$TMP/check_usim.py" <<'PY'
+import sys
+sys.path.insert(0, sys.argv[1])
+import workspace as w
+r = w.similarity(w.normalize_text("I'll send the vendor report by Friday"),
+                 w.normalize_text("Send the vendor report by Friday"))
+assert 0.82 <= r < 1.0, "unified fixture pair scores %r; expected in [0.82, 1.0)" % r
+print("ok")
+PY
+USIM="$(run_pycheck "$TMP/check_usim.py" "$REPO/lib")" || fail "unified fixture sanity check crashed"
+assert_eq "$USIM" "ok" "spoken clause / bullet pair scores in [0.82, 1.0)"
+
+run_ws rollup "$UWS"
+assert_eq "$RC" 0 "unified fixture: rollup exit code"
+printf '%s\n' "$ERR" > "$TMP/unified.err"
+assert_has "folding 2026-09-17-0900/action-items.md (5 self-owned commitment bullet(s))" \
+  "$TMP/unified.err" "roll-up logs the action-items fold (5 rows: the two-timestamp bullet counts twice)"
+
+cat > "$TMP/check_unified.py" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1] + "/_commitments.json"))
+items = d["items"]
+assert [it["id"] for it in items] == ["CM-001", "CM-002", "CM-003", "CM-004"], \
+    [it["text"] for it in items]
+by_id = {it["id"]: it for it in items}
+
+# the unified occurrence shape is the contract the graph views join against
+shape = {"source", "meeting", "line", "t_sec", "owner", "requester",
+         "requester_role", "text", "cue", "negative"}
+for it in items:
+    for o in it["occurrences"]:
+        assert set(o) == shape, (it["id"], sorted(o))
+
+# CM-001: the spoken clause and its matching bullet, ONE id, TWO occurrences
+c1 = by_id["CM-001"]
+assert c1["text"] == "I'll send the vendor report by Friday", c1
+assert c1["speaker"] == "Alice_Example" and c1["priority"] == "high", c1
+assert c1["requested_by"] == "Bob_Example" and c1["requested_by_role"] == "boss", c1
+assert len(c1["occurrences"]) == 2, c1["occurrences"]
+spoken, bullet = c1["occurrences"]
+assert spoken["source"] == "transcript" and bullet["source"] == "action-items", \
+    c1["occurrences"]
+assert spoken == {
+    "source": "transcript", "meeting": "2026-09-17-0900", "line": 1, "t_sec": 6,
+    "owner": "Alice_Example", "requester": "Bob_Example", "requester_role": "boss",
+    "text": "I'll send the vendor report by Friday", "cue": "i'll send",
+    "negative": False}, spoken
+assert bullet == {
+    "source": "action-items", "meeting": "2026-09-17-0900", "line": 5, "t_sec": 8,
+    "owner": "Alice_Example", "requester": "Bob_Example", "requester_role": "boss",
+    "text": "Send the vendor report by Friday", "cue": None, "negative": False}, bullet
+
+# CM-002: unmatched self-owned bullet, ai_refs from the line, requester from
+# the bracket with its role looked up in the meeting's roles map
+c2 = by_id["CM-002"]
+assert c2["text"] == "Draft the migration plan (AI-007)", c2
+assert c2["ai_refs"] == "AI-007", c2
+assert c2["requested_by"] == "Alice_Example" and c2["requested_by_role"] == "self", c2
+assert len(c2["occurrences"]) == 1 and c2["occurrences"][0]["source"] == "action-items", c2
+assert c2["occurrences"][0]["t_sec"] == 14 and c2["occurrences"][0]["line"] == 10, c2
+
+# CM-003: one occurrence per timestamp in the bracket, same line
+c3 = by_id["CM-003"]
+assert [(o["t_sec"], o["line"]) for o in c3["occurrences"]] == [(30, 11), (45, 11)], c3
+assert all(o["source"] == "action-items" for o in c3["occurrences"]), c3
+assert c3["requested_by"] == "Alice_Example", "bracket with no name: requester = owner"
+
+# CM-004: legacy '**[Requester TIME] Title.**' bullet defaults the owner to
+# the meeting's self speaker
+c4 = by_id["CM-004"]
+assert c4["text"] == "Book the review room.", c4
+assert c4["speaker"] == "Alice_Example", c4
+assert c4["requested_by"] == "Bob_Example" and c4["requested_by_role"] == "boss", c4
+assert c4["occurrences"][0]["owner"] == "Alice_Example", c4
+
+# Carol's bullet never entered the corpus; the plain bullet is not one
+texts = [it["text"] for it in items]
+assert not any("on-call" in t for t in texts), texts
+assert not any("plain bullet" in t for t in texts), texts
+
+assert d["next_id"] == 5, d["next_id"]
+assert d["folded_meetings"] == ["2026-09-17-0900"], d["folded_meetings"]
+print("ok")
+PY
+UCHK="$(run_pycheck "$TMP/check_unified.py" "$UWS")" || fail "unified corpus JSON check crashed"
+assert_eq "$UCHK" "ok" \
+  "one CM id with transcript+action-items occurrences (bullet timestamp, requester+role, ai_refs); other owners stay out"
+
+assert_has "(2×): **[boss]** I'll send the vendor report by Friday" "$UWS/_COMMITMENTS.md" \
+  "_COMMITMENTS.md renders the two-sighting item once with its count"
+assert_has "  - 2026-09-17-0900 transcript @ 00:00:06" "$UWS/_COMMITMENTS.md" \
+  "the transcript sighting lists under the item"
+assert_has "  - 2026-09-17-0900 action-items @ 00:00:08 (line 5)" "$UWS/_COMMITMENTS.md" \
+  "the action-items sighting lists under the item with its bullet timestamp and line"
+assert_has "- **CM-002** [open] (Alice_Example)" "$UWS/_COMMITMENTS.md" \
+  "an unmatched self-owned bullet becomes its own CM item"
+
+# hand-edit reconcile still works over two-source occurrences: flip CM-001
+# to done, re-run, and the sighting lines survive
+sed -i '' 's/\*\*CM-001\*\* \[open\]/**CM-001** [done]/' "$UWS/_COMMITMENTS.md" \
+  || fail "sed failed to hand-edit the unified CM-001 to done"
+PASS=$((PASS + 1))
+run_ws rollup "$UWS"
+assert_eq "$RC" 0 "unified fixture: rollup after hand-edit exit code"
+assert_has "**CM-001** [done]" "$UWS/_COMMITMENTS.md" \
+  "the [done] hand edit survives over two-source occurrences"
+assert_has "  - 2026-09-17-0900 action-items @ 00:00:08 (line 5)" "$UWS/_COMMITMENTS.md" \
+  "sighting lines survive the hand-edit re-run"
+
+# idempotency: a second run rewrites nothing — same ids, same bytes
+shasum "$UWS/_COMMITMENTS.md" "$UWS/_commitments.json" > "$TMP/unified_before.sha"
+run_ws rollup "$UWS"
+assert_eq "$RC" 0 "unified fixture: second rollup exit code"
+shasum -c "$TMP/unified_before.sha" >/dev/null 2>&1 \
+  || fail "second unified rollup rewrote artifacts (expected byte-identical)"
+PASS=$((PASS + 1))
+cat > "$TMP/check_unified_again.py" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1] + "/_commitments.json"))
+assert [it["id"] for it in d["items"]] == ["CM-001", "CM-002", "CM-003", "CM-004"], d["items"]
+assert all(len(it["occurrences"]) == (2 if it["id"] in ("CM-001", "CM-003") else 1)
+           for it in d["items"]), d["items"]
+assert d["next_id"] == 5, d["next_id"]
+print("ok")
+PY
+UCHK2="$(run_pycheck "$TMP/check_unified_again.py" "$UWS")" || fail "unified idempotency check crashed"
+assert_eq "$UCHK2" "ok" "ids and occurrence counts unchanged by the re-run"
+
+# the bullet grammar itself, in-process (mirrors the pre-#23 graph parser)
+cat > "$TMP/check_cm_doc_grammar.py" <<'PY'
+import sys
+sys.path.insert(0, sys.argv[1])
+import workspace as w
+rows = w.parse_action_items_commitments(
+    "# h\n"
+    "- **Alice** [Bob 12:01 / 14:30] Ship the schema fix\n"
+    "- **Alice** [46:36-47:35] Write the design note\n"
+    "- **Alice** [inferred] Confirm the demo time\n"
+    "- **Alice** [Bob, implicit] Loop in finance\n"
+    "- **Alice** [00:20:00] Review the PRs\n"
+    "- **[Bob 1:04:21] Get onboarded.**\n"
+    "- plain bullet\n",
+    "M", "Self")
+assert [r["text"] for r in rows] == [
+    "Ship the schema fix", "Ship the schema fix",
+    "Write the design note", "Write the design note",
+    "Confirm the demo time",
+    "Loop in finance",
+    "Review the PRs",
+    "Get onboarded."], rows
+assert [(r["owner"], r["requester"], r["t_sec"]) for r in rows] == [
+    ("Alice", "Bob", 721), ("Alice", "Bob", 870),
+    ("Alice", "Alice", 2796), ("Alice", "Alice", 2855),
+    ("Alice", "Alice", None),
+    ("Alice", "Bob", None),
+    ("Alice", "Alice", 1200),
+    ("Self", "Bob", 3861)], rows
+assert [r["line"] for r in rows] == [2, 2, 3, 3, 4, 5, 6, 7], rows
+assert w.parse_cm_bracket("Bob 12:01 / 14:30") == ("Bob", ["12:01", "14:30"])
+assert w.parse_cm_bracket("12:01") == ("", ["12:01"])
+assert w.parse_cm_bracket("inferred") == ("", ["inferred"])
+assert w.parse_cm_bracket("implicit", strict=True) == ("", [""])
+assert w.merge_ai_refs("AI-002,AI-001", "AI-001,AI-003") == "AI-001,AI-002,AI-003"
+print("ok")
+PY
+GRAM="$(run_pycheck "$TMP/check_cm_doc_grammar.py" "$REPO/lib")" || fail "bullet grammar check crashed"
+assert_eq "$GRAM" "ok" \
+  "bullet grammar: one row per timestamp, requester/owner defaults, inferred and no-time brackets, legacy shape"
 
 # ---------------------------------------------------------------------------
 echo ""

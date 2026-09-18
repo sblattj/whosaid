@@ -8,6 +8,26 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ### Added
 
+- **One commitment model (GitHub issue #23).** The CM corpus (`_commitments.json`) is now the
+  single id authority for commitments from BOTH sources: the roll-up folds self-owned
+  action-items bullets (`- **Owner** [Requester HH:MM:SS] text`) into the same CM-NNN items as
+  the spoken clauses via the existing TextMatcher — a bullet and its matching clause become one
+  item with two occurrences (each carrying `source` `transcript`|`action-items`, meeting, line,
+  `t_sec`, owner, requester, requester_role, text, cue, negative) and the bullet's timestamp
+  back to the audio. `whosaid graph <ws> commitments [--owner X] [--source S] [--status S]
+  [--json]` inspects the merged table; the worklist ranks action-items sightings of self-owned
+  items with no input change.
+
+### Changed
+
+- **`graph build` loads the CM corpus instead of re-parsing action-items bullets (GitHub issue
+  #23).** The `commitment` table in `_search.db` is now the corpus flattened — one row per
+  occurrence with the CM id, source, and status — so `graph person` (one line per item with
+  occurrence count and sources), `graph item`, and `_WIKI.md` cite the same rows the worklist
+  ranks (`CM-001 meeting@12:01`), and the same spoken promise no longer lives twice with no
+  link between the two. Legacy/old-shape corpora load defensively; a missing corpus yields an
+  empty table with one log line.
+
 - **`_COMMITMENTS.md` / `_commitments.json` corpus.** Roll-up folds each meeting's
   `commitments.json` into stable `CM-NNN` ids (never renumbered) with the same 0.82 difflib
   dedupe and 0.10 near-miss review band as action items, grouped by status then speaker,

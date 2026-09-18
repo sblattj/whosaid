@@ -30,6 +30,9 @@
 #   7. --json shape and --all-owners --json
 #   8. `whosaid commitments` launcher dispatch + help
 #   9. determinism: a second roll-up rewrites nothing
+#  10. issue #23: a self-owned commitment's action-items bullet folds into
+#      its CM item as a second occurrence, and the worklist ranks the item
+#      on BOTH sightings (repeat across meetings, requester from the bullet)
 #
 # macOS/BSD only: BSD grep/sed, bash 3.2 (no associative arrays). Python
 # checker scripts are written to files, not inline in "$( ... )", because
@@ -755,6 +758,88 @@ shasum -c "$TMP/before.sha" >/dev/null 2>&1 \
 PASS=$((PASS + 1))
 printf '%s\n' "$ERR" > "$TMP/settle.err"
 assert_has "_WORKLIST-Alice_Example.md (unchanged)" "$TMP/settle.err" "the roll-up reports the unchanged worklist"
+
+# ---------------------------------------------------------------------------
+# 10. Issue #23: action-items-sourced occurrences rank like transcript ones.
+#     Meeting 1 contributes the spoken clause (commitments.json), meeting 2
+#     only an action-items.md bullet — the worklist must see both meetings,
+#     the bullet's requester, and rank the merged item on the union.
+# ---------------------------------------------------------------------------
+echo "-- action-items-sourced occurrences (issue #23) --"
+
+UW="$TMP/ws-issue23"
+mkdir -p "$UW/2026-09-14-0900" "$UW/2026-09-15-0900"
+cat > "$UW/2026-09-14-0900/commitments.json" <<'EOF'
+{
+  "roles": {"Alice_Example": "self", "Bob_Example": "boss"},
+  "items": [
+    {"speaker": "Alice_Example", "speaker_role": "self",
+     "text": "I'll send the vendor report by Friday", "time": "00:00:06",
+     "cue": "i'll send", "negative": false, "priority": "normal"}
+  ]
+}
+EOF
+# meeting 2 has no commitments.json: its self role comes from the speakers
+# headers, so its bullet folds on name match alone
+cat > "$UW/2026-09-15-0900/meeting.speakers.txt" <<'EOF'
+# Speaker-labeled transcript: transcript
+# Diarization: sherpa-onnx, local.
+# Speakers (2): Alice_Example, Bob_Example
+# Role: Alice_Example = self
+# Role: Bob_Example = boss
+
+[00:00:08] Alice_Example: I'll send the vendor report by Friday.
+EOF
+cat > "$UW/2026-09-15-0900/action-items.md" <<'EOF'
+# Action items — 2026-09-15-0900
+
+- **Alice_Example** [Bob_Example 00:00:08] Send the vendor report by Friday
+- **Carol_Example** [Bob_Example 00:00:10] Rotate the on-call schedule
+EOF
+
+run_ws rollup "$UW"
+assert_eq "$RC" 0 "rollup (issue #23 fixture) exit code"
+assert_file "$UW/_WORKLIST-Alice_Example.md" "the worklist is written from both sources"
+
+cat > "$TMP/check_issue23_corpus.py" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1] + "/_commitments.json"))
+assert [it["id"] for it in d["items"]] == ["CM-001"], [it["text"] for it in d["items"]]
+it = d["items"][0]
+assert it["requested_by"] == "Bob_Example" and it["requested_by_role"] == "boss", it
+assert [(o["source"], o["meeting"], o["t_sec"]) for o in it["occurrences"]] == \
+    [("transcript", "2026-09-14-0900", 6), ("action-items", "2026-09-15-0900", 8)], \
+    it["occurrences"]
+assert d["folded_meetings"] == ["2026-09-14-0900", "2026-09-15-0900"], d["folded_meetings"]
+print("ok")
+PY
+I23C="$(run_pycheck "$TMP/check_issue23_corpus.py" "$UW")" || fail "issue #23 corpus check crashed"
+assert_eq "$I23C" "ok" \
+  "one CM id across both sources; the bullet's requester upgrades the item; both meetings folded (Carol's bullet stays out)"
+
+WL23="$UW/_WORKLIST-Alice_Example.md"
+assert_has "2026-09-14-0900 → 2026-09-15-0900 (2×)" "$WL23" \
+  "the worklist spans both sightings of the merged item"
+assert_has "P1 · boss · due=by friday · 2 meetings · latest meeting · strong cue" "$WL23" \
+  "the action-items occurrence ranks: repeat across meetings, bullet requester (boss), recency, cue"
+assert_eq "$(grep -c '^- \*\*CM-' "$WL23")" "1" \
+  "exactly one CM line in the worklist"
+
+run_ws worklist "$UW" --json
+assert_eq "$RC" 0 "worklist --json (issue #23 fixture) exit code"
+printf '%s\n' "$OUT" > "$TMP/wl23.json"
+cat > "$TMP/check_issue23_json.py" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1]))
+assert d["owner"] == "Alice_Example", d["owner"]
+assert [it["id"] for it in d["items"]] == ["CM-001"], d["items"]
+it = d["items"][0]
+assert it["occurrences"] == 2 and it["tier"] == "P1", it
+assert "2 meetings" in it["why"] and "boss" in it["why"], it
+print("ok")
+PY
+I23J="$(run_pycheck "$TMP/check_issue23_json.py" "$TMP/wl23.json")" || fail "issue #23 json check crashed"
+assert_eq "$I23J" "ok" "--json reports 2 occurrences (both sources) and the union-ranked tier"
 
 # ---------------------------------------------------------------------------
 echo ""
