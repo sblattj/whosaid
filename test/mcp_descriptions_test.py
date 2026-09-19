@@ -25,6 +25,7 @@ camelCase field names (`inputSchema`, `readOnlyHint`) the spec pins on.
 """
 
 import asyncio
+import re
 import sys
 from pathlib import Path
 
@@ -48,8 +49,15 @@ def wire(tool) -> dict:
 
 
 def main() -> None:
-    assert mcp_server.__version__ == "1.2.0", (
-        f"__version__ must be 1.2.0, got {mcp_server.__version__!r}"
+    # Drift-catcher, not a frozen number: the server's __version__ must equal
+    # the launcher's WHOSAID_VERSION (the two release-time bump sites; see
+    # CHANGELOG "PyPI packaging" for the single-source plan).
+    launcher = (REPO_DIR / "whosaid").read_text()
+    m = re.search(r'^WHOSAID_VERSION="([^"]+)"', launcher, re.M)
+    assert m, "WHOSAID_VERSION not found in the whosaid launcher"
+    assert mcp_server.__version__ == m.group(1), (
+        f"mcp_server.__version__ ({mcp_server.__version__!r}) != launcher "
+        f"WHOSAID_VERSION ({m.group(1)!r}) — bump both at release time"
     )
 
     tools = asyncio.run(mcp_server.mcp.list_tools())
