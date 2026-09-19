@@ -31,9 +31,11 @@ Subcommands (the `whosaid` bash CLI shells out to this module via
                [--engine auto|ollama|hook|none] [--ws DIR]
       Per-meeting action items. Two engines (issue #14):
         hook    --hook (or WHOSAID_ACTION_ITEMS_HOOK) runs as a shell command
-                with the transcript text on stdin plus WHOSAID_TRANSCRIPT_PATH
-                and WHOSAID_SPEAKERS in the environment; its stdout is the
-                markdown.
+                with the transcript text on stdin plus WHOSAID_TRANSCRIPT_PATH,
+                WHOSAID_SPEAKERS, and WHOSAID_ROLES (compact JSON {name: role}
+                from '# Role:' headers, empty {} when none; the same roles the
+                commitments hook gets, #27) in the environment; its stdout is
+                the markdown.
         ollama  the built-in summarizer, lib/action_items.py, run in-process:
                 a local Ollama model on 127.0.0.1 drafts sectioned bullets
                 with verified quotes, configured by <workspace>/whosaid.toml
@@ -543,12 +545,18 @@ def skeleton_markdown(transcript: Path, speakers: list[str]) -> str:
     return "\n".join(lines)
 
 
-def run_hook(hook: str, transcript: Path, text: str, speakers: list[str]) -> str:
+def run_hook(hook: str, transcript: Path, text: str, speakers: list[str],
+             roles: dict | None = None) -> str:
     """The --hook engine: shell command, transcript on stdin, markdown on stdout.
-    Returns '' (after a WARN) when the hook fails or prints nothing."""
+    Returns '' (after a WARN) when the hook fails or prints nothing. The hook
+    gets WHOSAID_TRANSCRIPT_PATH, WHOSAID_SPEAKERS, and WHOSAID_ROLES (compact
+    JSON {name: role}, empty {} when none are declared). These are the same
+    roles the commitments hook receives, so an action-items hook can tell leadership from
+    peers without re-deriving them (GitHub issue #27)."""
     env = dict(os.environ)
     env["WHOSAID_TRANSCRIPT_PATH"] = str(transcript.resolve())
     env["WHOSAID_SPEAKERS"] = ",".join(speakers)
+    env["WHOSAID_ROLES"] = json.dumps(roles or {}, separators=(",", ":"))
     try:
         proc = subprocess.run(
             hook, shell=True, input=text, env=env,
@@ -581,6 +589,7 @@ def cmd_action_items(args: argparse.Namespace) -> int:
         return 1
     text = transcript.read_text()
     speakers = parse_speakers(text)
+    roles = parse_roles(text)  # '# Role:' headers; handed to the hook as WHOSAID_ROLES (#27)
 
     import wsconfig  # sibling module in lib/; lazy so importers of this file need nothing new
     ws = Path(args.ws).expanduser() if getattr(args, "ws", None) else transcript.resolve().parent.parent
@@ -608,7 +617,7 @@ def cmd_action_items(args: argparse.Namespace) -> int:
             log("WARN --engine hook but no hook is set (--hook CMD or WHOSAID_ACTION_ITEMS_HOOK); "
                 "writing skeleton")
         else:
-            markdown = run_hook(hook, transcript, text, speakers)
+            markdown = run_hook(hook, transcript, text, speakers, roles)
             if markdown:
                 source = "hook"
     elif engine == "ollama":

@@ -436,7 +436,8 @@ ENV OVERRIDES
   WHOSAID_REC_DEVICE   avfoundation audio device index (default: 0).
   WHOSAID_INSTALL_DIR  Command install directory (default: ~/.local/bin).
   WHOSAID_ACTION_ITEMS_HOOK  Default action-items summarizer hook: gets the
-                      transcript on stdin, prints markdown on stdout.
+                      transcript on stdin, prints markdown on stdout, and reads
+                      WHOSAID_TRANSCRIPT_PATH, WHOSAID_SPEAKERS, WHOSAID_ROLES.
   WHOSAID_WORKSPACE    Default meeting workspace for index/search/context/graph/
                       wiki, for 'whosaid doctor', and for the read-only search
                       tools of 'whosaid mcp'.
