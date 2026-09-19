@@ -41,7 +41,7 @@ REPO_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
 
 # Single source of truth for the released version. Bump this alongside the
 # CHANGELOG.md entry and git tag at release time.
-WHOSAID_VERSION="1.2.0"
+WHOSAID_VERSION="1.3.0"
 
 HELPER="$REPO_DIR/lib/transcribe_mlx.py"
 DIARIZER="$REPO_DIR/lib/diarize_sherpa.py"

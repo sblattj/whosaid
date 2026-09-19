@@ -52,7 +52,7 @@ if _LIB_DIR not in sys.path:
     sys.path.insert(0, _LIB_DIR)
 import wsconfig  # noqa: E402
 
-__version__ = "1.2.0"
+__version__ = "1.3.0"
 
 # ---------------------------------------------------------------------------
 # Paths / environment (mirror the `whosaid` bash dispatcher's own derivations).

@@ -6,6 +6,8 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-09-18
+
 ### Added
 
 - **SwiftBar menu bar plugin: `whosaid watch menubar install` (GitHub issue #24).** Ships
