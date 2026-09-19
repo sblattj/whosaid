@@ -8,6 +8,13 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ### Added
 
+- **Action-items hooks receive `WHOSAID_ROLES` (GitHub issue #27).** The external `--hook` /
+  `WHOSAID_ACTION_ITEMS_HOOK` engine now runs with `WHOSAID_ROLES` in its environment (compact
+  JSON `{name: role}` from the transcript's `# Role:` headers, `{}` when none), matching the
+  commitments hook. A bring-your-own summarizer can tell leadership from peers without
+  re-deriving roles. Additive and backward compatible: hooks that ignore the variable are
+  unchanged.
+
 - **PyPI packaging (`pyproject.toml`).** The `lib/` modules ship as the importable `whosaid`
   package (PEP 621, hatchling; wheel renames `lib/` → `whosaid/`), with a `whosaid-mcp` console
   script that runs the MCP server (`whosaid.mcp_server:main`) and the MCP registry marker

@@ -599,6 +599,54 @@ def test_workspace_integration(stub: StubOllama, tmp: Path) -> None:
           "parse_bullets itself is unchanged")
 
 
+def test_hook_env_roles(tmp: Path) -> None:
+    """The external --hook engine gets WHOSAID_ROLES (from '# Role:' headers),
+    the same context the commitments hook receives (GitHub issue #27), alongside
+    WHOSAID_SPEAKERS and WHOSAID_TRANSCRIPT_PATH."""
+    for k in ("WHOSAID_ACTION_ITEMS_HOOK", "WHOSAID_OWNER"):
+        os.environ.pop(k, None)
+    ws = tmp / "ws-hook-roles"
+    meeting = ws / "2026-09-19-0900"
+    meeting.mkdir(parents=True)
+    tr = meeting / "meeting.speakers.txt"
+    tr.write_text(
+        "# Speakers (3): Alice_Example, Bob_Example, Carol_Example\n"
+        "# Role: Alice_Example = self\n"
+        "# Role: Bob_Example = boss\n"
+        "# Role: Carol_Example = peer\n\n"
+        "[00:00:01] Bob_Example: Alice, send the vendor report.\n"
+        "[00:00:05] Alice_Example: I'll send it by Thursday.\n"
+    )
+    # The hook echoes what it was handed; run_hook captures stdout as the markdown.
+    hook = ('printf "ROLES=%s\\nSPEAKERS=%s\\nHASPATH=%s\\n" '
+            '"$WHOSAID_ROLES" "$WHOSAID_SPEAKERS" '
+            '"$([ -f "$WHOSAID_TRANSCRIPT_PATH" ] && echo yes || echo no)"')
+
+    def run(argv: list[str]) -> tuple[int, str]:
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            rc = workspace.main(argv)
+        return rc, err.getvalue()
+
+    out = tmp / "hook-roles.md"
+    rc, err = run(["action-items", "--transcript", str(tr), "--engine", "hook",
+                   "--hook", hook, "--md-out", str(out)])
+    got = out.read_text()
+    check(rc == 0 and "action items (hook)" in err, f"hook engine exits 0: {err}")
+    check('ROLES={"Alice_Example":"self","Bob_Example":"boss","Carol_Example":"peer"}' in got,
+          f"hook receives WHOSAID_ROLES from the '# Role:' headers: {got!r}")
+    check("SPEAKERS=Alice_Example,Bob_Example,Carol_Example" in got, f"hook still gets speakers: {got!r}")
+    check("HASPATH=yes" in got, f"hook still gets a readable transcript path: {got!r}")
+
+    # No roles declared -> an empty JSON object still reaches the hook.
+    tr2 = meeting / "noroles.speakers.txt"
+    tr2.write_text("# Speakers (1): Alice_Example\n\n[00:00:01] Alice_Example: I'll follow up.\n")
+    out2 = tmp / "hook-noroles.md"
+    rc, _ = run(["action-items", "--transcript", str(tr2), "--engine", "hook",
+                 "--hook", hook, "--md-out", str(out2)])
+    check(rc == 0 and "ROLES={}" in out2.read_text(), "no '# Role:' headers -> WHOSAID_ROLES is an empty object")
+
+
 def main() -> None:
     stub = StubOllama()
     try:
@@ -610,6 +658,7 @@ def main() -> None:
             test_no_groups_and_no_owner(stub, tmp)
             test_failures_and_cli(stub, tmp)
             test_workspace_integration(stub, tmp)
+            test_hook_env_roles(tmp)
     finally:
         stub.close()
     print(f"PASS: {CHECKS} assertions")
