@@ -184,7 +184,7 @@ Typical workflow: whosaid_transcribe -> read the speaker cards in the result -> 
 
 Speakers can carry role tags (self/boss/peer/report/external) set via whosaid_relabel's `roles` param; roles appear in speaker cards and transcripts and tell you whose commitments matter most (boss ranks higher). "self" is the user's own voice.
 
-Dev-commitments = the cross-meeting corpus of commitments the self-roled speaker made to others/team. Extracted per-meeting into commitments.md/commitments.json (via `python3 lib/workspace.py commitments --transcript T --json-out F`, or `whosaid ingest --commitments`), then rolled up into _COMMITMENTS.md/_commitments.json with stable CM-NNN ids. whosaid_worklist(owner="me") answers "what did I sign up for, ranked": the owner's commitments plus the action items they own, tiered P1/P2/P3 (boss-requested, blocking or deadline cues, repeat across meetings, recency, cue strength) with a score and why strings; the same view the roll-up writes to _WORKLIST-<Owner>.md.
+Dev-commitments = the cross-meeting corpus of commitments the self-roled speaker made to others/team. Extracted per-meeting into commitments.md/commitments.json (via `python3 lib/workspace.py commitments --transcript T --json-out F`, or `whosaid ingest --commitments`), then rolled up into _COMMITMENTS.md/_commitments.json with stable CM-NNN ids. whosaid_worklist(owner="me") answers "what did I sign up for, ranked": the owner's commitments plus the action items they own, tiered P1/P2/P3 (boss-requested, blocking or deadline cues, repeat across meetings, recency, cue strength) with a score and why strings; the same view the roll-up writes to _WORKLIST-<Owner>.md (the tool takes tier/limit/offset/compact and caps at 50 items unless told otherwise).
 
 Not exposed here: `enroll` and `record` are interactive microphone operations that need a live terminal. Run them from the `whosaid` CLI. The first transcribe downloads ~1.5 GB of models; run whosaid_doctor to check readiness. Full flag/env/long-audio reference: read the whosaid://guide resource.
 
@@ -952,6 +952,12 @@ _AT_RE = re.compile(r"^[0-9]{1,3}:[0-9]{2}(:[0-9]{2})?$")  # MM:SS or HH:MM:SS
 _ITEM_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")  # e.g. AI-042
 _MAX_K = 100
 _MAX_WINDOW = 3600  # seconds of context either side; more than that is "read the transcript"
+_WORKLIST_TIERS = ("P1", "P2", "P3")
+# GitHub issue #30: one real worklist ran ~61k chars and blew the MCP tool-result
+# token limit, so a call with neither limit nor offset returns only the top N,
+# reporting the rest via "omitted"/"hint" instead of dumping everything.
+_WORKLIST_DEFAULT_LIMIT = 50
+_WORKLIST_COMPACT_KEYS = ("id", "source", "text", "tier", "score", "why")
 
 
 def _read_only() -> ToolAnnotations:
@@ -1120,7 +1126,11 @@ _DESC_WS_WORKLIST = (
     "P1 = boss-requested, a blocking/urgency cue, a deadline cue, or seen in 3+ meetings; "
     "P2 = seen in 2 meetings, requested by anyone, or a strong cue in the latest meeting; "
     "P3 = the rest; negated items are never P1. owner is a speaker label or 'me' (the "
-    "self-roled speaker, else the whosaid.toml [workspace] owner). Deterministic, no LLM, "
+    "self-roled speaker, else the whosaid.toml [workspace] owner). Filter and page with "
+    "tier (P1/P2/P3, case-insensitive) first, then offset (skip N), then limit (top N); "
+    "compact=true keeps only id, source, text, tier, score and why per item; a call with "
+    "neither limit nor offset returns the top 50 items plus total/omitted and a paging "
+    "hint (GitHub issue #30). Deterministic, no LLM, "
     "same view as _WORKLIST-<Owner>.md. Read-only. Keywords: my worklist, what did I "
     "promise, what did I sign up for, my priorities, ranked commitments."
 )
@@ -1406,17 +1416,46 @@ def whosaid_workspace_status(workspace: Optional[str] = None) -> dict:
 # 16) whosaid_worklist
 # ---------------------------------------------------------------------------
 @mcp.tool(name="whosaid_worklist", description=_DESC_WS_WORKLIST, annotations=_read_only())
-def whosaid_worklist(owner: str = "me", workspace: Optional[str] = None) -> dict:
+def whosaid_worklist(
+    owner: str = "me",
+    tier: Optional[str] = None,
+    limit: Optional[int] = None,
+    offset: int = 0,
+    compact: bool = False,
+    workspace: Optional[str] = None,
+) -> dict:
     """Shell `workspace.py worklist <ws> --owner <owner> --json`.
 
     Returns {"ok", "workspace", "owner", "generated_from": [meetings], "items": [...],
-    "count"}, each item {id, source, text, status, tier, score, why, first_seen,
-    last_seen, occurrences, requested_by, negative, also}. Reads _commitments.json
-    and _action-items.json only (the roll-up writes them), never the index.
+    "count", "total"} plus "omitted"/"hint" when items were held back. Each item is
+    {id, source, text, status, tier, score, why, first_seen, last_seen, occurrences,
+    requested_by, negative, also}; compact=true keeps only id, source, text, tier,
+    score, why. Reads _commitments.json and _action-items.json only (the roll-up
+    writes them), never the index. tier filters the full ranked list first, then
+    offset skips, then limit caps (the shell's order is never re-sorted); with
+    neither limit nor offset the response self-caps at _WORKLIST_DEFAULT_LIMIT
+    items (GitHub issue #30).
     """
     ws, err = _resolve_ws(workspace)
     if err:
         return err
+    if tier is not None:
+        raw_tier = (tier or "").strip()
+        tier = raw_tier.upper()
+        if tier not in _WORKLIST_TIERS:
+            return _ws_error(f"invalid tier '{raw_tier}'", "use one of: P1, P2, P3 (case-insensitive)")
+    try:
+        limit = None if limit is None else int(limit)
+    except (TypeError, ValueError):
+        return _ws_error(f"invalid limit '{limit}'", "pass a whole number >= 1")
+    if limit is not None and limit < 1:
+        return _ws_error(f"limit must be >= 1, got {limit}", "pass limit=N to cap the page size")
+    try:
+        offset = int(offset)
+    except (TypeError, ValueError):
+        return _ws_error(f"invalid offset '{offset}'", "pass a whole number >= 0")
+    if offset < 0:
+        return _ws_error(f"offset must be >= 0, got {offset}", "offset is a skip count; 0 is the first page")
     who = (owner or "").strip() or "me"
     payload, err = _run_ws(WORKSPACE_PY, ["worklist", ws, "--owner", who], ws)
     if err:
@@ -1428,14 +1467,38 @@ def whosaid_worklist(owner: str = "me", workspace: Optional[str] = None) -> dict
         return err
     data = payload if isinstance(payload, dict) else {}
     items = data.get("items") if isinstance(data.get("items"), list) else []
-    return {
+    if tier is not None:
+        items = [it for it in items if isinstance(it, dict) and str(it.get("tier", "")).upper() == tier]
+    total = len(items)
+    if limit is None and offset == 0:
+        limit = _WORKLIST_DEFAULT_LIMIT  # self-limiting default (GitHub issue #30)
+    items = items[offset:]
+    if limit is not None:
+        items = items[:limit]
+    if compact:
+        items = [{k: it.get(k) for k in _WORKLIST_COMPACT_KEYS} for it in items]
+    out = {
         "ok": True,
         "workspace": str(ws),
         "owner": data.get("owner") or who,
         "generated_from": data.get("generated_from") or [],
         "items": items,
         "count": len(items),
+        "total": total,
     }
+    if tier is not None:
+        out["tier"] = tier
+    if limit is not None:
+        out["limit"] = limit
+    if offset:
+        out["offset"] = offset
+    if compact:
+        out["compact"] = True
+    omitted = total - (offset + len(items))
+    if omitted > 0:
+        out["omitted"] = omitted
+        out["hint"] = f"more remain: pass offset={offset + len(items)} (or limit/compact) to page"
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -1559,7 +1622,11 @@ Roles tag who each speaker IS to the user, so commitments can be ranked:
   overdue=YYYY-MM-DD and no longer earns P1. Score, why strings and the cue
   lists come from whosaid.toml [commitments] (boss, deadline_cues,
   blocking_cues, negators, strong_cues, weak_cues, weights,
-  embed_threshold). Deterministic, no LLM.
+  embed_threshold). Deterministic, no LLM. The MCP tool filters and pages this
+  view (GitHub issue #30): tier (P1/P2/P3, case-insensitive) first, then offset
+  skips, then limit caps; compact=true keeps only id, source, text, tier, score
+  and why per item; with neither limit nor offset it returns the top 50 plus
+  total/omitted and a paging hint.
 
 ## Long audio runs in parallel
 Recordings over ~15 min (900 s) auto-chunk: the file is split into windows,

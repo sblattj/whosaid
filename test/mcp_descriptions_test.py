@@ -220,8 +220,13 @@ def main() -> None:
     check("GitHub issue #13" in d_worklist and "P1" in d_worklist and "_WORKLIST-" in d_worklist,
           "worklist desc must cite issue #13, the tiers and the rendered file")
     wprops = dumps["whosaid_worklist"]["inputSchema"]["properties"]
-    check(set(wprops) == {"owner", "workspace"}, f"worklist params: {sorted(wprops)}")
+    check(set(wprops) == {"owner", "workspace", "tier", "limit", "offset", "compact"},
+          f"worklist params: {sorted(wprops)}")
     check(wprops["owner"].get("default") == "me", f"worklist owner default must be me: {wprops['owner']}")
+    check(wprops["offset"].get("default") == 0 and wprops["compact"].get("default") is False,
+          f"worklist paging defaults: offset={wprops.get('offset')} compact={wprops.get('compact')}")
+    check(all(p in d_worklist for p in ("tier", "limit", "offset", "compact")),
+          "worklist desc must document the tier/limit/offset/compact params")
     check(not dumps["whosaid_worklist"]["inputSchema"].get("required"), "worklist has no required params")
     check("whosaid_worklist" in (mcp_server.SERVER_INSTRUCTIONS or ""), "instructions must mention whosaid_worklist")
 
