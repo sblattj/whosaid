@@ -8,6 +8,14 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ### Added
 
+- **`whosaid_worklist` pagination: `tier`/`limit`/`offset`/`compact` (GitHub issue #30).**
+  The full ranked worklist ran ~61k chars in one observed workspace and exceeded the MCP
+  tool-result token limit. `tier="P1|P2|P3"` (case-insensitive) filters the ranked list
+  first, then `offset` skips, then `limit` caps (the shell's order is preserved);
+  `compact=true` keeps only id, source, text, tier, score and why per item; a call with
+  neither `limit` nor `offset` now returns the top 50 items (`_WORKLIST_DEFAULT_LIMIT`)
+  with `total`, `omitted` and a paging `hint` instead of the whole list.
+
 - **`whosaid watch install --no-fda`: the no-administrator flow.** The macOS Full Disk Access
   toggle is admin-gated (it demands an administrator's password; MDM-managed Macs may hide the
   pane entirely), yet folder mode never needed FDA. `--no-fda` makes that the default: with no

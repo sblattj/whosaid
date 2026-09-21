@@ -381,6 +381,75 @@ def test_worklist(ws: Path, fake: FakeRunner) -> None:
     check(out["ok"] is False and len(fake.calls) == before, "bad workspace never reaches the runner")
 
 
+def test_worklist_paging(ws: Path, fake: FakeRunner) -> None:
+    """tier/limit/offset/compact + the 50-item default cap (GitHub issue #30)."""
+    w = str(ws.resolve())
+    items = [
+        {"id": f"CM-{i:03d}", "source": "commitments", "text": f"do thing {i}", "status": "open",
+         "tier": "P1" if i < 2 else ("P2" if i < 4 else "P3"), "score": 10 - i, "why": ["boss"],
+         "first_seen": "2026-01-05", "last_seen": "2026-01-05", "occurrences": 1,
+         "requested_by": None, "negative": False, "also": None}
+        for i in range(6)
+    ]
+    payload = {"owner": "Alice_Example", "generated_from": ["2026-01-05-0900"], "items": items}
+
+    # tier filter: normalized case-insensitively, applied in the tool (CLI argv unchanged)
+    fake.queue.append((payload, None))
+    out = mcp_server.whosaid_worklist(tier="p1")
+    check(fake.last()[1] == ["worklist", w, "--owner", "me"], f"tier filters in the tool, not the CLI: {fake.last()[1]}")
+    check(out["ok"] is True and out["total"] == 2 and out["count"] == 2 and out["tier"] == "P1",
+          f"tier filter: {out}")
+    check([it["id"] for it in out["items"]] == ["CM-000", "CM-001"], f"tier keeps shell order: {out['items']}")
+    check("omitted" not in out and "hint" not in out, f"everything fit, no omitted/hint: {out}")
+
+    # limit + offset walk the ranked list in order, one page at a time
+    fake.queue.append((payload, None))
+    out = mcp_server.whosaid_worklist(limit=2)
+    check([it["id"] for it in out["items"]] == ["CM-000", "CM-001"] and out["total"] == 6 and out["limit"] == 2,
+          f"first page: {out}")
+    check(out["omitted"] == 4 and "offset=2" in out["hint"], f"omitted + hint: {out}")
+    fake.queue.append((payload, None))
+    out = mcp_server.whosaid_worklist(limit=2, offset=2)
+    check([it["id"] for it in out["items"]] == ["CM-002", "CM-003"] and out["offset"] == 2 and out["omitted"] == 2,
+          f"second page: {out}")
+    fake.queue.append((payload, None))
+    out = mcp_server.whosaid_worklist(offset=4)
+    check([it["id"] for it in out["items"]] == ["CM-004", "CM-005"] and "omitted" not in out and "limit" not in out,
+          f"offset alone pages to the end, no default cap: {out}")
+    fake.queue.append((payload, None))
+    out = mcp_server.whosaid_worklist(offset=6)
+    check(out["items"] == [] and out["count"] == 0 and out["total"] == 6 and "omitted" not in out,
+          f"offset past the end: {out}")
+
+    # compact drops the verbose keys
+    fake.queue.append((payload, None))
+    out = mcp_server.whosaid_worklist(limit=1, compact=True)
+    check(out["compact"] is True and set(out["items"][0]) == {"id", "source", "text", "tier", "score", "why"},
+          f"compact item keys: {out['items'][0]}")
+    check("first_seen" not in json.dumps(out["items"]), f"compact drops the verbose fields: {out['items']}")
+
+    # default cap: a 60-item worklist returns the top 50 with omitted/hint (GitHub issue #30)
+    big = {"owner": "Alice_Example", "generated_from": [],
+           "items": [dict(items[4], id=f"CM-{i:03d}") for i in range(60)]}
+    fake.queue.append((big, None))
+    out = mcp_server.whosaid_worklist()
+    check(out["count"] == 50 and out["omitted"] == 10 and out["total"] == 60 and out["limit"] == 50,
+          f"default cap: count={out['count']} total={out['total']} omitted={out.get('omitted')}")
+    check("offset=50" in out["hint"], f"hint must point at the next page: {out.get('hint')}")
+    check(out["items"][0]["id"] == "CM-000" and out["items"][-1]["id"] == "CM-049",
+          "the cap keeps the top of the ranking")
+
+    # invalid params: clean error dicts, never reaching the runner
+    before = len(fake.calls)
+    out = mcp_server.whosaid_worklist(tier="urgent")
+    check(out["ok"] is False and "tier" in out["error"] and "P1" in out["hint"], f"invalid tier: {out}")
+    out = mcp_server.whosaid_worklist(limit=0)
+    check(out["ok"] is False and "limit" in out["error"], f"limit=0: {out}")
+    out = mcp_server.whosaid_worklist(offset=-3)
+    check(out["ok"] is False and "offset" in out["error"], f"negative offset: {out}")
+    check(len(fake.calls) == before, "invalid params never reach the runner")
+
+
 # ---------------------------------------------------------------------------
 # The real runner against fake CLIs
 # ---------------------------------------------------------------------------
@@ -618,6 +687,7 @@ def main() -> None:
             test_graph_tools(ws, fake)
             test_workspace_status(ws, fake)
             test_worklist(ws, fake)
+            test_worklist_paging(ws, fake)
 
             mcp_server._run_ws = real_runner
             clear_env()

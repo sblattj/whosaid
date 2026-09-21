@@ -656,7 +656,7 @@ index` (or the watcher) owns writes, and the tools only read `_search.db`.
 | `whosaid_prs` | Pull-request numbers mentioned in speech or in the notes. |
 | `whosaid_speakers` | Talk share per speaker across the workspace. |
 | `whosaid_workspace_status` | Whether the index exists, how many turns it holds, and whether Ollama is reachable. |
-| `whosaid_worklist` | The owner's ranked worklist (P1/P2/P3 with score and why) from the commitments and action-item corpora, the `whosaid commitments --json` payload; `owner` defaults to `me`. |
+| `whosaid_worklist` | The owner's ranked worklist (P1/P2/P3 with score and why) from the commitments and action-item corpora, the `whosaid commitments --json` payload; `owner` defaults to `me`. `tier` (P1/P2/P3), `limit`, and `offset` filter and page it (tier first, then offset, then limit); `compact=true` keeps only id, source, text, tier, score and why per item; with neither `limit` nor `offset` the top 50 items come back plus `total`/`omitted` and a paging `hint`. |
 
 Resources, all reading `WHOSAID_WORKSPACE`: `whosaid://workspace/wiki` (`_WIKI.md`),
 `whosaid://workspace/action-items` (`_ACTION-ITEMS.md`), `whosaid://workspace/index`
