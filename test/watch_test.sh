@@ -150,7 +150,7 @@ FAKE
 chmod +x "$TMP/bin/whosaid" "$TMP/bin/shortcuts"
 export PATH="$TMP/bin:$PATH"
 export WHOSAID_WATCH_AGENT_DIR="$TMP/agent-dir"
-unset WHOSAID_WORKSPACE WHOSAID_BIN WHOSAID_ACCURATE WHOSAID_ACTION_ITEMS_HOOK HF_HUB_OFFLINE 2>/dev/null || true
+unset WHOSAID_WORKSPACE WHOSAID_BIN WHOSAID_ACCURATE WHOSAID_ACTION_ITEMS_HOOK HF_HUB_OFFLINE WHOSAID_PRETEND_NON_ADMIN 2>/dev/null || true
 
 WS="$TMP/ws"; SRC="$TMP/src"
 mkdir -p "$WS" "$SRC"
@@ -389,6 +389,38 @@ assert_no_text "would provision" "$ERR" "no provisioning with --interpreter"
 assert_text "FDA +-> not needed" "$ERR" "a source outside ~/Library needs no Full Disk Access"
 run_watch install --into "$WS3" --dry-run --env NOEQUALS
 assert_eq "$RC" 1 "malformed --env is rejected"
+
+# ---------------------------------------------------------------------------
+# 7b. --no-fda: the non-admin path (is_admin hook, ~/Recordings default,
+#     ~/Library refusal, dry-run admin note)
+# ---------------------------------------------------------------------------
+echo "-- 7b. install --no-fda"
+NONADMIN="$(WHOSAID_PRETEND_NON_ADMIN=1 python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import watch; print(watch.is_admin())' "$REPO/lib")"
+assert_eq "$NONADMIN" "False" "WHOSAID_PRETEND_NON_ADMIN=1 makes is_admin() False"
+run_watch install --into "$WS2" --no-fda --dry-run
+assert_eq "$RC" 0 "install --no-fda --dry-run exits 0"
+printf '%s\n' "$OUT" > "$TMP/nofda.plist"
+NFA="$(python3 - "$TMP/nofda.plist" <<'PY'
+import pathlib, plistlib, sys
+d = plistlib.load(open(sys.argv[1], "rb"))
+rec = str(pathlib.Path.home() / "Recordings")
+pa = d["ProgramArguments"]
+print(d["WatchPaths"] == [rec], "--source" in pa and pa[pa.index("--source") + 1] == rec)
+PY
+)"
+assert_eq "$NFA" "True True" "--no-fda with nothing configured pins WatchPaths/--source to ~/Recordings"
+assert_text "FDA +-> not needed" "$ERR" "--no-fda default source needs no Full Disk Access"
+# a temp HOME so ~/Library is safe to fake: a --no-fda source inside it must be refused
+NFA_HOME="$TMP/fake-home"; mkdir -p "$NFA_HOME/Library/Mobile Documents"
+HOME="$NFA_HOME" run_watch install --into "$WS2" --no-fda --dry-run \
+  --source "$NFA_HOME/Library/Mobile Documents"
+assert_eq "$RC" 1 "--no-fda with a source under ~/Library exits 1"
+assert_text "outside ~/Library" "$ERR" "--no-fda refusal asks for a folder outside ~/Library"
+assert_text "Recordings|Dropbox" "$ERR" "--no-fda refusal suggests ~/Recordings or a Dropbox folder"
+# a Library default source + non-admin: the dry run warns about the admin wall
+HOME="$NFA_HOME" WHOSAID_PRETEND_NON_ADMIN=1 run_watch install --into "$WS2" --dry-run
+assert_eq "$RC" 0 "dry run with a Library source and no admin exits 0"
+assert_text "note: you are not an admin; .*README 'No admin rights\?'" "$ERR" "dry run notes the admin wall for non-admins"
 
 # ---------------------------------------------------------------------------
 # 8. memos list / pull on a plain folder

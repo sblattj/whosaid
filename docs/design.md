@@ -309,6 +309,13 @@ staging but keeps the log. `memos list`/`pull` read a copy of `CloudRecordings.d
 iCloud sync and the app's database stay consistent. The database and the `.m4a` files are never
 modified directly.
 
+Folder mode (a `--source` outside `~/Library`) needs no FDA at all. Because the FDA toggle is
+admin-gated on macOS (it demands an administrator's password; MDM fleets may hide the pane
+entirely), `install --no-fda` defaults an unset source to `~/Recordings` (created on install,
+pinned in the plist) for non-admin clients and refuses a source still under `~/Library`;
+non-admins deliver recordings via a capture app, an iPhone Shortcut into a Dropbox folder, or
+drag-and-drop out of Voice Memos instead of watching the TCC-protected store.
+
 ## Error handling
 
 - Diarization failure is **never fatal to the transcript** — warn and keep the Whisper output.

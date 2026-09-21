@@ -25,6 +25,7 @@ Subcommands (the `whosaid` bash CLI dispatches `whosaid watch ...` and
 
   install   --into WS [--source DIR] [--seed] [--dry-run] [--interpreter PATH]
             [--label L] [--interval S] [--offline] [--env KEY=VALUE ...] [--no-open]
+            [--no-fda]
       Write and load a launchd LaunchAgent (~/Library/LaunchAgents/<label>.plist)
       that runs `run` when the source folder changes (WatchPaths) and every
       --interval seconds as a safety net. Label default: com.whosaid.watch.<8 hex
@@ -54,7 +55,9 @@ Subcommands (the `whosaid` bash CLI dispatches `whosaid watch ...` and
 
 Source folder: --source, else [watch] source in <ws>/whosaid.toml, else the
 macOS Voice Memos store (~/Library/Group Containers/group.com.apple.VoiceMemos.shared/
-Recordings). Any folder of audio files works.
+Recordings). Any folder of audio files works. --no-fda defaults an otherwise-unset
+source to ~/Recordings: the FDA toggle is admin-gated on macOS, so a standard
+user records into a plain folder instead (README 'No admin rights?').
 
 Why Full Disk Access is scoped to ONE dedicated binary
 ------------------------------------------------------
@@ -89,6 +92,7 @@ import argparse
 import copy
 import datetime as dt
 import fcntl
+import getpass
 import hashlib
 import json
 import os
@@ -375,6 +379,8 @@ def fda_hint(source: Path, err: BaseException) -> None:
         tlog(f"  -> grant Full Disk Access to this binary: {sys.executable}")
         tlog("     (System Settings > Privacy & Security > Full Disk Access), then retry.")
         tlog("     `whosaid watch install` provisions a dedicated binary so the grant covers nothing else.")
+        if isinstance(err, PermissionError) and not is_admin():
+            tlog("  -> no admin available to grant Full Disk Access? Record into a plain folder instead: whosaid watch install --no-fda")
     else:
         tlog(f"  -> check that {source} exists and is readable, or pass --source DIR.")
 
@@ -518,6 +524,68 @@ def needs_fda(source: Path) -> bool:
     return str(src).startswith(str(Path.home() / "Library") + os.sep)
 
 
+def is_admin() -> bool:
+    """Can the current user satisfy the Full Disk Access toggle, which demands
+    an administrator's password? WHOSAID_PRETEND_NON_ADMIN forces False (test
+    hook); failed lookups err True so a real admin is never steered away from
+    the Voice Memos path by a false negative."""
+    if os.environ.get("WHOSAID_PRETEND_NON_ADMIN"):
+        return False
+    if not is_macos():
+        return True
+    try:
+        user = getpass.getuser()
+        try:
+            import grp  # POSIX-only; macOS always has it
+            return user in grp.getgrnam("admin").gr_mem
+        except Exception:  # noqa: BLE001  (no grp module / no admin group: id -Gn)
+            pass
+        out = subprocess.run(["id", "-Gn"], capture_output=True, text=True)
+        if out.returncode != 0 or not out.stdout.strip():
+            return True  # uncertain: assume admin
+        return "admin" in out.stdout.split()
+    except Exception:  # noqa: BLE001
+        return True  # uncertain: assume admin
+
+
+def capture_options() -> list[str]:
+    """The three capture setups that land recordings in a plain folder (no Full
+    Disk Access anywhere); shared by no_admin_notice and install's no-FDA
+    success path."""
+    return [
+        "  1. Just Press Record for Mac (App Store) saving into ~/Recordings",
+        "  2. iPhone Shortcut \"Record Audio -> Save File\" into a Dropbox folder (e.g. ~/Dropbox/whosaid) on the Action Button — prefer Dropbox because iCloud Drive lives under ~/Library",
+        "  3. drag recordings out of the Voice Memos app into ~/Recordings",
+    ]
+
+
+def no_admin_notice(source: Path) -> str:
+    """The admin-wall explainer printed BEFORE fda_instructions(): the FDA
+    toggle needs an administrator's password (MDM may hide the pane), so a
+    standard user sees the plain-folder escape hatch first."""
+    lines = [
+        "",
+        "=" * 70,
+        "No administrator password? You can skip Full Disk Access entirely",
+        "=" * 70,
+        f"This agent needs Full Disk Access to read {source}, and the toggle in",
+        "System Settings asks for an administrator's password — on a",
+        "company-managed Mac the pane may be hidden entirely.",
+        "",
+        "If you cannot get 5 minutes of admin time, skip FDA: record into a plain",
+        "folder outside ~/Library and run",
+        "",
+        "    whosaid watch install --no-fda",
+        "",
+        "Three capture options that need no Full Disk Access:",
+    ] + capture_options() + [
+        "",
+        "Details: README section 'No admin rights?'",
+        "=" * 70,
+    ]
+    return "\n".join(lines)
+
+
 def fda_instructions(interpreter: str, label: str, ws: Path, source: Path) -> str:
     lines = [
         "",
@@ -561,6 +629,21 @@ def cmd_install(args: argparse.Namespace) -> int:
                    else (cfg.get("watch") or {}).get("interval_seconds", 900))
     extra_env = parse_env_pairs(args.env)
     dry = args.dry_run
+    source_explicit = bool(args.source)
+    if args.no_fda:
+        if not source_explicit and not str((cfg.get("watch") or {}).get("source") or "").strip():
+            # nothing chosen and the admin-gated FDA path is off the table:
+            # watch ~/Recordings, a plain folder any capture app can write into
+            source = Path.home() / "Recordings"
+            source_explicit = True  # pin the path in the plist
+            if not dry:
+                source.mkdir(parents=True, exist_ok=True)
+        if needs_fda(source):
+            log(f"install: --no-fda watches a plain folder, but {source} is under ~/Library")
+            log("(TCC guards all of ~/Library; the toggle would demand an admin password).")
+            log("Pick a folder outside ~/Library instead, e.g. ~/Recordings or a Dropbox")
+            log("folder such as ~/Dropbox/whosaid.")
+            return 1
 
     if args.interpreter:
         interpreter = str(Path(args.interpreter).expanduser())
@@ -572,11 +655,11 @@ def cmd_install(args: argparse.Namespace) -> int:
         interpreter = provision_interpreter(dry)
 
     data = build_plist(label, interpreter, ws, source, interval, args.offline, extra_env,
-                       source_explicit=bool(args.source))
+                       source_explicit=source_explicit)
     xml = plistlib.dumps(data, fmt=plistlib.FMT_XML, sort_keys=False).decode()
     target = plist_path(label)
     seed_cmd = [interpreter, str(Path(__file__).resolve()), "run", "--into", str(ws), "--seed"]
-    if args.source:
+    if source_explicit:
         seed_cmd += ["--source", str(source)]
 
     if dry:
@@ -594,6 +677,9 @@ def cmd_install(args: argparse.Namespace) -> int:
             f"launchctl bootstrap {domain()} {target}; launchctl enable {domain()}/{label}")
         if needs_fda(source) and not args.no_open:
             log(f"would open the Full Disk Access pane: open \"{FDA_PANE_URL}\"")
+        if needs_fda(source) and not is_admin():
+            log("note: you are not an admin; the FDA toggle will ask for an admin password — "
+                "see README 'No admin rights?' for the no-FDA path")
         sys.stdout.write(xml)
         return 0
 
@@ -613,11 +699,15 @@ def cmd_install(args: argparse.Namespace) -> int:
     launchctl("enable", f"{domain()}/{label}")
     log(f"loaded agent {label}")
     if needs_fda(source):
+        if not is_admin():
+            print(no_admin_notice(source))  # escape hatch first, so it is not lost below
         print(fda_instructions(interpreter, label, ws, source))
         if not args.no_open:
             subprocess.run(["open", FDA_PANE_URL], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     else:
         print(f"Watching {source} (outside ~/Library, so no Full Disk Access needed).")
+        for line in capture_options():
+            print(line)
         print(f"Tail the log with:   tail -f {ws / LOG_NAME}")
     print("Menu bar: install the SwiftBar glyph with:  whosaid watch menubar install")
     return 0
@@ -1277,6 +1367,9 @@ def build_parser() -> argparse.ArgumentParser:
     pi.add_argument("--env", action="append", metavar="KEY=VALUE",
                     help="extra EnvironmentVariables for the agent (repeatable, e.g. WHOSAID_ACCURATE=1)")
     pi.add_argument("--no-open", action="store_true", help="do not open the Full Disk Access pane")
+    pi.add_argument("--no-fda", action="store_true",
+                    help="watch a plain folder outside ~/Library instead of the TCC-protected "
+                         "Voice Memos store (no Full Disk Access needed; non-admin friendly)")
     pi.set_defaults(func=cmd_install)
 
     pu = sub.add_parser("uninstall", help="unload + remove the LaunchAgent")
