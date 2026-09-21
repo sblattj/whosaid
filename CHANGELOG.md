@@ -24,9 +24,9 @@ All notable changes to whosaid are documented here. This project adheres to
   `~/Recordings` or a Dropbox folder. Non-admin installs print a notice before the FDA
   instructions (record into a plain folder and run `--no-fda` instead), the dry run warns
   non-admins, the watcher's TCC error path points them at `--no-fda`, and the no-FDA success
-  path lists the three capture options: Just Press Record for Mac into `~/Recordings`, an
-  iPhone "Record Audio -> Save File" Shortcut into a Dropbox folder (Dropbox because iCloud
-  Drive lives under `~/Library`), or drag-and-drop out of Voice Memos. See the new README
+  path lists the three capture options: an iPhone "Record Audio -> Save File" Shortcut into a
+  Dropbox folder (Dropbox because iCloud Drive lives under `~/Library`), QuickTime Player saved
+  into `~/Recordings`, or drag-and-drop out of Voice Memos. See the new README
   section "No admin rights?".
 
 - **Action-items hooks receive `WHOSAID_ROLES` (GitHub issue #27).** The external `--hook` /

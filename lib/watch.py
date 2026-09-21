@@ -553,8 +553,8 @@ def capture_options() -> list[str]:
     Disk Access anywhere); shared by no_admin_notice and install's no-FDA
     success path."""
     return [
-        "  1. Just Press Record for Mac (App Store) saving into ~/Recordings",
-        "  2. iPhone Shortcut \"Record Audio -> Save File\" into a Dropbox folder (e.g. ~/Dropbox/whosaid) on the Action Button — prefer Dropbox because iCloud Drive lives under ~/Library",
+        "  1. iPhone Shortcut \"Record Audio -> Save File\" into a Dropbox folder (e.g. ~/Dropbox/whosaid) on the Action Button — Dropbox, not iCloud Drive, because iCloud lives under ~/Library",
+        "  2. QuickTime Player (built in): File > New Audio Recording, stop, save into ~/Recordings",
         "  3. drag recordings out of the Voice Memos app into ~/Recordings",
     ]
 

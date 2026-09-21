@@ -313,8 +313,10 @@ Folder mode (a `--source` outside `~/Library`) needs no FDA at all. Because the 
 admin-gated on macOS (it demands an administrator's password; MDM fleets may hide the pane
 entirely), `install --no-fda` defaults an unset source to `~/Recordings` (created on install,
 pinned in the plist) for non-admin clients and refuses a source still under `~/Library`;
-non-admins deliver recordings via a capture app, an iPhone Shortcut into a Dropbox folder, or
-drag-and-drop out of Voice Memos instead of watching the TCC-protected store.
+non-admins deliver recordings via an iPhone Shortcut into a Dropbox folder, QuickTime Player
+saved into the folder, or drag-and-drop out of Voice Memos instead of watching the
+TCC-protected store (iCloud-syncing capture apps land files under ~/Library and so cannot
+feed the no-FDA watcher).
 
 ## Error handling
 
