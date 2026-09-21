@@ -432,21 +432,22 @@ whosaid watch install --into ~/meetings --no-fda   # watches ~/Recordings; no FD
 
 Three ways to get recordings into that plain folder:
 
-1. **Just Press Record for Mac** (App Store): its recordings are plain files, no TCC involved. In
-   the app's Settings > General, point "Save recordings to" at `~/Recordings`; every stop-record
-   lands the file exactly where the watcher looks.
-2. **iPhone Shortcut "Record Audio -> Save File" -> Dropbox**: in the Shortcuts app, chain the
-   Record Audio and Save File actions with a Dropbox folder (say `whosaid`) as the destination,
-   then bind the shortcut to the Action Button (Settings > Action Button > Shortcut) or Back Tap
-   (Settings > Accessibility > Touch > Back Tap). Recordings sync to `~/Dropbox/whosaid` on the
-   Mac.
+1. **iPhone Shortcut "Record Audio -> Save File" -> Dropbox** (the one fully automatic
+   option): in the Shortcuts app, chain the Record Audio and Save File actions with a
+   Dropbox folder (say `whosaid`) as the destination, then bind the shortcut to the Action
+   Button (Settings > Action Button > Shortcut) or Back Tap (Settings > Accessibility >
+   Touch > Back Tap). Recordings sync to `~/Dropbox/whosaid` on the Mac.
+2. **QuickTime Player** (built in, nothing to install): File > New Audio Recording, record,
+   stop, and save into `~/Recordings`.
 3. **Drag and drop**: drag memos out of the Voice Memos app into `~/Recordings`, or from iOS use
    Share > Save to Files > the Dropbox folder. The watcher ingests them on the next pass like
    any other file.
 
 Dropbox beats iCloud Drive here: `~/Dropbox` is a plain folder outside `~/Library`, while iCloud
 Drive's on-disk root (`~/Library/Mobile Documents`) is TCC-adjacent and not verifiably readable
-without FDA.
+without FDA. The same applies to capture apps that sync via iCloud Drive (e.g. Just Press
+Record): their files land under `~/Library`, so they cannot feed the no-FDA watcher — an App
+Store recorder is only an option if it writes into a folder you choose outside `~/Library`.
 
 ### Menu bar glyph: `whosaid watch menubar` (SwiftBar)
 
