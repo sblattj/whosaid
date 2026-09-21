@@ -42,7 +42,7 @@ Subcommands (the `whosaid` bash CLI dispatches `whosaid watch ...` and
   menubar install [--workspace DIR] [--interval 10s]     (issue #24)
       Symlink the SwiftBar menu bar plugin (contrib/swiftbar/whosaid.10s.py)
       into SwiftBar's plugin directory: `defaults read com.ameba.SwiftBar
-      PluginDirectory`, fallback ~/.config/swiftbar (created). A non-default
+      PluginDirectory`; when unset, it configures ~/.config/swiftbar. A non-default
       --interval names the symlink whosaid.<interval>.py. When SwiftBar is
       absent (no app bundle, no PluginDirectory) it prints an
       install-then-retry message and exits non-zero. WHOSAID_SWIFTBAR_DIR and
@@ -126,7 +126,9 @@ LAUNCH_AGENTS = Path.home() / "Library/LaunchAgents"
 AGENT_DIR = Path(os.environ.get("WHOSAID_WATCH_AGENT_DIR") or Path.home() / ".local/opt/whosaid-watch").expanduser()
 AGENT_BIN = AGENT_DIR / "bin/whosaid-watch"
 AGENT_PATH = ":".join([
-    str(Path.home() / ".local/bin"), "/opt/homebrew/bin", "/usr/local/bin",
+    str(Path.home() / ".local/bin"), str(Path.home() / "bin"),
+    str(Path.home() / "homebrew/bin"), str(Path.home() / "homebrew/sbin"),
+    "/opt/homebrew/bin", "/opt/homebrew/sbin", "/usr/local/bin", "/usr/local/sbin",
     "/usr/bin", "/bin", "/usr/sbin", "/sbin",
 ])
 FDA_PANE_URL = "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles"
@@ -134,6 +136,8 @@ FDA_PANE_URL = "x-apple.systempreferences:com.apple.preference.security?Privacy_
 # The Whisper weights live in the local HF cache; with --offline every child skips
 # the doomed round-trip to huggingface.co (blocked networks, planes, privacy).
 OFFLINE_ENV = {"HF_HUB_OFFLINE": "1", "HF_HUB_DISABLE_TELEMETRY": "1", "TRANSFORMERS_OFFLINE": "1"}
+CERTIFICATE_ENV = ("SSL_CERT_FILE", "SSL_CERT_DIR", "REQUESTS_CA_BUNDLE",
+                   "CURL_CA_BUNDLE", "UV_SYSTEM_CERTS", "UV_NATIVE_TLS")
 
 CORE_DATA_EPOCH = dt.datetime(2001, 1, 1, tzinfo=dt.timezone.utc)
 
@@ -177,6 +181,20 @@ def is_store(source: Path) -> bool:
     """True when the source is a Voice Memos store (holds CloudRecordings.db)."""
     try:
         return (source / DB_NAME).is_file()
+    except OSError:
+        return False
+
+
+def is_voice_memos_source(source: Path) -> bool:
+    """Whether source is the TCC-protected Voice Memos recording store."""
+    return source.expanduser() == VOICE_MEMOS_STORE or is_store(source)
+
+
+def source_readable(source: Path) -> bool:
+    """Whether this process can enumerate the selected recording source."""
+    try:
+        os.listdir(source)
+        return True
     except OSError:
         return False
 
@@ -416,16 +434,27 @@ def cmd_run(args: argparse.Namespace) -> int:
 # ---- launchd: plist / interpreter / launchctl ---------------------------------------
 
 def build_plist(label: str, interpreter: str, ws: Path, source: Path, interval: int,
-                offline: bool, extra_env: dict[str, str], source_explicit: bool) -> dict:
+                offline: bool, extra_env: dict[str, str], source_explicit: bool,
+                preserved_env: dict[str, str] | None = None) -> dict:
     program = [interpreter, str(Path(__file__).resolve()), "run", "--into", str(ws)]
     if source_explicit:
         program += ["--source", str(source)]
     if offline:
         program.append("--offline")
-    env = {"PATH": AGENT_PATH}
+    # launchd starts with a deliberately sparse environment.  Preserve values the
+    # user explicitly supplied on an earlier install, while owning PATH/offline
+    # policy here so reinstall cannot retain stale launcher settings.
+    env = {k: v for k, v in (preserved_env or {}).items()
+           if k not in {"PATH", *OFFLINE_ENV}}
+    old_path = str((preserved_env or {}).get("PATH") or "")
+    # A prior explicit --env PATH=... must survive reinstall. Add currently
+    # supported prefixes after it, deduplicated, so old generated PATH values
+    # also gain new user-local prefixes without changing explicit precedence.
+    env["PATH"] = ":".join(dict.fromkeys(
+        [part for part in old_path.split(":") + AGENT_PATH.split(":") if part]))
     if offline:
         env.update(OFFLINE_ENV)
-    for key in ("WHOSAID_ACTION_ITEMS_HOOK", "WHOSAID_BIN"):
+    for key in ("WHOSAID_ACTION_ITEMS_HOOK", "WHOSAID_BIN", *CERTIFICATE_ENV):
         if os.environ.get(key):
             env[key] = os.environ[key]
     env.update(extra_env)
@@ -465,6 +494,23 @@ def plist_workspace(data: dict | None) -> Path | None:
     return None
 
 
+def watcher_source(data: dict | None, ws: Path | None) -> tuple[Path | None, Path]:
+    """Resolve a watcher's workspace and source from its installed plist.
+
+    ``WatchPaths`` is the authoritative installed source, including the plain
+    folder pinned by ``watch install --no-fda``. Configuration is only a
+    fallback for a plist that has no watch path.
+    """
+    if ws is None:
+        ws = plist_workspace(data)
+    configured = ((data or {}).get("WatchPaths") or [None])[0]
+    if configured:
+        return ws, Path(configured)
+    if ws is not None:
+        return ws, resolve_source(None, load_config(ws))
+    return None, VOICE_MEMOS_STORE
+
+
 def launchctl(*args: str) -> subprocess.CompletedProcess:
     return subprocess.run(["launchctl", *args], capture_output=True, text=True)
 
@@ -473,13 +519,51 @@ def domain() -> str:
     return f"gui/{os.getuid()}"
 
 
+def compatible_copying_interpreter() -> str:
+    """Find a Python that can make a real copied venv (CLT Python cannot)."""
+    candidates = [sys.executable]
+    for directory in AGENT_PATH.split(":"):
+        candidate = Path(directory) / "python3"
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            candidates.append(str(candidate))
+    uv = shutil.which("uv", path=AGENT_PATH)
+    if uv:
+        try:
+            found = subprocess.run([uv, "python", "find", "3.12"], capture_output=True,
+                                   text=True, timeout=10)
+            if found.returncode == 0 and found.stdout.strip():
+                candidates.append(found.stdout.strip())
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+    seen: set[str] = set()
+    for candidate in candidates:
+        candidate = str(Path(candidate).resolve())
+        if candidate in seen:
+            continue
+        seen.add(candidate)
+        with tempfile.TemporaryDirectory(prefix="whosaid-venv-probe-") as probe:
+            try:
+                result = subprocess.run([candidate, "-m", "venv", "--copies", probe],
+                                        capture_output=True, text=True, timeout=30)
+            except (OSError, subprocess.TimeoutExpired):
+                continue
+            if result.returncode == 0 and os.access(Path(probe) / "bin/python3", os.X_OK):
+                return candidate
+    raise SystemExit(
+        "whosaid: no compatible Python could create the dedicated copied interpreter. "
+        "Apple Command Line Tools Python cannot create venvs with --copies. Install a "
+        "user-local Python (for example `uv python install 3.12`) and rerun, or pass "
+        "--interpreter PATH to an executable you manage."
+    )
+
+
 def provision_interpreter(dry: bool) -> str:
     """A private, ad-hoc signed copy of python at a unique path, used ONLY by the
     watcher, so the Full Disk Access grant is scoped to it (TCC grants per path;
     a symlink would resolve back to the shared interpreter)."""
     if AGENT_BIN.is_file() and os.access(AGENT_BIN, os.X_OK):
         return str(AGENT_BIN)
-    base = sys.executable
+    base = sys.executable if dry else compatible_copying_interpreter()
     steps = [
         f"rm -rf {AGENT_DIR}",
         f"{base} -m venv --copies {AGENT_DIR}",
@@ -502,7 +586,7 @@ def provision_interpreter(dry: bool) -> str:
     except (subprocess.CalledProcessError, OSError) as e:
         raise SystemExit(
             f"whosaid: could not provision {AGENT_BIN} from {base} ({e}); "
-            f"pass --interpreter PATH to reuse an interpreter you already have, or set "
+            f"install a Python with `uv python install 3.12`, pass --interpreter PATH, or set "
             f"WHOSAID_WATCH_AGENT_DIR to a writable location"
         ) from None
     subprocess.run(["codesign", "-f", "-s", "-", str(AGENT_BIN)],
@@ -651,11 +735,20 @@ def cmd_install(args: argparse.Namespace) -> int:
             log(f"install: --interpreter is not executable: {interpreter}")
             return 1
         log(f"using the existing interpreter {interpreter} (grant it Full Disk Access if you have not)")
+    elif args.no_fda:
+        # A plain folder does not need a dedicated TCC identity.  Reusing the
+        # launcher interpreter avoids CLT's unsupported copied-venv path.
+        interpreter = sys.executable
+        log(f"using {interpreter}; no dedicated interpreter is needed for --no-fda")
     else:
         interpreter = provision_interpreter(dry)
 
+    prior = read_plist(label)
+    prior_env = (prior or {}).get("EnvironmentVariables")
+    if not isinstance(prior_env, dict):
+        prior_env = {}
     data = build_plist(label, interpreter, ws, source, interval, args.offline, extra_env,
-                       source_explicit=source_explicit)
+                       source_explicit=source_explicit, preserved_env=prior_env)
     xml = plistlib.dumps(data, fmt=plistlib.FMT_XML, sort_keys=False).decode()
     target = plist_path(label)
     seed_cmd = [interpreter, str(Path(__file__).resolve()), "run", "--into", str(ws), "--seed"]
@@ -768,9 +861,23 @@ def launchctl_status(label: str) -> tuple[bool, int | None, int | None, str]:
             pid = int(m.group(1))
         elif m := re.match(r"last exit code = (-?\d+)", s):
             last = int(m.group(1))
-        elif m := re.match(r"state = (\S+)", s):
-            state = m.group(1)
+        elif m := re.match(r"state = (.+)", s):
+            # launchctl states are not necessarily one word (for example,
+            # "not running"). Keep the complete value for CLI users and for
+            # consumers that decide whether a PID is expected to be live.
+            state = m.group(1).strip()
     return True, pid, last, state
+
+
+def process_alive(pid: int | None) -> bool:
+    """Whether pid currently names a process visible to this user."""
+    if pid is None or pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
 
 
 def cmd_status(args: argparse.Namespace) -> int:
@@ -781,15 +888,7 @@ def cmd_status(args: argparse.Namespace) -> int:
     data = read_plist(label)
     program = list((data or {}).get("ProgramArguments") or [])
     loaded, pid, last, state = launchctl_status(label)
-    if ws is None:
-        ws = plist_workspace(data)
-    if ws is not None:
-        cfg = load_config(ws)
-        source = ((data or {}).get("WatchPaths") or [None])[0]
-        source = Path(source) if source else resolve_source(None, cfg)
-    else:
-        source = ((data or {}).get("WatchPaths") or [None])[0]
-        source = Path(source) if source else VOICE_MEMOS_STORE
+    ws, source = watcher_source(data, ws)
     st = load_state(ws) if ws is not None else {"processed": {}}
     processed = st["processed"]
     log_tail: list[str] = []
@@ -798,6 +897,7 @@ def cmd_status(args: argparse.Namespace) -> int:
             log_tail = (ws / LOG_NAME).read_text(errors="replace").splitlines()[-3:]
         except OSError:
             log_tail = []
+    pid_alive = process_alive(pid)
     info = {
         "label": label,
         "plist": str(plist_path(label)),
@@ -805,11 +905,12 @@ def cmd_status(args: argparse.Namespace) -> int:
         "loaded": loaded,
         "state": state or None,
         "pid": pid,
+        "pid_alive": pid_alive,
         "last_exit_status": last,
         "interpreter": program[0] if program else None,
         "workspace": str(ws) if ws is not None else None,
         "source": str(source),
-        "source_readable": source.is_dir() if source else False,
+        "source_readable": source_readable(source) if source else False,
         "state_file": str(ws / STATE_NAME) if ws is not None else None,
         "processed": len(processed),
         "seeded": sum(1 for v in processed.values() if isinstance(v, dict) and v.get("seeded")),
@@ -822,7 +923,8 @@ def cmd_status(args: argparse.Namespace) -> int:
     print(f"label:            {info['label']}")
     print(f"installed:        {'yes' if info['installed'] else 'no'}  ({info['plist']})")
     print(f"loaded:           {'yes' if loaded else 'no'}"
-          + (f"  state={state}" if state else "") + (f"  pid={pid}" if pid else ""))
+          + (f"  state={state}" if state else "") + (f"  pid={pid}" if pid else "")
+          + (f"  pid-alive={'yes' if pid_alive else 'no'}" if pid else ""))
     print(f"last exit status: {last if last is not None else 'n/a'}")
     print(f"interpreter:      {info['interpreter'] or 'n/a'}")
     print(f"workspace:        {info['workspace'] or 'n/a'}")
@@ -1169,6 +1271,33 @@ def swiftbar_plugin_dir() -> tuple[Path | None, str]:
     return (Path(raw).expanduser(), "SwiftBar PluginDirectory") if raw else (None, "unset")
 
 
+def configure_swiftbar_plugin_dir(pdir: Path) -> bool:
+    """Set SwiftBar's existing PluginDirectory preference to pdir.
+
+    This is only called when that preference is unset, so an existing user
+    choice is never replaced. A link in an unconfigured fallback directory is
+    not presented as a complete install because SwiftBar may not discover it.
+    """
+    try:
+        out = subprocess.run(
+            ["defaults", "write", "com.ameba.SwiftBar", "PluginDirectory", "-string", str(pdir)],
+            capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    if out.returncode != 0:
+        return False
+    actual, _how = swiftbar_plugin_dir()
+    return actual == pdir
+
+
+def installed_watcher_labels() -> list[str]:
+    """All locally installed watcher labels, sorted for deterministic status."""
+    try:
+        return sorted(p.name[:-len(".plist")] for p in LAUNCH_AGENTS.glob(f"{LABEL_PREFIX}*.plist"))
+    except OSError:
+        return []
+
+
 def menubar_links(pdir: Path | None) -> list[tuple[Path, str]]:
     """(symlink, interval) for every whosaid.<interval>.py in pdir that points
     at the repo's plugin source (a stale/broken link still matches: the
@@ -1207,7 +1336,17 @@ def cmd_menubar_install(args: argparse.Namespace) -> int:
             log("  install it from https://swiftbar.com, launch it once and set its plugin directory")
             log("  (or rely on the ~/.config/swiftbar default), then re-run:  whosaid watch menubar install")
             return 1
-        pdir, how = MENUBAR_FALLBACK_DIR, "fallback (PluginDirectory unset)"
+        pdir = MENUBAR_FALLBACK_DIR
+        try:
+            pdir.mkdir(parents=True, exist_ok=True)
+        except OSError as e:
+            log(f"menubar install: cannot create the plugin directory {pdir} ({e})")
+            return 1
+        if not configure_swiftbar_plugin_dir(pdir):
+            log("menubar install: SwiftBar PluginDirectory is unset and could not be configured")
+            log(f"  choose {pdir} as SwiftBar's plugin directory, then re-run: whosaid watch menubar install")
+            return 1
+        how = "configured SwiftBar PluginDirectory"
     try:
         pdir.mkdir(parents=True, exist_ok=True)
     except OSError as e:
@@ -1240,6 +1379,8 @@ def cmd_menubar_install(args: argparse.Namespace) -> int:
             pass
     print(f"SwiftBar plugin dir: {pdir}  ({how})")
     print(f"plugin:               {target}  (SwiftBar refreshes it every {args.interval})")
+    if how == "configured SwiftBar PluginDirectory":
+        print("Plugin directory configured; refresh or relaunch SwiftBar to load the plugin.")
     ws_hint = str(ws) if ws is not None else os.environ.get("WHOSAID_WORKSPACE", "").strip()
     if ws_hint:
         print("The plugin reads WHOSAID_WORKSPACE; make it visible to SwiftBar (a GUI app) with:")
@@ -1285,12 +1426,16 @@ def cmd_menubar_status(args: argparse.Namespace) -> int:
     links = menubar_links(pdir)
     if pdir != MENUBAR_FALLBACK_DIR:
         links += [pair for pair in menubar_links(MENUBAR_FALLBACK_DIR) if pair not in links]
-    try:
-        os.listdir(VOICE_MEMOS_STORE)
-        store = True
-    except OSError:
-        store = False
     ws_env = os.environ.get("WHOSAID_WORKSPACE", "").strip()
+    ws = Path(ws_env).expanduser() if ws_env else None
+    if ws is not None:
+        data = read_plist(default_label(ws))
+    else:
+        labels = installed_watcher_labels()
+        data = read_plist(labels[0]) if len(labels) == 1 else None
+    _ws, source = watcher_source(data, ws)
+    source_ok = source_readable(source)
+    voice_memos = is_voice_memos_source(source)
     print(f"SwiftBar app:     {'installed (' + str(app) + ')' if app else 'NOT installed'}")
     if pdir is not None:
         print(f"plugin directory: {pdir}  ({how})")
@@ -1305,12 +1450,13 @@ def cmd_menubar_status(args: argparse.Namespace) -> int:
             print(f"plugin:           {link}  (every {interval})")
     else:
         print("plugin:           not installed (run: whosaid watch menubar install)")
-    if store:
-        print(f"store readable:   yes (this shell reads {VOICE_MEMOS_STORE})")
+    if source_ok:
+        print(f"source readable:  yes (this shell reads {source})")
     else:
-        print(f"store readable:   NO (this shell cannot read {VOICE_MEMOS_STORE})")
-        print("                   SwiftBar needs its own Full Disk Access grant for REC detection;")
-        print("                   the menu bar shows the live probe and links the pane when it fails.")
+        print(f"source readable:  NO (this shell cannot read {source})")
+        if voice_memos:
+            print("                   SwiftBar needs its own Full Disk Access grant for REC detection;")
+            print("                   the menu bar shows the live probe and links the pane when it fails.")
     if ws_env:
         print(f"workspace:        $WHOSAID_WORKSPACE={ws_env}")
     else:
@@ -1438,7 +1584,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     mns = mnsub.add_parser(
         "status",
-        help="is SwiftBar installed/running, the plugin linked, the Voice Memos store readable?")
+        help="is SwiftBar installed/running, the plugin linked, and the configured source readable?")
     mns.set_defaults(func=cmd_menubar_status)
     return p
 

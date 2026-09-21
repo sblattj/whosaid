@@ -6,6 +6,7 @@
 #   whosaid setup                 Run bootstrap.sh (deps, models, disk check).
 #   whosaid install               Install a stable command in ~/.local/bin.
 #   whosaid enroll [Name]         Record a voice sample and name a speaker cluster.
+#   whosaid speakers <sub>        Export or import the private speaker registry.
 #   whosaid record [--label L]    Record from the mic, then transcribe it.
 #   whosaid doctor                Read-only environment/model/device report.
 #   whosaid version | --version   Print the installed version.
@@ -26,8 +27,9 @@
 # ==============================================================================
 set -euo pipefail
 
-# Make Homebrew tools (ffmpeg, uv) visible even under a minimal PATH.
-export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+# Supply tools missing from GUI/launchd paths while preserving an explicit
+# caller PATH (including watch install --env PATH=...) in its chosen order.
+export PATH="$PATH:$HOME/.local/bin:$HOME/bin:$HOME/homebrew/bin:$HOME/homebrew/sbin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/local/sbin"
 
 # Follow symlinks so an installed ~/.local/bin/whosaid command still finds the
 # implementation and model helpers in this checkout.
@@ -89,14 +91,25 @@ warn_if_not_arm64() {
 
 ensure_uv_and_ffmpeg() {
   if ! command -v uv >/dev/null 2>&1; then
-    log "'uv' not found. Installing via Homebrew..."
-    command -v brew >/dev/null 2>&1 || { log "Homebrew required to bootstrap uv. See https://brew.sh"; exit 1; }
-    brew install uv
+    log "'uv' not found. Run 'whosaid setup' to install verified uv into ~/.local/bin, or install uv and rerun."
+    exit 1
   fi
-  if ! command -v ffmpeg >/dev/null 2>&1; then
-    log "'ffmpeg' not found (needed to decode/capture audio). Installing via Homebrew..."
-    command -v brew >/dev/null 2>&1 || { log "Homebrew required to bootstrap ffmpeg. See https://brew.sh"; exit 1; }
-    brew install ffmpeg
+  local missing=()
+  command -v ffmpeg >/dev/null 2>&1 || missing+=(ffmpeg)
+  command -v ffprobe >/dev/null 2>&1 || missing+=(ffprobe)
+  if [[ ${#missing[@]} -gt 0 ]]; then
+    log "'${missing[*]}' not found (audio decoding and duration checks need both ffmpeg and ffprobe)."
+    log "Install a verified FFmpeg build in ~/.local/bin, ~/bin, or ~/homebrew/bin, then rerun 'whosaid setup'."
+    exit 1
+  fi
+}
+
+diagnose_uv_failure() {
+  local errfile="$1"
+  if grep -qiE 'certificate|tls|ssl|x509|unknown issuer' "$errfile"; then
+    log "TLS certificate verification failed while uv resolved a dependency; verification remains enabled."
+    log "For a managed network, install the organization CA in macOS System Keychain, or reinstall the watcher with --env SSL_CERT_FILE=/path/to/ca.pem --env UV_SYSTEM_CERTS=1."
+    log "The selected certificate settings are retained on later watch reinstalls unless explicitly replaced."
   fi
 }
 
@@ -106,7 +119,11 @@ cmd_help() {
 whosaid — local, GPU-accelerated, speaker-attributed transcription (Apple Silicon)
 
 USAGE
-  whosaid setup                        Install dependencies, pre-download models.
+  whosaid setup [--yes] [--build-ffmpeg]
+                                        Install dependencies, pre-download models.
+                                        Homebrew is optional; --build-ffmpeg builds
+                                        verified FFmpeg source into ~/.local/bin
+                                        (requires Command Line Tools).
   whosaid install [--force]            Install/update ~/.local/bin/whosaid. Refuses (unless
                                         --force) when this checkout is under a temp directory,
                                         since the symlink would dangle once it's cleaned up.
@@ -137,6 +154,15 @@ USAGE
                                         the speaker cards. Replacing a registry print
                                         whose similarity to the cluster is below the
                                         match threshold requires --force.
+  whosaid speakers export --out FILE
+  whosaid speakers import FILE [--merge|--overwrite]
+                                        Export a private, portable speaker-registry backup or
+                                        restore one. Import refuses to replace an existing
+                                        registry unless --merge (only non-conflicting speakers)
+                                        or --overwrite (replaces the whole destination registry)
+                                        is explicit. All output files use mode
+                                        0600 and atomic replacement. The active registry is
+                                        WHOSAID_SPEAKER_DB or ~/.config/whosaid/speakers.json.
   whosaid samples <base> [-o DIR] [--audio FILE] [--per-speaker N]
                   [--seconds S] [--json]
                                         Export one short representative WAV per
@@ -159,6 +185,9 @@ USAGE
                                         Print the ranked worklist (P1/P2/P3) of
                                         what one person signed up for, across
                                         every meeting, from the roll-up corpora.
+  whosaid backfill <ws> [--dry-run]
+                                        Apply historical registry names/roles,
+                                        refresh commitments and dependent views.
   whosaid index <ws> [--no-embed] [--rebuild]
                                         Build <ws>/_search.db (full text, optional
                                         embeddings, entity graph) and <ws>/_WIKI.md.
@@ -246,6 +275,12 @@ RELABEL FLAGS
                        items (boss higher) and mark your own voice (self) so the
                        dev-commitments corpus knows which commitments are yours.
   -o, --outdir DIR    Where the sidecar/outputs live (default: alongside <base>).
+  After changing roles, run: whosaid backfill <workspace> --dry-run
+  Then apply with: whosaid backfill <workspace>
+  Backfill updates historical names/roles and commitments, preserves transcript
+  prose and curated corpus items, refuses conflicting meeting commitment edits,
+  and refreshes roll-up, worklists, search, graph and wiki. A conflict writes
+  nothing; --dry-run reports each meeting without modifying workspace files.
 
 SAMPLES FLAGS
   <base>              Sidecar path or base name of a prior transcribe — same
@@ -328,6 +363,9 @@ ROLL-UP FLAGS
                       'self' role, else whosaid.toml [workspace] owner).
   --all-owners        Also write one _WORKLIST-<Owner>.md per participant.
   --index             Run 'whosaid index <ws>' after the roll-up.
+  Commitment source/role/config fingerprints refresh already-folded CM evidence
+  while keeping IDs and explicit text, speaker, status and merge edits. Use
+  backfill after registry role changes to refresh historical meeting sources.
 
 COMMITMENTS
   whosaid commitments <ws> [--owner NAME|me] [--all-owners] [--json] [-o FILE]
@@ -1088,7 +1126,26 @@ cmd_transcribe() {
 
     local helper_args=("$audio" --model "$MODEL" --outdir "$out" --lang "$LANG_CODE" --format "$FORMAT" --name "$base")
 
-    uv run --quiet --with mlx-whisper python "$HELPER" "${helper_args[@]}"
+    local uv_err uv_rc=0 uv_status=()
+    uv_err="$(mktemp "${TMPDIR:-/tmp}/whosaid-uv.XXXXXX")"
+    # Keep progress/warnings live on stderr, preserve stdout for callers, and
+    # wait for tee to finish before inspecting the captured diagnostic.
+    {
+      if uv run --quiet --with mlx-whisper python "$HELPER" "${helper_args[@]}" \
+          2>&1 1>&3 | tee "$uv_err" >&2; then
+        uv_rc=0
+      else
+        uv_status=("${PIPESTATUS[@]}")
+        uv_rc="${uv_status[0]}"
+        if [[ "$uv_rc" -eq 0 ]]; then uv_rc="${uv_status[1]}"; fi
+      fi
+    } 3>&1
+    if [[ "$uv_rc" -ne 0 ]]; then
+      diagnose_uv_failure "$uv_err"
+      rm -f "$uv_err"
+      exit "$uv_rc"
+    fi
+    rm -f "$uv_err"
 
     local txt="$out/$base.txt"
     if [[ ! -s "$txt" ]]; then
@@ -1202,7 +1259,7 @@ cmd_relabel() {
     esac
   done
   [[ -z "$target" ]] && { log "relabel: need a base name or sidecar path. e.g. whosaid relabel meeting SPEAKER_02=Jane (or --auto)"; exit 1; }
-  if [[ ${#specs[@]} -eq 0 && "$auto" -eq 0 ]]; then
+  if [[ ${#specs[@]} -eq 0 && ${#roles[@]} -eq 0 && "$auto" -eq 0 ]]; then
     log "relabel: need at least one SPEAKER_XX=Name assignment, or --auto to re-apply registry + absorb naming"; exit 1
   fi
 
@@ -1213,6 +1270,7 @@ cmd_relabel() {
   [[ "$auto" -eq 1 ]] && extra+=(--auto)
   uv run --quiet --with sherpa-onnx --with numpy python "$DIARIZER" \
     --relabel "$sidecar" --outdir "$sdir" ${specs[@]+"${specs[@]}"} ${extra[@]+"${extra[@]}"} ${roles[@]+"${roles[@]}"}
+  log "relabel: refresh historical commitments and views with: whosaid backfill <workspace>"
 }
 
 # ---- samples ------------------------------------------------------------------
@@ -1254,6 +1312,19 @@ cmd_samples() {
   [[ "$want_json" -eq 1 ]] && pyargs+=(--json)
 
   python3 "$REPO_DIR/lib/samples.py" "${pyargs[@]}"
+}
+
+# ---- speakers -----------------------------------------------------------------
+# Migration stays stdlib-only: a new machine can restore identities without
+# downloading or initializing diarization models.
+cmd_speakers() {
+  [[ $# -gt 0 ]] || { log "speakers: need export or import. usage: whosaid speakers export --out FILE | import FILE [--merge|--overwrite]"; exit 1; }
+  case "$1" in
+    -h|--help) exec python3 "$REPO_DIR/lib/speaker_registry.py" "$@" ;;
+    export|import) ;;
+    *) log "speakers: unknown subcommand '$1'. usage: whosaid speakers export --out FILE | import FILE [--merge|--overwrite]"; exit 1 ;;
+  esac
+  exec python3 "$REPO_DIR/lib/speaker_registry.py" "$@"
 }
 
 # ---- ingest / roll-up (issue #2: meeting workspace) ----------------------------
@@ -1496,6 +1567,20 @@ except BaseException:
 # _workspace.json manifest, and (with --action-items) the deduplicated corpus.
 # --index then runs `whosaid index <ws>` (issue #14), so this is a plain call
 # rather than an exec.
+# Historical registry changes are explicit and auditable.
+cmd_backfill() {
+  if want_help "$@"; then
+    uv run --quiet --with numpy python "$REPO_DIR/lib/backfill.py" --help
+    return $?
+  fi
+  local dry=0 arg
+  for arg in "$@"; do [[ "$arg" == "--dry-run" ]] && dry=1; done
+  uv run --quiet --with numpy python "$REPO_DIR/lib/backfill.py" "$@" || return $?
+  if [[ "$dry" == 0 && "${1:-}" != "--help" && "${1:-}" != "-h" ]]; then
+    cmd_rollup "$1" --action-items --all-owners --index
+  fi
+}
+
 cmd_rollup() {
   local wsdir="" py_args=() want_index=0
   while [[ $# -gt 0 ]]; do
@@ -1719,8 +1804,14 @@ case "${1:-}" in
   samples)
     cmd_samples "${@:2}"
     ;;
+  speakers)
+    cmd_speakers "${@:2}"
+    ;;
   ingest)
     cmd_ingest "${@:2}"
+    ;;
+  backfill)
+    cmd_backfill "${@:2}"
     ;;
   roll-up|rollup)
     cmd_rollup "${@:2}"

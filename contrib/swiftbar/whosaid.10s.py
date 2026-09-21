@@ -271,6 +271,35 @@ def probe_dir(path: Path) -> bool:
         return False
 
 
+def process_alive(pid: object) -> bool:
+    """Whether a watcher PID is still live from SwiftBar's user session."""
+    if not isinstance(pid, int) or pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
+
+
+def watcher_running(status: dict | None) -> bool | None:
+    """True only for a loaded active/running launchd job with a live PID.
+
+    ``None`` means status was unavailable. ``active`` and ``running`` are both
+    valid launchd states; stopped and multiword states deliberately do not
+    pass, even when an old log still contains an ingest line.
+    """
+    if status is None:
+        return None
+    if not status.get("loaded"):
+        return False
+    state = str(status.get("state") or "").strip().lower()
+    if state not in {"active", "running"}:
+        return False
+    reported = status.get("pid_alive")
+    return reported if isinstance(reported, bool) else process_alive(status.get("pid"))
+
+
 def find_whosaid() -> str | None:
     """$WHOSAID_BIN > `whosaid` on PATH > the checkout beside contrib/swiftbar/."""
     env = os.environ.get("WHOSAID_BIN", "").strip()
@@ -380,7 +409,7 @@ def render() -> str:
     running: bool | None = None
     if status:
         loaded = bool(status.get("loaded"))
-        running = status.get("state") == "running"
+        running = watcher_running(status)
         if ws is None and status.get("workspace"):
             ws = Path(str(status["workspace"]))
     log_path = None
@@ -399,7 +428,6 @@ def render() -> str:
         if isinstance(data, dict) and isinstance(data.get("recordings"), list):
             rows = data["recordings"]
     rec_title = active_recording(rows)
-    store_ok = probe_dir(VOICE_MEMOS_STORE)
 
     bar, headline = pick_glyph(state, detail, loaded, rec_title)
     lines: list[str] = [bar, "---"]
@@ -415,14 +443,19 @@ def render() -> str:
                      f"{status.get('seeded', 0)} seeded")
     else:
         lines.append(f"watcher: status unavailable · {status_err}")
-    source = str(status.get("source")) if status and status.get("source") else str(VOICE_MEMOS_STORE)
+    source = Path(str(status.get("source"))) if status and status.get("source") else VOICE_MEMOS_STORE
     reads = "?" if not status else ("reads it" if status.get("source_readable") else "CANNOT read it")
     lines.append(f"watcher source: {source} · {reads}")
-    if store_ok:
-        lines.append("SwiftBar reads the Voice Memos store (REC detection on)")
-    else:
+    source_ok = probe_dir(source)
+    voice_memos = source.expanduser() == VOICE_MEMOS_STORE or (source / "CloudRecordings.db").is_file()
+    if source_ok:
+        lines.append("SwiftBar reads the Voice Memos store (REC detection on)" if voice_memos
+                     else "SwiftBar reads the configured recording source")
+    elif voice_memos:
         lines.append(f"SwiftBar cannot read the Voice Memos store | color=red href={FDA_PANE_URL}")
         lines.append("grant SwiftBar Full Disk Access, then relaunch it below | color=red")
+    else:
+        lines.append("SwiftBar cannot read the configured recording source | color=red")
     if ws is not None:
         lines.append(f"workspace: {ws}")
     if log_path is not None:

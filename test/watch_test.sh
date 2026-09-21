@@ -410,6 +410,13 @@ PY
 )"
 assert_eq "$NFA" "True True" "--no-fda with nothing configured pins WatchPaths/--source to ~/Recordings"
 assert_text "FDA +-> not needed" "$ERR" "--no-fda default source needs no Full Disk Access"
+NFA_INTERPRETER="$(python3 - "$TMP/nofda.plist" <<'PY'
+import plistlib, sys
+print(plistlib.load(open(sys.argv[1], "rb"))["ProgramArguments"][0])
+PY
+)"
+assert_eq "$NFA_INTERPRETER" "$(python3 -c 'import sys; print(sys.executable)')" "--no-fda reuses the launcher interpreter instead of provisioning an FDA copy"
+assert_text "no dedicated interpreter is needed for --no-fda" "$ERR" "--no-fda explains why copied-venv provisioning was skipped"
 # a temp HOME so ~/Library is safe to fake: a --no-fda source inside it must be refused
 NFA_HOME="$TMP/fake-home"; mkdir -p "$NFA_HOME/Library/Mobile Documents"
 HOME="$NFA_HOME" run_watch install --into "$WS2" --no-fda --dry-run \
@@ -421,6 +428,50 @@ assert_text "Recordings|Dropbox" "$ERR" "--no-fda refusal suggests ~/Recordings 
 HOME="$NFA_HOME" WHOSAID_PRETEND_NON_ADMIN=1 run_watch install --into "$WS2" --dry-run
 assert_eq "$RC" 0 "dry run with a Library source and no admin exits 0"
 assert_text "note: you are not an admin; .*README 'No admin rights\?'" "$ERR" "dry run notes the admin wall for non-admins"
+
+# A reinstall keeps explicit certificate configuration from the existing plist,
+# while a new --env value takes precedence.  This uses an isolated HOME and the
+# real install dry-run entry point; it never loads a LaunchAgent.
+TLS_HOME="$TMP/tls-home"; TLS_LABEL="com.example.watch-tls"; mkdir -p "$TLS_HOME/Library/LaunchAgents"
+python3 - "$TLS_HOME/Library/LaunchAgents/$TLS_LABEL.plist" <<'PY'
+import plistlib, sys
+plistlib.dump({"Label": "com.example.watch-tls", "EnvironmentVariables": {
+    "PATH": "/custom/tools:/old/path", "SSL_CERT_FILE": "/corp/old.pem", "UV_SYSTEM_CERTS": "1", "UV_NATIVE_TLS": "1", "FOO": "old"
+}}, open(sys.argv[1], "wb"))
+PY
+HOME="$TLS_HOME" run_watch install --into "$WS2" --source "$SRC" --dry-run --label "$TLS_LABEL" --env FOO=new
+assert_eq "$RC" 0 "certificate-configured reinstall dry run exits 0"
+printf '%s\n' "$OUT" > "$TMP/tls.plist"
+TLS_ENV="$(python3 - "$TMP/tls.plist" <<'PY'
+import plistlib, sys
+e = plistlib.load(open(sys.argv[1], "rb"))["EnvironmentVariables"]
+print(e.get("SSL_CERT_FILE"), e.get("UV_SYSTEM_CERTS"), e.get("UV_NATIVE_TLS"), e.get("FOO"), e["PATH"].split(":")[0], ".local/bin" in e["PATH"])
+PY
+)"
+assert_eq "$TLS_ENV" "/corp/old.pem 1 1 new /custom/tools True" "reinstall retains certificate env and explicit PATH precedence"
+
+# Candidate selection skips a copied-venv failure and accepts the Python found
+# by uv.  The subprocesses are mocked; this isolates selection from this Mac's
+# installed interpreters while exercising the production function.
+PROBE_SELECTION="$(PYTHONPATH="$REPO/lib" python3 - <<'PY'
+import subprocess, sys
+from pathlib import Path
+from unittest.mock import patch
+import watch
+class R:
+    def __init__(self, rc, out=""): self.returncode, self.stdout = rc, out
+calls = []
+def run(argv, **kwargs):
+    calls.append(argv)
+    if argv[1:3] == ["python", "find"]: return R(0, "/uv/python3.12\n")
+    return R(0 if argv[0] == "/uv/python3.12" else 1)
+with patch.object(watch.shutil, "which", return_value="/fake/uv"), \
+     patch.object(watch.subprocess, "run", side_effect=run), \
+     patch.object(watch.os, "access", return_value=True):
+    print(watch.compatible_copying_interpreter() == "/uv/python3.12", any(a[1:3] == ["python", "find"] for a in calls))
+PY
+)"
+assert_eq "$PROBE_SELECTION" "True True" "copied-venv selection falls through to uv-managed Python"
 
 # ---------------------------------------------------------------------------
 # 8. memos list / pull on a plain folder

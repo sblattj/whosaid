@@ -103,6 +103,42 @@ PASS=$((PASS + 1))
 bash -n "$SCRIPT_PATH" || fail "bash -n failed on test/cli_test.sh"
 PASS=$((PASS + 1))
 
+# The production launcher must select a user-local tool before system prefixes.
+# A separate HOME/PATH is the paired control for the host's installed tools and
+# does not write to the user's tool directories.
+touch "$TMP/no-tools.wav"
+mkdir -p "$TMP/no-tools-home/.local/bin"
+cat > "$TMP/no-tools-home/.local/bin/uv" <<'EOF'
+#!/bin/bash
+echo "synthetic user-local uv: invalid peer certificate: UnknownIssuer" >&2
+exit 7
+EOF
+chmod +x "$TMP/no-tools-home/.local/bin/uv"
+set +e
+OUT="$(HOME="$TMP/no-tools-home" PATH="/usr/bin:/bin" "$WHOSAID" "$TMP/no-tools.wav" 2>&1)"
+RC=$?
+set -e
+assert_eq "$RC" 7 "transcribe retains a user-local uv failure exit code"
+assert_text "synthetic user-local uv" "$OUT" "transcribe discovers uv from ~/.local/bin before system prefixes"
+assert_text "TLS certificate verification failed" "$OUT" "certificate-shaped uv failures receive targeted remediation"
+assert_text "UV_SYSTEM_CERTS=1" "$OUT" "TLS remediation names the system-trust setting"
+
+# Vary only PATH: an explicit caller-selected tool must win over automatic
+# prefix discovery while the same local fallback remains present.
+mkdir -p "$TMP/custom-tools"
+cat > "$TMP/custom-tools/uv" <<'EOF'
+#!/bin/bash
+echo "explicit PATH uv selected" >&2
+exit 8
+EOF
+chmod +x "$TMP/custom-tools/uv"
+set +e
+OUT="$(HOME="$TMP/no-tools-home" PATH="$TMP/custom-tools:/usr/bin:/bin" "$WHOSAID" "$TMP/no-tools.wav" 2>&1)"
+RC=$?
+set -e
+assert_eq "$RC" 8 "explicit PATH tool selection survives launcher setup"
+assert_text "explicit PATH uv selected" "$OUT" "caller PATH precedes discovered prefixes"
+
 # ---------------------------------------------------------------------------
 # 1. `whosaid help` names every new command, flag, and env var.
 # ---------------------------------------------------------------------------

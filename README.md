@@ -85,11 +85,30 @@ absolute path. `WHOSAID_INSTALL_DIR=/another/bin ./whosaid install` selects anot
 directory. The installed command is a symlink to the checkout, so updating the checkout updates the
 command without copying or duplicating the implementation.
 
+Homebrew is optional when `uv`, `ffmpeg`, and `ffprobe` are already installed. The launcher
+and watcher search `~/.local/bin`, `~/bin`, and `~/homebrew/bin` as well as the usual system
+prefixes. Setup can install a pinned, checksum-verified Apple Silicon `uv` archive into
+`~/.local/bin`. Homebrew FFmpeg installation requires a bottle; a nonstandard prefix will not
+silently trigger a source build.
+
+For a Mac without Homebrew, or one where no bottle is available, use:
+
+```bash
+./bootstrap.sh --build-ffmpeg
+```
+
+This builds pinned FFmpeg source into user-local `ffmpeg` and `ffprobe` executables. It needs
+Apple's Command Line Tools (`xcode-select --install` if missing), compilation time, and free
+disk space, but no administrator-owned install prefix or GPG installation. The source archive
+is checked with macOS `shasum` against a checksum verified from FFmpeg's signed release.
+Existing usable tools are retained. Setup then warms the Python environments and downloads
+the models as usual.
+
 ## Commands
 
 | Command | What it does |
 |---|---|
-| `./bootstrap.sh [--yes]` (also `whosaid setup`) | Capability check, dependency install, model pre-download, and command installation. Idempotent — safe to re-run. |
+| `./bootstrap.sh [--yes] [--build-ffmpeg]` (also `whosaid setup`) | Capability check, dependency install, model pre-download, and command installation. `--build-ffmpeg` selects the verified user-local source build when FFmpeg tools are missing. Idempotent — safe to re-run. |
 | `whosaid install [--force]` | Install/update the command symlink in `~/.local/bin` (or `WHOSAID_INSTALL_DIR`). Refuses to replace an unrelated command, and refuses (unless `--force`) to install from a checkout under `/tmp`, `/private/tmp`, `/var/tmp`, or `$TMPDIR` — that symlink would dangle once the OS cleans the temp directory up. |
 | `whosaid enroll [Name]` | Records ~45s from the mic reading a printed passage, saves `voices/<Name>.wav`. See [Speaker identity: enrollment clips vs. the registry](#speaker-identity-enrollment-clips-vs-the-registry). |
 | `whosaid enroll <Name> --from FILE [--ss T] [--t D\|--to T] [--force]` | Extracts a clip from an existing recording instead of the mic (extract → verify → save, no interaction). `--ss`/`--t`/`--to` accept seconds or `M:SS`/`H:MM:SS`; same ≥15s/non-silent bar as mic enrollment. |
@@ -98,6 +117,9 @@ command without copying or duplicating the implementation.
 | `whosaid relabel <base> SPEAKER_02=Jane …` | Put real names on clusters after reading the speaker cards. Rewrites the transcript + cards and saves each named voiceprint to the local registry for future transcripts — refusing (unless `--force`) to overwrite an existing registry entry the new cluster doesn't match (similarity below the match threshold, default 0.50). No re-transcription. |
 | `whosaid relabel <base> SPEAKER_04=Alice --no-save [--note TEXT]` | Transcript-only label: renames the cluster in the transcript + cards and never writes to the registry. For a speaker the conversation makes obvious but whose cluster is a poor voiceprint — a long mixed cluster saved as that person would degrade their enrolled print. The label is kept in the sidecar (`local_labels`), survives `relabel --auto` and `whosaid samples`, and each card is marked `Alice_Example  (transcript-only label; registry untouched)`. See [Speaker identity: enrollment clips vs. the registry](#speaker-identity-enrollment-clips-vs-the-registry). |
 | `whosaid relabel <base> --auto` | Re-apply naming to an existing transcript with no assignments: re-runs registry matching + the absorb pass over the cached sidecar and rewrites the transcript + cards. Picks up voices enrolled after the transcript was made, and folds phantom cluster splits of one person into a single speaker. No re-transcription, no re-diarization. In a meeting workspace the base is `transcript`. See [Speaker identity: enrollment clips vs. the registry](#speaker-identity-enrollment-clips-vs-the-registry). |
+| `whosaid backfill <ws> [--dry-run]` | Apply current registry names and roles to historical meetings, regenerate commitments, and refresh roll-up, worklists, search, graph, and wiki. Reports conflicts before changing meeting files. |
+| `whosaid speakers export --out FILE` | Export the private speaker registry to a new backup file, including voiceprints, roles, and metadata. |
+| `whosaid speakers import FILE [--merge\|--overwrite]` | Restore a registry backup. An existing destination requires an explicit conflict policy; `--overwrite` replaces the entire registry. |
 | `whosaid samples <base> [-o DIR] [--audio FILE] [--per-speaker N] [--seconds S] [--json]` | Export one short representative WAV per speaker cluster — the longest diarized segment, clamped to `--seconds` (default 8) — so you can listen and confirm an identity before trusting an auto-label or enrolling. Cuts from the sidecar's own `source.path`, or an explicit `--audio FILE` for a sidecar written before that metadata existed. |
 | `whosaid ingest <audio>… --into DIR [--action-items] [--engine E] [--index]` | Transcribe a batch into dated meeting folders (idempotent by content hash). `--engine` picks the action-item summarizer, `--index` runs roll-up + index afterwards. See [Meeting workspaces](#meeting-workspaces). |
 | `whosaid roll-up <ws> [--action-items] [--index] [--owner NAME\|me] [--all-owners]` | Rebuild the workspace index (`_INDEX.md`), audit, the deduplicated action-item and dev-commitments corpora, and the owner's ranked `_WORKLIST-<Owner>.md`; `--index` then rebuilds the search index too. |
@@ -401,6 +423,24 @@ Hugging Face offline variables into the agent so a machine with no network acces
 fetch; `--env K=V` adds any other environment the agent should carry; `--engine E` on `run` picks
 the summarizer.
 
+Reinstall preserves saved environment settings, including custom tool paths. Current exported
+certificate settings and explicit `--env` values can override saved values; `--env` takes final
+precedence. On a managed network, the watcher can use the organization's installed macOS trust
+roots or its CA bundle without turning off certificate verification:
+
+```bash
+whosaid watch install --into ~/meetings --no-fda --env UV_SYSTEM_CERTS=1
+# If your organization supplies a PEM bundle instead:
+whosaid watch install --into ~/meetings --no-fda \
+  --env SSL_CERT_FILE=/path/to/organization-ca.pem --env UV_SYSTEM_CERTS=1
+```
+
+The installer also carries exported `SSL_CERT_DIR`, `REQUESTS_CA_BUNDLE`, `CURL_CA_BUNDLE`,
+and the legacy `UV_NATIVE_TLS` setting into launchd. Certificate failures retain the original
+error and provide this setup guidance. To discard saved environment settings completely,
+uninstall the watcher, then install it with the desired settings. Uninstall leaves shared
+user-local tools and CA files intact.
+
 **Full Disk Access, scoped to one binary.** The Voice Memos store is TCC-protected: only an
 executable you have granted Full Disk Access can read it, and macOS grants that per executable
 path. Granting it to your terminal or your everyday Python would privilege everything they run.
@@ -430,6 +470,12 @@ no `[watch] source` is set):
 whosaid watch install --into ~/meetings --no-fda   # watches ~/Recordings; no FDA, no admin
 ```
 
+This mode reuses the launcher's Python and does not create a dedicated copied interpreter.
+For Voice Memos FDA installs, the installer selects a Python that supports copied virtual
+environments. If only Apple's Command Line Tools Python is available, install a compatible
+user-local interpreter with `uv python install 3.12`, then rerun; `--interpreter PATH` still
+selects an existing interpreter explicitly.
+
 Three ways to get recordings into that plain folder:
 
 1. **iPhone Shortcut "Record Audio -> Save File" -> Dropbox** (the one fully automatic
@@ -454,8 +500,13 @@ Store recorder is only an option if it writes into a folder you choose outside `
 `whosaid watch menubar install [--workspace <ws>] [--interval 10s]` symlinks a stdlib-only
 SwiftBar plugin (`contrib/swiftbar/whosaid.10s.py`) into SwiftBar's plugin directory, so the
 watcher's state lives in your menu bar at a glance; `menubar uninstall` removes it and
-`menubar status` reports whether SwiftBar is installed and running and whether the plugin can
-read the Voice Memos store. `whosaid doctor` prints the same report.
+`menubar status` reports whether SwiftBar is installed and running and whether the configured
+recording source is readable. `whosaid doctor` prints the same report. A watcher using an
+ordinary folder, such as `~/Recordings`, does not require a separate Voice Memos access grant.
+If SwiftBar has no plugin directory preference, the installer configures `~/.config/swiftbar`
+and verifies the preference before linking the plugin. An existing directory preference is
+preserved. Refresh or relaunch SwiftBar after installation to load the plugin; a successful
+preference write and symlink do not by themselves prove the app has loaded it.
 
 | glyph | meaning |
 |---|---|
@@ -471,7 +522,8 @@ The dropdown carries the stage log tail, the agent line, links to the workspace,
 dated meeting folder, every `_WORKLIST-<Owner>.md`, and `_WIKI.md`, plus actions to follow the
 log, kick the watcher now (`launchctl kickstart -k`), and refresh or relaunch SwiftBar.
 
-Two platform notes the plugin cannot fix for you: reading the Voice Memos store requires
+Two platform notes the plugin cannot fix for you: when Voice Memos is the configured source,
+reading its store requires
 **SwiftBar itself** to hold Full Disk Access (the watcher's grant is separate — the plugin
 shows the pane link and a relaunch action when the probe fails, because a fresh grant only
 applies after a relaunch); and on a notched display a new status item can land behind the
@@ -762,6 +814,39 @@ re-saved, and rendered as `# Role: Karen = boss` header lines in `<base>.speaker
 Roles carry semantics downstream: `self` marks your own voice, and a `boss`-roled speaker's
 requests rank higher in action items and the [dev-commitments](#dev-commitments) corpus.
 
+**Apply registry changes to historical meetings.** Relabeling a meeting updates that meeting;
+use backfill to bring an existing workspace into line with the current registry:
+
+```bash
+whosaid backfill ~/meetings --dry-run   # inspect per-meeting changes and conflicts
+whosaid backfill ~/meetings             # apply, then refresh all derived views
+```
+
+Backfill works from cached diarization sidecars without transcribing audio again. It preserves
+transcript prose and transcript-only labels, updates speaker role headers and cards, and
+regenerates heuristic commitments. Conflicting edits to a meeting's commitments are reported
+before meeting files are written; reconcile those edits before retrying. Corpus curation,
+including edited commitment text and statuses, survives source refresh. Roll-up fingerprints
+commitment inputs and roles so previously folded meetings are reconsidered when those inputs
+change. Run backfill after changing registry roles to update the per-meeting inputs as well.
+
+**Back up or move the registry.** Both commands respect `WHOSAID_SPEAKER_DB` and work without
+loading a model:
+
+```bash
+whosaid speakers export --out ./speakers-backup.json
+whosaid speakers import ./speakers-backup.json          # destination must not exist
+whosaid speakers import ./speakers-backup.json --merge  # add non-conflicting entries
+```
+
+Exports preserve names, model identifiers, embeddings, roles, notes, and other registry metadata
+inside a versioned format. Import validates the complete file before writing and refuses merge
+conflicts. To deliberately replace every destination entry, use `--overwrite`; this also removes
+voices absent from the backup. Export refuses an existing output path. Registry writes are
+atomic and backup/import files have owner-only permissions. These files contain private
+voiceprints: keep them out of source control and use a private, encrypted transfer when moving
+them between machines. Enrollment audio in `voices/` is separate from the registry backup.
+
 **Which one actually names a cluster.** `name_clusters()` (`lib/diarize_sherpa.py`) runs three
 passes in order, and a later pass only touches a cluster the earlier ones left unnamed: (1)
 registry one-best, (2) `--ref` enrollment clips, (3) absorb (folds a still-unnamed cluster into
@@ -1037,6 +1122,17 @@ min_words` key, and the dropped-fragments review sections); no model download re
 strings, owner resolution (`--owner`, `me`, the toml owner, aliases), the CM + AI union and its
 cross-source dedupe, `_WORKLIST-<Owner>.md` as a regenerated view, `--all-owners`, `--json`, and
 the `whosaid commitments` launcher command.
+
+The client setup and history regressions have focused suites as well:
+
+- `./test/bootstrap_test.sh` exercises the no-Homebrew, required-tool, bottle-failure,
+  and checksum-failure paths with isolated tool mocks.
+- `python3 test/menubar_test.py` exercises the real plugin and watcher CLI, including
+  active versus stopped PIDs, configured-source permissions, and first-run preferences.
+- `uv run --with numpy python test/backfill_test.py` exercises historical backfill,
+  corpus freshness and curation, dry-run behavior, malformed inputs, and rollback.
+- `python3 test/speaker_registry_migration_test.py` exercises private registry
+  round trips, validation, conflict policies, permissions, and concurrent creation.
 
 ## License
 

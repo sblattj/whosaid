@@ -188,6 +188,7 @@ from __future__ import annotations
 
 import argparse
 import difflib
+import copy
 import hashlib
 import json
 import math
@@ -1471,6 +1472,8 @@ class CommitmentItem:
     # AI-NNN ids written on this item's action-items.md bullets (comma-
     # joined, mirroring graph.py's commitment rows); "" when none.
     ai_refs: str = ""
+    curated: dict = field(default_factory=dict)
+    source_values: dict = field(default_factory=dict)
     occurrences: list[CmOccurrence] = field(default_factory=list)
 
 
@@ -2774,6 +2777,81 @@ def cmd_worklist(args: argparse.Namespace) -> int:
     return 0
 
 
+def commitment_fingerprints(folders: list[Path], cues: dict) -> dict[str, str]:
+    """Content, role and extractor configuration identity, never mtimes."""
+    result = {}
+    for folder in folders:
+        sources = {p.name: sha256_file(p) for p in
+                   [folder / "commitments.json", folder / "action-items.md",
+                    *sorted(folder.glob("*.speakers.txt"))] if p.is_file()}
+        result[folder.name] = hashlib.sha256(json.dumps(
+            {"sources": sources, "roles": meeting_roles(folder), "cues": cues},
+            sort_keys=True).encode()).hexdigest()
+    return result
+
+
+CM_CURATED_FIELDS = ("text", "speaker", "status", "merged_into", "priority",
+                     "requested_by", "requested_by_role", "cue", "negative", "ai_refs")
+
+
+def remember_commitment_edits(items: list[CommitmentItem]) -> None:
+    for it in items:
+        baseline = it.source_values or {
+            "text": next((o.text for o in it.occurrences if o.text), it.text),
+            "speaker": next((o.owner for o in it.occurrences if o.owner), it.speaker),
+            "status": "open", "merged_into": "",
+        }
+        for key in CM_CURATED_FIELDS:
+            if getattr(it, key) != baseline.get(key, getattr(it, key)):
+                it.curated[key] = getattr(it, key)
+            else:
+                it.curated.pop(key, None)
+
+
+def restore_commitment_edits(fresh: list[CommitmentItem], previous: list[CommitmentItem]) -> None:
+    """Keep IDs and explicit edits while replacing all derived role evidence."""
+    used = set()
+    def evidence(it):
+        return {(o.meeting, o.source, o.t_sec, normalize_text(o.text)) for o in it.occurrences}
+    for it in fresh:
+        candidates = [old for old in previous if old.id not in used and
+                      (evidence(old) & evidence(it) or
+                       any(normalize_text(o.text) == normalize_text(it.text)
+                           for o in old.occurrences if o.text))]
+        it.source_values = {k: getattr(it, k) for k in CM_CURATED_FIELDS}
+        if candidates:
+            old = max(candidates, key=lambda old: len(evidence(old) & evidence(it)))
+            used.add(old.id)
+            it.id, it.curated = old.id, old.curated
+            for key, value in it.curated.items():
+                if key in CM_CURATED_FIELDS:
+                    setattr(it, key, value)
+    for old in previous:
+        if old.id not in used and old.curated:
+            # An explicit human decision outlives its automatic evidence.
+            old.occurrences = []
+            fresh.append(old)
+    by_id = {it.id: it for it in fresh}
+    for it in list(fresh):
+        if it.status != "merged" or not it.merged_into:
+            continue
+        survivor = by_id.get(it.merged_into)
+        if survivor is None:
+            previous_target = next((old for old in previous if old.id == it.merged_into), None)
+            if previous_target is None:
+                raise ValueError(f"{it.id}: missing manual merge target {it.merged_into}")
+            survivor = copy.deepcopy(previous_target)
+            survivor.occurrences = []
+            fresh.append(survivor)
+            by_id[survivor.id] = survivor
+        have = evidence(survivor)
+        survivor.occurrences.extend(o for o in it.occurrences
+                                   if (o.meeting, o.source, o.t_sec, normalize_text(o.text)) not in have)
+        if survivor.occurrences:
+            survivor.first_seen = min(o.meeting for o in survivor.occurrences)
+            survivor.last_seen = max(o.meeting for o in survivor.occurrences)
+
+
 def cmd_rollup(args: argparse.Namespace) -> int:
     if not 0.5 <= args.similarity_threshold <= 1.0:
         log(f"rollup: --similarity-threshold must be between 0.5 and 1.0 "
@@ -2811,6 +2889,21 @@ def cmd_rollup(args: argparse.Namespace) -> int:
         elif entry.is_dir():
             orphans.append(entry.name)
     stale = [f for f in prev_meetings if f not in {p.name for p in dated}]
+
+    # Validate every source before reconciliation or writing any derived view.
+    # A corrupt historical source must not erase its previously folded evidence.
+    for folder in dated:
+        source = folder / "commitments.json"
+        if source.exists():
+            try:
+                value = json.loads(source.read_text())
+                if not isinstance(value, dict) or not isinstance(value.get("items"), list):
+                    raise ValueError("expected object with items list")
+                if any(not isinstance(item, dict) for item in value["items"]):
+                    raise ValueError("commitment items must be objects")
+            except (OSError, ValueError) as exc:
+                log(f"rollup: refusing unreadable source {source}: {exc}")
+                return 1
 
     meetings = [scan_meeting(folder, prev_meetings.get(folder.name)) for folder in dated]
     manifest_data = {
@@ -2873,10 +2966,19 @@ def cmd_rollup(args: argparse.Namespace) -> int:
         log(f"reconciling hand edits from {cm_out.name}")
         reconcile_commitments_from_md(cm_items, cm_out.read_text())
 
+    remember_commitment_edits(cm_items)
+    fingerprints = commitment_fingerprints(dated, cm_cues)
+    previous_cm_items = copy.deepcopy(cm_items)
+    refresh_cm = bool(cm_folded) and commitments_data.get("source_fingerprints") != fingerprints
+    if refresh_cm:
+        log("commitment sources/roles changed: replacing derived contributions; preserving curation")
+        cm_items, cm_folded = [], set()
     cm_near_misses: list[tuple[str, str, float]] = []
     # Fold-time fragment near misses live in the corpus JSON so the review
     # section survives incremental runs (folded meetings are not re-read).
     cm_dropped: list[dict] = list(commitments_data.get("dropped", []))
+    if refresh_cm:
+        cm_dropped = []
     cm_dropped_before = len(cm_dropped)
     for folder in dated:
         cj_path = folder / "commitments.json"
@@ -2923,6 +3025,11 @@ def cmd_rollup(args: argparse.Namespace) -> int:
         log(f"dropped {len(cm_dropped) - cm_dropped_before} fragment(s) at fold "
             f"(min_words={cm_cues['min_words']}); listed under 'Dropped fragments (review)' "
             f"in {cm_out.name}")
+    if refresh_cm:
+        restore_commitment_edits(cm_items, previous_cm_items)
+    for it in cm_items:
+        if not it.source_values:
+            it.source_values = {k: getattr(it, k) for k in CM_CURATED_FIELDS}
     cm_dupes = possible_duplicates(cm_items, cm_near_misses, args.similarity_threshold)
     cm_md = render_commitments_md(ws, cm_items, cm_dupes, cm_dropped)
     for it in cm_items:
@@ -2934,6 +3041,7 @@ def cmd_rollup(args: argparse.Namespace) -> int:
         "next_id": cm_next_id[0],
         "similarity_threshold": args.similarity_threshold,
         "folded_meetings": sorted(cm_folded),
+        "source_fingerprints": fingerprints,
         "items": [
             {
                 "id": it.id, "text": it.text, "speaker": it.speaker,
@@ -2942,6 +3050,7 @@ def cmd_rollup(args: argparse.Namespace) -> int:
                 "cue": it.cue, "negative": bool(it.negative),
                 "status": it.status, "first_seen": it.first_seen, "last_seen": it.last_seen,
                 "merged_into": it.merged_into, "ai_refs": it.ai_refs,
+                "curated": it.curated, "source_values": it.source_values,
                 "occurrences": [vars(o) for o in it.occurrences],
                 "md_status": it.md_status, "md_text": it.md_text, "md_speaker": it.md_speaker,
             }

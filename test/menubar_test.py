@@ -19,9 +19,11 @@ Run:
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
 import importlib.util
 import json
 import os
+import plistlib
 import subprocess
 import sys
 import tempfile
@@ -129,6 +131,75 @@ def test_classifier(P) -> None:
                     "2026-09-18T09:07:30+03:00 chunk 8/8 done: mel"]
     state, _ = P.classify(P.parse_stage_lines(noisy_ingest), now=when(8, 0))
     check(state == "ingesting", "noise mid-ingest does not end the ingest")
+
+
+def test_watcher_liveness(P) -> None:
+    live = {"loaded": True, "state": "active", "pid": os.getpid(), "pid_alive": True}
+    check(P.watcher_running(live) is True, "active + live PID is a live launchd watcher")
+    live["state"] = "running"
+    check(P.watcher_running(live) is True, "running + live PID is a live launchd watcher")
+    live["state"] = "not running"
+    check(P.watcher_running(live) is False, "a multiword stopped state is not live")
+    live["state"] = "active"
+    live["pid_alive"] = False
+    check(P.watcher_running(live) is False, "active without a live PID is not live")
+    del live["pid_alive"]
+    live["pid"] = None
+    check(P.watcher_running(live) is False, "active without a PID is not live")
+    check(P.watcher_running(None) is None, "unavailable status remains unknown")
+
+
+def test_render_controls(P, tmp: Path) -> None:
+    """Exercise the plugin entry point with one fresh log and paired statuses."""
+    source = tmp / "plain-recordings"
+    source.mkdir()
+    ws = tmp / "render-workspace"
+    ws.mkdir()
+    log = ws / ".watch.log"
+    log.write_text(dt.datetime.now().astimezone().isoformat(timespec="seconds")
+                   + " whosaid:   > whosaid ingest fixture.m4a\n")
+    fake_whosaid = tmp / "fake-whosaid"
+    fake_whosaid.write_text(
+        "#!/usr/bin/env python3\n"
+        "import os, sys\n"
+        "if sys.argv[1:3] == ['watch', 'status']:\n"
+        "    print(os.environ['FAKE_STATUS'])\n"
+        "elif sys.argv[1:3] == ['memos', 'list']:\n"
+        "    print('{\\\"recordings\\\": []}')\n"
+        "else:\n"
+        "    raise SystemExit(64)\n")
+    fake_whosaid.chmod(0o755)
+    common = {"loaded": True, "pid": os.getpid(), "workspace": str(ws), "source": str(source),
+              "source_readable": True, "processed": 0, "seeded": 0, "log": str(log),
+              "last_exit_status": 0}
+
+    def render(status: dict) -> str:
+        env = dict(os.environ, HOME=str(tmp / "render-home"), WHOSAID_WORKSPACE=str(ws),
+                   WHOSAID_BIN=str(fake_whosaid), FAKE_STATUS=json.dumps(status))
+        result = subprocess.run([sys.executable, str(PLUGIN)], capture_output=True, text=True, env=env)
+        check(result.returncode == 0, "plugin entry point renders its controlled status")
+        return result.stdout
+
+    active = dict(common, state="active", pid_alive=True)
+    active_output = render(active)
+    check("no watcher process is running" not in active_output,
+          "active live watcher does not turn a fresh ingest log into a warning")
+    check("cannot read the Voice Memos store" not in active_output,
+          "a readable plain source does not warn about unrelated Voice Memos access")
+    check("configured recording source" in active_output,
+          "plugin names successful plain-source access")
+    stopped = dict(common, state="not running", pid_alive=False)
+    stopped_output = render(stopped)
+    check("no watcher process is running" in stopped_output,
+          "a stopped multiword state warns when the same log says ingesting")
+    missing_pid = dict(common, state="running", pid=None, pid_alive=False)
+    check("no watcher process is running" in render(missing_pid),
+          "a running state without a live PID warns when the same log says ingesting")
+    voice_source = tmp / "render-home/Library/Group Containers/group.com.apple.VoiceMemos.shared/Recordings"
+    voice_output = render(dict(common, source=str(voice_source), source_readable=False,
+                               state="active", pid_alive=True))
+    check("cannot read the Voice Memos store" in voice_output,
+          "the Voice Memos source retains its FDA-specific diagnostic")
 
 
 def test_tail(P, tmp: Path) -> None:
@@ -240,7 +311,9 @@ def test_notify_once(P, tmp: Path) -> None:
 def run_watch(args: list[str], env_extra: dict | None = None, cwd: Path | None = None):
     env = {k: v for k, v in os.environ.items()
            if k not in ("WHOSAID_WORKSPACE", "WHOSAID_SWIFTBAR_DIR", "WHOSAID_SWIFTBAR_APP",
-                        "FAKE_DEFAULTS_DIR", "WHOSAID_BIN")}
+                        "FAKE_DEFAULTS_DIR", "FAKE_DEFAULTS_FILE", "FAKE_DEFAULTS_WRITE_FAIL",
+                        "FAKE_DEFAULTS_WRITE_NO_EFFECT",
+                        "WHOSAID_BIN")}
     env["PATH"] = f"{FAKE_BIN}:{env.get('PATH', '')}"
     env.update(env_extra or {})
     return subprocess.run([sys.executable, str(WATCH_PY), *args],
@@ -285,11 +358,38 @@ def test_cli() -> None:
     home2 = TMP / "home2"
     app2 = TMP / "SwiftBar.app"
     app2.mkdir()
-    r = run_watch(["menubar", "install"], {"HOME": str(home2), "WHOSAID_SWIFTBAR_APP": str(app2)})
+    preference = TMP / "swiftbar-plugin-directory"
+    r = run_watch(["menubar", "install"], {"HOME": str(home2), "WHOSAID_SWIFTBAR_APP": str(app2),
+                                          "FAKE_DEFAULTS_FILE": str(preference)})
     fallback = home2 / ".config/swiftbar/whosaid.10s.py"
     check(r.returncode == 0 and fallback.is_symlink(),
-          "app present + PluginDirectory unset falls back to ~/.config/swiftbar (HOME redirected)")
-    check("fallback" in r.stdout, "the fallback is announced")
+          "app present + PluginDirectory unset configures ~/.config/swiftbar (HOME redirected)")
+    check(preference.read_text().strip() == str(home2 / ".config/swiftbar"),
+          "first install writes SwiftBar's PluginDirectory preference")
+    check("refresh or relaunch SwiftBar" in r.stdout,
+          "configuration gives an actionable refresh step without claiming live discovery")
+    r = run_watch(["menubar", "install"], {"HOME": str(home2), "WHOSAID_SWIFTBAR_APP": str(app2),
+                                          "FAKE_DEFAULTS_FILE": str(preference)})
+    check(r.returncode == 0 and preference.read_text().strip() == str(home2 / ".config/swiftbar"),
+          "second install preserves the configured preference")
+
+    failed_home = TMP / "failed-home"
+    r = run_watch(["menubar", "install"], {"HOME": str(failed_home), "WHOSAID_SWIFTBAR_APP": str(app2),
+                                          "FAKE_DEFAULTS_FILE": str(TMP / "failed-preference"),
+                                          "FAKE_DEFAULTS_WRITE_FAIL": "1"})
+    check(r.returncode == 1 and "could not be configured" in r.stderr,
+          "an unset directory that cannot be configured is an actionable incomplete install")
+    check(not (failed_home / ".config/swiftbar/whosaid.10s.py").exists(),
+          "failed configuration does not claim discovery by creating a plugin link")
+
+    no_effect_home = TMP / "no-effect-home"
+    r = run_watch(["menubar", "install"], {"HOME": str(no_effect_home), "WHOSAID_SWIFTBAR_APP": str(app2),
+                                          "FAKE_DEFAULTS_FILE": str(TMP / "no-effect-preference"),
+                                          "FAKE_DEFAULTS_WRITE_NO_EFFECT": "1"})
+    check(r.returncode == 1 and "could not be configured" in r.stderr,
+          "a successful defaults write without a readable preference is incomplete")
+    check(not (no_effect_home / ".config/swiftbar/whosaid.10s.py").exists(),
+          "unverified preference writes do not leave a misleading plugin link")
 
     defaults_dir = TMP / "plug-defaults"
     r = run_watch(["menubar", "install"], {"FAKE_DEFAULTS_DIR": str(defaults_dir)})
@@ -304,7 +404,52 @@ def test_cli() -> None:
     check("whosaid.10s.py" in r.stdout and "whosaid.5s.py" in r.stdout and "whosaid.1m.py" in r.stdout,
           "status lists every linked plugin (not the unrelated file)")
     check("WHOSAID_WORKSPACE" in r.stdout, "status mentions the workspace env the plugin reads")
-    check("store readable:" in r.stdout, "status reports the store-read probe")
+    check("source readable:" in r.stdout, "status reports the configured-source probe")
+
+    plain_workspace = TMP / "plain-workspace"
+    plain_source = TMP / "status-plain-source"
+    plain_workspace.mkdir()
+    plain_source.mkdir()
+    (plain_workspace / "whosaid.toml").write_text(f"[watch]\nsource = {json.dumps(str(plain_source))}\n")
+    r = run_watch(["menubar", "status"], {"WHOSAID_WORKSPACE": str(plain_workspace),
+                                           "WHOSAID_SWIFTBAR_DIR": str(plugins),
+                                           "WHOSAID_SWIFTBAR_APP": str(app2)})
+    check(str(plain_source) in r.stdout and "Full Disk Access" not in r.stdout,
+          "menubar status bases permission guidance on the configured plain source")
+
+    pinned_home = TMP / "pinned-home"
+    pinned_agents = pinned_home / "Library/LaunchAgents"
+    pinned_agents.mkdir(parents=True)
+    pinned_workspace = TMP / "pinned-workspace"
+    pinned_source = TMP / "pinned-no-fda-source"
+    pinned_workspace.mkdir()
+    pinned_source.mkdir()
+    pinned_label = "com.whosaid.watch." + hashlib.sha256(str(pinned_workspace).encode()).hexdigest()[:8]
+    with open(pinned_agents / f"{pinned_label}.plist", "wb") as fh:
+        plistlib.dump({"Label": pinned_label, "WatchPaths": [str(pinned_source)],
+                       "ProgramArguments": [sys.executable, str(WATCH_PY), "run", "--into", str(pinned_workspace),
+                                            "--source", str(pinned_source)]}, fh)
+    r = run_watch(["menubar", "status"], {"HOME": str(pinned_home), "WHOSAID_WORKSPACE": str(pinned_workspace),
+                                           "WHOSAID_SWIFTBAR_DIR": str(plugins),
+                                           "WHOSAID_SWIFTBAR_APP": str(app2)})
+    check(str(pinned_source) in r.stdout and "Full Disk Access" not in r.stdout,
+          "menubar status honors a plain source pinned in the installed watcher plist")
+
+    fake_launchctl = FAKE_BIN / "launchctl"
+    fake_launchctl.write_text(
+        "#!/bin/bash\n"
+        "echo \"state = $FAKE_LAUNCHD_STATE\"\n"
+        "echo \"pid = $FAKE_LAUNCHD_PID\"\n")
+    fake_launchctl.chmod(0o755)
+    status_env = {"FAKE_LAUNCHD_STATE": "active", "FAKE_LAUNCHD_PID": str(os.getpid())}
+    r = run_watch(["status", "--json", "--label", "com.whosaid.test-status"], status_env)
+    status = json.loads(r.stdout)
+    check(status["state"] == "active" and status["pid_alive"] is True,
+          "actual status CLI reports an active state with a live PID")
+    status_env["FAKE_LAUNCHD_STATE"] = "not running"
+    r = run_watch(["status", "--json", "--label", "com.whosaid.test-status"], status_env)
+    status = json.loads(r.stdout)
+    check(status["state"] == "not running", "actual status CLI preserves multiword launchd state")
 
     occupied.unlink()
     r = run_watch(["menubar", "uninstall"], {"WHOSAID_SWIFTBAR_DIR": str(plugins)})
@@ -331,12 +476,24 @@ def main() -> None:
         fake_defaults = FAKE_BIN / "defaults"
         fake_defaults.write_text(
             "#!/bin/bash\n"
-            "# fake defaults: print $FAKE_DEFAULTS_DIR when set, else fail like an unset key\n"
-            "if [ -n \"${FAKE_DEFAULTS_DIR:-}\" ]; then echo \"$FAKE_DEFAULTS_DIR\"; exit 0; fi\n"
-            "exit 1\n")
+            "# fake defaults: read an explicit test preference or a directory fixture.\n"
+            "if [ \"$1\" = read ]; then\n"
+            "  if [ -n \"${FAKE_DEFAULTS_FILE:-}\" ] && [ -f \"$FAKE_DEFAULTS_FILE\" ]; then cat \"$FAKE_DEFAULTS_FILE\"; exit 0; fi\n"
+            "  if [ -n \"${FAKE_DEFAULTS_DIR:-}\" ]; then echo \"$FAKE_DEFAULTS_DIR\"; exit 0; fi\n"
+            "  exit 1\n"
+            "fi\n"
+            "if [ \"$1\" = write ]; then\n"
+            "  [ \"${FAKE_DEFAULTS_WRITE_FAIL:-}\" = 1 ] && exit 1\n"
+            "  [ -n \"${FAKE_DEFAULTS_FILE:-}\" ] || exit 1\n"
+            "  [ \"${FAKE_DEFAULTS_WRITE_NO_EFFECT:-}\" = 1 ] && exit 0\n"
+            "  printf '%s\\n' \"${@: -1}\" > \"$FAKE_DEFAULTS_FILE\"; exit 0\n"
+            "fi\n"
+            "exit 64\n")
         fake_defaults.chmod(0o755)
         plugin = load_plugin()
         test_classifier(plugin)
+        test_watcher_liveness(plugin)
+        test_render_controls(plugin, TMP)
         test_tail(plugin, TMP)
         test_glyph(plugin)
         test_rec_rows(plugin)

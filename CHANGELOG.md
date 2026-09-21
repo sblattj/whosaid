@@ -6,6 +6,30 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ## [Unreleased]
 
+### Added
+
+- Speaker registry export/import commands for private backups and migration, with
+  validation, explicit conflict handling, atomic writes, and private file permissions.
+- An explicit workspace backfill for historical speaker names and roles, including
+  a dry run, conflict reporting, regenerated commitments, and refreshed workspace views.
+
+### Fixed
+
+- Watcher setup on Macs using Apple Command Line Tools Python: plain-folder
+  `--no-fda` installs reuse the interpreter, and FDA installs select a Python that
+  supports a copied interpreter.
+- LaunchAgent environment handling for user-local tools and managed-network
+  certificate settings, including retention across reinstalls and TLS diagnostics.
+- Dependency setup accepts installed tools without requiring Homebrew and checks
+  for both `ffmpeg` and `ffprobe`. It can install checksum-verified user-local uv
+  and build FFmpeg from a pinned, verified source release. Homebrew installations
+  require a bottle and do not silently fall back to compilation.
+- SwiftBar probes the configured source, recognizes active watcher processes, and
+  preserves multiword launchd states. Plugin installation handles the first-run
+  directory preference and reports setup failures accurately.
+- Commitment roll-up detects changed source and role inputs in previously folded
+  meetings while preserving curated corpus fields.
+
 ## [1.4.0] - 2026-09-21
 
 ### Added

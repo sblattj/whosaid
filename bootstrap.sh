@@ -4,23 +4,37 @@
 # pre-download. Idempotent — safe to re-run any time; each step detects
 # already-done and says so.
 #
-# Usage: ./bootstrap.sh [--yes] [--force]
+# Usage: ./bootstrap.sh [--yes] [--force] [--build-ffmpeg]
 #   --yes     Skip confirmation prompts (installs/continues automatically).
 #   --force   Install even if this checkout lives in a temp directory (see
 #             the temp-directory guard below). Passed through to `whosaid
 #             install --force` at step 8.
+#   --build-ffmpeg  Prefer a verified user-local FFmpeg source build when either
+#                   ffmpeg or ffprobe is missing (requires Command Line Tools).
 # ==============================================================================
 set -euo pipefail
 
-export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+# GUI shells and launchd do not load a user's shell profile.  Keep the same
+# user-local prefixes the watcher supplies to its LaunchAgent.
+export PATH="$HOME/.local/bin:$HOME/bin:$HOME/homebrew/bin:$HOME/homebrew/sbin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/local/sbin:$PATH"
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 YES=0
 FORCE=0
+BUILD_FFMPEG=0
 for a in "$@"; do
-  [[ "$a" == "--yes" ]] && YES=1
-  [[ "$a" == "--force" ]] && FORCE=1
+  case "$a" in
+    --yes) YES=1 ;;
+    --force) FORCE=1 ;;
+    --build-ffmpeg) BUILD_FFMPEG=1 ;;
+    --help|-h)
+      echo "Usage: whosaid setup [--yes] [--force] [--build-ffmpeg]"
+      echo "Use installed uv/ffmpeg/ffprobe or install dependencies and download models."
+      echo "--build-ffmpeg builds verified FFmpeg source into ~/.local/bin using Command Line Tools."
+      exit 0 ;;
+    *) echo "whosaid setup: unknown option: $a (see --help)" >&2; exit 2 ;;
+  esac
 done
 
 # ---- temp-directory checkout guard (before the multi-minute downloads below) ------
@@ -61,38 +75,82 @@ if [[ "$(uname -m)" != "arm64" ]]; then
 fi
 log "✓ Apple Silicon macOS detected"
 
-# ---- 2. Homebrew -----------------------------------------------------------------
-step 2 "checking Homebrew"
-if ! command -v brew >/dev/null 2>&1; then
-  log "FATAL: Homebrew is required. Install it from https://brew.sh then re-run ./bootstrap.sh."
-  exit 1
+# ---- 2. package manager (optional) ----------------------------------------------
+step 2 "checking optional package manager"
+if command -v brew >/dev/null 2>&1; then
+  log "✓ Homebrew found: $(brew --version 2>/dev/null | head -1)"
+else
+  log "Homebrew not found; continuing with user-local tools and the official uv installer."
 fi
-log "✓ Homebrew found: $(brew --version 2>/dev/null | head -1)"
 
 # ---- 3. ffmpeg + uv ---------------------------------------------------------------
-step 3 "checking ffmpeg and uv"
-if command -v ffmpeg >/dev/null 2>&1; then
-  log "✓ ffmpeg already installed"
+step 3 "checking ffmpeg, ffprobe, and uv"
+if command -v ffmpeg >/dev/null 2>&1 && command -v ffprobe >/dev/null 2>&1; then
+  log "✓ ffmpeg and ffprobe already installed"
 else
-  if confirm "ffmpeg not found — install via 'brew install ffmpeg'?"; then
-    brew install ffmpeg
-    log "✓ ffmpeg installed"
+  if [[ "$BUILD_FFMPEG" -eq 0 ]] && command -v brew >/dev/null 2>&1 && confirm "ffmpeg/ffprobe not found — install a Homebrew bottle?"; then
+    # A user-local Homebrew prefix may not have a bottle. Never quietly turn
+    # setup into a multi-hour source build: require a bottle or explain the
+    # verified-source route below.
+    brew install --force-bottle ffmpeg || { log "Homebrew could not supply a bottle; rerun with --build-ffmpeg for the verified source route."; exit 1; }
+  elif [[ "$BUILD_FFMPEG" -eq 1 ]] || confirm "ffmpeg/ffprobe not found — build FFmpeg 9.0.2 from verified official source into ~/.local (requires Command Line Tools)?"; then
+    command -v make >/dev/null 2>&1 && command -v clang >/dev/null 2>&1 || { log "FATAL: source build needs Xcode Command Line Tools (run: xcode-select --install), make, and clang."; exit 1; }
+    ff_tmp="$(mktemp -d)"
+    trap 'rm -rf "$ff_tmp"' EXIT
+    ff_url="https://ffmpeg.org/releases/ffmpeg-9.0.2.tar.xz"
+    # Verified against FFmpeg's detached release signature with the public key
+    # fingerprint FCF986EA15E6E293A5644F10B4322F04D67658D8 published at
+    # https://ffmpeg.org/download.html. End users need only macOS shasum.
+    ff_sha256="8c3850283eb25fa026482078a04051e0be17347b09ef81a0849bec15a96e002e"
+    curl --fail --location --proto '=https' --tlsv1.2 "$ff_url" -o "$ff_tmp/ffmpeg.tar.xz"
+    printf '%s  %s\n' "$ff_sha256" "$ff_tmp/ffmpeg.tar.xz" | shasum -a 256 -c -
+    tar -xJf "$ff_tmp/ffmpeg.tar.xz" -C "$ff_tmp"
+    ff_jobs="$(sysctl -n hw.ncpu)"
+    [[ "$ff_jobs" -gt 8 ]] && ff_jobs=8
+    # Avoid accidentally linking against optional libraries in a development
+    # machine's Homebrew tree. Keep the native macOS capture/media frameworks.
+    (cd "$ff_tmp/ffmpeg-9.0.2" && ./configure --prefix="$HOME/.local" \
+      --disable-debug --disable-doc --disable-ffplay --disable-autodetect \
+      --enable-avfoundation --enable-audiotoolbox --enable-videotoolbox --enable-pthreads \
+      && make -j"$ff_jobs" ffmpeg ffprobe)
+    mkdir -p "$HOME/.local/bin"
+    install -m 0755 "$ff_tmp/ffmpeg-9.0.2/ffmpeg" "$HOME/.local/bin/ffmpeg"
+    install -m 0755 "$ff_tmp/ffmpeg-9.0.2/ffprobe" "$HOME/.local/bin/ffprobe"
+    rm -rf "$ff_tmp"
+    trap - EXIT
+    hash -r
   else
-    log "FATAL: ffmpeg is required. Install with: brew install ffmpeg"
+    log "FATAL: ffmpeg and ffprobe are both required. Use --build-ffmpeg to build verified official source into ~/.local, or install a provider build with its published checksum in ~/.local/bin."
     exit 1
   fi
 fi
 if command -v uv >/dev/null 2>&1; then
   log "✓ uv already installed"
 else
-  if confirm "uv not found — install via 'brew install uv'?"; then
+  if command -v brew >/dev/null 2>&1 && confirm "uv not found — install via 'brew install uv'?"; then
     brew install uv
-    log "✓ uv installed"
+  elif confirm "uv not found — download verified Astral uv 0.12.17 into ~/.local/bin?"; then
+    # Pin the official Apple-Silicon archive and its SHA-256.  Do not use the
+    # convenience installer here: its checksum helper requires GNU sha256sum,
+    # which a stock macOS installation does not provide.
+    uv_tmp="$(mktemp -d)"
+    trap 'rm -rf "$uv_tmp"' EXIT
+    uv_url="https://github.com/astral-sh/uv/releases/download/0.12.17/uv-aarch64-apple-darwin.tar.gz"
+    uv_sha256="85f00cbdc6dd3e97eba4c31b4d014375a9fdfe8f570023b84e5102fc3456896b"
+    curl --fail --location --proto '=https' --tlsv1.2 "$uv_url" -o "$uv_tmp/uv.tar.gz"
+    printf '%s  %s\n' "$uv_sha256" "$uv_tmp/uv.tar.gz" | shasum -a 256 -c -
+    tar -xzf "$uv_tmp/uv.tar.gz" -C "$uv_tmp"
+    mkdir -p "$HOME/.local/bin"
+    install -m 0755 "$uv_tmp/uv-aarch64-apple-darwin/uv" "$HOME/.local/bin/uv"
+    install -m 0755 "$uv_tmp/uv-aarch64-apple-darwin/uvx" "$HOME/.local/bin/uvx"
+    hash -r
   else
-    log "FATAL: uv is required. Install with: brew install uv"
+    log "FATAL: uv is required. Install it with the official installer: curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=\"$HOME/.local/bin\" UV_NO_MODIFY_PATH=1 sh"
     exit 1
   fi
 fi
+command -v uv >/dev/null 2>&1 || { log "FATAL: uv installation finished but uv is not executable on PATH."; exit 1; }
+command -v ffmpeg >/dev/null 2>&1 && command -v ffprobe >/dev/null 2>&1 || { log "FATAL: ffmpeg installation did not provide both ffmpeg and ffprobe."; exit 1; }
 
 # ---- 4. disk space ---------------------------------------------------------------
 step 4 "checking disk space"
