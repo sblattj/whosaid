@@ -6,6 +6,8 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-09-21
+
 ### Added
 
 - **`whosaid_worklist` pagination: `tier`/`limit`/`offset`/`compact` (GitHub issue #30).**
