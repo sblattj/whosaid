@@ -398,7 +398,7 @@ WORKSPACE SEARCH
 WATCH
   whosaid watch install --into <ws> [--source DIR] [--seed] [--dry-run]
                         [--interpreter PATH] [--label L] [--interval S]
-                        [--offline] [--env K=V ...] [--no-open]
+                        [--offline] [--env K=V ...] [--no-open] [--no-fda]
   whosaid watch run     --into <ws> [--source DIR] [--seed] [--dry-run]
                         [--accurate] [--offline] [--whosaid PATH] [--engine E]
   whosaid watch uninstall [--into <ws> | --label L] [--purge]
@@ -409,7 +409,9 @@ WATCH
   --commitments', then roll-up and index. --seed marks the recordings already there as done. Full
   Disk Access is granted to ONE dedicated, ad-hoc-signed interpreter the
   installer provisions; --interpreter PATH reuses a binary you already granted.
-  --source works for any folder, not just Voice Memos. uninstall --purge also
+  --source works for any folder, not just Voice Memos. --no-fda defaults an
+  unset source to ~/Recordings: the FDA toggle needs an admin password (see
+  README 'No admin rights?'). uninstall --purge also
   removes the interpreter, state file, and log. run is the same pipeline in the
   foreground (--dry-run lists what would be ingested).
 

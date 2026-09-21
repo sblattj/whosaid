@@ -417,6 +417,37 @@ Logs land in `<ws>/.watch.log` (launchd captures the watcher's stdout and stderr
 `uninstall` unloads and removes the agent; `--purge` also removes the dedicated interpreter and
 the workspace's `.watch_state.json`, `.watch.lock`, and `.watch_staging/`, never the log.
 
+### No admin rights?
+
+The Full Disk Access toggle asks for an administrator's password — even though `install` scopes
+the grant to one dedicated binary — and on a company-managed Mac the Privacy & Security pane may
+be hidden entirely, so a standard user often cannot grant it at all. The escape hatch needs no
+admin time: `watch` already reads any folder outside `~/Library` with no FDA, and `--no-fda`
+makes that the default (it watches `~/Recordings`, creating it if needed, when no `--source` and
+no `[watch] source` is set):
+
+```bash
+whosaid watch install --into ~/meetings --no-fda   # watches ~/Recordings; no FDA, no admin
+```
+
+Three ways to get recordings into that plain folder:
+
+1. **Just Press Record for Mac** (App Store): its recordings are plain files, no TCC involved. In
+   the app's Settings > General, point "Save recordings to" at `~/Recordings`; every stop-record
+   lands the file exactly where the watcher looks.
+2. **iPhone Shortcut "Record Audio -> Save File" -> Dropbox**: in the Shortcuts app, chain the
+   Record Audio and Save File actions with a Dropbox folder (say `whosaid`) as the destination,
+   then bind the shortcut to the Action Button (Settings > Action Button > Shortcut) or Back Tap
+   (Settings > Accessibility > Touch > Back Tap). Recordings sync to `~/Dropbox/whosaid` on the
+   Mac.
+3. **Drag and drop**: drag memos out of the Voice Memos app into `~/Recordings`, or from iOS use
+   Share > Save to Files > the Dropbox folder. The watcher ingests them on the next pass like
+   any other file.
+
+Dropbox beats iCloud Drive here: `~/Dropbox` is a plain folder outside `~/Library`, while iCloud
+Drive's on-disk root (`~/Library/Mobile Documents`) is TCC-adjacent and not verifiably readable
+without FDA.
+
 ### Menu bar glyph: `whosaid watch menubar` (SwiftBar)
 
 `whosaid watch menubar install [--workspace <ws>] [--interval 10s]` symlinks a stdlib-only

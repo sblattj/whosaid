@@ -8,6 +8,19 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ### Added
 
+- **`whosaid watch install --no-fda`: the no-administrator flow.** The macOS Full Disk Access
+  toggle is admin-gated (it demands an administrator's password; MDM-managed Macs may hide the
+  pane entirely), yet folder mode never needed FDA. `--no-fda` makes that the default: with no
+  `--source` and no `[watch] source` it watches `~/Recordings` (created on install, pinned in
+  the plist), and it exits 1 if the resolved source still sits under `~/Library`, suggesting
+  `~/Recordings` or a Dropbox folder. Non-admin installs print a notice before the FDA
+  instructions (record into a plain folder and run `--no-fda` instead), the dry run warns
+  non-admins, the watcher's TCC error path points them at `--no-fda`, and the no-FDA success
+  path lists the three capture options: Just Press Record for Mac into `~/Recordings`, an
+  iPhone "Record Audio -> Save File" Shortcut into a Dropbox folder (Dropbox because iCloud
+  Drive lives under `~/Library`), or drag-and-drop out of Voice Memos. See the new README
+  section "No admin rights?".
+
 - **Action-items hooks receive `WHOSAID_ROLES` (GitHub issue #27).** The external `--hook` /
   `WHOSAID_ACTION_ITEMS_HOOK` engine now runs with `WHOSAID_ROLES` in its environment (compact
   JSON `{name: role}` from the transcript's `# Role:` headers, `{}` when none), matching the
