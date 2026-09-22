@@ -6,6 +6,8 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ## [Unreleased]
 
+## [1.5.0] - 2026-09-22
+
 ### Added
 
 - Speaker registry export/import commands for private backups and migration, with
