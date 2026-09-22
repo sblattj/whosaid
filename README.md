@@ -116,7 +116,7 @@ the models as usual.
 | `whosaid <audio>… [flags]` | The default command: transcribe + diarize + label one or more audio files. `whosaid transcribe <audio>…` is the same command written explicitly (matching the `whosaid_transcribe` MCP tool name). |
 | `whosaid relabel <base> SPEAKER_02=Jane …` | Put real names on clusters after reading the speaker cards. Rewrites the transcript + cards and saves each named voiceprint to the local registry for future transcripts — refusing (unless `--force`) to overwrite an existing registry entry the new cluster doesn't match (similarity below the match threshold, default 0.50). No re-transcription. |
 | `whosaid relabel <base> SPEAKER_04=Alice --no-save [--note TEXT]` | Transcript-only label: renames the cluster in the transcript + cards and never writes to the registry. For a speaker the conversation makes obvious but whose cluster is a poor voiceprint — a long mixed cluster saved as that person would degrade their enrolled print. The label is kept in the sidecar (`local_labels`), survives `relabel --auto` and `whosaid samples`, and each card is marked `Alice_Example  (transcript-only label; registry untouched)`. See [Speaker identity: enrollment clips vs. the registry](#speaker-identity-enrollment-clips-vs-the-registry). |
-| `whosaid relabel <base> --auto` | Re-apply naming to an existing transcript with no assignments: re-runs registry matching + the absorb pass over the cached sidecar and rewrites the transcript + cards. Picks up voices enrolled after the transcript was made, and folds phantom cluster splits of one person into a single speaker. No re-transcription, no re-diarization. In a meeting workspace the base is `transcript`. See [Speaker identity: enrollment clips vs. the registry](#speaker-identity-enrollment-clips-vs-the-registry). |
+| `whosaid relabel <base> --auto [--fold-unknown]` | Re-apply naming to an existing transcript with no assignments: re-runs registry matching + the absorb pass over the cached sidecar and rewrites the transcript + cards. Picks up voices enrolled after the transcript was made. Add `--fold-unknown` to repair anonymous phantom clusters in cached auto-diarization; it requires `--auto` and does not assign an identity. No re-transcription, no re-diarization. In a meeting workspace the base is `transcript`. See [Speaker identity: enrollment clips vs. the registry](#speaker-identity-enrollment-clips-vs-the-registry). |
 | `whosaid backfill <ws> [--dry-run]` | Apply current registry names and roles to historical meetings, regenerate commitments, and refresh roll-up, worklists, search, graph, and wiki. Reports conflicts before changing meeting files. |
 | `whosaid speakers export --out FILE` | Export the private speaker registry to a new backup file, including voiceprints, roles, and metadata. |
 | `whosaid speakers import FILE [--merge\|--overwrite]` | Restore a registry backup. An existing destination requires an explicit conflict policy; `--overwrite` replaces the entire registry. |
@@ -959,14 +959,15 @@ files are generated and safe to delete; the dotfiles are the watcher's working s
 | `whosaid.toml` | Optional per-workspace settings (owner, groups, summarizer, search, watch). The one file here you write by hand. |
 | `.watch_state.json`, `.watch.lock`, `.watch_staging/`, `.watch.log` | `whosaid watch` state: recordings already handled, the overlap guard, copies staged out of the Voice Memos store, and the agent's log. |
 
-The sidecar's three machine-readable extras, so a consumer never has to scrape stderr or shell out to
+The sidecar's machine-readable extras, so a consumer never has to scrape stderr or shell out to
 `ffprobe`:
 
 | Sidecar key | Contents |
 |---|---|
-| `registry_matches` | One record per naming decision, **including near-misses**: `{"cluster": "SPEAKER_03", "name": "Alice", "similarity": 0.919, "threshold": 0.5, "matched": true, "pass": "registry"}`. `pass` is `registry`, `ref`, or `absorb`; `matched: false` means the cluster stayed `SPEAKER_NN` because `similarity < threshold`. Refreshed by `whosaid relabel --auto`, and also printed in the transcribe JSON line. |
+| `registry_matches` | One record per naming decision, **including near-misses**: `{"cluster": "SPEAKER_03", "name": "Alice", "similarity": 0.919, "threshold": 0.5, "matched": true, "pass": "registry"}`. `pass` is `registry`, `ref`, `absorb`, or `anchor`; `matched: false` means that decision did not identify the voice. After an anonymous fold, `cluster` points to the retained cluster and optional `original_cluster` records which original cluster supplied the similarity evidence. Refreshed by `whosaid relabel --auto`, and also printed in the transcribe JSON line. |
 | `source` | Recording provenance: `{"path": "/abs/path.m4a", "duration_seconds": 1834.2, "creation_time": "2026-09-14T18:02:11.000000Z"}`. `creation_time` is the container tag, or `null` when the file carries none. |
 | `roles` | Optional — present only when at least one speaker carries a registry role: `{"Karen": "boss"}`. Read by downstream consumers such as the commitments extractor. |
+| `count_before_fold`, `count_after_fold`, `fold_note` | Physical speaker-cluster counts before and after the anonymous-phantom check, plus a note when it ran. Equal counts and `fold_note: null` mean no fold was applied. These counts do not claim that the remaining speakers were identified. Older sidecars are read as their observed `num_speakers` for both counts. |
 
 In a meeting workspace, `ingest --commitments` additionally writes per-meeting
 `commitments.md` / `commitments.json`, which `roll-up` folds into the workspace-level
@@ -1041,8 +1042,18 @@ deliberately if a real speaker is being missed.
   with real channel variation it kept opening new clusters until it pinned at the hard cap of
   20. The cap is now a **bound, not a target**: if the estimate lands on it, the count is
   reported as untrustworthy — a `WARNING:` line is written into `<base>.speaker-cards.txt` right
-  under the count, and `count_warning` / `count_estimate` appear in `<base>.diarization.json` and
-  in the JSON on stdout. If you know roughly how many people were present, pass
+  under the count. Suspicious estimates first try stable clustering cuts using turns of at least
+  one second, then assign the shorter turns. A short turn whose voiceprint is too far from those
+  substantive voices prevents that fallback. `count_estimate` preserves the primary count and recovery evidence;
+  `count_warning` explains the action taken or remaining uncertainty. On a problematic fresh auto
+  run, whosaid also checks anonymous phantom clusters for repair
+  after clustering and records `count_before_fold`, `count_after_fold`, and `fold_note` in the
+  sidecar and MCP result. For an existing cached auto sidecar, run
+  `whosaid relabel <base> --auto --fold-unknown`; it only merges confident anonymous clusters and
+  does not give them names. Cached repairs preserve their original similarity evidence in
+  `fold_evidence`, so repeating the command cannot create a chain of merges through averaged
+  voices. Named speakers and transcript-only labels are protected. If you know roughly how many
+  people were present, pass
   `--min-speakers`/`--max-speakers`; if you know exactly, pass `--speakers N`.
   Note this estimator runs on the **chunked** path (recordings over 15 minutes, or any
   `--chunk-seconds`); shorter recordings use sherpa's own clustering, which takes an exact count

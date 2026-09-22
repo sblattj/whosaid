@@ -142,11 +142,13 @@ USAGE
                                         the whosaid_transcribe MCP tool) and
                                         changes nothing.
   whosaid relabel <base> SPEAKER_02=Jane [SPEAKER_03=Bob ...] [--role NAME=ROLE] [-o DIR]
-  whosaid relabel <base> --auto [--absorb-threshold F] [-o DIR]
+  whosaid relabel <base> --auto [--fold-unknown] [--absorb-threshold F] [-o DIR]
                                         Name clusters from the speaker cards and
                                         remember them for future transcripts; --auto
                                         re-applies registry + absorb naming over the
-                                        cached sidecar with no re-transcription.
+                                        cached sidecar with no re-transcription. Use
+                                        --fold-unknown to repair anonymous phantom
+                                        clusters in a cached sidecar.
   whosaid relabel <base> SPEAKER_NN=Name --no-save [--note TEXT]
                                         Transcript-only label: rename in the sidecar
                                         and outputs, never touch the registry; the
@@ -266,6 +268,9 @@ RELABEL FLAGS
                       pass over the cached voiceprints and rewrite <base>.speakers.txt
                       and <base>.speaker-cards.txt. Picks up voices enrolled after
                       the transcript was made — no re-diarization.
+  --fold-unknown      With --auto, repair anonymous phantom clusters in a cached
+                      sidecar. Requires --auto; fresh problematic auto diarization
+                      applies this repair automatically.
   --absorb-threshold F  Absorb-pass cosine threshold for --auto (default 0.85).
   --match-threshold F  Registry/ref match cosine threshold for --auto (alias
                        --ref-threshold; default 0.50). Clusters under it stay SPEAKER_NN.
@@ -1242,11 +1247,12 @@ resolve_sidecar() {
 # the sidecar + outputs without touching the registry, survive `--auto`, and are
 # marked on the speaker cards.
 cmd_relabel() {
-  local target="" outdir="" auto=0 specs=() extra=() roles=()
+  local target="" outdir="" auto=0 fold_unknown=0 specs=() extra=() roles=()
   while [[ $# -gt 0 ]]; do
     case "$1" in
       -o|--outdir) outdir="$2"; shift 2 ;;
       --auto)      auto=1; shift ;;
+      --fold-unknown) fold_unknown=1; shift ;;
       --absorb-threshold) extra+=(--absorb-threshold "$2"); shift 2 ;;
       --ref-threshold|--match-threshold) extra+=(--ref-threshold "$2"); shift 2 ;;
       --role)       [[ "$2" == *=* ]] || { log "relabel: --role wants NAME=ROLE (e.g. --role Karen=boss)"; exit 1; }
@@ -1262,12 +1268,17 @@ cmd_relabel() {
   if [[ ${#specs[@]} -eq 0 && ${#roles[@]} -eq 0 && "$auto" -eq 0 ]]; then
     log "relabel: need at least one SPEAKER_XX=Name assignment, or --auto to re-apply registry + absorb naming"; exit 1
   fi
+  if [[ "$fold_unknown" -eq 1 && "$auto" -eq 0 ]]; then
+    log "relabel: --fold-unknown requires --auto (it repairs cached auto-diarization clusters)"
+    exit 1
+  fi
 
   resolve_sidecar "$target" "$outdir" relabel
   local sidecar="$RESOLVED_SIDECAR"
   local sdir; sdir="$(cd -P "$(dirname "$sidecar")" && pwd)"
   log "relabel: using sidecar $sidecar"
   [[ "$auto" -eq 1 ]] && extra+=(--auto)
+  [[ "$fold_unknown" -eq 1 ]] && extra+=(--fold-unknown)
   uv run --quiet --with sherpa-onnx --with numpy python "$DIARIZER" \
     --relabel "$sidecar" --outdir "$sdir" ${specs[@]+"${specs[@]}"} ${extra[@]+"${extra[@]}"} ${roles[@]+"${roles[@]}"}
   log "relabel: refresh historical commitments and views with: whosaid backfill <workspace>"

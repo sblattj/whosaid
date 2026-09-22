@@ -527,7 +527,7 @@ def test_runner(tmp: Path) -> None:
 # Resources
 # ---------------------------------------------------------------------------
 # ---------------------------------------------------------------------------
-# whosaid_relabel flags (GitHub issue #19): offline via a stubbed _run_cli
+# whosaid_relabel flags (GitHub issues #19 and #38): offline via a stubbed _run_cli
 # ---------------------------------------------------------------------------
 def test_relabel_flags() -> None:
     calls: list[list] = []
@@ -559,6 +559,16 @@ def test_relabel_flags() -> None:
               f"summary must admit no_save instead of claiming a registry save: {out['summary']}")
         check(out["registry_path"], f"registry_path still reported: {out}")
 
+        out = mcp_server.whosaid_relabel("rec", {}, auto=True, fold_unknown=True)
+        check(out["ok"] is True, f"cached unknown folding must accept auto=true: {out}")
+        check(calls[-1] == ["relabel", "rec", "--auto", "--fold-unknown"],
+              f"fold_unknown must follow --auto in CLI argv: {calls[-1]}")
+
+        before = len(calls)
+        out = mcp_server.whosaid_relabel("rec", {"SPEAKER_00": "Jane"}, fold_unknown=True)
+        check(out["ok"] is False and len(calls) == before and "requires auto=true" in out["error"],
+              f"fold_unknown without auto must be rejected before shelling: {out}")
+
         before = len(calls)
         out = mcp_server.whosaid_relabel("rec", {"BAD": "Jane"})
         check(out["ok"] is False and len(calls) == before,
@@ -569,6 +579,73 @@ def test_relabel_flags() -> None:
         out = mcp_server.whosaid_relabel("rec", {"SPEAKER_00": "Jane"}, force=True)
         check(out["ok"] is False and "whosaid_doctor" in out["fix"],
               f"CLI failure still surfaces as an error dict: {out}")
+    finally:
+        mcp_server._run_cli = saved
+
+
+def test_fold_metadata(tmp: Path) -> None:
+    """MCP exposes core fold metadata and normalizes old sidecars safely."""
+    outdir = tmp / "fold-metadata"
+    outdir.mkdir()
+    audio = tmp / "sample.m4a"
+    audio.write_bytes(b"fake")
+    calls: list[list] = []
+
+    def fake_cli(args, timeout=None):
+        calls.append([str(a) for a in args])
+        (outdir / "sample.txt").write_text("hello\\n")
+        (outdir / "sample.speakers.txt").write_text("[00:00:00] SPEAKER_00: hello\\n")
+        return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+    saved = mcp_server._run_cli
+    mcp_server._run_cli = fake_cli
+    try:
+        # Old sidecar: no fold fields. The observable rendered count is both ends.
+        (outdir / "sample.diarization.json").write_text(json.dumps({
+            "num_speakers": 2,
+            "names": {"SPEAKER_00": "SPEAKER_00", "SPEAKER_01": "SPEAKER_01"},
+            "segments": [{"speaker": "SPEAKER_00"}, {"speaker": "SPEAKER_01"}],
+        }))
+        out = mcp_server.whosaid_transcribe(str(audio), outdir=str(outdir))
+        check(out["ok"] is True, f"legacy sidecar transcribe result: {out}")
+        check((out["count_before_fold"], out["count_after_fold"], out["fold_note"]) == (2, 2, None),
+              f"legacy sidecar defaults must preserve observed count: {out}")
+        legacy_relabel = mcp_server.whosaid_relabel(
+            str(outdir / "sample.diarization.json"), {}, auto=True,
+        )
+        check((legacy_relabel["count_before_fold"], legacy_relabel["count_after_fold"],
+               legacy_relabel["fold_note"]) == (2, 2, None),
+              f"legacy sidecar relabel defaults must preserve observed count: {legacy_relabel}")
+        check(calls[-1][-1:] == ["--auto"] and "--fold-unknown" not in calls[-1],
+              f"auto without fold_unknown must preserve no-fold CLI behavior: {calls[-1]}")
+
+        # New core sidecar: preserve its explicitly recorded before/after/note values.
+        sidecar = outdir / "sample.diarization.json"
+        sidecar.write_text(json.dumps({
+            "base": "sample", "num_speakers": 2,
+            "count_before_fold": 20, "count_after_fold": 2,
+            "fold_note": "Folded 18 anonymous phantom clusters into 2 rendered speakers.",
+            "count_warning": "auto estimate saturated at cap",
+            "count_estimate": {"k": 20, "saturated": True},
+            "names": {"SPEAKER_00": "SPEAKER_00", "SPEAKER_01": "SPEAKER_01"},
+            "segments": [{"speaker": "SPEAKER_00"}, {"speaker": "SPEAKER_01"}],
+        }))
+        out = mcp_server.whosaid_transcribe(str(audio), outdir=str(outdir))
+        check((out["count_before_fold"], out["count_after_fold"], out["fold_note"]) == (
+            20, 2, "Folded 18 anonymous phantom clusters into 2 rendered speakers."),
+            f"transcribe must preserve current fold metadata: {out}")
+
+        relabeled = mcp_server.whosaid_relabel(str(sidecar), {}, auto=True, fold_unknown=True)
+        check(relabeled["ok"] is True, f"relabel sidecar result: {relabeled}")
+        check((relabeled["num_speakers"], relabeled["count_before_fold"],
+               relabeled["count_after_fold"], relabeled["fold_note"]) == (
+                   2, 20, 2, "Folded 18 anonymous phantom clusters into 2 rendered speakers."),
+              f"relabel must return the same current fold metadata: {relabeled}")
+        check(relabeled["count_warning"] == "auto estimate saturated at cap"
+              and relabeled["count_estimate"] == {"k": 20, "saturated": True},
+              f"relabel must retain existing count metadata: {relabeled}")
+        check(calls[-1][-2:] == ["--auto", "--fold-unknown"],
+              f"relabel metadata test must use the real fold CLI contract: {calls[-1]}")
     finally:
         mcp_server._run_cli = saved
 
@@ -693,6 +770,7 @@ def main() -> None:
             clear_env()
             test_runner(tmp)
             test_relabel_flags()
+            test_fold_metadata(tmp)
             test_resources(tmp)
             test_registration()
         finally:

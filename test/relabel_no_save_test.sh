@@ -93,11 +93,23 @@ assert_eq "$RC" 1 "'relabel ... --no-save --force --note' with no sidecar exits 
 assert_contains "$OUT" "could not find a diarization sidecar" "the flag combination reaches sidecar resolution"
 assert_not_contains "$OUT" "unexpected arg" "the flag combination is not rejected as unexpected args"
 
+echo "-- --fold-unknown validation and passthrough --"
+run_w relabel does-not-exist SPEAKER_00=Alice --fold-unknown
+assert_eq "$RC" 1 "'--fold-unknown' without '--auto' exits 1"
+assert_contains "$OUT" "--fold-unknown requires --auto" "cached unknown folding requires auto mode"
+assert_not_contains "$OUT" "could not find a diarization sidecar" "invalid fold mode fails before sidecar resolution"
+
+run_w relabel does-not-exist --auto --fold-unknown
+assert_eq "$RC" 1 "'--auto --fold-unknown' with no sidecar exits 1"
+assert_contains "$OUT" "could not find a diarization sidecar" "valid fold mode reaches sidecar resolution"
+assert_not_contains "$OUT" "unexpected arg" "'--fold-unknown' is accepted by the shell parser"
+
 echo "-- help documents the new flags --"
 run_w help
 assert_eq "$RC" 0 "'whosaid help' exits 0"
 assert_contains "$OUT" "--no-save" "'whosaid help' documents --no-save"
 assert_contains "$OUT" "--force" "'whosaid help' documents --force"
+assert_contains "$OUT" "--fold-unknown" "'whosaid help' documents cached unknown folding"
 
 echo "-- no-arg usage hint --"
 run_w relabel

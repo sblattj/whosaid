@@ -420,7 +420,7 @@ def agglomerative_labels(X: np.ndarray, thresh: float = AGGLOM_THRESHOLD) -> np.
 
 def estimate_speakers(X: np.ndarray, thresh: float = AGGLOM_THRESHOLD,
                       cap: int = SPEAKER_CAP, min_speakers: int = 0,
-                      max_speakers: int = 0) -> dict:
+                      max_speakers: int = 0, durations=None) -> dict:
     """Estimate the speaker count by agglomerative clustering of per-turn voiceprints.
 
     The old farthest-first pass opened a new center whenever a turn's similarity
@@ -431,9 +431,10 @@ def estimate_speakers(X: np.ndarray, thresh: float = AGGLOM_THRESHOLD,
     Average linkage instead compares GROUP means, which is exactly the quantity
     that separates cleanly, and needs no cap to terminate.
 
-    `cap` (and `max_speakers`, which lowers it) is a bound only. If the raw
-    estimate reaches it we do not trust the count: `saturated` is True and the
-    caller warns instead of silently shipping an inflated speaker list.
+    `cap` (and `max_speakers`, which lowers it) is a bound only. `saturated`
+    retains the primary result even when the duration-filtered plateau recovery
+    succeeds. Recovery fits substantive turns and requires excluded short turns
+    to resemble them; a distinct brief voice makes it abstain.
 
     Returns {"method", "threshold", "k", "raw_k", "cap", "min", "max",
              "saturated", "labels"}.
@@ -441,14 +442,52 @@ def estimate_speakers(X: np.ndarray, thresh: float = AGGLOM_THRESHOLD,
     labels = agglomerative_labels(X, thresh)
     raw_k = int(labels.max()) + 1 if len(labels) else 0
     eff_cap = min(cap, max_speakers) if max_speakers and max_speakers > 0 else cap
-    k = raw_k
     saturated = raw_k >= eff_cap
-    if saturated:
-        k = eff_cap
+    k = min(raw_k, eff_cap)
+    fallback = None
+    # Duration filtering is only a recovery path, never the normal estimator.
+    # A stable cut on substantive turns is evidence for a count; a smaller cap
+    # alone is not. Keep the primary result and saturation for auditability.
+    if durations is not None and (saturated or raw_k > max(3, len(X) // 4)):
+        duration = np.asarray(durations, dtype=float)
+        reliable = np.flatnonzero(duration >= 1.0)
+        if len(reliable) >= 10:
+            R = X[reliable]
+            merges = _average_linkage_merges(1.0 - R @ R.T)
+            ladder = []
+            chosen = None
+            for cut in (thresh, thresh - 0.06, thresh - 0.12, thresh - 0.18):
+                lab = _cut_merges(len(R), merges, 1.0 - cut)
+                count = int(lab.max()) + 1
+                ladder.append(count)
+                if len(ladder) >= 2 and count == ladder[-2] and count < raw_k and count < eff_cap:
+                    # Do not collapse into a count supported only by isolated
+                    # long noisy turns. Brief distinct guests can still survive
+                    # as clusters; require most, not all, turns to be supported.
+                    sizes = np.bincount(lab)
+                    centers = np.array([R[lab == c].sum(axis=0) for c in range(count)])
+                    centers /= np.linalg.norm(centers, axis=1, keepdims=True) + 1e-9
+                    short = X[duration < 1.0]
+                    # A brief guest must not disappear merely for being brief.
+                    # If even one excluded voice is far from all substantive
+                    # voices, abstain: embeddings alone cannot call it noise.
+                    explained_short = (not len(short) or
+                                       bool(np.all(np.max(short @ centers.T, axis=1) >= 0.40)))
+                    if int(sizes[sizes >= 3].sum()) >= 0.9 * len(R) and explained_short:
+                        chosen = count
+                        break
+            if chosen is not None:
+                k = chosen
+                fallback = {"method": "duration-filtered-plateau", "k": chosen,
+                            "reliable_turns": int(len(reliable)),
+                            "excluded_short_turns": int(len(X) - len(reliable)),
+                            "counts": ladder, "threshold": round(float(cut), 4)}
     if min_speakers and min_speakers > 0:
         k = max(k, min_speakers)
     k = max(1, min(k, len(X)))
-    if saturated:
+    if fallback:
+        log(f"speaker-count recovery: primary {raw_k} -> stable substantive count {k}")
+    elif saturated:
         log(f"WARN speaker-count estimate hit the bound of {eff_cap} "
             f"(agglomerative at cosine {thresh:.2f} found {raw_k}); the count is NOT trustworthy")
     return {
@@ -461,7 +500,23 @@ def estimate_speakers(X: np.ndarray, thresh: float = AGGLOM_THRESHOLD,
         "max": int(max_speakers) if max_speakers and max_speakers > 0 else None,
         "saturated": bool(saturated),
         "labels": labels,
+        "fallback": fallback,
     }
+
+
+def cluster_estimated(X, estimate, durations):
+    """Fit recovered counts on reliable turns, then assign every original turn."""
+    if estimate.get("fallback"):
+        reliable = np.flatnonzero(np.asarray(durations) >= 1.0)
+        R = X[reliable]
+        if estimate["k"] > len(R):
+            # Explicit lower bounds outrank duration filtering.
+            return spherical_kmeans(X, estimate["k"])
+        labs = spherical_kmeans(R, min(estimate["k"], len(R)))
+        centers = np.array([R[labs == c].sum(axis=0) for c in sorted(set(labs))])
+        centers /= np.linalg.norm(centers, axis=1, keepdims=True) + 1e-9
+        return np.argmax(X @ centers.T, axis=1)
+    return spherical_kmeans(X, estimate["k"])
 
 
 def estimate_k(X: np.ndarray, thresh: float = AGGLOM_THRESHOLD,
@@ -568,6 +623,7 @@ def cluster_segments(all_segments: list, num_speakers: int, min_speakers: int = 
         return [], {}, [], None, None
     X = np.array([s["emb"] for s in embedded], dtype=np.float32)
     X = X / (np.linalg.norm(X, axis=1, keepdims=True) + 1e-9)
+    durations = np.array([s["end"] - s["start"] for s in embedded])
     estimate = None
     anchor_info = None
 
@@ -603,7 +659,7 @@ def cluster_segments(all_segments: list, num_speakers: int, min_speakers: int = 
                 k_res = max(1, num_speakers - active)
             else:
                 est = estimate_speakers(Xr, min_speakers=min_speakers,
-                                        max_speakers=max_speakers)
+                                        max_speakers=max_speakers, durations=durations[residual])
                 k_res = est["k"]
                 estimate = {p: est[p] for p in est if p != "labels"}
                 estimate["anchored"] = True
@@ -611,7 +667,8 @@ def cluster_segments(all_segments: list, num_speakers: int, min_speakers: int = 
                 estimate["residual_turns"] = int(len(residual))
             k_res = max(1, min(k_res, len(residual)))
             log(f"  residual clustering: {len(residual)} turn(s) -> {k_res} new speaker(s)")
-            rlabels = spherical_kmeans(Xr, k_res)
+            rlabels = (cluster_estimated(Xr, est, durations[residual]) if estimate is not None
+                       else spherical_kmeans(Xr, k_res))
             for i, lab in zip(residual, rlabels):
                 cid[i] = n_anchor + int(lab)
 
@@ -634,7 +691,8 @@ def cluster_segments(all_segments: list, num_speakers: int, min_speakers: int = 
         if num_speakers and num_speakers > 0:
             k = num_speakers
         else:
-            est = estimate_speakers(X, min_speakers=min_speakers, max_speakers=max_speakers)
+            est = estimate_speakers(X, min_speakers=min_speakers, max_speakers=max_speakers,
+                                    durations=durations)
             k = est["k"]
             estimate = {p: est[p] for p in est if p != "labels"}
         k = max(1, min(k, len(embedded)))
@@ -645,7 +703,8 @@ def cluster_segments(all_segments: list, num_speakers: int, min_speakers: int = 
         # identical given the same k, and its reassignment step recovers turns that
         # average linkage chained into a neighbour.
         log(f"global clustering: {len(embedded)} embedded turns -> {k} speaker(s)")
-        labels = spherical_kmeans(X, k)
+        labels = (cluster_estimated(X, est, durations) if estimate is not None
+                  else spherical_kmeans(X, k))
         for s, lab in zip(embedded, labels):
             s["_c"] = int(lab)
 
@@ -977,6 +1036,152 @@ def name_clusters(cluster_emb: dict, ref_threshold: float, absorb_threshold: flo
     return names
 
 
+def fold_unknown_clusters(segs, cluster_emb, names, *, protected=(), minimum=1, evidence=None):
+    """Conservatively fold anonymous splits; never infer identity from size alone.
+
+    Original centroids provide complete-link evidence for substantive merges;
+    tiny fragments may attach to a substantive voice at cosine >=0.50 with a
+    0.15 margin over other voices. No step updates the matching references.
+    Local/named clusters cannot be sources or destinations. A short guest with a
+    distinct voice therefore survives even if it is a single turn. Centroids are
+    duration-weighted approximations because old sidecars lack per-turn prints.
+    """
+    speakers = sorted({s["speaker"] for s in segs})
+    talk = {sp: sum(max(0., s["end"] - s["start"]) for s in segs if s["speaker"] == sp)
+            for sp in speakers}
+    anonymous = [sp for sp in speakers if names.get(sp, sp) == sp
+                 and sp not in protected and sp in cluster_emb]
+    nturns = {sp: sum(s["speaker"] == sp for s in segs) for sp in speakers}
+    if evidence is None:
+        evidence = {}
+    for sp in anonymous:
+        evidence.setdefault(sp, [{"embedding": np.asarray(cluster_emb[sp]).tolist(),
+                                  "talk": talk[sp], "turns": nturns[sp]}])
+    def original_prints(members, substantive=False):
+        records = [record for sp in members for record in evidence[sp]]
+        if substantive:
+            supported = [r for r in records if r["talk"] >= 30 or
+                         (r["turns"] >= 5 and r["talk"] / r["turns"] >= 1.0)]
+            records = supported or records
+        return [np.asarray(r["embedding"]) / (np.linalg.norm(r["embedding"]) + 1e-9)
+                for r in records]
+    groups = {sp: [sp] for sp in anonymous}
+    def group_records(sp):
+        return [record for member in groups[sp] for record in evidence[member]]
+    def group_support(sp):
+        records = group_records(sp)
+        return sum(r["talk"] for r in records), sum(r["turns"] for r in records)
+    def group_reference(sp):
+        # Use an original member print, never a recomputed centroid. The same
+        # group representation survives serialization and additional rounds.
+        v = np.asarray(max(group_records(sp), key=lambda r: r["talk"])["embedding"])
+        return v / (np.linalg.norm(v) + 1e-9)
+    mapping = {sp: sp for sp in speakers}
+    # Prefer retaining the substantive cluster ID, making repeat runs stable.
+    # Removing a competing phantom can unlock another merge. Settle those
+    # decisions now, always against the same original prints, so a repeated
+    # cached repair cannot discover an order-dependent extra merge.
+    previous_size = -1
+    while previous_size != len(groups):
+        previous_size = len(groups)
+        for source in sorted(groups, key=lambda sp: (group_support(sp)[0], sp)):
+            if source not in groups or len(set(mapping.values())) <= minimum:
+                continue
+            source_talk, source_turns = group_support(source)
+            candidates = []
+            for target in groups:
+                target_talk, target_turns = group_support(target)
+                if target == source or (target_talk, target) <= (source_talk, source):
+                    continue
+                tiny_source = source_talk < 30.0 and (source_turns < 5 or source_talk / source_turns < 1.0)
+                substantive_target = target_talk >= 20.0 and target_turns >= 5
+                if tiny_source and substantive_target:
+                    # The retained substantive print remains the reference, so a
+                    # sequence of short noisy turns cannot pull it toward a guest.
+                    similarity = min(float(a @ group_reference(target)) for a in original_prints(groups[source]))
+                    gate = 0.50
+                else:
+                    left = original_prints(groups[source], substantive=True)
+                    right = original_prints(groups[target], substantive=True)
+                    similarity = min(float(a @ b) for a in left for b in right)
+                    gate = 0.85
+                candidates.append((similarity, target, gate))
+            candidates.sort(reverse=True)
+            if not candidates:
+                continue
+            best, target, gate = candidates[0]
+            # Equivalent destinations are splits of the same voice, not competing
+            # identities. Only a distinct destination makes this assignment ambiguous.
+            runner_up = max((score for score, other, other_gate in candidates[1:]
+                             if (other_gate < 0.85 or score >= other_gate)
+                             and float(group_reference(target) @ group_reference(other)) < 0.85), default=-1.)
+            # Named/local voices are protected destinations, but still compete:
+            # a fragment closer to a known voice cannot be annexed by an unknown.
+            for sp in speakers:
+                if sp not in anonymous and sp in cluster_emb:
+                    v = np.asarray(cluster_emb[sp])
+                    v = v / (np.linalg.norm(v) + 1e-9)
+                    runner_up = max(runner_up, max(float(a @ v) for a in original_prints(groups[source])))
+            # Similarity evidence is required even for tiny clusters. Ambiguous near-ties
+            # remain visible rather than arbitrarily assigning another person's turn.
+            if best < gate or best - runner_up < (0.15 if gate < 0.85 else 0.05):
+                continue
+            for sp in groups[source]:
+                mapping[sp] = target
+            groups[target].extend(groups.pop(source))
+    kept = sorted(set(mapping.values()))
+    merged_emb = dict(cluster_emb)
+    for target in kept:
+        members = [sp for sp in speakers if mapping[sp] == target and sp in cluster_emb]
+        if len(members) > 1:
+            v = sum(np.asarray(cluster_emb[sp]) * max(talk[sp], 1e-6) for sp in members)
+            merged_emb[target] = v / (np.linalg.norm(v) + 1e-9)
+    merged_emb = {sp: merged_emb[sp] for sp in kept if sp in merged_emb}
+    result = [dict(s, speaker=mapping[s["speaker"]]) for s in segs]
+    retained_evidence = {target: [record for sp in members for record in evidence[sp]]
+                         for target, members in groups.items()}
+    evidence.clear()
+    evidence.update(retained_evidence)
+    removed = len(speakers) - len(kept)
+    note = (f"Folded {removed} anonymous cluster(s): {len(speakers)} -> {len(kept)} "
+            "using conservative voice similarity; distinct or ambiguous voices retained."
+            if removed else "Unknown-cluster fold checked; no confident merges; ambiguous voices retained.")
+    return result, merged_emb, {sp: names.get(sp, sp) for sp in kept}, note
+
+
+def remap_fold_matches(matches, original_segments, folded_segments):
+    """Keep the original match evidence while pointing at active cluster IDs."""
+    mapping = {old["speaker"]: new["speaker"]
+               for old, new in zip(original_segments, folded_segments)}
+    for match in matches:
+        old = match.get("cluster")
+        if old in mapping and mapping[old] != old:
+            match.setdefault("original_cluster", old)
+            match["cluster"] = mapping[old]
+
+
+def count_recovery_warning(estimate, before, after, fold_note=None):
+    """Describe recovery without pretending that a saturated primary was reliable."""
+    parts = []
+    if estimate and estimate.get("fallback"):
+        f = estimate["fallback"]
+        parts.append(f"Auto count recovery: primary found {estimate['raw_k']} clusters; "
+                     f"duration-filtered stable cuts estimated {f['k']} from "
+                     f"{f['reliable_turns']} substantive turns. "
+                     + (f"Explicit bounds required fitting all turns at k={estimate['k']}. "
+                        if estimate['k'] > f['reliable_turns'] else
+                        f"{f['excluded_short_turns']} short turns assigned afterwards. ")
+                     + "Short-only voices remain uncertain.")
+    elif estimate and estimate.get("saturated"):
+        parts.append(f"Auto count remains UNRELIABLE: primary found {estimate['raw_k']} clusters "
+                     f"at its bound; {after} is not a verified speaker count.")
+    if fold_note:
+        parts.append(fold_note)
+    if estimate and estimate.get("min") and estimate.get("fallback"):
+        parts.append(f"Requested minimum {estimate['min']} remains enforced.")
+    return " ".join(parts) or None
+
+
 def save_print_guarded(reg: dict, cluster: str, person: str, emb_vec, emb_model: str,
                        base: str, ref_threshold: float, force: bool) -> None:
     """Replace person's registry print with this cluster's embedding (#19).
@@ -1090,6 +1295,24 @@ def do_relabel(args) -> None:
                       registry_entries, [], names, report=registry_matches)
         data["registry_matches"] = registry_matches
 
+    before_fold = len(speakers)
+    fold_note = None
+    if getattr(args, "fold_unknown", False):
+        est = data.get("count_estimate") or {}
+        minimum = (est.get("min") or 1) + (est.get("anchors_active") or 0)
+        original_segments = segs
+        fold_evidence = data.setdefault("fold_evidence", {})
+        segs, cluster_emb, names, fold_note = fold_unknown_clusters(
+            segs, cluster_emb, names, protected=local_labels, minimum=minimum, evidence=fold_evidence)
+        remap_fold_matches(data.get("registry_matches", []), original_segments, segs)
+        speakers = sorted({s["speaker"] for s in segs})
+        data.update(segments=segs, cluster_emb={sp: v.tolist() for sp, v in cluster_emb.items()},
+                    num_speakers=len(speakers), count_before_fold=before_fold,
+                    count_after_fold=len(speakers), fold_note=fold_note)
+        data["count_warning"] = count_recovery_warning(est, before_fold, len(speakers), fold_note)
+        detect_mode = f"{len(speakers)} speakers (relabel --auto; fold {before_fold} -> {len(speakers)})"
+        data["detect_mode"] = detect_mode
+
     # Final roles for the sidecar + rendering: explicit --save-role tags plus the
     # registry role of every name this run ended up using (covers --auto naming).
     roles: dict[str, str] = dict(explicit_roles)
@@ -1114,7 +1337,12 @@ def do_relabel(args) -> None:
                    detect_mode, emb_name=emb_model,
                    count_warning=data.get("count_warning"), roles=roles or None,
                    local_names={v["name"] for v in local_labels.values()})
-    print(json.dumps({"num_speakers": len(speakers), "clusters": names, "relabeled": True}))
+    print(json.dumps({"num_speakers": len(speakers), "clusters": names, "relabeled": True,
+                      "count_estimate": data.get("count_estimate"),
+                      "count_warning": data.get("count_warning"),
+                      "count_before_fold": data.get("count_before_fold", before_fold),
+                      "count_after_fold": data.get("count_after_fold", len(speakers)),
+                      "fold_note": data.get("fold_note")}))
 
 
 def main() -> None:
@@ -1160,6 +1388,8 @@ def main() -> None:
     ap.add_argument("--auto", action="store_true",
                     help="with --relabel: re-run registry matching + the absorb pass over the "
                          "sidecar's cached voiceprints (no CLUSTER=NAME needed, no re-diarization)")
+    ap.add_argument("--fold-unknown", action="store_true",
+                    help="with --relabel --auto: conservatively merge similar anonymous cached clusters")
     ap.add_argument("--save-speaker", action="append", default=[], metavar="CLUSTER=NAME",
                     help="persist a cluster's voiceprint under NAME in the local registry "
                          "(e.g. SPEAKER_02=Jane). Repeatable. Names it here and in future runs.")
@@ -1193,6 +1423,8 @@ def main() -> None:
     ap.add_argument("--ensure-models-only", action="store_true",
                     help="download/verify the sherpa models then exit; no audio needed")
     args = ap.parse_args()
+    if args.fold_unknown and not (args.relabel and args.auto):
+        ap.error("--fold-unknown requires --relabel --auto")
 
     for spec in args.save_role:
         if "=" not in spec:
@@ -1377,7 +1609,9 @@ def main() -> None:
     if args.num_speakers < 0:
         tiny = [sp for sp in speakers if talk[sp] < 5.0]
         saturated = bool(count_estimate and count_estimate.get("saturated"))
-        if saturated:
+        if count_estimate and count_estimate.get("fallback"):
+            count_warning = count_recovery_warning(count_estimate, len(speakers), len(speakers))
+        elif saturated:
             eff_cap = count_estimate["max"] or count_estimate["cap"]
             count_warning = (
                 f"speaker count is UNRELIABLE — the auto estimate hit its bound of "
@@ -1447,6 +1681,25 @@ def main() -> None:
         if wrote_registry:
             save_registry(reg)
 
+    count_before_fold = len(speakers)
+    fold_note = None
+    fold_evidence = {}
+    tiny = sum(1 for sp in speakers if talk[sp] < 30.0 or
+               sum(s["speaker"] == sp for s in segs) < 5)
+    if args.num_speakers < 0 and ((count_estimate and count_estimate.get("saturated"))
+                                 or (len(speakers) >= 4 and tiny > len(speakers) / 2)):
+        minimum = max(1, args.min_speakers) + (count_estimate or {}).get("anchors_active", 0)
+        original_segments = segs
+        segs, cluster_emb, names, fold_note = fold_unknown_clusters(
+            segs, cluster_emb, names, protected=local_labels, minimum=minimum, evidence=fold_evidence)
+        remap_fold_matches(registry_matches, original_segments, segs)
+        speakers = sorted({s["speaker"] for s in segs})
+        detect_mode += f", fold {count_before_fold} -> {len(speakers)}"
+    count_after_fold = len(speakers)
+    recovery_warning = count_recovery_warning(count_estimate, count_before_fold, count_after_fold, fold_note)
+    if recovery_warning:
+        count_warning = recovery_warning
+
     # ---- per-speaker roles (registry "role" tags) for rendering + the sidecar ----
     roles: dict[str, str] = {}
     if not args.no_registry:
@@ -1472,11 +1725,15 @@ def main() -> None:
         "num_speakers": len(speakers),
         "names": names,
         "local_labels": local_labels,
+        "fold_evidence": fold_evidence,
         "registry_matches": registry_matches,
         "source": source_metadata(args.audio),
         "detect_mode": detect_mode,
         "count_warning": count_warning,
         "count_estimate": count_estimate,
+        "count_before_fold": count_before_fold,
+        "count_after_fold": count_after_fold,
+        "fold_note": fold_note,
         "anchors": (anchor_info["names"] if anchor_info else None),
         "segments": segs,
         "cluster_emb": {sp: cluster_emb[sp].tolist() for sp in cluster_emb},
@@ -1491,6 +1748,9 @@ def main() -> None:
         "detect_mode": detect_mode,
         "count_warning": count_warning,
         "count_estimate": count_estimate,
+        "count_before_fold": count_before_fold,
+        "count_after_fold": count_after_fold,
+        "fold_note": fold_note,
         "anchors": (anchor_info["names"] if anchor_info else None),
         "speakers": [names[sp] for sp in speakers],
         "clusters": {sp: names[sp] for sp in speakers},

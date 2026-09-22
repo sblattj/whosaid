@@ -6,6 +6,22 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ## [Unreleased]
 
+### Fixed
+
+- **Speaker-count saturation now repairs anonymous phantom clusters (GitHub issue #38).**
+  Suspicious auto counts retry stable clustering cuts on substantive turns before accepting
+  the cap, then assign short turns using those voices. A distinct short-only voice prevents
+  that fallback; unresolved counts remain explicitly uncertain. Exact counts and bounds
+  remain enforced.
+  Fresh problematic auto diarization records the physical speaker-cluster counts before and after
+  the anonymous-phantom check as
+  `count_before_fold` / `count_after_fold`, plus `fold_note`, in its sidecar and MCP result.
+  Cached auto diarization can receive the same conservative repair with
+  `whosaid relabel <base> --auto --fold-unknown`; the flag requires `--auto` and does not assign
+  identities to anonymous clusters.
+  Original similarity evidence is retained so repeated repairs cannot gradually merge
+  distinct voices through averaged centroids. Named and transcript-only labels are protected.
+
 ## [1.5.0] - 2026-09-22
 
 ### Added

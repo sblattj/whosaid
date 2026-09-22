@@ -178,7 +178,7 @@ def _time_to_seconds(value: str) -> float:
 # ---------------------------------------------------------------------------
 SERVER_INSTRUCTIONS = """whosaid turns audio into a transcript where every turn is labeled with who spoke. It runs 100% locally on Apple Silicon via the MLX Whisper GPU pipeline plus sherpa-onnx diarization — audio, text, and voice embeddings NEVER leave the machine; there are no API keys and no cloud calls.
 
-Output-file contract: each transcribe writes, using <base> = the input's basename (or your `name`, with any character outside [A-Za-z0-9_-] mapped to '_'): <base>.txt (plain transcript), <base>.speakers.txt (speaker-labeled), <base>.speaker-cards.txt (one card per speaker: turn count, talk time, sample snippets — to tell who each SPEAKER_NN is), and <base>.diarization.json (a sidecar that whosaid_relabel reuses).
+Output-file contract: each transcribe writes, using <base> = the input's basename (or your `name`, with any character outside [A-Za-z0-9_-] mapped to '_'): <base>.txt (plain transcript), <base>.speakers.txt (speaker-labeled), <base>.speaker-cards.txt (one card per speaker: turn count, talk time, sample snippets — to tell who each SPEAKER_NN is), and <base>.diarization.json (a sidecar that whosaid_relabel reuses). Diarization results include `count_before_fold`, `count_after_fold`, and `fold_note`; these are physical speaker-cluster counts before and after the anonymous-phantom check, not identity claims.
 
 Typical workflow: whosaid_transcribe -> read the speaker cards in the result -> whosaid_samples if you want to LISTEN to a clip per cluster before trusting a name -> whosaid_relabel to put real names on the SPEAKER_NN clusters. Relabeling saves each name to a persistent local registry, so the same voice is auto-named in every later transcript. whosaid_list_speakers shows who is already known.
 
@@ -224,7 +224,8 @@ _DESC_RELABEL = (
     "in place — no re-transcription, no re-diarization. Run whosaid_transcribe first, read its "
     "speaker cards to tell who is who, then map clusters to names. Pass auto=true (with an empty "
     "assignments map) to instead re-apply registry matching + the absorb pass over the cached "
-    "sidecar, which folds phantom cluster splits into their real speaker. Optionally pass "
+    "sidecar, which folds phantom cluster splits into their real speaker. With auto=true, pass "
+    "fold_unknown=true to repair anonymous phantom clusters in a cached sidecar. Optionally pass "
     "`roles` ({Name: role} — self/boss/peer/report/external) to role-tag speakers in the "
     "registry, cards, and transcripts. Pass no_save=true for a transcript-only label: sidecar "
     "+ outputs are renamed but the registry is untouched (composes with auto=true); note adds "
@@ -385,6 +386,9 @@ def whosaid_transcribe(
     source_meta: Optional[dict] = None
     count_warning: Optional[str] = None
     count_estimate: Optional[dict] = None
+    count_before_fold: Optional[int] = None
+    count_after_fold: Optional[int] = None
+    fold_note: Optional[str] = None
     roles: Optional[dict] = None
     if sidecar_path.exists():
         try:
@@ -395,6 +399,9 @@ def whosaid_transcribe(
             num_speakers = data.get("num_speakers")
             count_warning = data.get("count_warning")
             count_estimate = data.get("count_estimate")
+            count_before_fold = data.get("count_before_fold")
+            count_after_fold = data.get("count_after_fold")
+            fold_note = data.get("fold_note")
             roles = data.get("roles")
             if num_speakers is None:
                 num_speakers = len({s["speaker"] for s in data.get("segments", [])}) or None
@@ -405,6 +412,13 @@ def whosaid_transcribe(
         names = {c: c for c in clusters}
         if num_speakers is None:
             num_speakers = len(clusters) or None
+
+    # Older sidecars predate the fold metadata. Their rendered count is the
+    # only available observation, and so is both the before and after count.
+    if count_before_fold is None:
+        count_before_fold = num_speakers
+    if count_after_fold is None:
+        count_after_fold = num_speakers
 
     named_speakers = sorted({v for k, v in names.items() if v != k})
     unnamed_clusters = sorted(k for k, v in names.items() if v == k)
@@ -442,6 +456,9 @@ def whosaid_transcribe(
         "num_speakers": num_speakers,
         "count_warning": count_warning,
         "count_estimate": count_estimate,
+        "count_before_fold": count_before_fold,
+        "count_after_fold": count_after_fold,
+        "fold_note": fold_note,
         "named_speakers": named_speakers,
         "unnamed_clusters": unnamed_clusters,
         "speaker_cards": speaker_cards,
@@ -491,12 +508,14 @@ def whosaid_relabel(
     no_save: bool = False,
     force: bool = False,
     note: Optional[str] = None,
+    fold_unknown: bool = False,
 ) -> dict:
     """Name SPEAKER_NN clusters and persist them, by shelling `whosaid relabel`.
 
     With auto=True the assignments map may be empty: whosaid re-applies registry
     matching + the absorb pass over the cached sidecar (no re-diarization),
-    merging phantom cluster splits into their real speaker.
+    merging phantom cluster splits into their real speaker. Set fold_unknown=True
+    only with auto=True to repair anonymous phantom clusters in a cached sidecar.
 
     `roles` optionally maps Name -> role (conventional: self, boss, peer,
     report, external; free-form allowed) and is passed through as repeatable
@@ -514,6 +533,12 @@ def whosaid_relabel(
             "ok": False,
             "error": "assignments must be a non-empty map of SPEAKER_NN -> Name (or pass auto=true)",
             "fix": "pass at least one entry, e.g. {'SPEAKER_00':'Jane'}, or auto=true with {}",
+        }
+    if fold_unknown and not auto:
+        return {
+            "ok": False,
+            "error": "fold_unknown requires auto=true",
+            "fix": "pass auto=true to repair anonymous phantom clusters in a cached sidecar",
         }
     bad = []
     for k, v in assignments.items():
@@ -557,6 +582,8 @@ def whosaid_relabel(
     args = ["relabel", base, *specs]
     if auto:
         args.append("--auto")
+    if fold_unknown:
+        args.append("--fold-unknown")
     if match_threshold is not None:
         args += ["--match-threshold", str(match_threshold)]
     for name, role in role_specs:
@@ -589,10 +616,24 @@ def whosaid_relabel(
     sidecar = _resolve_sidecar(base, outdir)
     data_base = Path(base).name.removesuffix(".diarization.json")
     speakers_txt: Optional[str] = None
+    num_speakers: Optional[int] = None
+    count_before_fold: Optional[int] = None
+    count_after_fold: Optional[int] = None
+    fold_note: Optional[str] = None
+    count_warning: Optional[str] = None
+    count_estimate: Optional[dict] = None
     if sidecar and sidecar.exists():
         try:
             d = json.loads(sidecar.read_text())
             data_base = d.get("base", data_base)
+            num_speakers = d.get("num_speakers")
+            if num_speakers is None:
+                num_speakers = len({s.get("speaker") for s in d.get("segments", []) if s.get("speaker")}) or None
+            count_before_fold = d.get("count_before_fold", num_speakers)
+            count_after_fold = d.get("count_after_fold", num_speakers)
+            fold_note = d.get("fold_note")
+            count_warning = d.get("count_warning")
+            count_estimate = d.get("count_estimate")
         except Exception:  # noqa: BLE001
             pass
         sp = sidecar.parent / f"{data_base}.speakers.txt"
@@ -604,11 +645,19 @@ def whosaid_relabel(
         "renamed": dict(assignments),
         "roles_applied": sorted(name for name, _ in role_specs),
         "speakers_txt": speakers_txt,
+        "num_speakers": num_speakers,
+        "count_before_fold": count_before_fold,
+        "count_after_fold": count_after_fold,
+        "fold_note": fold_note,
+        "count_warning": count_warning,
+        "count_estimate": count_estimate,
         "registry_path": str(_speaker_db()),
         "summary": (
             (f"Re-applied registry + absorb naming from the sidecar"
+             + (" and checked anonymous clusters for repair" if fold_unknown else "")
              + (f" plus {len(assignments)} explicit assignment(s)" if assignments else "")
              + (f", {len(role_specs)} role(s) applied" if role_specs else "")
+             + (f": {fold_note}" if fold_unknown and fold_note else "")
              + "." + (" Transcript-only: registry untouched." if no_save else ""))
             if auto else
             (f"Renamed {len(assignments)} cluster(s)"
@@ -1540,6 +1589,11 @@ Nothing — audio, text, or voice embeddings — ever leaves the machine.
 - `match_threshold` → `--match-threshold F`: cosine a known voice must reach to
   claim a cluster (default `0.50`, env `WHOSAID_MATCH_THRESHOLD`). Omit it to use
   the default. Also accepted by whosaid_relabel (applies to `auto=True`).
+- `whosaid_relabel(auto=True, fold_unknown=True)` → `whosaid relabel <base> --auto
+  --fold-unknown`: repair confident anonymous phantom clusters in a cached sidecar,
+  without re-transcribing or assigning a speaker identity. `fold_unknown` requires
+  `auto=True`. Results expose `count_before_fold`, `count_after_fold`, and `fold_note`;
+  equal counts with a null note mean no fold ran.
 
 CLI-only transcribe flags (not surfaced as MCP params; use the resource/CLI):
 `-m/--model REPO`, `-n/--name NAME`, and the long-audio controls below.

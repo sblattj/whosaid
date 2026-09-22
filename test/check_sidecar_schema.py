@@ -12,7 +12,7 @@ import sys
 
 ENTRY_KEYS = {"cluster", "name", "similarity", "threshold", "matched", "pass"}
 # The anchor pass (--expected-speakers) carries one extra field: how many turns
-# the anchor claimed. Every other pass must still be EXACTLY the base key set.
+# the anchor claimed. Folding may add original_cluster to retain match provenance.
 EXTRA_KEYS = {"anchor": {"turns"}}
 PASSES = {"registry", "ref", "absorb", "anchor"}
 
@@ -37,9 +37,12 @@ def main() -> None:
         if entry["pass"] not in PASSES:
             fail(f"registry_matches entry 'pass' must be one of {sorted(PASSES)}, got {entry}")
         allowed = ENTRY_KEYS | EXTRA_KEYS.get(entry["pass"], set())
-        if set(entry) != allowed:
-            fail(f"registry_matches '{entry['pass']}' entry must have exactly "
-                 f"{sorted(allowed)}, got {entry}")
+        if not allowed <= set(entry) or set(entry) - allowed - {"original_cluster"}:
+            fail(f"registry_matches '{entry['pass']}' entry must have "
+                 f"{sorted(allowed)}, optionally original_cluster, got {entry}")
+        if "original_cluster" in entry and (not isinstance(entry["original_cluster"], str)
+                                             or not entry["original_cluster"]):
+            fail(f"registry_matches 'original_cluster' must be a non-empty string, got {entry}")
         if entry["pass"] == "anchor" and not isinstance(entry["turns"], int):
             fail(f"registry_matches anchor 'turns' must be an int, got {entry}")
         if not isinstance(entry["similarity"], (int, float)):

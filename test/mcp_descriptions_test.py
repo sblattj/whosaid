@@ -153,6 +153,16 @@ def main() -> None:
     check(rreq == {"base", "assignments"}, f"relabel required mismatch: {rreq}")
     check("roles" in rprops, f"relabel must expose an optional 'roles' param: {sorted(rprops)}")
     check("roles" not in rreq, f"'roles' must stay optional, required={rreq}")
+    check(
+        rprops["fold_unknown"].get("type") == "boolean"
+        and rprops["fold_unknown"].get("default") is False
+        and "fold_unknown" not in rreq,
+        f"relabel fold_unknown must be optional boolean defaulting false: {rprops.get('fold_unknown')}",
+    )
+    check(
+        "fold_unknown=true" in d_relabel,
+        "relabel description must document cached anonymous-cluster repair",
+    )
 
     # --- list_speakers stays parameter-free ---
     ls_schema = dumps["whosaid_list_speakers"]["inputSchema"]
