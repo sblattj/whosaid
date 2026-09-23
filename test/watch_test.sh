@@ -321,6 +321,96 @@ assert_eq "$RC" 0 "bounded wait exits 0"
 assert_text "no stable recordings yet \(1 still syncing\)\." "$ERR" "max_wait_seconds bounds the wait"
 
 # ---------------------------------------------------------------------------
+# 6c. [watch] speaker hints: valid keys reach the ingest argv (list form and
+#     comma-separated-string form of expected_speakers), and show up in
+#     install --dry-run's summary.
+# ---------------------------------------------------------------------------
+echo "-- 6c. speaker hints"
+WS5="$TMP/ws5"; SRC5="$TMP/src5"; mkdir -p "$WS5" "$SRC5"
+cat > "$WS5/whosaid.toml" <<'EOF'
+[watch]
+max_wait_seconds = 0
+speakers = 2
+min_speakers = 2
+max_speakers = 4
+expected_speakers = ["Alice", "Bob"]
+EOF
+old_file "$SRC5/hinted.m4a"
+reset_calls
+run_watch run --into "$WS5" --source "$SRC5"
+assert_eq "$RC" 0 "hinted run exits 0"
+assert_text "^ingest $WS5/\.watch_staging/hinted\.m4a --into $WS5 --folder-by created --action-items --commitments --speakers 2 --min-speakers 2 --max-speakers 4 --expected-speakers Alice,Bob" "$(calls)" "speaker hints (list form) appended to the ingest argv, in order"
+
+# same workspace, expected_speakers as one comma-separated string (spaces stripped),
+# no speakers/min/max: only --expected-speakers is appended
+cat > "$WS5/whosaid.toml" <<'EOF'
+[watch]
+max_wait_seconds = 0
+expected_speakers = "Alice, Bob"
+EOF
+old_file "$SRC5/hinted2.m4a"
+reset_calls
+run_watch run --into "$WS5" --source "$SRC5"
+assert_eq "$RC" 0 "second hinted run exits 0"
+assert_text "^ingest $WS5/\.watch_staging/hinted2\.m4a --into $WS5 --folder-by created --action-items --commitments --expected-speakers Alice,Bob" "$(calls)" "expected_speakers as a comma string, spaces stripped, no --speakers/--min/--max"
+
+# install --dry-run shows the hints in effect (one summary line)
+cat > "$WS5/whosaid.toml" <<'EOF'
+[watch]
+speakers = 2
+min_speakers = 2
+max_speakers = 4
+expected_speakers = ["Alice", "Bob"]
+EOF
+run_watch install --into "$WS5" --source "$SRC5" --dry-run --no-open
+assert_eq "$RC" 0 "install --dry-run with valid hints exits 0"
+assert_text "speakers +-> --speakers 2 --min-speakers 2 --max-speakers 4 --expected-speakers Alice,Bob" "$ERR" "dry run summary shows the speaker hints in effect"
+
+# unset [watch] speaker keys (no file at all): install --dry-run says so
+run_watch install --into "$WS4" --source "$SRC4" --dry-run --no-open
+assert_eq "$RC" 0 "install --dry-run with no hints exits 0"
+assert_text "speakers +-> auto-detect \(no \[watch\] speaker hints\)" "$ERR" "dry run summary reports auto-detect when nothing is set"
+
+# ---------------------------------------------------------------------------
+# 6d. invalid [watch] speaker-hint values: both `run` and `install --dry-run`
+#     refuse before touching anything (no lock taken, no whosaid call, no
+#     dry-run report reached), naming the bad key.
+# ---------------------------------------------------------------------------
+echo "-- 6d. invalid speaker hints"
+WS_BAD="$TMP/ws-bad"; SRC_BAD="$TMP/src-bad"; mkdir -p "$WS_BAD" "$SRC_BAD"
+old_file "$SRC_BAD/x.m4a"
+
+check_bad_hint() {  # check_bad_hint <toml-body> <ERE-pattern-for-the-bad-key> <what>
+  printf '%s\n' "$1" > "$WS_BAD/whosaid.toml"
+  reset_calls
+  run_watch run --into "$WS_BAD" --source "$SRC_BAD"
+  assert_eq "$RC" 1 "run refuses: $3"
+  assert_text "$2" "$ERR" "run error names the bad key: $3"
+  assert_missing "$WS_BAD/.watch.lock" "run refusal happens before the lock is taken: $3"
+  assert_eq "$(calls | wc -l | tr -d ' ')" 0 "run refusal ingests nothing: $3"
+  run_watch install --into "$WS_BAD" --source "$SRC_BAD" --dry-run --no-open
+  assert_eq "$RC" 1 "install --dry-run refuses: $3"
+  assert_text "$2" "$ERR" "install error names the bad key: $3"
+  assert_no_text "== DRY RUN" "$ERR" "install refusal never reaches the dry-run report: $3"
+}
+
+check_bad_hint '[watch]
+speakers = 0' '\[watch\] speakers must be' "speakers below 1"
+
+check_bad_hint '[watch]
+speakers = true' '\[watch\] speakers must be' "speakers as a boolean"
+
+check_bad_hint '[watch]
+max_speakers = "four"' '\[watch\] max_speakers must be' "max_speakers not an integer"
+
+check_bad_hint '[watch]
+min_speakers = 3
+max_speakers = 2' '\[watch\] min_speakers \(3\) must be <= max_speakers \(2\)' "min_speakers over max_speakers"
+
+check_bad_hint '[watch]
+expected_speakers = ["Alice", ""]' '\[watch\] expected_speakers has an empty name' "expected_speakers with an empty name"
+
+# ---------------------------------------------------------------------------
 # 7. install --dry-run: valid plist, label, WatchPaths, interval, env, interpreter
 # ---------------------------------------------------------------------------
 echo "-- 7. install --dry-run"

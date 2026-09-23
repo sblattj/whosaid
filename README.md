@@ -358,6 +358,10 @@ negative = -3
 
 [watch]
 source = ""                      # folder to watch (default: the macOS Voice Memos store)
+# speakers = 2                   # exact diarization speaker count (a 1:1-call workspace)
+# min_speakers = 2               # lower bound on auto-detected speaker count
+# max_speakers = 4               # upper bound (a ceiling for a mixed-size meeting workspace)
+# expected_speakers = ["Alice_Example", "Bob_Example"]   # roster, or "Alice_Example,Bob_Example"
 ```
 
 **What `_search.db` is.** One SQLite file in the workspace: an FTS5 table of every turn (meeting,
@@ -424,6 +428,17 @@ fetch; `--env K=V` adds any other environment the agent should carry; `--engine 
 the summarizer. The recordings source and the meeting workspace (transcripts, corpora,
 `_search.db`) must be separate folders — never the same directory, never nested inside each
 other — or `install`/`run` refuse to start.
+
+**Diarization speaker hints.** The watcher can never ask how many people were actually in the
+room, and blind speaker auto-detect can over-split a long call into a pile of phantom speakers
+when it should have found two. Set `[watch] speakers = 2` for a workspace that only records 1:1
+calls, or `max_speakers` as a ceiling for a workspace with mixed-size meetings; `min_speakers`
+and `expected_speakers` (see the `--expected-speakers` flag reference below) are read from the same
+block. These are workspace-wide, not per-recording — every ingested recording gets the same
+hint — and take effect on the very next pass with no reinstall, since `run` re-reads
+`whosaid.toml` each time it runs; `install`'s `--dry-run` summary echoes the hints it would use.
+An invalid value (a non-whole-number, `min_speakers` above `max_speakers`, an empty name) makes
+both `run` and `install` refuse, naming the bad key.
 
 Reinstall preserves saved environment settings, including custom tool paths. Current exported
 certificate settings and explicit `--env` values can override saved values; `--env` takes final

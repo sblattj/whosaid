@@ -13,10 +13,11 @@ Subcommands (the `whosaid` bash CLI dispatches `whosaid watch ...` and
       watch.stable_seconds is copied into <ws>/.watch_staging/, fed to
       `whosaid ingest <copy> --into <ws> --folder-by created --action-items
       --commitments` (dev-commitments always ride along: the extractor is a
-      stdlib heuristic, so it costs nothing), and recorded as done (keyed
-      name:size, recordings are immutable). After any success `whosaid
-      roll-up <ws> --action-items` (which also folds the commitments corpus
-      and regenerates _WORKLIST-<Owner>.md) and `whosaid index <ws>`
+      stdlib heuristic, so it costs nothing) plus any `[watch]` speaker hints
+      (speakers/min_speakers/max_speakers/expected_speakers), and recorded as
+      done (keyed name:size, recordings are immutable). After any success
+      `whosaid roll-up <ws> --action-items` (which also folds the commitments
+      corpus and regenerates _WORKLIST-<Owner>.md) and `whosaid index <ws>`
       rebuild the aggregates. A file whose mtime is fresher than
       stable_seconds may still be syncing, so the pass stays alive (bounded by
       watch.max_wait_seconds) and rescans. <ws>/.watch.lock guards against
@@ -321,10 +322,80 @@ def child_env(offline: bool) -> dict[str, str]:
     return env
 
 
-def ingest_one(ws: Path, path: Path, whosaid: str, engine: str | None,
-               accurate: bool, env: dict[str, str]) -> int:
+def diarize_hints(wcfg: dict) -> tuple[list[str], str | None]:
+    """Extra `whosaid ingest` args for the `[watch]` speaker hints (`speakers`,
+    `min_speakers`, `max_speakers`, `expected_speakers`), or an error message
+    naming the bad key. A watcher never gets to ask how many people were in
+    the room, so blind auto-detect is the default; these let a workspace pin
+    what it already knows (README 'Hands-free ingest').
+
+    Unset or empty keys mean today's behavior exactly: no extra args. Each of
+    `speakers`/`min_speakers`/`max_speakers` must be a whole number >= 1 (a
+    bool is rejected even though Python's bool is an int subclass), and
+    `min_speakers` may not exceed `max_speakers`. `expected_speakers` is a
+    list of names or one comma-separated string (either way, an empty name
+    after stripping is an error); the args are joined into one
+    `--expected-speakers A,B`, which is how the whosaid launcher forwards a
+    single occurrence's comma-separated value straight to the diarizer.
+
+    Arg order is fixed: --speakers, --min-speakers, --max-speakers,
+    --expected-speakers.
+    """
+
+    def positive_int(key: str) -> tuple[int | None, str | None]:
+        value = wcfg.get(key)
+        if value is None:
+            return None, None
+        if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+            return None, f"[watch] {key} must be a whole number >= 1 (got {value!r})"
+        return value, None
+
+    speakers, err = positive_int("speakers")
+    if err:
+        return [], err
+    min_speakers, err = positive_int("min_speakers")
+    if err:
+        return [], err
+    max_speakers, err = positive_int("max_speakers")
+    if err:
+        return [], err
+    if min_speakers is not None and max_speakers is not None and min_speakers > max_speakers:
+        return [], (f"[watch] min_speakers ({min_speakers}) must be <= "
+                     f"max_speakers ({max_speakers})")
+
+    raw_expected = wcfg.get("expected_speakers")
+    names: list[str] = []
+    if raw_expected:
+        if isinstance(raw_expected, str):
+            candidates = raw_expected.split(",")
+        elif isinstance(raw_expected, list):
+            candidates = raw_expected
+        else:
+            return [], (f"[watch] expected_speakers must be a list of names or a "
+                         f"comma-separated string (got {raw_expected!r})")
+        for candidate in candidates:
+            name = str(candidate).strip()
+            if not name:
+                return [], f"[watch] expected_speakers has an empty name (got {raw_expected!r})"
+            names.append(name)
+
+    args: list[str] = []
+    if speakers is not None:
+        args += ["--speakers", str(speakers)]
+    if min_speakers is not None:
+        args += ["--min-speakers", str(min_speakers)]
+    if max_speakers is not None:
+        args += ["--max-speakers", str(max_speakers)]
+    if names:
+        args += ["--expected-speakers", ",".join(names)]
+    return args, None
+
+
+def ingest_one(ws: Path, path: Path, whosaid: str, engine: str | None, accurate: bool,
+               hints: list[str], env: dict[str, str]) -> int:
     """Copy the recording OUT of the (possibly TCC-protected) source into staging
-    and run whosaid on the copy, so only this process needs Full Disk Access."""
+    and run whosaid on the copy, so only this process needs Full Disk Access.
+    `hints` are the [watch] speaker-hint args from diarize_hints()."""
     staging = ws / STAGING_NAME
     staging.mkdir(parents=True, exist_ok=True)
     staged = staging / path.name
@@ -336,6 +407,7 @@ def ingest_one(ws: Path, path: Path, whosaid: str, engine: str | None,
             cmd += ["--engine", engine]
         if accurate:
             cmd.append("--accurate")
+        cmd += hints
         tlog(f"  > {Path(whosaid).name} ingest {path.name}")
         return subprocess.run(cmd, env=env).returncode
     finally:
@@ -378,6 +450,9 @@ def watch_pass(ws: Path, source: Path, cfg: dict, whosaid: str, engine: str | No
     wcfg = cfg.get("watch") or {}
     stable_seconds = float(wcfg.get("stable_seconds", 120))
     max_wait = float(wcfg.get("max_wait_seconds", 900))
+    # cmd_run already validated the hints before taking the lock; recomputing
+    # here from the same cfg is deterministic and cannot fail.
+    hints, _hint_err = diarize_hints(wcfg)
     state = load_state(ws)
     deadline = time.time() + max_wait
     while True:
@@ -405,7 +480,7 @@ def watch_pass(ws: Path, source: Path, cfg: dict, whosaid: str, engine: str | No
     done = 0
     for key, path, name in new:
         try:
-            rc = ingest_one(ws, path, whosaid, engine, accurate, env)
+            rc = ingest_one(ws, path, whosaid, engine, accurate, hints, env)
         except OSError as e:
             if isinstance(e, (PermissionError, FileNotFoundError)):
                 raise
@@ -442,6 +517,10 @@ def cmd_run(args: argparse.Namespace) -> int:
         log(f"run: workspace not found: {ws}")
         return 1
     cfg = load_config(ws)
+    _hints, hint_err = diarize_hints(cfg.get("watch") or {})
+    if hint_err:
+        log(f"run: {hint_err}")
+        return 1
     source = resolve_source(args.source, cfg)
     problem = overlap_problem(ws, source)
     if problem:
@@ -744,6 +823,10 @@ def cmd_install(args: argparse.Namespace) -> int:
         log(f"install: workspace not found: {ws}")
         return 1
     cfg = load_config(ws)
+    hint_args, hint_err = diarize_hints(cfg.get("watch") or {})
+    if hint_err:
+        log(f"install: {hint_err}")
+        return 1
     source = resolve_source(args.source, cfg)
     label = args.label or default_label(ws)
     interval = int(args.interval if args.interval is not None
@@ -807,6 +890,7 @@ def cmd_install(args: argparse.Namespace) -> int:
         log(f"label     -> {label}")
         log(f"plist     -> {target}")
         log(f"watch     -> {source}")
+        log(f"speakers  -> {' '.join(hint_args) if hint_args else 'auto-detect (no [watch] speaker hints)'}")
         log(f"workspace -> {ws}")
         log(f"runs      -> {' '.join(data['ProgramArguments'])}")
         log(f"log       -> {ws / LOG_NAME}")
