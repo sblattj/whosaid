@@ -1,0 +1,33 @@
+# Speakers (4): Priya_Example, Gareth_Example, Diego_Example, Hannah_Example
+[00:00:04] Gareth_Example: Okay, I think that's everyone. Let's keep it tight today, I have the roadmap review right after this.
+[00:00:12] Hannah_Example: Morning.
+[00:00:15] Diego_Example: Morning, all.
+[00:00:19] Gareth_Example: Diego, you want to kick us off?
+[00:00:23] Diego_Example: Sure. So yesterday I got the retry logic for the sync service up for review, and today I'm chasing the duplicate photo bug in the offline cache. No blockers, I think.
+[00:00:44] Gareth_Example: Great. Priya, can you review Diego's retry logic PR today? I don't want it sitting over the weekend.
+[00:00:53] Priya_Example: Yeah, will do.
+[00:00:56] Gareth_Example: Hannah?
+[00:00:59] Hannah_Example: Um, so I wrapped up the onboarding copy with the design folks, that shipped in yesterday's build. Today I'm starting on the push settings screen. One thing, Priya, I need you to sign off on the notification permission wording before I hand it to legal, ideally by Wednesday.
+[00:01:27] Priya_Example: Sure, send it over whenever.
+[00:01:31] Gareth_Example: Okay. Priya, your turn.
+[00:01:34] Priya_Example: Okay, so yesterday I finished the crash triage from the weekend, most of it was one null pointer in the settings sync. Today I'm going to write the fix for the login timeout on older Android devices, and after lunch I'll pair with Diego on the duplicate photo bug.
+[00:02:01] Gareth_Example: Good. On the login timeout, Priya, please loop in Olu from support once you have a build, they've been fielding those tickets all week.
+[00:02:13] Priya_Example: Will do.
+[00:02:15] Gareth_Example: Couple of things from my side. The roadmap review is today at two, and I'll share the deck with everyone afterwards.
+[00:02:27] Gareth_Example: And Priya, I need the Android release notes from you by Thursday, marketing wants to start on the store listing Friday morning.
+[00:02:38] Diego_Example: Is that for 3.8 or 3.9?
+[00:02:41] Gareth_Example: 3.8. 3.9 is still a month out.
+[00:02:45] Priya_Example: Okay, 3.8, got it. I'll also check with Hannah which of her onboarding changes made it into 3.8, so the notes don't miss anything.
+[00:03:01] Hannah_Example: Most of them did, I'll send you the list after this.
+[00:03:06] Gareth_Example: Diego, one more for you: can you take the flaky UI test in the checkout flow? It failed three times on main last night.
+[00:03:17] Diego_Example: Yeah, I saw that. I'll grab it after the photo bug.
+[00:03:22] Hannah_Example: Oh, and Priya's analytics dashboard still shows last week's signup funnel, could you fix the date filter on it when you get a chance? The growth folks keep asking me about it.
+[00:03:39] Priya_Example: Ugh, yes, that's the timezone thing. On it.
+[00:03:44] Gareth_Example: Last thing. We said last week we'd maybe move standup to Tuesdays and Thursdays only. Let's not decide now, just think about it.
+[00:03:58] Diego_Example: Works for me either way.
+[00:04:01] Priya_Example: Before we drop, I'll set up a thirty minute session with the support team on Friday to walk through the new crash reporting, since a few of them asked for it.
+[00:04:17] Gareth_Example: Perfect. Hannah, can you send Priya the legal contact for the permission wording?
+[00:04:24] Hannah_Example: Yep, I'll forward it right after this.
+[00:04:28] Gareth_Example: Great, thanks everyone. Priya, stay on for two minutes? I want to ask you about the hiring loop.
+[00:04:34] Priya_Example: Sure.
+[00:04:36] Diego_Example: Bye, all.

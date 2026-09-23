@@ -1,0 +1,32 @@
+# Speakers (4): Siobhan_Example, Theo_Example, Amara_Example, SPEAKER_03
+[00:00:06] Siobhan_Example: Hi everyone, thanks for making time. This is the weekly check-in for the website redesign, and I think we have someone dialing in from the client side too?
+[00:00:17] SPEAKER_03: Yes, hi, sorry, I'm on my phone, I'm driving between two of the stores this morning so I might drop off.
+[00:00:25] Theo_Example: No worries, we'll keep it tight.
+[00:00:28] Amara_Example: Hi, all.
+[00:00:30] SPEAKER_03: Shivaun, do you want to walk us through where things are?
+[00:00:34] Siobhan_Example: Sure. So discovery is wrapped, we finished the stakeholder interviews last week and the findings deck went out on Friday. Theo has started on the new information architecture, and Amara is on visual design.
+[00:00:53] SPEAKER_03: Great. Shivaun, can you send over the revised sitemap by Monday? I want to show it to our regional managers on Tuesday.
+[00:01:03] Siobhan_Example: Yes, will do.
+[00:01:06] Theo_Example: The structure is mostly there, I just need to fold in the new product categories.
+[00:01:13] SPEAKER_03: Oh, on product categories, can you make sure camping gear is its own section? Right now it's buried under outdoor living.
+[00:01:23] Theo_Example: Yep, easy change, I'll pull it out.
+[00:01:27] Amara_Example: On visual design, I've got two directions for the homepage, and I'll share both at next week's review.
+[00:01:36] SPEAKER_03: Chevonne, could you also add the store locator to the phase one scope? Our customers keep asking for it.
+[00:01:44] Siobhan_Example: Okay, noted. I'll rewrite the phase one scope document with that in it and send it to everyone by Thursday, including the updated timeline.
+[00:02:01] SPEAKER_03: Perfect. And can you get me a quote for the product photography? We'd need it before the end of the month for budget.
+[00:02:11] Siobhan_Example: Sure.
+[00:02:13] Theo_Example: Siobhan, can you book the usability sessions with the recruiter? We need five people who've bought from the site in the last year.
+[00:02:23] Siobhan_Example: Yep, I'll get those booked.
+[00:02:26] Amara_Example: Also, Shivaun's moodboard in the shared deck still has the old logo. Can you swap in the new one before the deck goes to the regional managers?
+[00:02:39] Siobhan_Example: Good catch. I'll swap the logo tonight, and while I'm at it I'll set up a shared folder for all the brand assets so we stop working from old copies.
+[00:02:55] SPEAKER_03: Chevonne did a great job on the pitch, by the way, our CEO still talks about it.
+[00:03:02] Theo_Example: Ha, we'll take it.
+[00:03:04] SPEAKER_03: Theo, one more for you: can the product pages load faster on mobile? Our analytics say people bounce.
+[00:03:13] Theo_Example: Yeah, most of that is image sizes, we'll fix it in the rebuild.
+[00:03:18] SPEAKER_03: Maybe next year we'd look at an app too, but that's way down the line.
+[00:03:25] Amara_Example: Fun, I'd love to do an app.
+[00:03:28] Siobhan_Example: On admin, I'll send the invoice for the discovery phase at the end of this week, to the accounts payable address you gave us.
+[00:03:40] SPEAKER_03: That works. Could we move these calls to nine instead of eight? Eight is rough with the store openings.
+[00:03:48] Siobhan_Example: Nine works for us.
+[00:03:51] SPEAKER_03: Okay, I'm pulling into the store, I have to drop. Thanks, everyone.
+[00:03:56] Theo_Example: Bye!

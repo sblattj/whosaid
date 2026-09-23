@@ -1,0 +1,39 @@
+# Speakers (4): Tomasz_Example, Renata_Example, Kofi_Example, Lena_Example
+[00:00:03] Renata_Example: Alright, let's get going. Two big things today, the churn report and the warehouse migration, and then hiring if we have time.
+[00:00:12] Lena_Example: Can I go first? I've got a hard stop at half past.
+[00:00:16] Renata_Example: Go ahead.
+[00:00:18] Lena_Example: So the warehouse migration is about seventy percent done. The events tables moved over last week, billing tables are next, and I'm planning to cut billing over on the fourteenth.
+[00:00:36] Renata_Example: Okay. Can you send me the cutover checklist before then? I mostly want to read the rollback steps.
+[00:00:44] Lena_Example: Yep, it's half written, I'll send it Friday.
+[00:00:49] Kofi_Example: I can help with the billing tables if you want, I did the schema mapping for those last year.
+[00:00:57] Renata_Example: Oh good, can you take that one then? Pair up with Lena on the billing cutover.
+[00:01:04] Kofi_Example: Sure, happy to.
+[00:01:07] Renata_Example: Tomasz, where are we on churn?
+[00:01:10] Tomasz_Example: So I pulled the first cut yesterday. Churn is up about two points in the self-serve tier, mostly accounts under six months old, and the enterprise tier is basically flat.
+[00:01:29] Renata_Example: Interesting. Could you also send me the numbers broken out by signup month? I want to see if it's all the spring cohort.
+[00:01:40] Tomasz_Example: Yeah, can do.
+[00:01:43] Lena_Example: And while you're in there, can you check whether trial conversions are being double counted? I think the dashboard counts reactivations as new trials.
+[00:01:58] Tomasz_Example: Hm, possibly. The reactivation flag only went in in March, so anything before that would show up twice.
+[00:02:10] Renata_Example: Okay, then please add a footnote about that in the report, so nobody panics about the jump in March.
+[00:02:19] Kofi_Example: Speaking of panics, did anyone else get paged on Sunday?
+[00:02:23] Lena_Example: That was me, sorry. The disk on the old replica filled up, I cleared it Sunday night.
+[00:02:32] Renata_Example: Kofi, can you put a disk alert on the new replica too, so we're not surprised again?
+[00:02:39] Kofi_Example: Yep, I'll add it this afternoon.
+[00:02:42] Tomasz_Example: Different topic, but the events pipeline bill went up again this month, about eighteen percent, and I'm fairly sure it's the hourly backfill job.
+[00:02:55] Renata_Example: Can you dig into the backfill and tell me by Friday whether we can drop it to daily?
+[00:03:04] Kofi_Example: Before you change anything there, please give me a heads up, the finance export reads from that job.
+[00:03:14] Tomasz_Example: Sure, noted.
+[00:03:17] Renata_Example: Okay, hiring. We have two data engineer candidates on site next week.
+[00:03:24] Tomasz_Example: I did the phone screens for both. The one from the logistics company was really strong on streaming, the other one less so, but both were solid on SQL.
+[00:03:41] Renata_Example: Good. Would you be able to run the system design round for both of them? You're the obvious person for the streaming questions.
+[00:03:50] Tomasz_Example: Sure, as long as it's not Thursday, I'm out Thursday.
+[00:03:54] Kofi_Example: Oh, sorry, going back to the churn report for a second. Can you share the query you used? I'd like to reuse it for the retention cohort work.
+[00:04:08] Tomasz_Example: Yeah, I'll put it in the shared repo.
+[00:04:11] Renata_Example: Lena, you can take the SQL round then?
+[00:04:15] Lena_Example: Yep, put me down for both.
+[00:04:18] Tomasz_Example: One more thing from me. I'll write up a short note on the churn methodology before the exec review on the twentieth, because those numbers are going to get questions.
+[00:04:32] Renata_Example: Please do. And could you walk the execs through it yourself? I'd rather they hear it from you than from a slide.
+[00:04:41] Tomasz_Example: Sure.
+[00:04:43] Renata_Example: We should probably revisit the whole churn definition at some point, but not this quarter.
+[00:04:51] Lena_Example: Okay, I have to jump. Bye, all.
+[00:04:54] Renata_Example: Thanks, everyone.

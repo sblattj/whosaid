@@ -1,0 +1,45 @@
+# Speakers (5): Rafael_Example, Yvonne_Example, Oskar_Example, Mei_Example, Bettina_Example
+[00:00:02] Yvonne_Example: Hi all, thanks for joining. This is the launch prep sync for the analytics release, we're two weeks out.
+[00:00:09] Oskar_Example: Hey. Sorry, one sec, my audio's being weird.
+[00:00:13] Mei_Example: We can hear you fine.
+[00:00:16] Bettina_Example: Hi, Bettina from support, I'm sitting in today.
+[00:00:21] Yvonne_Example: Welcome. Did everyone see the match last night, by the way? Brutal ending.
+[00:00:27] Oskar_Example: Don't remind me.
+[00:00:30] Yvonne_Example: Okay. Quick recap: Rafael already sent the launch checklist last week, and most of it is green.
+[00:00:38] Mei_Example: Honestly, Rafael's schema migration went really smoothly, I didn't hear a single complaint from the beta customers.
+[00:00:48] Yvonne_Example: Agreed. Oskar, you'll own the press FAQ, right?
+[00:00:52] Oskar_Example: Yep, the first draft is done, I'm cleaning it up this week.
+[00:00:58] Yvonne_Example: Great. Mei, can you check the pricing page copy against the final tiers?
+[00:01:04] Mei_Example: Sure, I'll do that tomorrow.
+[00:01:07] Yvonne_Example: Rafael, anything to add on the platform side?
+[00:01:11] Rafael_Example: A little. The beta cohort is at about four hundred accounts now, and retention looks pretty similar to the last beta, so no surprises there. The new cluster is provisioned, and I sent the draft capacity numbers to finance yesterday, they approved them.
+[00:01:34] Oskar_Example: Nice. Could you send me the API rate limits you mentioned last week? I need them for the developer docs.
+[00:01:43] Rafael_Example: Yeah, sure.
+[00:01:45] Yvonne_Example: What about performance? Last time the dashboards were slow for the big accounts.
+[00:01:51] Rafael_Example: The queries are better since the index change, but I haven't tested at launch volume. I might look at export performance at some point too, but I'm not promising anything there.
+[00:02:05] Yvonne_Example: It'd be nice if someone looked at the dashboard load times before launch.
+[00:02:11] Rafael_Example: Okay, I'll run a load test against the ingestion cluster on Wednesday at launch volume, and I'll post the results in the launch channel so everyone can see them.
+[00:02:25] Mei_Example: We should really profile the mobile SDK someday, it keeps getting heavier.
+[00:02:32] Oskar_Example: Yeah, that's a next quarter thing though.
+[00:02:35] Yvonne_Example: Let's talk about launch day. Rafael, I need you to own the rollback plan, with a draft to me by Tuesday.
+[00:02:44] Rafael_Example: Sure, that works.
+[00:02:47] Yvonne_Example: And Oskar is on call that day, right? I think you did it last launch.
+[00:02:53] Oskar_Example: Yeah, I did it last time, I can do it again.
+[00:02:57] Bettina_Example: Could we move the support handoff meeting to Thursday next week? Monday's a holiday for half my team.
+[00:03:04] Yvonne_Example: Sure, I'll move it.
+[00:03:07] Bettina_Example: Also, Rafael, would you join our support training on Thursday afternoon to answer the technical questions? The team always has a ton about data retention.
+[00:03:17] Rafael_Example: Happy to.
+[00:03:19] Mei_Example: Rafael, can you review the migration guide before we publish it? You know the old schema better than anyone.
+[00:03:27] Rafael_Example: Yep, send it over.
+[00:03:29] Oskar_Example: If we had another engineer, Rafael could redo the onboarding tour, but that's not happening this quarter.
+[00:03:37] Yvonne_Example: Right. Maybe next year.
+[00:03:40] Mei_Example: The webinar is on the twentieth, I already have a draft deck. Oskar, can you do the live demo part?
+[00:03:49] Oskar_Example: Sure, as long as the staging data looks decent.
+[00:03:53] Rafael_Example: I'll refresh the staging data set on Monday so the webinar demo has realistic accounts in it, and I'll send Oskar the login details once it's done.
+[00:04:06] Yvonne_Example: Great. We should rewrite the billing module someday, by the way, it came up again in the retro.
+[00:04:13] Mei_Example: Ha, every retro.
+[00:04:16] Yvonne_Example: Okay, I think that's it. Same time next week?
+[00:04:20] Oskar_Example: Works for me.
+[00:04:22] Rafael_Example: Works. Mei, I think you're handling the webinar invites too, right? You already sent the first batch.
+[00:04:30] Mei_Example: Yep, the second batch goes out Monday.
+[00:04:34] Yvonne_Example: Thanks, all.
