@@ -1,0 +1,25 @@
+{
+  "schema": 1,
+  "backend": "claude-cli",
+  "model": "opus",
+  "recorded": "2026-09-23",
+  "resolved_model": "claude-opus-5-5",
+  "calls": {
+    "b02674d5b33e0c2eaadae2b11b3ca6f35e36ace46b2b825f1f87708d5d4d450d": "#14: Send API rate limits to Oskar for docs\n#18: Look at dashboard load times before launch\n#22: Own rollback plan, draft by Tuesday\n#28: Join support training Thursday for technical questions\n#30: Review migration guide before publishing",
+    "232a580ffc0b12bbe0425781c2cb35b93fe8b6101618bcf338e6774aff41688c": "SKIP",
+    "89378c3b7f3188a1c8c6441ce4bb0922a54a2df5a3ce581ade2a6fff13ba6d51": "SKIP",
+    "c4ee7eb642a3a2dc04d389a446d8e175f04bef6afbdd99bd140cc1e89da7c52f": "SKIP",
+    "4c1cdcceb492799f9a385a08b1e065659cc3607ed7a49a2dd18b81f9660c43a6": "SKIP",
+    "d0a561be2413ff4ec77c31f832bd99c602948682468174de23b711adcc320b4b": "- **Send Oskar the API rate limits.** Oskar needs the rate limits Rafael mentioned last week for the developer docs. \"Could you send me the API rate limits you mentioned last week?\"",
+    "31cdff2288f8c8e43f4cfafd4e17e135d5c328ca0b79fb1bc3d045f8f804c77e": "SKIP",
+    "efc3404cbed2531c9707e9b677df6f6969b0ff2f14e7ae40233805808cd473ae": "SKIP",
+    "5686373749d955e442eab6f4e4f2d96653e308ba417596761c04ad34feed035a": "- **Run a load test against the ingestion cluster at launch volume on Wednesday.** Rafael committed to testing at launch volume after noting the queries haven't been tested at that level yet. \"I'll run a load test against the ingestion cluster on Wednesday at launch volume\"\n- **Post the load test results in the launch channel.** Rafael committed to sharing the results where everyone can see them. \"I'll post the results in the launch channel so everyone can see them\"",
+    "a107edbd6cc58e2f57d89785e8dd4f5d13b8fe55242a6e7f769ae20903f179c9": "- **Own the launch-day rollback plan and send Yvonne a draft by Tuesday.** Yvonne assigned Rafael ownership of the rollback plan for launch day, with a draft due to her by Tuesday. \"Rafael, I need you to own the rollback plan, with a draft\"",
+    "56ad91b1c95bb24646ec0138e48dce34f4f806a65231657b484996ad143408fb": "- **Join Bettina's support training on Thursday afternoon to answer technical questions.** Bettina asked Rafael to attend because her support team usually has many questions about data retention. \"would you join our support training on Thursday afternoon to answer the technical questions?\"",
+    "64add894ec9078fc4208cf52cf26c3fe5459ce6bc203fb2c712e31c59f2a04da": "- **Review the migration guide before it is published.** Mei asked Rafael to check the guide because he knows the old schema best. \"can you review the migration guide before we publish it?\"",
+    "6e966aa3f9c730b9a6687d2352c0ed85657a49dca05181aac0999f763574887e": "SKIP",
+    "bd8c655e538e8cc10083d7cf33c2ec9275b5a2d9a90ce71d2908f450e00af291": "- **Refresh the staging data set on Monday.** Rafael committed to updating staging so the webinar demo has realistic accounts. \"I'll refresh the staging data set on Monday so the webinar demo has realistic accounts\"\n- **Send Oskar the staging login details.** Once the refresh is done, Rafael will pass the login details to Oskar for the live demo. \"I'll send Oskar the login details once it's done\"",
+    "b47ef7a83daa58215e8243087326defbff73c1258a0ffc28b82cac0fa6008f36": "SKIP",
+    "6a611153cd674cf30576e7e484ad0e119bd7e7ceee1284696fbbcb5e27ca865c": "- (inferred) Revise the rollback plan based on Yvonne's feedback and circulate the final version before launch day.\n- (inferred) Send review comments on the migration guide to its author before publication.\n- (inferred) Confirm the staging data set refresh works before sending Oskar the staging login details."
+  }
+}

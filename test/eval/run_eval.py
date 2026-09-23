@@ -372,7 +372,11 @@ def record(fixtures_dir: Path, slugs: list[str], backend: str, model: str, make_
         cassette["calls"] = rec.cassette
         write_json(p["cassettes"] / f"{slug}.json", cassette)
         p["drafts"].mkdir(parents=True, exist_ok=True)
-        (p["drafts"] / f"{slug}.md").write_text(r["markdown"])
+        md = r["markdown"]
+        if backend != "ollama":
+            # lib stamps every draft "(local Ollama, offline)"; say which backend made this one
+            md = md.replace("(local Ollama, offline)", f"({backend} reference backend, eval only)")
+        (p["drafts"] / f"{slug}.md").write_text(md)
     write_json(p["results"], doc)
     return doc, runs
 

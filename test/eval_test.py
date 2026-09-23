@@ -416,7 +416,13 @@ def test_record_replay(tmp: Path) -> None:
           and cas["backend"] == "fake" and len(cas["calls"]) == t["model_calls"],
           f"cassette holds one reply per call ({len(cas['calls'])} vs {t['model_calls']})")
     check(all(len(k) == 64 for k in cas["calls"]), "cassette keys are sha256 hex")
-    check((p["drafts"] / "tiny.md").read_text() == runs["tiny"]["markdown"], "draft markdown saved")
+    saved_md = (p["drafts"] / "tiny.md").read_text()
+    check(saved_md == runs["tiny"]["markdown"].replace(
+        "(local Ollama, offline)", "(fake reference backend, eval only)"), "draft markdown saved")
+    check("(local Ollama, offline)" in runs["tiny"]["markdown"]
+          and "(local Ollama, offline)" not in saved_md
+          and "(fake reference backend, eval only)" in saved_md,
+          "a non-ollama draft is not labeled local Ollama")
 
     before = snapshot(tmp / "rr")
     with patched_ollama(NoOllama):
