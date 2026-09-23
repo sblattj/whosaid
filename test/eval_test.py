@@ -372,14 +372,15 @@ def test_injection(tmp: Path) -> None:
     built = []
 
     class StubOllama:
-        def __init__(self, url, model, num_ctx, timeout=0):
-            built.append((url, model, num_ctx, timeout))
+        def __init__(self, url, model, num_ctx, timeout=0, num_predict=None):
+            built.append((url, model, num_ctx, timeout, num_predict))
             self.model, self.calls = model, 0
 
     with patched_ollama(StubOllama):
         _p, _t, _s, default = ai.prepare(TINY_TRANSCRIPT, cfg, model="m1")
-    check(isinstance(default, StubOllama) and built == [("http://127.0.0.1:11434", "m1", 32768, 900)],
-          f"without client=, prepare still builds the Ollama client ({built})")
+    check(isinstance(default, StubOllama)
+          and built == [("http://127.0.0.1:11434", "m1", 32768, 900, 2048)],
+          f"without client=, prepare still builds the Ollama client, num_predict included ({built})")
 
 
 # ---- 3. record -> replay ----------------------------------------------------------------------

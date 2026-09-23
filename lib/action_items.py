@@ -31,7 +31,9 @@ checkable, and turn text always comes from the transcript, never from the model
   3. VERIFY      every quote is checked against its own evidence turn; a quote
                  that is not a verbatim substring is flagged, never dropped.
   4. INFER       one small call (temperature 0.2) turns the accepted titles
-                 into at most 3 "[inferred]" next steps.
+                 into at most 3 "[inferred]" next steps. Best-effort: if this
+                 call fails, the drafted bullets are kept and the note line
+                 says so.
 
 Configuration is <workspace>/whosaid.toml (see lib/wsconfig.py):
 
@@ -49,6 +51,7 @@ Configuration is <workspace>/whosaid.toml (see lib/wsconfig.py):
   split_chars = 600                  # sentence-group size for long turns
   chunk_chars = 8000                 # SELECT slice size (~5 minutes of meeting)
   timeout = 900                      # seconds per model call
+  num_predict = 2048                 # max tokens per model reply; caps a runaway generation
   [search]
   ollama = "http://127.0.0.1:11434"
 
@@ -100,6 +103,7 @@ from wsconfig import Turn, hms, log, parse_turns, speaker_first_name
 
 DEFAULT_MODEL = "qwen2.5:14b"
 DEFAULT_TIMEOUT = 900        # seconds per model call
+DEFAULT_NUM_PREDICT = 2048   # max tokens per model reply; caps a runaway (repetition-loop) generation
 CONTEXT_TURNS = 2            # previous turns shown to each BULLETS call
 CONTEXT_CHARS = 300          # each context turn is cut to this many chars
 MAX_INFERRED = 3
@@ -213,17 +217,20 @@ def local_stamp(tz: str = "") -> str:
 class Ollama:
     """POST /api/chat, stream off, urllib only. Every failure becomes a SummarizerError."""
 
-    def __init__(self, url: str, model: str, num_ctx: int, timeout: int = DEFAULT_TIMEOUT) -> None:
+    def __init__(self, url: str, model: str, num_ctx: int, timeout: int = DEFAULT_TIMEOUT,
+                 num_predict: int = DEFAULT_NUM_PREDICT) -> None:
         self.url = url.rstrip("/")
         self.model = model
         self.num_ctx = num_ctx
         self.timeout = timeout
+        self.num_predict = num_predict
         self.calls = 0
 
     def chat(self, system: str, user: str, temperature: float = 0.0) -> str:
         payload = {
             "model": self.model, "stream": False,
-            "options": {"temperature": temperature, "num_ctx": self.num_ctx},
+            "options": {"temperature": temperature, "num_ctx": self.num_ctx,
+                        "num_predict": self.num_predict},
             "messages": [{"role": "system", "content": system},
                          {"role": "user", "content": user}],
         }
@@ -298,6 +305,7 @@ class Plan:
         self.split_chars = int(summ.get("split_chars") or 600)
         self.chunk_chars = int(summ.get("chunk_chars") or 8000)
         self.timeout = int(summ.get("timeout") or DEFAULT_TIMEOUT)
+        self.num_predict = int(summ.get("num_predict") or DEFAULT_NUM_PREDICT)
         self.tz = str(ws.get("tz") or "")
 
         if self.owner and self.groups:
@@ -541,7 +549,7 @@ def header_lines(meeting: str, speakers: list[str]) -> list[str]:
 
 
 def note_line(plan: Plan, stamp: str, counts: dict, ncand: int, nev: int,
-              nitems: int, nflagged: int) -> str:
+              nitems: int, nflagged: int, infer_error: str | None = None) -> str:
     k = counts.get("slices", 0)
     slices = f"{k} slice" + ("" if k == 1 else "s")
     if plan.owner:
@@ -549,9 +557,10 @@ def note_line(plan: Plan, stamp: str, counts: dict, ncand: int, nev: int,
                   f"{counts['model_added']} added by the model over {slices}")
     else:
         detail = f"all added by the model over {slices}"
+    infer_note = f" Inferred next steps skipped ({infer_error})." if infer_error else ""
     return (f"_Auto-drafted {stamp} by `{plan.model}` (local Ollama, offline) via "
             f"`whosaid action-items --engine ollama`: {ncand} candidate turns ({detail}), "
-            f"{nev} kept as evidence, {nitems} items drafted, {nflagged} flagged ⚠. "
+            f"{nev} kept as evidence, {nitems} items drafted, {nflagged} flagged ⚠.{infer_note} "
             f"A DRAFT: read the evidence and the transcript before trusting it._")
 
 
@@ -576,7 +585,7 @@ def prepare(transcript_text: str, cfg: dict, *, model: str | None = None,
     speakers = speakers_of(transcript_text, turns)
     plan.build_prompts(speakers)
     if client is None:
-        client = Ollama(plan.url, plan.model, plan.num_ctx, plan.timeout)
+        client = Ollama(plan.url, plan.model, plan.num_ctx, plan.timeout, num_predict=plan.num_predict)
     return plan, turns, speakers, client
 
 
@@ -622,18 +631,26 @@ def draft(transcript_text: str, meeting: str, cfg: dict, *, model: str | None = 
             nflagged += b.flagged
 
     inferred: list[str] = []
+    infer_error: str | None = None
     if nitems:
-        out = client.chat(plan.infer_prompt,
-                          f"Meeting: {meeting}\n\nItems:\n" + "\n".join(f"- {t}" for t in titles),
-                          temperature=0.2)
-        for ln in out.splitlines():
-            m = INFERRED_RE.match(ln)
-            if m:
-                inferred.append(m.group(1).strip())
-        inferred = inferred[:MAX_INFERRED]
+        try:
+            out = client.chat(plan.infer_prompt,
+                              f"Meeting: {meeting}\n\nItems:\n" + "\n".join(f"- {t}" for t in titles),
+                              temperature=0.2)
+        except SummarizerError as e:
+            # INFER is best-effort: it only turns accepted titles into <= 3 extra
+            # "[inferred]" lines, so losing it must never discard the drafted bullets.
+            infer_error = str(e)
+            log(f"WARN INFER step failed ({e}); keeping the drafted bullets with no inferred items")
+        else:
+            for ln in out.splitlines():
+                m = INFERRED_RE.match(ln)
+                if m:
+                    inferred.append(m.group(1).strip())
+            inferred = inferred[:MAX_INFERRED]
     sections[plan.inferred_section] = [(0, render_inferred(plan, x)) for x in inferred]
 
-    lines.append(note_line(plan, stamp, counts, len(ids), len(evidence), nitems, nflagged))
+    lines.append(note_line(plan, stamp, counts, len(ids), len(evidence), nitems, nflagged, infer_error))
     for n, (heading, bucket) in enumerate(zip(plan.headings, sections), 1):
         lines += ["", f"## {n}. {heading}"]
         bucket = sorted(bucket, key=lambda x: x[0])      # stable: by speaker only without an owner
@@ -648,6 +665,8 @@ def draft(transcript_text: str, meeting: str, cfg: dict, *, model: str | None = 
     stats.update(counts)
     stats.update({"candidates": len(ids), "evidence": len(evidence), "items": nitems,
                   "flagged": nflagged, "inferred": len(inferred), "model_calls": client.calls})
+    if infer_error:
+        stats["infer_error"] = infer_error
     return "\n".join(lines), stats
 
 

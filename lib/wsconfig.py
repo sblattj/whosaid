@@ -60,6 +60,7 @@ DEFAULTS: dict = {
     "summarizer": {
         "engine": "auto", "model": "qwen2.5:14b", "num_ctx": 32768,
         "min_chars": 60, "split_chars": 600, "chunk_chars": 8000, "timeout": 900,
+        "num_predict": 2048,
     },
     "search": {"ollama": "http://127.0.0.1:11434", "embed_model": "nomic-embed-text", "embed": True},
     "watch": {"source": "", "stable_seconds": 120, "max_wait_seconds": 900, "interval_seconds": 900},

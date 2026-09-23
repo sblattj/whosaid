@@ -332,6 +332,7 @@ team = ["Carol_Example", "Dan_Example"]
 engine = "auto"                  # auto | ollama | hook | none
 model = "qwen2.5:14b"
 timeout = 900                    # seconds per model call
+num_predict = 2048               # max tokens per model reply; caps a runaway generation
 
 [search]
 ollama = "http://127.0.0.1:11434"

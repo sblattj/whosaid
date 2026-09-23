@@ -150,6 +150,8 @@ def router(payload: dict) -> str | tuple[int, str]:
         table = NO_OWNER_BULLET_REPLIES if "COMMIT:" in system else BULLET_REPLIES
         return table.get(key, "SKIP")
     if "implied next steps" in system:
+        if payload["model"] == "infer-fail-stub":
+            return 500, json.dumps({"error": "synthetic INFER failure (for tests)"})
         return INFER_REPLY
     raise AssertionError(f"unexpected system prompt: {system[:120]!r}")
 
@@ -214,14 +216,16 @@ def dead_port_url() -> str:
 
 
 def write_config(ws: Path, url: str, *, owner: str = "Alice_Example", groups: bool = True,
-                 aliases: bool = True) -> None:
+                 aliases: bool = True, num_predict: int | None = None) -> None:
     lines = ["[workspace]", f'owner = "{owner}"']
     if aliases:
         lines.append('aliases = ["Alice", "Alicia"]')
     if groups:
         lines += ["", "[groups]", 'leadership = ["Bob_Example"]', 'team = ["Carol_Example"]']
-    lines += ["", "[summarizer]", 'model = "qwen-stub"', "num_ctx = 4096", "chunk_chars = 300",
-              "", "[search]", f'ollama = "{url}"', ""]
+    lines += ["", "[summarizer]", 'model = "qwen-stub"', "num_ctx = 4096", "chunk_chars = 300"]
+    if num_predict is not None:
+        lines.append(f"num_predict = {num_predict}")
+    lines += ["", "[search]", f'ollama = "{url}"', ""]
     (ws / "whosaid.toml").write_text("\n".join(lines))
 
 
@@ -317,10 +321,12 @@ def test_owner_mode(stub: StubOllama, tmp: Path) -> None:
     # -- request shape
     for r in selects + bullets:
         check(r["model"] == "qwen-stub" and r["stream"] is False
-              and r["options"] == {"temperature": 0.0, "num_ctx": 4096},
-              f"select/bullets: temperature 0, num_ctx from config, stream off: {r['options']}")
+              and r["options"] == {"temperature": 0.0, "num_ctx": 4096, "num_predict": ai.DEFAULT_NUM_PREDICT},
+              f"select/bullets: temperature 0, num_ctx from config, stream off, default num_predict: {r['options']}")
     infers = stub.of_kind("implied next steps")
-    check(len(infers) == 1 and infers[0]["options"]["temperature"] == 0.2, "one INFER call at 0.2")
+    check(len(infers) == 1 and infers[0]["options"]["temperature"] == 0.2
+          and infers[0]["options"]["num_predict"] == ai.DEFAULT_NUM_PREDICT,
+          "one INFER call at 0.2, default num_predict")
     check(stats["model_calls"] == len(stub.requests), "stats count every model call")
 
     # -- headings, in config order, numbered
@@ -405,6 +411,69 @@ def test_owner_mode(stub: StubOllama, tmp: Path) -> None:
     check(stats2["model"] == "other-stub" and all(r["model"] == "other-stub" for r in stub.requests),
           "model override reaches every call")
     check("by `other-stub`" in md2, "note line names the model used")
+
+
+def test_num_predict(stub: StubOllama, tmp: Path) -> None:
+    """[summarizer] num_predict reaches options.num_predict on every request;
+    unset falls back to the DEFAULT_NUM_PREDICT module constant (issue: an
+    uncapped Ollama generation could run until the 900s per-call timeout)."""
+    ws = tmp / "ws-num-predict"
+    ws.mkdir()
+    write_config(ws, stub.url, num_predict=256)
+    cfg = wsconfig.load_config(ws)
+    check(cfg["summarizer"]["num_predict"] == 256, "num_predict read from whosaid.toml")
+
+    stub.requests.clear()
+    md, stats = ai.draft(TRANSCRIPT, "m", cfg)
+    check(bool(stub.requests) and all(r["options"]["num_predict"] == 256 for r in stub.requests),
+          f"configured num_predict reaches every request's options: "
+          f"{[r['options'] for r in stub.requests]}")
+
+    ws2 = tmp / "ws-num-predict-default"
+    ws2.mkdir()
+    write_config(ws2, stub.url)
+    cfg2 = wsconfig.load_config(ws2)
+    check(cfg2["summarizer"]["num_predict"] == ai.DEFAULT_NUM_PREDICT,
+          f"num_predict defaults to DEFAULT_NUM_PREDICT ({ai.DEFAULT_NUM_PREDICT}) when unset")
+    stub.requests.clear()
+    ai.draft(TRANSCRIPT, "m", cfg2)
+    check(bool(stub.requests) and all(r["options"]["num_predict"] == ai.DEFAULT_NUM_PREDICT
+                                      for r in stub.requests),
+          "an unset num_predict reaches every request as the default")
+
+
+def test_infer_failure(stub: StubOllama, tmp: Path) -> None:
+    """A SummarizerError from the INFER call (issue #14 follow-up: a runaway,
+    sampled INFER generation used to hang for 900s and then discard the whole
+    draft) must not discard the already-drafted bullets: INFER is best-effort."""
+    ws = tmp / "ws-infer-fail"
+    ws.mkdir()
+    write_config(ws, stub.url)
+    cfg = wsconfig.load_config(ws)
+
+    stub.requests.clear()
+    err = io.StringIO()
+    with contextlib.redirect_stderr(err):
+        md, stats = ai.draft(TRANSCRIPT, "m", cfg, model="infer-fail-stub")
+    check("WARN INFER step failed" in err.getvalue() and "HTTP 500" in err.getvalue(),
+          f"the INFER failure is logged: {err.getvalue()!r}")
+    check(stats["items"] == 8, f"all 8 bullets still drafted despite the INFER failure: {stats}")
+    check(stats["inferred"] == 0, f"zero inferred items when INFER fails: {stats}")
+    check(stats.get("infer_error") is not None and "HTTP 500" in stats["infer_error"],
+          f"the INFER failure is recorded in stats: {stats.get('infer_error')!r}")
+    check(section(md, "## 1.") and section(md, "## 2.") and section(md, "## 3."),
+          "the asks/commitments sections are unaffected by the INFER failure")
+    check(section(md, "## 4.") == ["- none"], "the inferred section is empty, not corrupted")
+    note = md.splitlines()[4]
+    check("Inferred next steps skipped" in note and "HTTP 500" in note,
+          f"a short visible note about the INFER failure is in the note line: {note}")
+
+    # a matched control: the same fixture with a working INFER call gets inferred items
+    stub.requests.clear()
+    md_ok, stats_ok = ai.draft(TRANSCRIPT, "m", cfg)
+    check(stats_ok["inferred"] == 3 and "infer_error" not in stats_ok,
+          f"the control run (INFER working) is unaffected: {stats_ok}")
+    check("Inferred next steps skipped" not in md_ok, "no failure note when INFER succeeds")
 
 
 def test_no_groups_and_no_owner(stub: StubOllama, tmp: Path) -> None:
@@ -655,6 +724,8 @@ def main() -> None:
             tmp = Path(d)
             test_name_regex_and_pieces()
             test_owner_mode(stub, tmp)
+            test_num_predict(stub, tmp)
+            test_infer_failure(stub, tmp)
             test_no_groups_and_no_owner(stub, tmp)
             test_failures_and_cli(stub, tmp)
             test_workspace_integration(stub, tmp)

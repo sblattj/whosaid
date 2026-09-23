@@ -285,7 +285,7 @@ def client_factory(backend: str, model: str, ollama: str = DEFAULT_OLLAMA):
     if backend == "ollama":
         def make(cfg: dict):
             plan = ai.Plan(cfg, model=model, ollama=ollama)
-            return ai.Ollama(plan.url, plan.model, plan.num_ctx, plan.timeout)
+            return ai.Ollama(plan.url, plan.model, plan.num_ctx, plan.timeout, num_predict=plan.num_predict)
         return make
     if backend == "claude-cli":
         return lambda cfg: ClaudeCLI(model)
