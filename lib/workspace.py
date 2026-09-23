@@ -1352,16 +1352,21 @@ def possible_duplicates(items: list[ActionItem],
                         near_misses: list[tuple[str, str, float]],
                         threshold: float) -> list[tuple[str, str, float]]:
     """Distinct corpus-item pairs scoring in [threshold - 0.10, threshold),
-    deduped by id pair, most similar first. Merged items are skipped."""
+    deduped by id pair, most similar first. Merged items are skipped, and so
+    are fold-time near misses naming an id the final corpus no longer holds
+    (a commitments refresh folds under transient ids, then restores the
+    stable ones), so the review section never cites a missing item."""
     best: dict[tuple[str, str], float] = {}
 
     def add(id_a: str, id_b: str, ratio: float) -> None:
         key = tuple(sorted((id_a, id_b)))
         best[key] = max(best.get(key, 0.0), ratio)
 
-    for id_a, id_b, ratio in near_misses:
-        add(id_a, id_b, ratio)
     live = [it for it in items if it.status != "merged"]
+    live_ids = {it.id for it in live}
+    for id_a, id_b, ratio in near_misses:
+        if id_a in live_ids and id_b in live_ids:
+            add(id_a, id_b, ratio)
     norms = [normalize_text(it.text) for it in live]
     for i in range(len(live)):
         for j in range(i + 1, len(live)):
