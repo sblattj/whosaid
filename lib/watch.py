@@ -177,6 +177,39 @@ def resolve_source(arg: str | None, cfg: dict) -> Path:
     return VOICE_MEMOS_STORE
 
 
+def overlap_problem(ws: Path, source: Path) -> str | None:
+    """None when the workspace and the recordings source are safely separate
+    folders; otherwise an actionable message naming both real (symlink- and
+    /var-resolved) paths. A watcher whose source is the workspace itself, or
+    nested either way, would scan its own staging/output files (or the
+    cross-meeting corpora and _search.db) and mix raw audio into meeting
+    folders. Path.resolve() (default strict=False) does not require the
+    target to exist, so this is safe to call before `source` exists (install
+    may still need to create it, e.g. the --no-fda ~/Recordings default);
+    any other OSError (a symlink loop) falls back to comparing the
+    unresolved path rather than raising."""
+    try:
+        real_ws = ws.resolve()
+    except OSError:
+        real_ws = ws
+    try:
+        real_source = source.resolve()
+    except OSError:
+        real_source = source
+    if not (real_ws == real_source
+            or real_source in real_ws.parents
+            or real_ws in real_source.parents):
+        return None
+    return (
+        f"the recordings source ({real_source}) and the meeting workspace ({real_ws}) "
+        "must be separate folders: neither the same directory nor nested inside the "
+        "other. The watcher would otherwise scan its own staging/output files (or the "
+        "workspace's transcripts, corpora, and _search.db) as if they were recordings. "
+        "Keep them apart, e.g. recordings in ~/Recordings and the workspace in "
+        "~/meetings."
+    )
+
+
 def is_store(source: Path) -> bool:
     """True when the source is a Voice Memos store (holds CloudRecordings.db)."""
     try:
@@ -410,6 +443,10 @@ def cmd_run(args: argparse.Namespace) -> int:
         return 1
     cfg = load_config(ws)
     source = resolve_source(args.source, cfg)
+    problem = overlap_problem(ws, source)
+    if problem:
+        log(f"run: {problem}")
+        return 1
     whosaid = find_whosaid(args.whosaid)
     accurate = args.accurate or os.environ.get("WHOSAID_ACCURATE") == "1"
     with open(ws / LOCK_NAME, "w") as lock:
@@ -714,20 +751,30 @@ def cmd_install(args: argparse.Namespace) -> int:
     extra_env = parse_env_pairs(args.env)
     dry = args.dry_run
     source_explicit = bool(args.source)
+    no_fda_default_source = False
     if args.no_fda:
         if not source_explicit and not str((cfg.get("watch") or {}).get("source") or "").strip():
             # nothing chosen and the admin-gated FDA path is off the table:
             # watch ~/Recordings, a plain folder any capture app can write into
             source = Path.home() / "Recordings"
             source_explicit = True  # pin the path in the plist
-            if not dry:
-                source.mkdir(parents=True, exist_ok=True)
+            no_fda_default_source = True
         if needs_fda(source):
             log(f"install: --no-fda watches a plain folder, but {source} is under ~/Library")
             log("(TCC guards all of ~/Library; the toggle would demand an admin password).")
             log("Pick a folder outside ~/Library instead, e.g. ~/Recordings or a Dropbox")
             log("folder such as ~/Dropbox/whosaid.")
             return 1
+
+    # The source is now final (including the --no-fda ~/Recordings default): refuse an
+    # overlap with the workspace before creating anything, provisioning the dedicated
+    # interpreter, writing the plist, or running launchctl -- in --dry-run too.
+    problem = overlap_problem(ws, source)
+    if problem:
+        log(f"install: {problem}")
+        return 1
+    if no_fda_default_source and not dry:
+        source.mkdir(parents=True, exist_ok=True)
 
     if args.interpreter:
         interpreter = str(Path(args.interpreter).expanduser())

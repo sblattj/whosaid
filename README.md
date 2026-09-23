@@ -421,7 +421,9 @@ net. `--seed` marks the recordings already present as done so an existing librar
 reprocessed. `--source DIR` watches any folder, not just Voice Memos; `--offline` bakes the
 Hugging Face offline variables into the agent so a machine with no network access never tries to
 fetch; `--env K=V` adds any other environment the agent should carry; `--engine E` on `run` picks
-the summarizer.
+the summarizer. The recordings source and the meeting workspace (transcripts, corpora,
+`_search.db`) must be separate folders — never the same directory, never nested inside each
+other — or `install`/`run` refuse to start.
 
 Reinstall preserves saved environment settings, including custom tool paths. Current exported
 certificate settings and explicit `--env` values can override saved values; `--env` takes final

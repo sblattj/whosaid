@@ -474,6 +474,57 @@ PY
 assert_eq "$PROBE_SELECTION" "True True" "copied-venv selection falls through to uv-managed Python"
 
 # ---------------------------------------------------------------------------
+# 7c. overlap guard: the watched recordings source and the meeting workspace
+#     must never be the same folder or nested inside each other, in either
+#     direction, including through a symlink alias or the --no-fda default.
+# ---------------------------------------------------------------------------
+echo "-- 7c. overlap guard"
+OV="$TMP/overlap"
+mkdir -p "$OV/rec" "$OV/rec/ws-inner" "$OV/ws" "$OV/ws/rec-inner"
+ln -s "$OV/rec" "$OV/rec-alias"
+
+# same folder for both --into and --source
+run_watch install --into "$OV/rec" --source "$OV/rec" --dry-run
+assert_eq "$RC" 1 "install refuses source == workspace"
+assert_text "must be separate folders" "$ERR" "same-folder refusal names the overlap"
+assert_text "$OV/rec" "$ERR" "same-folder refusal names the resolved path"
+assert_no_text "== DRY RUN" "$ERR" "same-folder refusal never reaches the dry-run report"
+
+# workspace nested inside the source
+run_watch install --into "$OV/rec/ws-inner" --source "$OV/rec" --dry-run
+assert_eq "$RC" 1 "install refuses workspace nested inside the source"
+assert_text "must be separate folders" "$ERR" "nested-workspace refusal names the overlap"
+
+# source nested inside the workspace
+run_watch install --into "$OV/ws" --source "$OV/ws/rec-inner" --dry-run
+assert_eq "$RC" 1 "install refuses source nested inside the workspace"
+assert_text "must be separate folders" "$ERR" "nested-source refusal names the overlap"
+
+# a symlinked alias of the same directory must not defeat the guard
+run_watch install --into "$OV/rec" --source "$OV/rec-alias" --dry-run
+assert_eq "$RC" 1 "install refuses a symlinked alias of the workspace"
+assert_text "must be separate folders" "$ERR" "symlink-alias refusal names the overlap"
+
+# a normal, disjoint pair is still accepted
+run_watch install --into "$OV/ws" --source "$OV/rec" --dry-run
+assert_eq "$RC" 0 "install accepts a disjoint workspace/source pair"
+assert_text "== DRY RUN" "$ERR" "disjoint pair reaches the dry-run report"
+assert_no_text "must be separate folders" "$ERR" "disjoint pair triggers no overlap message"
+
+# `watch run` refuses the same overlap, before taking the lock
+run_watch run --into "$OV/rec" --source "$OV/rec"
+assert_eq "$RC" 1 "run refuses source == workspace"
+assert_text "must be separate folders" "$ERR" "run refusal names the overlap"
+assert_missing "$OV/rec/.watch.lock" "run refusal happens before the lock is taken"
+
+# the guard sees the FINAL source, including the --no-fda ~/Recordings default
+# (nothing configured, no --source): here that default collides with --into itself.
+OV_HOME="$OV/no-fda-home"; mkdir -p "$OV_HOME/Recordings"
+HOME="$OV_HOME" run_watch install --into "$OV_HOME/Recordings" --no-fda --dry-run
+assert_eq "$RC" 1 "install refuses when the --no-fda default source equals the workspace"
+assert_text "must be separate folders" "$ERR" "no-fda-default refusal names the overlap"
+
+# ---------------------------------------------------------------------------
 # 8. memos list / pull on a plain folder
 # ---------------------------------------------------------------------------
 echo "-- 8. memos on a plain folder"
