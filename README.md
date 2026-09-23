@@ -1142,7 +1142,9 @@ placeholder speakers and `--no-embed` so Ollama is never contacted:
 pipeline over synthetic meetings with hand-labeled action items, reports precision, recall and
 F1, and records each run so it can be replayed offline. It can also draft the same meetings with a
 cloud model for comparison. That backend is opt-in developer tooling that sends only the committed
-synthetic fixtures; whosaid itself never calls a cloud model. See [docs/eval.md](docs/eval.md).
+synthetic fixtures; whosaid itself never calls a cloud model. The recorded baseline is F1 0.717
+for the default `qwen2.5:14b` against 0.921 for the Claude `opus` reference, and most of the gap is
+precision. See [docs/eval.md](docs/eval.md).
 
 `./test/roles_test.sh` covers speaker role tags offline: `--role`/`--save-role` validation, role
 preservation across registry re-saves, the `# Role:` header lines in `.speakers.txt`, the

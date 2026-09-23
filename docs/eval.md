@@ -9,7 +9,7 @@ The eval has two jobs:
 
 1. **A baseline for the local model.** The summarizer runs a local Ollama model (default
    `qwen2.5:14b`). The eval says how good that model is on these meetings, and whether a prompt
-   or pipeline change made it better or worse.
+   or pipeline change made it better or worse. The committed numbers are under "Baseline" below.
 2. **A reference point.** The same fixtures can be drafted by a cloud model (Claude, through the
    Claude Code CLI) to show how much of the gap is the local model and how much is the pipeline.
    This is a measuring stick only. whosaid never uses a cloud model.
@@ -165,8 +165,8 @@ its own Ollama client, exactly as in production. Each fixture gets a fresh clien
 ### The `ollama` backend
 
 This backend uses lib's own `Ollama` class, the production client. It builds the client with the
-fixture's `num_ctx` and `timeout`, the same way the summarizer does. Ollama must be running with
-the model pulled.
+fixture's `num_ctx`, `timeout` and `num_predict`, the same way the summarizer does. Ollama must be
+running with the model pulled.
 
 ### The `claude-cli` backend
 
@@ -197,8 +197,8 @@ model sees only the summarizer's own prompts.
   pins down what one run saw.
 - **Resolved model.** A model alias such as `opus` resolves to whatever that alias means on the
   day. The cassette records the resolved model id as `resolved_model`.
-- **Cosmetic note.** The drafts' italic header line still says "local Ollama, offline", because
-  lib renders it. Ignore it for claude-cli drafts.
+- **Draft header.** lib stamps every draft "(local Ollama, offline)". Before saving a claude-cli
+  draft, the runner rewrites that to "(claude-cli reference backend, eval only)".
 
 ## Record and replay
 
@@ -253,6 +253,40 @@ prints `MATCH` or `MISMATCH`.
 A replay only checks that a recording still reproduces its scores under the current pipeline and
 scorer. It says nothing about model quality. When you change a prompt in `lib/action_items.py`,
 every recording stops matching, and you need a fresh live run.
+
+## Baseline (recorded 2026-09-23)
+
+Two runs are committed. `python3 test/eval/run_eval.py --report` prints this comparison from them:
+
+| run | model | precision | recall | F1 | flag rate | model calls | wall s |
+|---|---|---|---|---|---|---|---|
+| claude-cli-opus | opus | 0.891 | 0.954 | 0.921 | 0.000 | 73 | 394.7 |
+| ollama-qwen2.5-14b | qwen2.5:14b | 0.603 | 0.884 | 0.717 | 0.016 | 68 | 1788.6 |
+
+| fixture | claude-cli-opus | ollama-qwen2.5-14b |
+|---|---|---|
+| aliases-no-groups | 0.889 | 0.800 |
+| distractor-heavy | 0.857 | 0.476 |
+| long-status | 0.952 | 0.800 |
+| named-asks | 0.941 | 0.842 |
+| unnamed-asks | 0.947 | 0.667 |
+
+- **The gap is precision, not recall.** The local model finds most real asks: 38 true positives
+  against 41 for the reference, and 5 misses against 2. But it also drafts 25 false positives
+  against 5. Of those 25, 16 come from distractor turns (asks aimed at someone other than the
+  owner), 7 are duplicates, and 2 are wrong items. All 5 of the reference's false positives are
+  duplicates. `distractor-heavy` shows the gap most clearly: F1 0.476 against 0.857.
+- **The reference is `opus`**, which resolved to `claude-opus-5-5` on the recording date. The
+  claude-cli backend has no temperature control, so a new live run of it can differ from this
+  one.
+- **Wall time is not comparable between the two runs.** `wall s` is the sum of per-fixture
+  drafting times. The local run was on a 24 GB Apple Silicon Mac, where `qwen2.5:14b` with a
+  32k context is memory-bound (about 4 tokens per second). The reference run's time is mostly
+  network and API latency.
+
+The local run was recorded with the `[summarizer] num_predict` cap (default 2048). Without that
+cap, one sampled pass (the temperature-0.2 inferred-next-steps step) fell into a repetition loop
+and ran until the 900-second timeout.
 
 ## Tests
 

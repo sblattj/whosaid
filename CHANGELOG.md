@@ -6,8 +6,41 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ## [Unreleased]
 
+## [1.6.0] - 2026-09-23
+
+### Added
+
+- **An offline eval for the action-item summarizer** (`test/eval/`, documented in
+  [docs/eval.md](docs/eval.md)). Five synthetic meetings with hand-labeled action items and
+  distractor turns are drafted by the real pipeline and scored for precision, recall, F1 and
+  flag rate. Runs are recorded as cassettes and replay offline with a strict score check. The
+  recorded baseline is F1 0.717 for the default `qwen2.5:14b` (precision 0.603, recall 0.884)
+  against 0.921 for a Claude `opus` reference run (precision 0.891, recall 0.954); most of the
+  local model's false positives are asks aimed at someone other than the owner. The reference
+  backend drives the Claude Code CLI on a subscription, is opt-in developer tooling that lives
+  only under `test/eval/`, and refuses to read anything but the committed synthetic fixtures.
+  whosaid itself still never calls a cloud model.
+- `action_items.prepare()` and `draft()` take an optional keyword-only `client=`, a model client
+  with a `chat(system, user, temperature)` method. With no client, lib builds its own Ollama
+  client exactly as before.
+- **`[watch]` speaker hints.** `speakers`, `min_speakers`, `max_speakers` and
+  `expected_speakers` in a workspace's `whosaid.toml` are passed to every recording the watcher
+  ingests, so a workspace that only records 1:1 calls can pin `speakers = 2` instead of relying
+  on blind auto-detect. They are re-read on every pass, echoed by `install --dry-run`, and an
+  invalid value makes `run` and `install` refuse, naming the key.
+- `[summarizer] num_predict` (default 2048): the maximum number of tokens in one Ollama reply.
+
 ### Fixed
 
+- **A runaway local-model generation no longer stalls the summarizer for the full timeout.**
+  Ollama requests carried no token cap, so a sampled pass that fell into a repetition loop kept
+  generating until the 900-second timeout and failed the whole draft. Replies are now capped by
+  `[summarizer] num_predict`, and a failure in the inferred-next-steps pass keeps the drafted
+  bullets and notes the skip in the draft instead of discarding them.
+- **The watcher refuses a workspace that overlaps its recordings folder.** `watch install` and
+  `watch run` now stop, before writing anything, when the recordings source and the meeting
+  workspace are the same folder or one is inside the other, so transcripts, corpora and
+  `_search.db` can no longer land among the recordings being watched.
 - **Speaker-count saturation now repairs anonymous phantom clusters (GitHub issue #38).**
   Suspicious auto counts retry stable clustering cuts on substantive turns before accepting
   the cap, then assign short turns using those voices. A distinct short-only voice prevents
@@ -566,7 +599,11 @@ attributed to a person — who said what — with nothing ever leaving your Mac.
 - `ffmpeg` and `uv` (Homebrew). Python is used only through ephemeral `uv`
   environments — no persistent install is left behind.
 
-[Unreleased]: https://github.com/sblattj/whosaid/compare/v1.2.0...HEAD
+[Unreleased]: https://github.com/sblattj/whosaid/compare/v1.6.0...HEAD
+[1.6.0]: https://github.com/sblattj/whosaid/releases/tag/v1.6.0
+[1.5.0]: https://github.com/sblattj/whosaid/releases/tag/v1.5.0
+[1.4.0]: https://github.com/sblattj/whosaid/releases/tag/v1.4.0
+[1.3.0]: https://github.com/sblattj/whosaid/releases/tag/v1.3.0
 [1.2.0]: https://github.com/sblattj/whosaid/releases/tag/v1.2.0
 [1.1.0]: https://github.com/sblattj/whosaid/releases/tag/v1.1.0
 [1.0.2]: https://github.com/sblattj/whosaid/releases/tag/v1.0.2
