@@ -566,21 +566,27 @@ def stub_markdown(meeting: str, speakers: list[str], model: str, reason: str, hi
 
 
 def prepare(transcript_text: str, cfg: dict, *, model: str | None = None,
-            ollama: str | None = None, owner: str | None = None
+            ollama: str | None = None, owner: str | None = None, client=None
             ) -> tuple[Plan, list[Turn], list[str], Ollama]:
+    """`client`, when given, is used instead of a new Ollama client. It needs the
+    same duck type: .chat(system, user, temperature=0.0) -> str, .calls, .model
+    (the offline eval harness in test/eval/ passes fakes and recorders)."""
     plan = Plan(cfg, owner=owner, model=model, ollama=ollama)
     turns = parse_turns(transcript_text)
     speakers = speakers_of(transcript_text, turns)
     plan.build_prompts(speakers)
-    client = Ollama(plan.url, plan.model, plan.num_ctx, plan.timeout)
+    if client is None:
+        client = Ollama(plan.url, plan.model, plan.num_ctx, plan.timeout)
     return plan, turns, speakers, client
 
 
 def draft(transcript_text: str, meeting: str, cfg: dict, *, model: str | None = None,
-          ollama: str | None = None, owner: str | None = None) -> tuple[str, dict]:
+          ollama: str | None = None, owner: str | None = None, client=None) -> tuple[str, dict]:
     """The whole pipeline in-process -> (markdown, stats). Raises SummarizerError
-    when the model cannot be used; callers decide whether to write a stub."""
-    plan, turns, speakers, client = prepare(transcript_text, cfg, model=model, ollama=ollama, owner=owner)
+    when the model cannot be used; callers decide whether to write a stub.
+    `client` replaces the Ollama client (see prepare)."""
+    plan, turns, speakers, client = prepare(transcript_text, cfg, model=model, ollama=ollama,
+                                            owner=owner, client=client)
     stamp = local_stamp(plan.tz)
     stats: dict = {"engine": "ollama", "model": plan.model, "ollama": plan.url, "owner": plan.owner,
                    "meeting": meeting, "speakers": speakers, "candidates": 0, "by_owner": 0,
