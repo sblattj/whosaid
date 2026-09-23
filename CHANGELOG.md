@@ -8,6 +8,12 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ### Fixed
 
+- **Roll-up no longer aborts with `KeyError` on a commitments refresh.** When commitment sources
+  or roles change, the fold runs under transient ids and then restores the stable ones, so
+  fold-time near-miss pairs could name an id the final corpus no longer holds (e.g. `CM-426`),
+  and `render_commitments_md` crashed, leaving every aggregate stale (the watcher logged
+  `roll-up exited 1`). `possible_duplicates` now keeps only near misses whose ids are both live.
+  Regression test: `test/possible_duplicates_test.py`.
 - **Speaker-count saturation now repairs anonymous phantom clusters (GitHub issue #38).**
   Suspicious auto counts retry stable clustering cuts on substantive turns before accepting
   the cap, then assign short turns using those voices. A distinct short-only voice prevents
