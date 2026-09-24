@@ -129,6 +129,8 @@ def router(payload: dict) -> str | tuple[int, str]:
     user = payload["messages"][1]["content"]
     if payload["model"] == "missing-model":
         return 404, json.dumps({"error": "model 'missing-model' not found, try pulling it first"})
+    if payload["model"] == "no-think-stub" and payload.get("think"):
+        return 400, json.dumps({"error": '"no-think-stub" does not support thinking'})
     if "Select every turn" in system:
         if "No owner is configured" in system:
             rows = [f"#{i}: something" for i in (0, 1, 5) if f"#{i} [" in user]
@@ -192,6 +194,11 @@ class StubOllama:
                 if isinstance(reply, tuple):
                     self._send(reply[0], reply[1])
                     return
+                if payload["model"] == "inline-think-stub":
+                    # a thinking model that leaves its reasoning in content,
+                    # bullet-shaped so a leak would show up as a bogus item
+                    reply = ('<think>\n- **Leaked reasoning bullet.** "should never be parsed"\n'
+                             "</think>\n" + reply)
                 self._send(200, json.dumps({"model": payload["model"], "done": True,
                                             "message": {"role": "assistant", "content": reply}}))
 
@@ -216,15 +223,18 @@ def dead_port_url() -> str:
 
 
 def write_config(ws: Path, url: str, *, owner: str = "Alice_Example", groups: bool = True,
-                 aliases: bool = True, num_predict: int | None = None) -> None:
+                 aliases: bool = True, num_predict: int | None = None,
+                 think: bool | None = None, model: str = "qwen-stub") -> None:
     lines = ["[workspace]", f'owner = "{owner}"']
     if aliases:
         lines.append('aliases = ["Alice", "Alicia"]')
     if groups:
         lines += ["", "[groups]", 'leadership = ["Bob_Example"]', 'team = ["Carol_Example"]']
-    lines += ["", "[summarizer]", 'model = "qwen-stub"', "num_ctx = 4096", "chunk_chars = 300"]
+    lines += ["", "[summarizer]", f'model = "{model}"', "num_ctx = 4096", "chunk_chars = 300"]
     if num_predict is not None:
         lines.append(f"num_predict = {num_predict}")
+    if think is not None:
+        lines.append(f"think = {'true' if think else 'false'}")
     lines += ["", "[search]", f'ollama = "{url}"', ""]
     (ws / "whosaid.toml").write_text("\n".join(lines))
 
@@ -440,6 +450,55 @@ def test_num_predict(stub: StubOllama, tmp: Path) -> None:
     check(bool(stub.requests) and all(r["options"]["num_predict"] == ai.DEFAULT_NUM_PREDICT
                                       for r in stub.requests),
           "an unset num_predict reaches every request as the default")
+
+
+def test_think(stub: StubOllama, tmp: Path) -> None:
+    """Ollama's top-level "think" flag goes out on every request (false unless
+    [summarizer] think = true), reasoning left inline in content is stripped
+    before parsing, and a model with no thinking mode gets an actionable hint."""
+    ws = tmp / "ws-think-default"
+    ws.mkdir()
+    write_config(ws, stub.url)
+    cfg = wsconfig.load_config(ws)
+    check(cfg["summarizer"]["think"] is False and ai.Plan(cfg).think is False,
+          "think defaults to false when unset")
+    stub.requests.clear()
+    md, stats = ai.draft(TRANSCRIPT, "m", cfg)
+    check(bool(stub.requests) and all(r.get("think") is False for r in stub.requests),
+          f"every request sends think=false by default: {[r.get('think') for r in stub.requests]}")
+
+    ws2 = tmp / "ws-think-on"
+    ws2.mkdir()
+    write_config(ws2, stub.url, think=True)
+    stub.requests.clear()
+    ai.draft(TRANSCRIPT, "m", wsconfig.load_config(ws2))
+    check(bool(stub.requests) and all(r.get("think") is True for r in stub.requests),
+          "[summarizer] think = true reaches every request")
+    for raw, want in (("yes", True), ("off", False), ("0", False), ("maybe", False), (None, False)):
+        check(ai.config_flag(raw, False) is want, f"config_flag({raw!r}) -> {want}")
+
+    ws3 = tmp / "ws-think-inline"
+    ws3.mkdir()
+    write_config(ws3, stub.url, model="inline-think-stub")
+    md3, stats3 = ai.draft(TRANSCRIPT, "m", wsconfig.load_config(ws3))
+    check("Leaked reasoning" not in md3 and stats3["items"] == stats["items"],
+          f"inline <think> blocks are stripped before parsing ({stats3['items']} vs {stats['items']} items)")
+    for raw, want in (("<think>x</think>\nSKIP", "SKIP"),
+                      ("<THINK>a\nb</THINK> - **Do it.**", "- **Do it.**"),
+                      ("<think>cut off by num_predict", ""),
+                      ("reasoning with no opening tag</think>\nNONE", "NONE"),
+                      ("- **No thinking here.**", "- **No thinking here.**")):
+        check(ai.strip_thinking(raw) == want, f"strip_thinking({raw!r}) -> {want!r}")
+
+    try:
+        ai.Ollama(stub.url, "no-think-stub", 4096, think=True).chat("s", "u")
+        check(False, "think=true on a model without thinking raises")
+    except ai.SummarizerError as e:
+        check("HTTP 400" in str(e) and "think = false" in e.hint,
+              f"think=true on a model without thinking says how to fix it: {e} / {e.hint}")
+    out = ai.Ollama(stub.url, "no-think-stub", 4096).chat(
+        "Select every turn", "Meeting: m\n\nTranscript:\n#3 [00:00:01] Bob: hi")
+    check(out.startswith("#3"), "the default think=false is accepted by a model without thinking")
 
 
 def test_infer_failure(stub: StubOllama, tmp: Path) -> None:
@@ -725,6 +784,7 @@ def main() -> None:
             test_name_regex_and_pieces()
             test_owner_mode(stub, tmp)
             test_num_predict(stub, tmp)
+            test_think(stub, tmp)
             test_infer_failure(stub, tmp)
             test_no_groups_and_no_owner(stub, tmp)
             test_failures_and_cli(stub, tmp)

@@ -333,6 +333,7 @@ engine = "auto"                  # auto | ollama | hook | none
 model = "qwen2.5:14b"
 timeout = 900                    # seconds per model call
 num_predict = 2048               # max tokens per model reply; caps a runaway generation
+think = false                    # thinking models (qwen3, qwen3.x) skip reasoning; much faster
 
 [search]
 ollama = "http://127.0.0.1:11434"
