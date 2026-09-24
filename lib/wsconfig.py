@@ -24,7 +24,8 @@ Per-workspace config is an optional TOML file, <workspace>/whosaid.toml:
   team = ["Dan_Example", "Eve_Example"]
 
   [summarizer]
-  engine = "auto"                # auto | ollama | hook | none
+  engine = "auto"                # auto | ollama | claude | hook | none
+                                 # claude is opt-in and sends the transcript to Anthropic
   model = "qwen2.5:14b"
   timeout = 900                  # seconds per model call
 
@@ -61,6 +62,7 @@ DEFAULTS: dict = {
         "engine": "auto", "model": "qwen2.5:14b", "num_ctx": 32768,
         "min_chars": 60, "split_chars": 600, "chunk_chars": 8000, "timeout": 900,
         "num_predict": 2048, "think": False,
+        "claude_model": "opus", "claude_timeout": 900, "claude_bin": "", "fallback": "ollama",
     },
     "search": {"ollama": "http://127.0.0.1:11434", "embed_model": "nomic-embed-text", "embed": True},
     "watch": {"source": "", "stable_seconds": 120, "max_wait_seconds": 900, "interval_seconds": 900},

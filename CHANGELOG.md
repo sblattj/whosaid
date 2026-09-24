@@ -18,6 +18,17 @@ All notable changes to whosaid are documented here. This project adheres to
   role-tags `boss`. A team directive on a sentence that opens by naming one other participant
   ("Sam, can you ...") is that person's task and is dropped by the script, whatever the model
   says. Without leadership, the prompts and the layout are unchanged.
+- **Opt-in claude engine** (`[summarizer] engine = "claude"` or `--engine claude`, issue #44).
+  One isolated `claude -p` call per meeting (Opus by default, `claude_model` to change it) reads
+  the whole transcript and returns the items as JSON; whosaid still decides the sections, applies
+  the team-directive guards, takes each item's speaker and time from the turn holding its quote,
+  flags quotes no turn holds, and appends the verified evidence. **This sends the transcript's
+  text to Anthropic**, so it is never the default and `auto` never picks it; the note under the
+  banner says so. The call runs with no tools, MCP servers, settings or saved session, in an
+  empty temp dir, with `ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN` scrubbed. On failure it falls
+  back to the local Ollama engine (`fallback = "ollama"`, the default, when Ollama is up) or the
+  skeleton. New keys `claude_model`, `claude_timeout`, `claude_bin`, `fallback`, and the
+  `WHOSAID_CLAUDE_BIN` variable.
 - A `team-directives` eval fixture (owner nearly silent, two leadership speakers, 6 directives plus 1 optional)
   and a `directive` gold kind.
 

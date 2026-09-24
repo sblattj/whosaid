@@ -29,8 +29,9 @@ command.
 
 - **Meetings, interviews, calls, podcasts** — get a transcript where every turn is attributed to a
   person, not just a wall of text.
-- **Privacy by construction** — audio, text, and voice embeddings never leave your Mac. There's no
-  cloud step to opt out of, because there isn't one.
+- **Privacy by construction** — audio, text, and voice embeddings never leave your Mac. The only
+  cloud step is one you opt into: `[summarizer] engine = "claude"` sends each transcript's text to
+  Anthropic to draft action items. Leave it unset and nothing is sent.
 - **Your name on your own lines** — a one-time ~45s voice enrollment teaches whosaid your voice, so
   your turns read as your name instead of `SPEAKER_00`.
 - **Tells you how many people spoke** — the number of distinct speakers is auto-detected and
@@ -179,7 +180,8 @@ ollama run llama3.2 "List this meeting's action items as markdown bullets (Owner
 
 You no longer need a hook to get a real draft: `--engine ollama` (or the default `--engine
 auto`, which uses Ollama when it is running) turns on the built-in summarizer described in
-[Action items drafted by a local model](#action-items-drafted-by-a-local-model). `--engine`
+[Action items drafted by a local model](#action-items-drafted-by-a-local-model); `--engine claude`
+is the opt-in cloud alternative. `--engine`
 implies `--action-items`. Add `--index` and, once every file is in, ingest runs
 `whosaid roll-up <ws> --action-items` and `whosaid index <ws>` for you, so the new meetings are
 searchable in the same command:
@@ -329,12 +331,16 @@ leadership = ["Bob_Example"]
 team = ["Carol_Example", "Dan_Example"]
 
 [summarizer]
-engine = "auto"                  # auto | ollama | hook | none
+engine = "auto"                  # auto | ollama | claude | hook | none (claude: opt-in, cloud)
 model = "qwen2.5:14b"
 timeout = 900                    # seconds per model call
 num_predict = 2048               # max tokens per model reply; caps a runaway generation
 think = false                    # thinking models (qwen3, qwen3.x) skip reasoning; much faster
                                  # per model: think = { "qwen3:14b" = true, default = false }
+claude_model = "opus"            # engine = "claude": any `claude --model` value
+claude_timeout = 900             # seconds for the one claude call
+claude_bin = ""                  # path to `claude` (default: WHOSAID_CLAUDE_BIN, PATH, ~/.local/bin)
+fallback = "ollama"              # engine = "claude" failed: "ollama" (if it is up) or "none" (skeleton)
 
 [search]
 ollama = "http://127.0.0.1:11434"
@@ -381,6 +387,7 @@ instead of a hook. `--engine` (or `[summarizer] engine` in `whosaid.toml`) picks
 |---|---|
 | `auto` (default) | The hook if one is configured, else Ollama if it answers on localhost, else the skeleton. |
 | `ollama` | The built-in summarizer below. If Ollama is down or the model is missing, it warns and writes the skeleton (exit 0). |
+| `claude` | **Opt-in, cloud.** The transcript text goes to Anthropic. See [The claude engine](#the-claude-engine-opt-in-cloud). `auto` never picks it. |
 | `hook` | The `--hook` / `WHOSAID_ACTION_ITEMS_HOOK` command, exactly as before. |
 | `none` | The skeleton only (speakers listed, no items). |
 
@@ -406,6 +413,30 @@ anything into `_ACTION-ITEMS.md`.
 Model choice: the default is `qwen2.5:14b` (`ollama pull qwen2.5:14b`; about a minute for an
 hour-long meeting on an M-series Mac). `WHOSAID_SUMMARIZER_MODEL=qwen2.5:7b` is roughly twice as
 fast and roughly twice as noisy. Ollama is only ever contacted on `127.0.0.1`.
+
+### The claude engine (opt-in, cloud)
+
+`engine = "claude"` (or `--engine claude`) drafts the same file with Claude through the
+[Claude Code](https://claude.com/claude-code) CLI you are already signed in to: one `claude -p`
+call per meeting reads the whole transcript and returns the items as JSON. **This sends the
+transcript's text to Anthropic.** Audio and voiceprints stay local. Only turn it on for
+recordings you may send to a cloud model; `auto` never picks it.
+
+The rest is the local engine's contract: the same sections (the plan decides them, not the
+model), the same guards (a team directive from someone outside leadership, or on a sentence that
+opens "Sam, ...", is dropped), and the same verification. The speaker and time of every item come
+from the transcript turn that holds its quote, a quote no turn holds is flagged ⚠, and the
+evidence block lists the verified turns verbatim. The note under the banner names the model and
+says the transcript went to Anthropic.
+
+The call is isolated: no tools, no MCP servers, no settings, hooks, skills, or slash commands, no
+saved session, an empty temp directory as its cwd, and `ANTHROPIC_API_KEY` /
+`ANTHROPIC_AUTH_TOKEN` scrubbed so it runs on your Claude login, not an API key. The binary is
+`[summarizer] claude_bin`, else `WHOSAID_CLAUDE_BIN`, else `claude` on `PATH`, else
+`~/.local/bin/claude`, so the `whosaid watch` LaunchAgent finds it too. If the call fails, the
+engine warns and falls back to the local Ollama engine when `fallback = "ollama"` and Ollama is
+up, else writes the skeleton (exit 0). On the eval fixtures Opus scores F1 0.924 against 0.895 for
+`qwen3:14b` ([docs/eval.md](docs/eval.md)), with one call a meeting and no local model loaded.
 
 ## Hands-free ingest: `whosaid watch`
 
@@ -806,6 +837,7 @@ the absolute path to the `whosaid` script for `command` if it is not on the clie
 | `WHOSAID_TODAY` | `YYYY-MM-DD` the worklist treats as today when deciding whether a relative deadline (`today`, `tomorrow`, `by Friday`, …) is overdue (default: the clock). |
 | `WHOSAID_OLLAMA` | Ollama base URL for embeddings and the built-in summarizer (default: `http://127.0.0.1:11434`). Localhost is the only supported destination. |
 | `WHOSAID_SUMMARIZER_MODEL` | Ollama model for `--engine ollama` (default: `qwen2.5:14b`); overrides `[summarizer] model`. |
+| `WHOSAID_CLAUDE_BIN` | The `claude` binary for `--engine claude` when `[summarizer] claude_bin` is unset (default: `claude` on `PATH`, else `~/.local/bin/claude`). |
 | `WHOSAID_BIN` | The `whosaid` command the watcher runs (default: the script that launched `whosaid watch`). |
 | `WHOSAID_COMMITMENTS_HOOK` | Default hook for dev-commitments extraction (`ingest --commitments`), overridden per-run by `--hook`. Receives the transcript on stdin plus `WHOSAID_SPEAKERS`/`WHOSAID_ROLES`. |
 | `HF_HOME` | Hugging Face cache location (where the Whisper model lands). |

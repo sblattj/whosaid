@@ -28,8 +28,8 @@ Subcommands (the `whosaid` bash CLI shells out to this module via
       ingest and the coverage audit.
 
   action-items --transcript <path.speakers.txt> [--md-out F] [--json-out F] [--hook CMD]
-               [--engine auto|ollama|hook|none] [--ws DIR]
-      Per-meeting action items. Two engines (issue #14):
+               [--engine auto|ollama|claude|hook|none] [--ws DIR]
+      Per-meeting action items. Three engines (issues #14, #44):
         hook    --hook (or WHOSAID_ACTION_ITEMS_HOOK) runs as a shell command
                 with the transcript text on stdin plus WHOSAID_TRANSCRIPT_PATH,
                 WHOSAID_SPEAKERS, and WHOSAID_ROLES (compact JSON {name: role}
@@ -40,9 +40,15 @@ Subcommands (the `whosaid` bash CLI shells out to this module via
                 a local Ollama model on 127.0.0.1 drafts sectioned bullets
                 with verified quotes, configured by <workspace>/whosaid.toml
                 (owner, groups, model; see lib/wsconfig.py).
+        claude  OPT-IN, CLOUD: lib/claude_engine.py sends the transcript to
+                Anthropic through one isolated `claude -p` call that reads the
+                whole meeting; the script verifies quotes and builds the same
+                sections. When it fails, [summarizer] fallback = "ollama"
+                (default) runs the local engine if Ollama answers; "none"
+                writes the skeleton.
       --engine defaults to [summarizer] engine in whosaid.toml, itself
       defaulting to auto: a hook if one is set, else ollama if it answers,
-      else a skeleton. `none` always writes the skeleton. The markdown goes to
+      else a skeleton. auto never picks claude. `none` always writes the skeleton. The markdown goes to
       --md-out (default: action-items.md alongside the transcript) and is
       mirrored to --json-out if given. Exits 0 either way, degrading to the
       skeleton with a WARN when an engine fails, so the offline default stays
@@ -243,7 +249,7 @@ MD_PAREN_RE = re.compile(r"\(([^()]*)\)")
 HEADING_RE = re.compile(r"^\s{0,3}(?P<hashes>#{1,6})\s+(?P<text>.*?)\s*#*\s*$")
 HEADING_NUM_RE = re.compile(r"^\d+[.)]\s+")
 HEADING_PAREN_RE = re.compile(r"\s*\([^()]*\)\s*$")
-ENGINES = ("auto", "ollama", "hook", "none")
+ENGINES = ("auto", "ollama", "claude", "hook", "none")
 # Rendered _COMMITMENTS.md item lines mirror the _ACTION-ITEMS.md shape with
 # CM- ids; the speaker rides in the paren slot the action-item parser reads
 # as the type.
@@ -583,6 +589,19 @@ def run_ollama_engine(text: str, meeting: str, cfg: dict) -> tuple[str, dict]:
         return "", {}
 
 
+def run_claude_engine(text: str, meeting: str, cfg: dict) -> tuple[str, dict]:
+    """The opt-in cloud engine (lib/claude_engine.py): the transcript goes to Anthropic
+    through `claude -p`. Returns ('', {}) after a WARN on any failure."""
+    try:
+        import claude_engine  # lazy: only this engine needs it
+        return claude_engine.draft(text, meeting, cfg)
+    except Exception as e:  # noqa: BLE001
+        hint = getattr(e, "hint", "")
+        log(f"WARN action-items engine claude failed ({type(e).__name__}: {e})"
+            + (f"; {hint}" if hint else ""))
+        return "", {}
+
+
 def cmd_action_items(args: argparse.Namespace) -> int:
     transcript = Path(args.transcript)
     if not transcript.is_file():
@@ -621,6 +640,20 @@ def cmd_action_items(args: argparse.Namespace) -> int:
             markdown = run_hook(hook, transcript, text, speakers, roles)
             if markdown:
                 source = "hook"
+    elif engine == "claude":
+        markdown, stats = run_claude_engine(text, transcript.resolve().parent.name, cfg)
+        if markdown:
+            source = f"claude:{stats.get('model', '')}"
+        elif str(cfg["summarizer"].get("fallback") or "ollama") == "ollama" \
+                and wsconfig.ollama_up(wsconfig.ollama_url(cfg)):
+            log("engine claude failed; falling back to the local ollama engine ([summarizer] fallback)")
+            markdown, stats = run_ollama_engine(text, transcript.resolve().parent.name, cfg)
+            if markdown:
+                source = f"ollama:{stats.get('model', '')}"
+                stats["fallback_from"] = "claude"
+        else:
+            log("engine claude failed and [summarizer] fallback is off or Ollama is down; "
+                "writing skeleton")
     elif engine == "ollama":
         markdown, stats = run_ollama_engine(text, transcript.resolve().parent.name, cfg)
         if markdown:

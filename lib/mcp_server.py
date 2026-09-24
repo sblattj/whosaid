@@ -12,7 +12,9 @@ Launch (via the CLI subcommand added to the `whosaid` dispatcher):
 which is:
     uv run --quiet --with "mcp[cli]" python lib/mcp_server.py
 
-Everything stays on the machine — audio, text, and voice embeddings never leave.
+Everything stays on the machine — audio, text, and voice embeddings never leave. (The one opt-in
+exception is outside this server: a workspace whose whosaid.toml sets [summarizer] engine = "claude"
+sends transcript text to Anthropic when ingest drafts action items.)
 """
 
 from __future__ import annotations
@@ -176,7 +178,7 @@ def _time_to_seconds(value: str) -> float:
 # ---------------------------------------------------------------------------
 # Server instructions (loaded once — cross-cutting semantics, NOT per tool).
 # ---------------------------------------------------------------------------
-SERVER_INSTRUCTIONS = """whosaid turns audio into a transcript where every turn is labeled with who spoke. It runs 100% locally on Apple Silicon via the MLX Whisper GPU pipeline plus sherpa-onnx diarization — audio, text, and voice embeddings NEVER leave the machine; there are no API keys and no cloud calls.
+SERVER_INSTRUCTIONS = """whosaid turns audio into a transcript where every turn is labeled with who spoke. It runs 100% locally on Apple Silicon via the MLX Whisper GPU pipeline plus sherpa-onnx diarization — audio, text, and voice embeddings NEVER leave the machine; there are no API keys and no cloud calls. (One opt-in exception, never made by these tools: a workspace configured with [summarizer] engine = "claude" has its action items drafted by Claude, so ingest sends transcript text to Anthropic; the item notes say so.)
 
 Output-file contract: each transcribe writes, using <base> = the input's basename (or your `name`, with any character outside [A-Za-z0-9_-] mapped to '_'): <base>.txt (plain transcript), <base>.speakers.txt (speaker-labeled), <base>.speaker-cards.txt (one card per speaker: turn count, talk time, sample snippets — to tell who each SPEAKER_NN is), and <base>.diarization.json (a sidecar that whosaid_relabel reuses). Diarization results include `count_before_fold`, `count_after_fold`, and `fold_note`; these are physical speaker-cluster counts before and after the anonymous-phantom check, not identity claims.
 
