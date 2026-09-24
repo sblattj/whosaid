@@ -1,0 +1,20 @@
+{
+  "schema": 1,
+  "backend": "ollama",
+  "model": "qwen3:14b",
+  "recorded": "2026-09-24",
+  "calls": {
+    "9341f92a0e1022eff5befba13fbdd88b2f2a3ffeec874648397846ab280a699c": "#14: Ingrid, I think this one's yours too.",
+    "0be79ae01c809a3532f9d4167dced31f0fd59ad01ac050dc3fcacaa3bc6f8d28": "SKIP",
+    "e1e6f6638d6b9455643b52048bd1a5b69cb3aa7ce915abbce8ee88a750aacfb9": "- **Write design doc for partial refunds.** \"I will write the design doc for partial refunds by next Wednesday and circulate it to this group before the review.\"",
+    "784543a175e94ffd204f87e1f8e9f92a6679f27961306fa7bbd922cb3fe9f9bb": "- **Schedule threat modeling session.** \"I'm going to schedule the threat modeling session with the security team for the week after, because we can't launch the new checkout without their sign-off.\"\n- **Migrate merchant webhooks.** \"I'll migrate the remaining merchant webhooks off the legacy queue before the end of the month, there are about forty of them left.\"\n- **Set up weekly metrics email.** \"I will set up the weekly metrics email for Walter's staff meeting, so he doesn't have to chase me for numbers every Monday.\"",
+    "91d0480ef65ca39007f948d8996fea2f558f17f6361fcc9c5cfb4f6d1cccada5": "SKIP",
+    "ac3c790dd15ea3becc649ddbc06b59e92ff1decc03a2e1fe80a48504d25536fd": "SKIP",
+    "abd6ab0ae39d6a959709393d17ab908a8c1df6351ea015d33b34d36447a4be77": "SKIP",
+    "0fa33b2cd5a9a8c4f134dd76c5cb269c841d4bc394b2574fa71dbfb8bce4ae5f": "- **Prepare fraud vendor comparison.** \"I'll put together a comparison of the two alternative fraud vendors, cost and false positive rates, and have it to Walter by the fifteenth.\"",
+    "2f217984902d019e32536a80ea84a81fe060f5a0b733b787ea4d23d451566096": "",
+    "7349317cc19dda1c3a62b884c527b994aa47e7abca1e7d9aad858493d4d0e93b": "- **Prepare onboarding plan for new senior backend engineer.** \"I will pull together an onboarding plan for her first two weeks...\"  \n- **Assign Joon as mentor for new hire.** \"I'll let her know before her start date.\"  \n- **Schedule quarterly career conversations.** \"expect a calendar invite from me this week.\"",
+    "cbe0d05399b8e3c73c7b7afb35c76fcd0beb8224d1b1f255a4d9cdeebc42628d": "SKIP",
+    "a3a7e9d1910895dd4b0680f13b5e0217a09cdb1f1702e6e1ada3ab91b29e5fbb": "- (inferred) Review the design doc for partial refunds with the engineering team.  \n- (inferred) Prepare a checklist or agenda for the scheduled threat modeling session.  \n- (inferred) Test the migrated merchant webhooks to ensure functionality."
+  }
+}

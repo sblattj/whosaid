@@ -1,0 +1,23 @@
+{
+  "schema": 1,
+  "backend": "ollama",
+  "model": "qwen3:14b",
+  "recorded": "2026-09-24",
+  "calls": {
+    "865465748a6d766ad632babcb9f481d19f168ebcb5e27fbd35677c833a0d145b": "#11 Renata_Example: send me numbers broken out by signup month\n#13 Lena_Example: check whether trial conversions are being double counted\n#15 Renata_Example: add footnote about that in the report\n#21 Renata_Example: dig into the backfill and tell me by Friday\n#26 Renata_Example: run the system design round for both of them\n#30 Renata_Example: take the SQL round then\n#33 Renata_Example: walk the execs through it yourself",
+    "4f8546068e3330f3450578e4e04a61bb0915cb07bc4a25b25108527e25d0587b": "- **Update leadership on churn status.** \"Tomasz, where are we on churn?\"",
+    "e8468a71d70fc75f30de5dc4802e54570dfcc84f8f2a9914632adf422e6a1ca8": "SKIP",
+    "0804219a2e59614c377f784293d6018f00be6201f29cbab3f130bd3e30c922a6": "- **Send churn numbers broken out by signup month.** \"Could you also send me the numbers broken out by signup month?\"",
+    "9447737ac79b15ed332870e47710c5a23f1935da7d0f2b7353923740deda72b7": "- **Check if trial conversions are being double counted.** \"can you check whether trial conversions are being double counted?\"",
+    "c2995375c8d051023acacb0446fd35dc87e8d4f315374bf77ea54d5a5fc45425": "SKIP",
+    "214e712f801704e33874ae3f386dc156e621cb7afdd3242d3529ee93f8b39956": "- **Add a footnote about trial conversions being double counted.** \"Okay, then please add a footnote about that in the report, so nobody panics about the jump in March.\"",
+    "bcd6c18755a8ad5419d6847a0fb36ac7af0ff8f872848db01df78b8870d801a8": "- **Investigate the increase in the events pipeline bill.** \"Different topic, but the events pipeline bill went up again this month, about eighteen percent, and I'm fairly sure it's the hourly backfill job.\"",
+    "5722d3273c63c34d6a434e1e86f070ff1cf76dc4cc6a2e9f2511d32a95f15ee9": "- **Investigate the backfill job and assess feasibility of switching to daily.** \"Can you dig into the backfill and tell me by Friday whether we can drop it to daily?\"",
+    "311118c651e642271780a999e295595bfa1638849a9fdb6287b127f47746f065": "SKIP",
+    "3658d002db6425ed1eff2e0033b39b9b7db64be2fdcf2f109e644209457c2f08": "- **Conduct system design rounds for both candidates.** \"Would you be able to run the system design round for both of them?\"",
+    "e8a481fe744a0ba7ba4583c8aba58be6725919b4bc53f4159c35d7baac3a8e2e": "SKIP",
+    "dbfcad47fb1da9496daecc5b857d356e0ebe1f528cad3eddcc2c8c8f27b3a158": "- **Write up a short note on the churn methodology.** \"I'll write up a short note on the churn methodology before the exec review on the twentieth, because those numbers are going to get questions.\"",
+    "4951305c9622f24293ab53996548e442c7d595bc972851738434779438a2ea01": "- **Prepare a presentation on churn methodology.** \"could you walk the execs through it yourself? I'd rather they hear it from you than from a slide\"",
+    "24fd32bfea58981bc648546e0ad18543472d29e5ecad6f467dfd9c7e087d8e32": "- (inferred) Schedule a follow-up meeting with leadership to discuss the churn status and related findings.  \n- (inferred) Coordinate with the engineering team to clarify the trial conversion counting process and resolve any discrepancies.  \n- (inferred) Gather feedback from candidates after the system design rounds to inform the hiring decision."
+  }
+}

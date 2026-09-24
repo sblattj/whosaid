@@ -6,6 +6,25 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ## [Unreleased]
 
+### Added
+
+- **`[summarizer] think`, globally or per model.** A bool applies to every model; a table is
+  looked up by exact model name, then the name without its tag, then its `default` key:
+  `think = { "qwen3:14b" = true, default = false }`. Drafting stats carry the resolved value.
+- The eval harness takes `--think on|off`; an `on` run records as `<run>-think`.
+- Three recorded eval runs for thinking models (see [docs/eval.md](docs/eval.md)):
+  `qwen3:14b` with thinking off (F1 0.821, 159.8 s), the same model with thinking on (F1 0.868,
+  1907.8 s), and `qwen3.8:27b` with thinking off (F1 0.844, 355.6 s).
+
+### Fixed
+
+- **Thinking models no longer reason before every summarizer call.** The Ollama request now
+  always carries `think` (default `false`). Before this, `qwen3` and newer reasoned on each of
+  the roughly 70 small calls per meeting, about 12 times slower on the eval, and a long enough
+  thought could hit `num_predict` and leave no answer. Reasoning a model leaves inline in its
+  reply is stripped before parsing, and a model with no thinking mode gets an actionable hint
+  when `think` is on.
+
 ## [1.6.0] - 2026-09-23
 
 ### Added

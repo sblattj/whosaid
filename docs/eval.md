@@ -142,6 +142,7 @@ python3 test/eval/run_eval.py --report
 | `--backend ollama\|claude-cli` | the backend for a live run |
 | `--model M` | the model name. Defaults to `qwen2.5:14b` for ollama and `opus` for claude-cli. |
 | `--ollama URL` | the Ollama base URL (default `http://127.0.0.1:11434`) |
+| `--think on\|off` | ollama backend: force `[summarizer] think` for every fixture. An `on` run records as `<run>-think`. Default: the fixture's config, which leaves thinking off. |
 | `--record` | save cassettes, the results JSON and the drafts, then replay them as a self-check |
 | `--replay RUN` | re-score a recorded run from its cassettes, offline |
 | `--report` | print a markdown comparison of every `results/*.json` |
@@ -165,8 +166,8 @@ its own Ollama client, exactly as in production. Each fixture gets a fresh clien
 ### The `ollama` backend
 
 This backend uses lib's own `Ollama` class, the production client. It builds the client with the
-fixture's `num_ctx`, `timeout` and `num_predict`, the same way the summarizer does. Ollama must be
-running with the model pulled.
+fixture's `num_ctx`, `timeout`, `num_predict` and `think`, the same way the summarizer does.
+Ollama must be running with the model pulled.
 
 ### The `claude-cli` backend
 
@@ -287,6 +288,45 @@ Two runs are committed. `python3 test/eval/run_eval.py --report` prints this com
 The local run was recorded with the `[summarizer] num_predict` cap (default 2048). Without that
 cap, one sampled pass (the temperature-0.2 inferred-next-steps step) fell into a repetition loop
 and ran until the 900-second timeout.
+
+## Thinking models (recorded 2026-09-24)
+
+Qwen3 and later are thinking models: unless the request says otherwise, Ollama lets them reason
+before every answer. The summarizer makes one small call per candidate turn, so that reasoning is
+paid about 70 times per meeting. `[summarizer] think` (default `false`) now goes out on every
+request, for all models or per model (`think = { "qwen3:14b" = true, default = false }`).
+
+Three more runs are committed. All three ran on a 48 GB Apple M5 Pro with Ollama 0.34.1 and a
+32k context, one fixture at a time:
+
+| run | model | think | precision | recall | F1 | model calls | wall s |
+|---|---|---|---|---|---|---|---|
+| ollama-qwen3-14b-think | qwen3:14b | on | 0.900 | 0.837 | 0.868 | 67 | 1907.8 |
+| ollama-qwen3-14b | qwen3:14b | off | 0.750 | 0.907 | 0.821 | 71 | 159.8 |
+| ollama-qwen3.8-27b | qwen3.8:27b | off | 0.808 | 0.884 | 0.844 | 66 | 355.6 |
+
+On the same machine, a live rerun of the `qwen2.5:14b` default scored precision 0.609, recall
+0.907, F1 0.729 in 177.0 s.
+
+- **Thinking buys precision at about 12 times the wall time.** With thinking on, `qwen3:14b`
+  drafts 4 false positives instead of 13, and misses 7 items instead of 4. Measured at the Ollama
+  API, it generated 38,429 tokens against 2,635 with thinking off. Two replies hit the
+  `num_predict` cap mid-reasoning, and one came back with no answer at all.
+- **With thinking off, `qwen3:14b` beats the `qwen2.5:14b` default at the same speed.** Precision
+  goes from 0.609 to 0.750 with recall unchanged, and wall time is within 10%.
+- **`qwen3.8:27b` with thinking off** is the most precise run without thinking, at about twice the
+  wall time of `qwen3:14b`. It is weakest on `unnamed-asks` (4 of 9 found), because its SELECT
+  pass adds fewer turns where the owner is asked something without being named. Qwen3.8 has no
+  14B size; 27B (about 18 GB loaded) is its smallest open model.
+- **The think-on run was recorded before this flag existed**, with `think` left out of the
+  request. Ollama 0.34.1 treats that as on for a thinking model, and all 67 calls returned
+  reasoning. `--think on` records the same configuration.
+- **Small differences are noise.** A live rerun of the committed `qwen2.5:14b` baseline gave F1
+  0.729 against the recorded 0.717 (`distractor-heavy` 0.545 against 0.476). Temperature 0 is
+  not bit-exact across runs, and the inferred-next-steps step samples at 0.2.
+
+For a background ingest, `qwen3:14b` with thinking off is the best trade on this set. Turn
+thinking on for that model when precision matters more than time.
 
 ## Tests
 

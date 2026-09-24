@@ -1,0 +1,131 @@
+{
+  "schema": 1,
+  "run": "ollama-qwen3-14b-think",
+  "backend": "ollama",
+  "model": "qwen3:14b",
+  "recorded": "2026-09-24",
+  "fixtures_sha256": "120686891145160d91e9a0095015caa0bcd7598fc4838f1b81cc0bc5b2037414",
+  "per_fixture": {
+    "aliases-no-groups": {
+      "tp": 8,
+      "fp": 1,
+      "fn": 1,
+      "bullets": 9,
+      "flagged": 1,
+      "inferred": 3,
+      "model_calls": 13,
+      "precision": 0.8889,
+      "recall": 0.8889,
+      "f1": 0.8889,
+      "flag_rate": 0.1111,
+      "fp_tags": {
+        "distractor": 1,
+        "duplicate": 0,
+        "wrong-item": 0,
+        "unlabeled": 0
+      }
+    },
+    "distractor-heavy": {
+      "tp": 6,
+      "fp": 2,
+      "fn": 0,
+      "bullets": 8,
+      "flagged": 0,
+      "inferred": 3,
+      "model_calls": 15,
+      "precision": 0.75,
+      "recall": 1.0,
+      "f1": 0.8571,
+      "flag_rate": 0.0,
+      "fp_tags": {
+        "distractor": 1,
+        "duplicate": 1,
+        "wrong-item": 0,
+        "unlabeled": 0
+      }
+    },
+    "long-status": {
+      "tp": 8,
+      "fp": 0,
+      "fn": 2,
+      "bullets": 8,
+      "flagged": 0,
+      "inferred": 3,
+      "model_calls": 12,
+      "precision": 1.0,
+      "recall": 0.8,
+      "f1": 0.8889,
+      "flag_rate": 0.0,
+      "fp_tags": {
+        "distractor": 0,
+        "duplicate": 0,
+        "wrong-item": 0,
+        "unlabeled": 0
+      }
+    },
+    "named-asks": {
+      "tp": 8,
+      "fp": 1,
+      "fn": 1,
+      "bullets": 10,
+      "flagged": 1,
+      "inferred": 3,
+      "model_calls": 13,
+      "precision": 0.8889,
+      "recall": 0.8889,
+      "f1": 0.8889,
+      "flag_rate": 0.1,
+      "fp_tags": {
+        "distractor": 0,
+        "duplicate": 0,
+        "wrong-item": 1,
+        "unlabeled": 0
+      }
+    },
+    "unnamed-asks": {
+      "tp": 6,
+      "fp": 0,
+      "fn": 3,
+      "bullets": 6,
+      "flagged": 0,
+      "inferred": 3,
+      "model_calls": 14,
+      "precision": 1.0,
+      "recall": 0.6667,
+      "f1": 0.8,
+      "flag_rate": 0.0,
+      "fp_tags": {
+        "distractor": 0,
+        "duplicate": 0,
+        "wrong-item": 0,
+        "unlabeled": 0
+      }
+    }
+  },
+  "total": {
+    "tp": 36,
+    "fp": 4,
+    "fn": 7,
+    "bullets": 41,
+    "flagged": 2,
+    "inferred": 15,
+    "model_calls": 67,
+    "precision": 0.9,
+    "recall": 0.8372,
+    "f1": 0.8675,
+    "flag_rate": 0.0488,
+    "fp_tags": {
+      "distractor": 2,
+      "duplicate": 1,
+      "wrong-item": 1,
+      "unlabeled": 0
+    }
+  },
+  "wall_seconds": {
+    "aliases-no-groups": 406.837,
+    "distractor-heavy": 332.33,
+    "long-status": 356.24,
+    "named-asks": 543.939,
+    "unnamed-asks": 268.416
+  }
+}

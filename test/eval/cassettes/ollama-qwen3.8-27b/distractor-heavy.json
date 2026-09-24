@@ -1,0 +1,23 @@
+{
+  "schema": 1,
+  "backend": "ollama",
+  "model": "qwen3.8:27b",
+  "recorded": "2026-09-24",
+  "calls": {
+    "b02674d5b33e0c2eaadae2b11b3ca6f35e36ace46b2b825f1f87708d5d4d450d": "#14: Send API rate limits for developer docs\n#22: Own rollback plan, draft due Tuesday\n#28: Join support training to answer technical questions\n#30: Review migration guide before publication",
+    "232a580ffc0b12bbe0425781c2cb35b93fe8b6101618bcf338e6774aff41688c": "SKIP",
+    "89378c3b7f3188a1c8c6441ce4bb0922a54a2df5a3ce581ade2a6fff13ba6d51": "SKIP",
+    "c4ee7eb642a3a2dc04d389a446d8e175f04bef6afbdd99bd140cc1e89da7c52f": "SKIP",
+    "4c1cdcceb492799f9a385a08b1e065659cc3607ed7a49a2dd18b81f9660c43a6": "SKIP",
+    "d0a561be2413ff4ec77c31f832bd99c602948682468174de23b711adcc320b4b": "- **Send API rate limits to Oskar.** Oskar requests the limits for use in developer documentation. \"Could you send me the API rate limits\"",
+    "31cdff2288f8c8e43f4cfafd4e17e135d5c328ca0b79fb1bc3d045f8f804c77e": "SKIP",
+    "5686373749d955e442eab6f4e4f2d96653e308ba417596761c04ad34feed035a": "- **Run load test against ingestion cluster.** Rafael commits to testing at launch volume on Wednesday. \"run a load test against the ingestion cluster\"\n- **Post results in launch channel.** Rafael will share the test outcomes with the team. \"post the results in the launch channel\"",
+    "a107edbd6cc58e2f57d89785e8dd4f5d13b8fe55242a6e7f769ae20903f179c9": "- **Own the rollback plan.** Yvonne assigns Rafael responsibility for the launch day rollback strategy. \"I need you to own the rollback plan\"\n- **Draft the rollback plan.** Yvonne requires a written draft of the plan to be submitted by Tuesday. \"with a draft to me by Tuesday\"",
+    "56ad91b1c95bb24646ec0138e48dce34f4f806a65231657b484996ad143408fb": "- **Join support training to answer technical questions.** Bettina asks Rafael to attend the Thursday afternoon session to address team queries. \"join our support training on Thursday afternoon\"",
+    "64add894ec9078fc4208cf52cf26c3fe5459ce6bc203fb2c712e31c59f2a04da": "- **Review the migration guide.** Mei asks Rafael to check the document before it is published. \"review the migration guide before we publish it\"",
+    "6e966aa3f9c730b9a6687d2352c0ed85657a49dca05181aac0999f763574887e": "SKIP",
+    "bd8c655e538e8cc10083d7cf33c2ec9275b5a2d9a90ce71d2908f450e00af291": "- **Refresh the staging data set.** Rafael commits to updating the data on Monday to ensure realistic accounts for the demo. \"refresh the staging data set on Monday\"\n- **Send Oskar the login details.** Rafael will provide Oskar with access credentials once the data refresh is complete. \"send Oskar the login details once it's done\"",
+    "b47ef7a83daa58215e8243087326defbff73c1258a0ffc28b82cac0fa6008f36": "SKIP",
+    "b343d87536bf7c169ada090ffe985b80a9737cff4db14389f4380152fdb4a53a": "- (inferred) Execute the rollback plan if the load test fails or reveals critical issues.\n- (inferred) Verify that the refreshed staging data set is accessible and consistent before running the load test.\n- (inferred) Confirm with Oskar that the API rate limits and login details were received and are functional."
+  }
+}

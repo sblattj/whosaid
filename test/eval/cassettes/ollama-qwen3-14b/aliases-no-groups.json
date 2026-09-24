@@ -1,0 +1,24 @@
+{
+  "schema": 1,
+  "backend": "ollama",
+  "model": "qwen3:14b",
+  "recorded": "2026-09-24",
+  "calls": {
+    "3fb30b3bc63b50e97ceab2f56de09b496eba7c605a237348453aaef6d333fd99": "#6: Send revised sitemap by Monday\n#9: Make camping gear its own section\n#12: Add store locator to phase one scope\n#14: Get product photography quote before end of month\n#16: Book usability sessions with recruiter\n#18: Swap in new logo before deck goes to managers\n#22: Make product pages load faster on mobile",
+    "0dcc6a137dd21985919fadd80e20d55a774f5ffc6d3050c82b7984741ae9182e": "SKIP",
+    "9fec6299935d7ebce1f3153554c5f8da0fefe336d75d8679b0bfeb05c85b8c52": "SKIP",
+    "fe2e4e2ef031f5c18ee99b355392a42deb0c949746509246beac4f42afbf7b63": "SKIP",
+    "ec5346d806e3377322000278884524a30a5b3de4cfd32e3147ac74eaaf5cac18": "- **Send revised sitemap by Monday.** \"Shivaun, can you send over the revised sitemap by Monday? I want to show it to our regional managers on Tuesday.\"",
+    "cda3f95b5644f74f09fc5180cb2ff8b7d810e558bcdd9838db278fcce41ed9fe": "- **Ensure camping gear is its own section.** \"Oh, on product categories, can you make sure camping gear is its own section? Right now it's buried under outdoor living.\"",
+    "80c92bb4095ad50ccf14343d1534476a9525e1eff6dabc2da40ab6c61707e34a": "- **Add the store locator to the phase one scope.** \"Chevonne, could you also add the store locator to the phase one scope? Our customers keep asking for it.\"",
+    "e4e495d2c7523c31826805d89e85dd3369ad4dcf88335f4b3508917b3f8822c3": "- **Update phase one scope document.** \"I'll rewrite the phase one scope document with that in it and send it to everyone by Thursday\"",
+    "c4845e28fe77ff9c1e1bec87decd071aaca4078a5b00bf952390301234a155d3": "- **Get a quote for product photography.** \"can you get me a quote for the product photography? We'd need it before the end of the month for budget.\"",
+    "c4ad4260ff58374307a0fcfc53ca2e8425a05595aec94b5aecb5452e851a2bb5": "- **Book usability sessions with the recruiter.** \"Siobhan, can you book the usability sessions with the recruiter? We need five people who've bought from the site in the last year.\"",
+    "65a77d4288fa201356c9e720e257f81a579a25c9356672a92c907eea9ea16fe0": "- **Update Shivaun's moodboard with the new logo.** \"Also, Shivaun's moodboard in the shared deck still has the old logo. Can you swap in the new one before the deck goes to the regional managers?\"",
+    "997c470e3eb37351d09e29e0cd752d9764ef56582a23733426c249a8dadc8ac8": "- **Swap the logo in Shivaun's moodboard.** \"I'll swap the logo tonight, and while I'm at it I'll set up a shared folder for all the brand assets so we stop working from old copies.\"",
+    "9563d557588fdb4c33b0e72de5f824d6fa99fe8da0d2ace8d9d35ce7dae335dd": "SKIP",
+    "aaa57140ef0272e73cce8f5eea24131914ce7071ae27fc6914e703fb6953c529": "SKIP",
+    "f16457c0261a04a78b55a168b2a254d6193716c9ee079fe173e5d42d20adbe7a": "- **Send invoice for discovery phase.** \"On admin, I'll send the invoice for the discovery phase at the end of this week, to the accounts payable address you gave us.\"",
+    "34fcef5e4cbcd9a03e9d5f76365df691a05025968498c0a3ad2791f46e48dd02": "- (inferred) Coordinate with the recruiter to schedule the usability sessions once the quote is obtained.  \n- (inferred) Review the revised sitemap and ensure it aligns with the updated phase one scope document.  \n- (inferred) Confirm with Shivaun that both the logo swap and moodboard update have been completed accurately."
+  }
+}

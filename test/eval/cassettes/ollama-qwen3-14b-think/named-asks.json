@@ -1,0 +1,21 @@
+{
+  "schema": 1,
+  "backend": "ollama",
+  "model": "qwen3:14b",
+  "recorded": "2026-09-24",
+  "calls": {
+    "146a1f412f62145d7cfcfed4df4b2ad7925953509b27741605434e270467ebf6": "#5: Gareth asks Priya to review PR  \n#8: Hannah needs Priya to sign off wording  \n#12: Gareth tells Priya to loop in Olu  \n#15: Gareth asks for Android release notes  \n#22: Hannah tells Priya to fix date filter  \n#29: Gareth asks Priya to stay for hiring loop",
+    "9fd8736df60d32c18c39bfdee9b24fe3491281388b60f0c718b6ddf43e3cc416": "- **Review Diego's retry logic PR.** \"Priya, can you review Diego's retry logic PR today?\"",
+    "d9273e64d65dd57ccb84d059884a8b64237f8dd3736a61138c67a221e0cb7988": "- **Sign off on notification permission wording.** Hannah needs Priya's approval before legal review \"Priya, I need you to sign off on the notification permission wording before I hand it to legal, ideally by Wednesday.\"",
+    "60eb25b2451420373cec44cb8292701fd315d886bbe388beeb3227b21df8b8af": "SKIP",
+    "070a91856a6db810c37fac4321a4a01ad777f4ddb45949170e26b8e67cb5c92b": "- **Write the fix for the login timeout on older Android devices.** \"Today I'm going to write the fix for the login timeout on older Android devices\"  \n- **Pair with Diego on the duplicate photo bug.** \"after lunch I'll pair with Diego on the duplicate photo bug\"",
+    "2a2d6cc0bf80250d52e360317246cd380fdefb0b7c4ba7ed977367d094c88657": "- **Loop in Olu from support once you have a build for the login timeout fix.** \"please loop in Olu from support once you have a build\"",
+    "fdb5481fd77fe4ef770a5c2c94533d6e12cb796222aa1f2a09310d7de013b384": "- **Provide Android release notes.** Gareth needs them by Thursday for marketing to start the store listing. \"I need the Android release notes from you by Thursday\"",
+    "1716d5b54bbbf3a111d9c67145e178d984abf5bca85bdee9d5ce90d5cb3e1b76": "- **Check with Hannah on onboarding changes for 3.8.** \"I'll also check with Hannah which of her onboarding changes made it into 3.8, so the notes don't miss anything.\"",
+    "440abef2912a63aa25913ea7f5bcd9f555a1ec28ea390f10975072e8c25783e5": "- **Fix date filter on analytics dashboard.** Hannah notes the dashboard shows last week's signup funnel, and growth team members are inquiring about it. \"could you fix the date filter on it when you get a chance?\"",
+    "d1deea7f8ff974fd9398df44ea9e7fe0857916c23d1d02cc70d629832c5201c2": "- **Set up session with support team on Friday.** \"since a few",
+    "34b42890d26211d028da4bdaa6d17f49305d73e9861f14f51c4fe4c33d06e097": "SKIP",
+    "98faa099435cb588833ef911f60a2f56699736f9c3ac3e51d410cd9964f2142b": "- **Stay for two minutes to discuss hiring loop.** \"Priya, stay on for two minutes? I want to ask you about the hiring loop.\"",
+    "f247b2dc1c137e3af157411dfe563a4dc3b825f70bf0e7f851a0a803884b28f3": "- (inferred) Test the login timeout fix on older Android devices before sharing the build with Olu.  \n- (inferred) Prepare an agenda for the support team session on Friday, focusing on the login timeout fix and duplicate photo bug.  \n- (inferred) Verify the date filter fix on the analytics dashboard to ensure it resolves the reported issue."
+  }
+}
