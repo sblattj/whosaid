@@ -54,7 +54,9 @@ Configuration is <workspace>/whosaid.toml (see lib/wsconfig.py):
   num_predict = 2048                 # max tokens per model reply; caps a runaway generation
   think = false                      # thinking models (qwen3, qwen3.x, deepseek-r1) reason
                                      # before every answer when this is unset; off keeps each
-                                     # small call fast and the reply inside num_predict
+                                     # small call fast and the reply inside num_predict.
+                                     # Per model: think = { "qwen3:14b" = true, default = false }
+                                     # (exact name, then the name without its tag, then default)
   [search]
   ollama = "http://127.0.0.1:11434"
 
@@ -289,6 +291,23 @@ def strip_thinking(text: str) -> str:
     return text.strip()
 
 
+def think_for(value, model: str, default: bool = DEFAULT_THINK) -> bool:
+    """[summarizer] think for one model. A bool (or a spelling of one) applies to
+    every model; a table is looked up by the exact model name, then the name
+    without its tag ("qwen3" for "qwen3:14b"; an untagged name also tries
+    ":latest"), then its "default" key, then `default`."""
+    if not isinstance(value, dict):
+        return config_flag(value, default)
+    base = model.split(":", 1)[0]
+    keys = [model, base] if ":" in model else [model, f"{model}:latest"]
+    if model.endswith(":latest"):
+        keys.append(base)
+    for key in keys:
+        if key in value:
+            return config_flag(value[key], default)
+    return config_flag(value.get("default"), default)
+
+
 def config_flag(value, default: bool) -> bool:
     """A TOML bool, or a string/number spelling of one; anything else is the default."""
     if isinstance(value, bool):
@@ -338,7 +357,7 @@ class Plan:
         self.chunk_chars = int(summ.get("chunk_chars") or 8000)
         self.timeout = int(summ.get("timeout") or DEFAULT_TIMEOUT)
         self.num_predict = int(summ.get("num_predict") or DEFAULT_NUM_PREDICT)
-        self.think = config_flag(summ.get("think"), DEFAULT_THINK)
+        self.think = think_for(summ.get("think"), self.model)
         self.tz = str(ws.get("tz") or "")
 
         if self.owner and self.groups:
@@ -631,7 +650,8 @@ def draft(transcript_text: str, meeting: str, cfg: dict, *, model: str | None = 
     plan, turns, speakers, client = prepare(transcript_text, cfg, model=model, ollama=ollama,
                                             owner=owner, client=client)
     stamp = local_stamp(plan.tz)
-    stats: dict = {"engine": "ollama", "model": plan.model, "ollama": plan.url, "owner": plan.owner,
+    stats: dict = {"engine": "ollama", "model": plan.model, "think": plan.think, "ollama": plan.url,
+                   "owner": plan.owner,
                    "meeting": meeting, "speakers": speakers, "candidates": 0, "by_owner": 0,
                    "naming_owner": 0, "model_added": 0, "slices": 0, "evidence": 0, "items": 0,
                    "flagged": 0, "inferred": 0, "sections": {}, "model_calls": 0}

@@ -382,6 +382,18 @@ def test_injection(tmp: Path) -> None:
           and built == [("http://127.0.0.1:11434", "m1", 32768, 900, 2048, False)],
           f"without client=, prepare still builds the Ollama client, num_predict and think included ({built})")
 
+    built.clear()
+    with patched_ollama(StubOllama):
+        rv.client_factory("ollama", "m1", think=True)(cfg)
+        rv.client_factory("ollama", "m1")(cfg)
+    check([b[-1] for b in built] == [True, False],
+          f"client_factory(think=True) forces think on; unset keeps the fixture's (off) ({built})")
+    before = cfg["summarizer"].get("think")
+    forced = rv.with_think(cfg, True)
+    check(rv.with_think(cfg, None) is cfg and forced["summarizer"]["think"] is True
+          and cfg["summarizer"].get("think") == before,
+          "with_think copies the config instead of mutating it")
+
 
 # ---- 3. record -> replay ----------------------------------------------------------------------
 

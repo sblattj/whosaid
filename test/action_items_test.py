@@ -224,7 +224,7 @@ def dead_port_url() -> str:
 
 def write_config(ws: Path, url: str, *, owner: str = "Alice_Example", groups: bool = True,
                  aliases: bool = True, num_predict: int | None = None,
-                 think: bool | None = None, model: str = "qwen-stub") -> None:
+                 think: bool | str | None = None, model: str = "qwen-stub") -> None:
     lines = ["[workspace]", f'owner = "{owner}"']
     if aliases:
         lines.append('aliases = ["Alice", "Alicia"]')
@@ -233,7 +233,9 @@ def write_config(ws: Path, url: str, *, owner: str = "Alice_Example", groups: bo
     lines += ["", "[summarizer]", f'model = "{model}"', "num_ctx = 4096", "chunk_chars = 300"]
     if num_predict is not None:
         lines.append(f"num_predict = {num_predict}")
-    if think is not None:
+    if isinstance(think, str):
+        lines.append(f"think = {think}")          # a raw TOML value, e.g. an inline table
+    elif think is not None:
         lines.append(f"think = {'true' if think else 'false'}")
     lines += ["", "[search]", f'ollama = "{url}"', ""]
     (ws / "whosaid.toml").write_text("\n".join(lines))
@@ -476,6 +478,27 @@ def test_think(stub: StubOllama, tmp: Path) -> None:
           "[summarizer] think = true reaches every request")
     for raw, want in (("yes", True), ("off", False), ("0", False), ("maybe", False), (None, False)):
         check(ai.config_flag(raw, False) is want, f"config_flag({raw!r}) -> {want}")
+
+    # per model: exact name, then the name without its tag, then "default"
+    ws_pm = tmp / "ws-think-per-model"
+    ws_pm.mkdir()
+    write_config(ws_pm, stub.url, think='{ "qwen-stub" = true, "qwen3" = true, default = false }')
+    cfg_pm = wsconfig.load_config(ws_pm)
+    stub.requests.clear()
+    _md, st = ai.draft(TRANSCRIPT, "m", cfg_pm)
+    check(bool(stub.requests) and all(r.get("think") is True for r in stub.requests) and st["think"] is True,
+          "a per-model think table turns thinking on for the model it names (and stats say so)")
+    stub.requests.clear()
+    ai.draft(TRANSCRIPT, "m", cfg_pm, model="no-think-stub")
+    check(bool(stub.requests) and all(r.get("think") is False for r in stub.requests),
+          "a model the table does not name gets the table's default")
+    table = {"qwen3": True, "qwen3.8:27b": False, "llama3:latest": True, "default": False}
+    for model, want in (("qwen3:14b", True), ("qwen3.8:27b", False), ("qwen3.8:9b", False),
+                        ("llama3", True), ("mistral", False)):
+        check(ai.think_for(table, model) is want, f"think_for(table, {model!r}) -> {want}")
+    check(ai.think_for({"llama3": True}, "llama3:latest") is True, "':latest' also matches the bare name")
+    check(ai.think_for({}, "x", default=True) is True and ai.think_for(True, "x") is True,
+          "an empty table falls back to the default; a bare bool applies to every model")
 
     ws3 = tmp / "ws-think-inline"
     ws3.mkdir()

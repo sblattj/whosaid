@@ -26,6 +26,9 @@ Usage:
   --fixtures-dir DIR    fixtures root (default test/eval/fixtures)
   --out-dir DIR         root holding cassettes/ and results/ (default test/eval)
   --ollama URL          Ollama base URL (default http://127.0.0.1:11434)
+  --think on|off        ollama backend: force [summarizer] think for every fixture;
+                        "on" records as run <slug>-think (default: the fixture's
+                        config, which leaves thinking off)
   --jobs N              fixtures drafted concurrently (threads; default 1)
   -v                    print every bullet's verdict and every missed item
 
@@ -279,12 +282,19 @@ class ClaudeCLI:
         return str(result.get("result") or "").strip()
 
 
-def client_factory(backend: str, model: str, ollama: str = DEFAULT_OLLAMA):
+def with_think(cfg: dict, think: bool | None) -> dict:
+    """cfg with [summarizer] think forced to `think` (None: unchanged)."""
+    if think is None:
+        return cfg
+    return {**cfg, "summarizer": {**cfg.get("summarizer", {}), "think": think}}
+
+
+def client_factory(backend: str, model: str, ollama: str = DEFAULT_OLLAMA, think: bool | None = None):
     """-> make(cfg) that builds one fresh client per fixture (draft reads
     client.calls, so clients are never shared between fixtures or threads)."""
     if backend == "ollama":
         def make(cfg: dict):
-            plan = ai.Plan(cfg, model=model, ollama=ollama)
+            plan = ai.Plan(with_think(cfg, think), model=model, ollama=ollama)
             return ai.Ollama(plan.url, plan.model, plan.num_ctx, plan.timeout,
                              num_predict=plan.num_predict, think=plan.think)
         return make
@@ -351,10 +361,11 @@ def write_json(path: Path, doc: dict) -> None:
 
 
 def record(fixtures_dir: Path, slugs: list[str], backend: str, model: str, make_client,
-           out_dir: Path, *, jobs: int = 1, progress=None) -> tuple[dict, dict[str, dict]]:
+           out_dir: Path, *, jobs: int = 1, progress=None, run: str | None = None
+           ) -> tuple[dict, dict[str, dict]]:
     """Live run through Recorders; writes the cassettes, the results json and
     the drafts. Nothing is written unless every fixture succeeds."""
-    run = run_slug(backend, model)
+    run = run or run_slug(backend, model)
     sha = fixtures_sha256(fixtures_dir, slugs)
     runs = run_fixtures(fixtures_dir, slugs, make_client, model, jobs=jobs,
                         wrap=lambda slug, c: Recorder(c), progress=progress)
@@ -524,6 +535,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--backend", choices=sorted(DEFAULT_MODELS), help="model backend for a live run")
     p.add_argument("--model", help="model name (default: qwen2.5:14b for ollama, opus for claude-cli)")
     p.add_argument("--ollama", default=DEFAULT_OLLAMA, help="Ollama base URL")
+    p.add_argument("--think", choices=("on", "off"),
+                   help="ollama backend: force [summarizer] think; 'on' records as <run>-think")
     p.add_argument("--record", action="store_true",
                    help="save cassettes, results json and drafts for this live run")
     p.add_argument("--fixtures", help="comma-separated fixture slugs (default: all)")
@@ -575,8 +588,11 @@ def main(argv: list[str] | None = None) -> int:
     if not slugs:
         print(f"no fixtures under {fixtures_dir}", file=sys.stderr)
         return 2
-    run = run_slug(args.backend, model)
-    make = client_factory(args.backend, model, args.ollama)
+    think = None if args.think is None else args.think == "on"
+    if think is not None and args.backend != "ollama":
+        build_parser().error("--think applies to the ollama backend only")
+    run = run_slug(args.backend, model) + ("-think" if think else "")
+    make = client_factory(args.backend, model, args.ollama, think=think)
 
     def progress(r: dict) -> None:
         s = r["score"]
@@ -586,7 +602,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.record:
             doc, runs = record(fixtures_dir, slugs, args.backend, model, make, out_dir,
-                               jobs=jobs, progress=progress)
+                               jobs=jobs, progress=progress, run=run)
         else:
             runs = run_fixtures(fixtures_dir, slugs, make, model, jobs=jobs, progress=progress)
             doc = results_doc(run, args.backend, model, date.today().isoformat(),
