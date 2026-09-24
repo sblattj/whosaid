@@ -21,6 +21,13 @@ All notable changes to whosaid are documented here. This project adheres to
 - A `team-directives` eval fixture (owner nearly silent, two leadership speakers, 6 directives plus 1 optional)
   and a `directive` gold kind.
 
+### Changed
+
+- The committed eval runs (`claude-cli-opus`, `ollama-qwen3-14b`, `ollama-qwen2.5-14b`) are
+  re-recorded on the #42 prompts over six fixtures: F1 0.924, 0.895 and 0.785. The
+  `ollama-qwen3-14b-think` and `ollama-qwen3.8-27b` recordings were not re-recorded and are
+  removed; their numbers stay in [docs/eval.md](docs/eval.md) as history.
+
 - **`[summarizer] think`, globally or per model.** A bool applies to every model; a table is
   looked up by exact model name, then the name without its tag, then its `default` key:
   `think = { "qwen3:14b" = true, default = false }`. Drafting stats carry the resolved value.

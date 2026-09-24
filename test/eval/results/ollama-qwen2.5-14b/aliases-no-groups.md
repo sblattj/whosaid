@@ -2,7 +2,7 @@
 
 Speakers in this meeting: Siobhan_Example, Theo_Example, Amara_Example, SPEAKER_03
 
-_Auto-drafted 2026-09-23T14:13-07:00 by `qwen2.5:14b` (local Ollama, offline) via `whosaid action-items --engine ollama`: 13 candidate turns (5 by Siobhan, 6 naming them, 2 added by the model over 1 slice), 9 kept as evidence, 11 items drafted, 0 flagged ⚠. A DRAFT: read the evidence and the transcript before trusting it._
+_Auto-drafted 2026-09-24T16:10-07:00 by `qwen2.5:14b` (local Ollama, offline) via `whosaid action-items --engine ollama`: 13 candidate turns (5 by Siobhan, 6 naming them, 2 added by the model over 1 slice), 9 kept as evidence, 11 items drafted, 0 flagged ⚠. A DRAFT: read the evidence and the transcript before trusting it._
 
 ## 1. Asks of Siobhan
 - **Siobhan_Example** [SPEAKER_03 00:00:30] Walk us through where things are. "Shivaun, do you want to walk us through where things are?"
@@ -21,8 +21,8 @@ _Auto-drafted 2026-09-23T14:13-07:00 by `qwen2.5:14b` (local Ollama, offline) vi
 
 ## 3. Inferred next steps
 - **Siobhan_Example** [inferred] Review and finalize the revised sitemap before sending.
-- **Siobhan_Example** [inferred] Confirm the usability sessions are scheduled with the recruiter.
-- **Siobhan_Example** [inferred] Ensure the new logo is correctly integrated across all materials.
+- **Siobhan_Example** [inferred] Confirm the usability session dates and participants with the recruiter.
+- **Siobhan_Example** [inferred] Ensure the new logo is correctly implemented across all moodboards and materials.
 
 <details><summary>Evidence turns the draft was built from (verbatim, 9)</summary>
 

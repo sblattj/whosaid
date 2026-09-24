@@ -1,0 +1,17 @@
+{
+  "schema": 1,
+  "backend": "ollama",
+  "model": "qwen2.5:14b",
+  "recorded": "2026-09-24",
+  "calls": {
+    "045a744ec3869d141bd081d2051a1bfa8ef2402fedf9db3f5d6edf9f027f5aff": "#8: Everyone use new release checklist.\n#10: Everyone read incident design doc.\n#13: No side work off the board.\n#14: Support escalations on the board.\n#24: Finish security training by end month.",
+    "789f52f34b038e1ac51f3c894f51b8592f9422886aafea9d4fe40c3762b837a0": "**TEAM: Link pull requests to tickets before review.** Starting this sprint, every pull request needs a linked ticket before anyone reviews it.",
+    "6f1d8bcedb1198757396c1be70c98b0e3e2d1449d3b00eb388ad93f124787f38": "**TEAM: Use new release checklist for every deploy.** Leadership sets a new process for the team. \"And from now on, use the new release checklist for every deploy\"",
+    "8cff012c8078368fd70ff343361d6e5887ab6351d45fd798f317874265cdb27f": "**TEAM: Add tasks to sprint if they take more than half a day.** \"<No side work off the board, I can't plan around invisible work.>\"",
+    "18bd57b06f5d771fbd78f9291d5f3eb57f63e21a0245d11044bef5674195c426": "**TEAM: Define scope of sprint work.** Bram asks if support escalations are included in the new process. \"That includes support escalations?\"",
+    "f8093da94e12f76e575a24a223fd75c86e324908d4a16a11dfffe178ed3d8cbe": "**investigate flaky deploy pipeline.** Anders and Tunde discussed a section that took two weeks; Marisol asks. \"Can you take the lead on the flaky deploy pipeline investigation this week?\"",
+    "f12635723c50bacc1935b5c596be41474922b83e6e10271e74a90c0a5bbafd79": "**<imperative title: Investigate flaky deploy pipeline>.** Keiko commits to investigating the flaky deploy pipeline. \"I'll pull the runner logs today and write up what I find by Wednesday\"",
+    "1e336fdc9156e49b171f834e3869767e9b25a8b7fb08e3442f1fb7e1a616e07f": "**TEAM: Update ticket estimates before Friday.** Leadership requests updated estimates for capacity planning. \"team, please update your ticket estimates before Friday\"\n**TEAM: Complete security training by end of month.** Leadership reminds team of compliance requirements. \"finish the security training by the end of the month\"",
+    "c75d535e4011399aec9d5d073693a169f4928fbb6fcf7e0f10e4023abdb2181b": "- (inferred) Review and update pull requests to ensure they are linked to tickets.\n- (inferred) Address and resolve issues identified in the flaky deploy pipeline.\n- (inferred) Ensure all team members have access to and understand the new release checklist."
+  }
+}

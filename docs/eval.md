@@ -9,7 +9,7 @@ The eval has two jobs:
 
 1. **A baseline for the local model.** The summarizer runs a local Ollama model (default
    `qwen2.5:14b`). The eval says how good that model is on these meetings, and whether a prompt
-   or pipeline change made it better or worse. The committed numbers are under "Baseline" below.
+   or pipeline change made it better or worse. The committed numbers are under "Committed runs" below.
 2. **A reference point.** The same fixtures can be drafted by a cloud model (Claude, through the
    Claude Code CLI) to show how much of the gap is the local model and how much is the pipeline.
    This is a measuring stick only. whosaid never uses a cloud model.
@@ -258,49 +258,57 @@ A replay only checks that a recording still reproduces its scores under the curr
 scorer. It says nothing about model quality. When you change a prompt in `lib/action_items.py`,
 every recording stops matching, and you need a fresh live run.
 
-## Baseline (recorded 2026-09-23)
+## Committed runs (recorded 2026-09-24, prompts from #42)
 
-Two runs are committed. `python3 test/eval/run_eval.py --report` prints this comparison from them:
+Three runs are committed, over six fixtures. `python3 test/eval/run_eval.py --report` prints this
+comparison from them:
 
 | run | model | precision | recall | F1 | flag rate | model calls | wall s |
 |---|---|---|---|---|---|---|---|
-| claude-cli-opus | opus | 0.891 | 0.954 | 0.921 | 0.000 | 73 | 394.7 |
-| ollama-qwen2.5-14b | qwen2.5:14b | 0.603 | 0.884 | 0.717 | 0.016 | 68 | 1788.6 |
+| claude-cli-opus | opus | 0.891 | 0.961 | 0.924 | 0.018 | 80 | 903.9 |
+| ollama-qwen3-14b | qwen3:14b | 0.870 | 0.922 | 0.895 | 0.018 | 86 | 337.7 |
+| ollama-qwen2.5-14b | qwen2.5:14b | 0.750 | 0.824 | 0.785 | 0.036 | 81 | 571.8 |
 
-| fixture | claude-cli-opus | ollama-qwen2.5-14b |
-|---|---|---|
-| aliases-no-groups | 0.889 | 0.800 |
-| distractor-heavy | 0.857 | 0.476 |
-| long-status | 0.952 | 0.800 |
-| named-asks | 0.941 | 0.842 |
-| unnamed-asks | 0.947 | 0.667 |
+| fixture | claude-cli-opus | ollama-qwen3-14b | ollama-qwen2.5-14b |
+|---|---|---|---|
+| aliases-no-groups | 1.000 | 0.889 | 0.800 |
+| distractor-heavy | 0.857 | 0.769 | 0.714 |
+| long-status | 0.952 | 0.870 | 0.833 |
+| named-asks | 1.000 | 1.000 | 0.750 |
+| team-directives | 0.842 | 0.933 | 0.857 |
+| unnamed-asks | 0.875 | 0.889 | 0.737 |
 
-- **The gap is precision, not recall.** The local model finds most real asks: 38 true positives
-  against 41 for the reference, and 5 misses against 2. But it also drafts 25 false positives
-  against 5. Of those 25, 16 come from distractor turns (asks aimed at someone other than the
-  owner), 7 are duplicates, and 2 are wrong items. All 5 of the reference's false positives are
-  duplicates. `distractor-heavy` shows the gap most clearly: F1 0.476 against 0.857.
+Before #42, over the first five fixtures, the same three models scored F1 0.921 (opus), 0.821
+(`qwen3:14b`, thinking off) and 0.717 (`qwen2.5:14b`).
+
+- **Team directives.** `team-directives` is the fixture #42 added: the owner barely speaks and two
+  leadership speakers set team-wide rules without naming them. The prompts before #42 excluded
+  such turns by design. All three models now find at least 7 of its 8 required items.
+- **A bare-bold reply bullet was being dropped.** `qwen3:14b` often writes `**Title.** ...` with
+  no leading `- `. Before #42 the parser skipped those lines; on `team-directives` that alone cut
+  its recall from 7 of 8 to 1 of 8.
 - **The reference is `opus`**, which resolved to `claude-opus-5-5` on the recording date. The
   claude-cli backend has no temperature control, so a new live run of it can differ from this
-  one.
-- **Wall time is not comparable between the two runs.** `wall s` is the sum of per-fixture
-  drafting times. The local run was on a 24 GB Apple Silicon Mac, where `qwen2.5:14b` with a
-  32k context is memory-bound (about 4 tokens per second). The reference run's time is mostly
-  network and API latency.
+  one (its `unnamed-asks` SELECT pass picked a turn in one live run and skipped it in the next,
+  with the same prompt).
+- **Wall time is not comparable.** `wall s` is the sum of per-fixture drafting times. These runs
+  were recorded on a 48 GB Apple M5 Pro under heavy unrelated load (load average 20 to 38), with
+  the opus run in parallel. Unloaded, `qwen3:14b` took 177 to 194 s for all six fixtures.
+- **`num_predict`.** The local runs use the `[summarizer] num_predict` cap (default 2048).
+  Without it, one sampled pass (the temperature-0.2 inferred-next-steps step) once fell into a
+  repetition loop and ran until the 900-second timeout.
 
-The local run was recorded with the `[summarizer] num_predict` cap (default 2048). Without that
-cap, one sampled pass (the temperature-0.2 inferred-next-steps step) fell into a repetition loop
-and ran until the 900-second timeout.
-
-## Thinking models (recorded 2026-09-24)
+## Thinking models (recorded 2026-09-24, before #42; history)
 
 Qwen3 and later are thinking models: unless the request says otherwise, Ollama lets them reason
 before every answer. The summarizer makes one small call per candidate turn, so that reasoning is
 paid about 70 times per meeting. `[summarizer] think` (default `false`) now goes out on every
 request, for all models or per model (`think = { "qwen3:14b" = true, default = false }`).
 
-Three more runs are committed. All three ran on a 48 GB Apple M5 Pro with Ollama 0.34.1 and a
-32k context, one fixture at a time:
+These three runs used the prompts before #42 and the first five fixtures. #42 changed the
+prompts, which invalidates every cassette, and the thinking and `qwen3.8:27b` runs were not
+re-recorded, so their recordings were removed; the numbers stay here as history. All three ran
+on a 48 GB Apple M5 Pro with Ollama 0.34.1 and a 32k context, one fixture at a time:
 
 | run | model | think | precision | recall | F1 | model calls | wall s |
 |---|---|---|---|---|---|---|---|
