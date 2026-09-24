@@ -52,6 +52,11 @@ Configuration is <workspace>/whosaid.toml (see lib/wsconfig.py):
   chunk_chars = 8000                 # SELECT slice size (~5 minutes of meeting)
   timeout = 900                      # seconds per model call
   num_predict = 2048                 # max tokens per model reply; caps a runaway generation
+  think = false                      # thinking models (qwen3, qwen3.x, deepseek-r1) reason
+                                     # before every answer when this is unset; off keeps each
+                                     # small call fast and the reply inside num_predict.
+                                     # Per model: think = { "qwen3:14b" = true, default = false }
+                                     # (exact name, then the name without its tag, then default)
   [search]
   ollama = "http://127.0.0.1:11434"
 
@@ -104,6 +109,7 @@ from wsconfig import Turn, hms, log, parse_turns, speaker_first_name
 DEFAULT_MODEL = "qwen2.5:14b"
 DEFAULT_TIMEOUT = 900        # seconds per model call
 DEFAULT_NUM_PREDICT = 2048   # max tokens per model reply; caps a runaway (repetition-loop) generation
+DEFAULT_THINK = False        # Ollama's "think" flag; thinking tokens count against num_predict
 CONTEXT_TURNS = 2            # previous turns shown to each BULLETS call
 CONTEXT_CHARS = 300          # each context turn is cut to this many chars
 MAX_INFERRED = 3
@@ -116,6 +122,7 @@ QUOTE_RE = re.compile(r'"([^"]{6,})"')
 INFERRED_RE = re.compile(r"^\s*[-*]\s*\(inferred\)\s*:?\s*(\S.*)$", re.IGNORECASE)
 KIND_RE = re.compile(r"^\s*(ASK|COMMIT)\s*:\s*(.*)$", re.IGNORECASE)
 PLACEHOLDER_RE = re.compile(r"<[^<>]*>")
+THINK_BLOCK_RE = re.compile(r"<think>.*?(?:</think>|\Z)", re.DOTALL | re.IGNORECASE)
 
 
 class SummarizerError(RuntimeError):
@@ -218,17 +225,20 @@ class Ollama:
     """POST /api/chat, stream off, urllib only. Every failure becomes a SummarizerError."""
 
     def __init__(self, url: str, model: str, num_ctx: int, timeout: int = DEFAULT_TIMEOUT,
-                 num_predict: int = DEFAULT_NUM_PREDICT) -> None:
+                 num_predict: int = DEFAULT_NUM_PREDICT, think: bool = DEFAULT_THINK) -> None:
         self.url = url.rstrip("/")
         self.model = model
         self.num_ctx = num_ctx
         self.timeout = timeout
         self.num_predict = num_predict
+        self.think = think
         self.calls = 0
 
     def chat(self, system: str, user: str, temperature: float = 0.0) -> str:
+        # "think" is always sent: false is accepted by every model, and leaving it
+        # out lets a thinking model reason at length before each small answer
         payload = {
-            "model": self.model, "stream": False,
+            "model": self.model, "stream": False, "think": self.think,
             "options": {"temperature": temperature, "num_ctx": self.num_ctx,
                         "num_predict": self.num_predict},
             "messages": [{"role": "system", "content": system},
@@ -249,6 +259,8 @@ class Ollama:
                 body = ""
             if "not found" in body.lower():
                 hint = f"pull the model first (`ollama pull {self.model}`)"
+            elif "does not support thinking" in body.lower():
+                hint = f"this model has no thinking mode; set think = false under [summarizer] in {wsconfig.CONFIG_NAME}"
             else:
                 hint = f"check `ollama list` and the [summarizer] model in {wsconfig.CONFIG_NAME}"
             raise SummarizerError(
@@ -264,9 +276,48 @@ class Ollama:
                 f"Ollama at {self.url} failed ({type(e).__name__}: {e})",
                 "check that it is running and not overloaded") from e
         try:
-            return str(out["message"]["content"]).strip()
+            return strip_thinking(str(out["message"]["content"]))
         except (KeyError, TypeError) as e:
             raise SummarizerError(f"unexpected reply from Ollama: {str(out)[:160]}") from e
+
+
+def strip_thinking(text: str) -> str:
+    """Drop reasoning a thinking model left inline in the answer: <think> blocks
+    (an unclosed one is a reply num_predict cut off mid-thought) and anything
+    before a stray </think> whose opening tag was in the chat template."""
+    text = THINK_BLOCK_RE.sub("", text)
+    if "</think>" in text.lower():
+        text = re.split(r"</think>", text, flags=re.IGNORECASE)[-1]
+    return text.strip()
+
+
+def think_for(value, model: str, default: bool = DEFAULT_THINK) -> bool:
+    """[summarizer] think for one model. A bool (or a spelling of one) applies to
+    every model; a table is looked up by the exact model name, then the name
+    without its tag ("qwen3" for "qwen3:14b"; an untagged name also tries
+    ":latest"), then its "default" key, then `default`."""
+    if not isinstance(value, dict):
+        return config_flag(value, default)
+    base = model.split(":", 1)[0]
+    keys = [model, base] if ":" in model else [model, f"{model}:latest"]
+    if model.endswith(":latest"):
+        keys.append(base)
+    for key in keys:
+        if key in value:
+            return config_flag(value[key], default)
+    return config_flag(value.get("default"), default)
+
+
+def config_flag(value, default: bool) -> bool:
+    """A TOML bool, or a string/number spelling of one; anything else is the default."""
+    if isinstance(value, bool):
+        return value
+    s = str(value).strip().lower() if value is not None else ""
+    if s in ("1", "true", "yes", "on"):
+        return True
+    if s in ("0", "false", "no", "off"):
+        return False
+    return default
 
 
 # ---- the plan: everything derived from the config -----------------------------------------
@@ -306,6 +357,7 @@ class Plan:
         self.chunk_chars = int(summ.get("chunk_chars") or 8000)
         self.timeout = int(summ.get("timeout") or DEFAULT_TIMEOUT)
         self.num_predict = int(summ.get("num_predict") or DEFAULT_NUM_PREDICT)
+        self.think = think_for(summ.get("think"), self.model)
         self.tz = str(ws.get("tz") or "")
 
         if self.owner and self.groups:
@@ -585,7 +637,8 @@ def prepare(transcript_text: str, cfg: dict, *, model: str | None = None,
     speakers = speakers_of(transcript_text, turns)
     plan.build_prompts(speakers)
     if client is None:
-        client = Ollama(plan.url, plan.model, plan.num_ctx, plan.timeout, num_predict=plan.num_predict)
+        client = Ollama(plan.url, plan.model, plan.num_ctx, plan.timeout, num_predict=plan.num_predict,
+                        think=plan.think)
     return plan, turns, speakers, client
 
 
@@ -597,7 +650,8 @@ def draft(transcript_text: str, meeting: str, cfg: dict, *, model: str | None = 
     plan, turns, speakers, client = prepare(transcript_text, cfg, model=model, ollama=ollama,
                                             owner=owner, client=client)
     stamp = local_stamp(plan.tz)
-    stats: dict = {"engine": "ollama", "model": plan.model, "ollama": plan.url, "owner": plan.owner,
+    stats: dict = {"engine": "ollama", "model": plan.model, "think": plan.think, "ollama": plan.url,
+                   "owner": plan.owner,
                    "meeting": meeting, "speakers": speakers, "candidates": 0, "by_owner": 0,
                    "naming_owner": 0, "model_added": 0, "slices": 0, "evidence": 0, "items": 0,
                    "flagged": 0, "inferred": 0, "sections": {}, "model_calls": 0}

@@ -1,0 +1,21 @@
+{
+  "schema": 1,
+  "backend": "ollama",
+  "model": "qwen3:14b",
+  "recorded": "2026-09-24",
+  "calls": {
+    "3fb30b3bc63b50e97ceab2f56de09b496eba7c605a237348453aaef6d333fd99": "#4: walk us through where things are  \n#6: send over the revised sitemap by Monday  \n#16: book the usability sessions with the recruiter  \n#18: swap in the new logo before the deck goes to regional managers",
+    "0dcc6a137dd21985919fadd80e20d55a774f5ffc6d3050c82b7984741ae9182e": "SKIP",
+    "9fec6299935d7ebce1f3153554c5f8da0fefe336d75d8679b0bfeb05c85b8c52": "- **Provide update on current status.** \"Shivaun, do you want to walk us through where things are?\"",
+    "fe2e4e2ef031f5c18ee99b355392a42deb0c949746509246beac4f42afbf7b63": "SKIP",
+    "ec5346d806e3377322000278884524a30a5b3de4cfd32e3147ac74eaaf5cac18": "- **Send revised sitemap by Monday.** \"Shivaun, can you send over the revised sitemap by Monday? I want to show it to our regional managers on Tuesday.\"",
+    "80c92bb4095ad50ccf14343d1534476a9525e1eff6dabc2da40ab6c61707e34a": "- **Add store locator to phase one scope.** \"Our customers keep asking for it.\" \"Chevonne, could you also add the store locator to the phase one scope?\"",
+    "e4e495d2c7523c31826805d89e85dd3369ad4dcf88335f4b3508917b3f8822c3": "- **Rewrite phase one scope document and send with updated timeline.** \"rewrite the phase one scope document and send it to everyone by Thursday, including the updated timeline.\"",
+    "c4ad4260ff58374307a0fcfc53ca2e8425a05595aec94b5aecb5452e851a2bb5": "- **Book usability sessions with recruiter.** \"Siobhan, can you book the usability sessions with the recruiter? We need five people who've bought from the site\"",
+    "65a77d4288fa201356c9e720e257f81a579a25c9356672a92c907eea9ea16fe0": "- **Update moodboard with new logo.** Amara pointed out the old logo in Shivaun's moodboard. \"Can you swap in the new one before the deck goes to the regional managers?\"",
+    "997c470e3eb37351d09e29e0cd752d9764ef56582a23733426c249a8dadc8ac8": "- **Swap Logo in Moodboard.** \"I'll swap the logo tonight\"  \n- **Set Up Shared Brand Assets Folder.** \"I'll set up a shared folder for all the brand assets\"",
+    "9563d557588fdb4c33b0e72de5f824d6fa99fe8da0d2ace8d9d35ce7dae335dd": "SKIP",
+    "f16457c0261a04a78b55a168b2a254d6193716c9ee079fe173e5d42d20adbe7a": "- **Send Discovery Phase Invoice.** Siobhan commits to sending the invoice by the end of the week to the provided accounts payable address. \"On admin, I'll send the invoice for the discovery phase at the end of this week, to the accounts payable address you gave us.\"",
+    "a344cc19958bd6d7b7b11338e16d3ee88e98adca1a30a5c75d63c5eaecbbc03f": "- (inferred) Coordinate with the development team to align on implementation details for the revised sitemap.  \n- (inferred) Share the updated moodboard with stakeholders for feedback and ensure brand consistency across all materials.  \n- (inferred) Follow up with the recruiter to confirm usability session schedules and prepare participant materials."
+  }
+}

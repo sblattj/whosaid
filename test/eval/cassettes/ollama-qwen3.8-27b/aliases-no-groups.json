@@ -1,0 +1,22 @@
+{
+  "schema": 1,
+  "backend": "ollama",
+  "model": "qwen3.8:27b",
+  "recorded": "2026-09-24",
+  "calls": {
+    "3fb30b3bc63b50e97ceab2f56de09b496eba7c605a237348453aaef6d333fd99": "#6: Send revised sitemap by Monday\n#12: Add store locator to phase one scope\n#14: Get quote for product photography\n#16: Book usability sessions with recruiter\n#18: Swap in new logo in moodboard",
+    "0dcc6a137dd21985919fadd80e20d55a774f5ffc6d3050c82b7984741ae9182e": "SKIP",
+    "9fec6299935d7ebce1f3153554c5f8da0fefe336d75d8679b0bfeb05c85b8c52": "SKIP",
+    "fe2e4e2ef031f5c18ee99b355392a42deb0c949746509246beac4f42afbf7b63": "SKIP",
+    "ec5346d806e3377322000278884524a30a5b3de4cfd32e3147ac74eaaf5cac18": "- **Send the revised sitemap.** SPEAKER_03 requests the document to present to regional managers. \"send over the revised sitemap by Monday\"",
+    "80c92bb4095ad50ccf14343d1534476a9525e1eff6dabc2da40ab6c61707e34a": "- **Add store locator to phase one scope.** An unidentified speaker requests this addition because customers are asking for it. \"add the store locator to the phase one scope\"",
+    "e4e495d2c7523c31826805d89e85dd3369ad4dcf88335f4b3508917b3f8822c3": "- **Rewrite phase one scope document.** Siobhan commits to updating the scope to include the store locator. \"rewrite the phase one scope document\"\n- **Send scope document to everyone.** Siobhan will distribute the updated document to the team by Thursday. \"send it to everyone by Thursday\"\n- **Include updated timeline.** The scope document must contain the revised project timeline. \"including the updated timeline\"",
+    "c4845e28fe77ff9c1e1bec87decd071aaca4078a5b00bf952390301234a155d3": "- **Get a quote for product photography.** SPEAKER_03 requests a quote to be provided before the end of the month for budgeting. \"can you get me a quote for the product photography\"",
+    "c4ad4260ff58374307a0fcfc53ca2e8425a05595aec94b5aecb5452e851a2bb5": "- **Book usability sessions with the recruiter.** Theo requests that Siobhan arrange these sessions with five specific participants. \"book the usability sessions with the recruiter\"",
+    "65a77d4288fa201356c9e720e257f81a579a25c9356672a92c907eea9ea16fe0": "- **Swap the old logo for the new one in the moodboard.** Amara requests this update to the shared deck before it is sent to regional managers. \"swap in the new one before the deck goes\"",
+    "997c470e3eb37351d09e29e0cd752d9764ef56582a23733426c249a8dadc8ac8": "- **Swap the old logo in the moodboard.** Siobhan commits to replacing the outdated logo in the shared deck. \"I'll swap the logo tonight\"\n- **Create a shared folder for brand assets.** Siobhan commits to setting up a central location for brand files. \"set up a shared folder for all the brand assets\"",
+    "9563d557588fdb4c33b0e72de5f824d6fa99fe8da0d2ace8d9d35ce7dae335dd": "SKIP",
+    "f16457c0261a04a78b55a168b2a254d6193716c9ee079fe173e5d42d20adbe7a": "- **Send discovery phase invoice.** Siobhan commits to sending the invoice to the provided accounts payable address. \"I'll send the invoice for the discovery phase\"",
+    "e5c249a4b4d0f3d471c75e16f56cc85b2a15d015e13f64b3f4be169de94c5498": "- (inferred) Update the project management tool to reflect the new phase one scope and timeline.\n- (inferred) Schedule a review meeting to approve the revised sitemap and scope document.\n- (inferred) Follow up with the photographer to confirm availability and finalize the booking."
+  }
+}

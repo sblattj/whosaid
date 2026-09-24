@@ -1,0 +1,21 @@
+{
+  "schema": 1,
+  "backend": "ollama",
+  "model": "qwen3:14b",
+  "recorded": "2026-09-24",
+  "calls": {
+    "9341f92a0e1022eff5befba13fbdd88b2f2a3ffeec874648397846ab280a699c": "#12 Walter_Example: Nadia, can you make sure the postmortem gets shared in the engineering newsletter?\n#14 Walter_Example: Okay, budget. Ingrid, I think this one's yours too.",
+    "0be79ae01c809a3532f9d4167dced31f0fd59ad01ac050dc3fcacaa3bc6f8d28": "SKIP",
+    "e1e6f6638d6b9455643b52048bd1a5b69cb3aa7ce915abbce8ee88a750aacfb9": "- **Write design doc for partial refunds.** \"I will write the design doc for partial refunds by next Wednesday and circulate it to this group before the review.\"",
+    "784543a175e94ffd204f87e1f8e9f92a6679f27961306fa7bbd922cb3fe9f9bb": "- **Write design doc for partial refunds.** \"I will write the design doc for partial refunds by next Wednesday and circulate it to this group before the review.\"\n- **Schedule threat modeling session.** \"I'm going to schedule the threat modeling session with the security team for the week after\"\n- **Migrate merchant webhooks.** \"I'll migrate the remaining merchant webhooks off the legacy queue before the end of the month\"\n- **Set up weekly metrics email.** \"I will set up the weekly metrics email for Walter's staff meeting\"",
+    "91d0480ef65ca39007f948d8996fea2f558f17f6361fcc9c5cfb4f6d1cccada5": "- **Confirm webhook timeline.** \"I think so, the last batch took about a week and it was bigger.\"",
+    "ac3c790dd15ea3becc649ddbc06b59e92ff1decc03a2e1fe80a48504d25536fd": "- **Confirm incident resolution status.** \"we already rolled back the bad config, wrote up the postmortem, and closed the ticket with support\"",
+    "1a1f00a6af1587f9d2ad76d61aad99d508ac68d982e3d4dc2e427e25cbe5cc38": "SKIP",
+    "abd6ab0ae39d6a959709393d17ab908a8c1df6351ea015d33b34d36447a4be77": "SKIP",
+    "0fa33b2cd5a9a8c4f134dd76c5cb269c841d4bc394b2574fa71dbfb8bce4ae5f": "- **Prepare fraud vendor comparison.** \"I'll put together a comparison of the two alternative fraud vendors, cost and false positive rates, and have it to Walter by the fifteenth.\"",
+    "2f217984902d019e32536a80ea84a81fe060f5a0b733b787ea4d23d451566096": "- **Prepare comparison of fraud vendors.** \"I'll put together a comparison of the two alternative fraud vendors, cost and false positive rates, and have it to Walter by the fifteenth.\"\n- **Request contract extension from procurement.** \"I'm also going to ask procurement to extend the current contract by one quarter, so we aren't negotiating with a gun to our head, and I'll send that request today.\"\n- **Book demo with second vendor.** \"I'll book a demo with the second vendor, the one Nadia recommended, sometime in the next two weeks.\"",
+    "7349317cc19dda1c3a62b884c527b994aa47e7abca1e7d9aad858493d4d0e93b": "- **Prepare onboarding plan.** \"I will pull together an onboarding plan for her first two weeks, including who she shadows on which days.\"\n- **Assign mentor.** \"I'm also going to set her up with Joon as her mentor for the first month, he already said yes when I asked.\"\n- **Schedule career conversations.** \"I'll run the quarterly career conversations with each of you before the end of the month, so expect a calendar invite from me this week.\"",
+    "cbe0d05399b8e3c73c7b7afb35c76fcd0beb8224d1b1f255a4d9cdeebc42628d": "SKIP",
+    "1c877f4f906ea6ebc2b46770f92fdfdf89df4a3bc7ec2408479332c439ea9a7d": "- (inferred) Review and finalize the design doc for partial refunds with relevant stakeholders.  \n- (inferred) Coordinate with the security team to ensure the threat modeling session covers all critical areas.  \n- (inferred) Follow up with the merchant team to clarify any outstanding details regarding the webhook timeline."
+  }
+}

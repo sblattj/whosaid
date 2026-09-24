@@ -1,0 +1,20 @@
+{
+  "schema": 1,
+  "backend": "ollama",
+  "model": "qwen3.8:27b",
+  "recorded": "2026-09-24",
+  "calls": {
+    "9341f92a0e1022eff5befba13fbdd88b2f2a3ffeec874648397846ab280a699c": "NONE",
+    "0be79ae01c809a3532f9d4167dced31f0fd59ad01ac050dc3fcacaa3bc6f8d28": "SKIP",
+    "e1e6f6638d6b9455643b52048bd1a5b69cb3aa7ce915abbce8ee88a750aacfb9": "- **Write design doc for partial refunds.** Ingrid commits to drafting the document for the refund flow. \"I will write the design doc for partial refunds\"\n- **Circulate design doc to group.** Ingrid will share the document with the team prior to the review. \"circulate it to this group before the review\"",
+    "784543a175e94ffd204f87e1f8e9f92a6679f27961306fa7bbd922cb3fe9f9bb": "- **Schedule threat modeling session.** Ingrid commits to arranging this with the security team for the week after next. \"schedule the threat modeling session with the security team\"\n- **Migrate remaining merchant webhooks.** Ingrid will move about forty webhooks off the legacy queue before month-end. \"migrate the remaining merchant webhooks off the legacy queue\"\n- **Set up weekly metrics email.** Ingrid will configure this for Walter's staff meeting to provide numbers. \"set up the weekly metrics email for Walter's staff meeting\"",
+    "91d0480ef65ca39007f948d8996fea2f558f17f6361fcc9c5cfb4f6d1cccada5": "SKIP",
+    "ac3c790dd15ea3becc649ddbc06b59e92ff1decc03a2e1fe80a48504d25536fd": "SKIP",
+    "abd6ab0ae39d6a959709393d17ab908a8c1df6351ea015d33b34d36447a4be77": "SKIP",
+    "0fa33b2cd5a9a8c4f134dd76c5cb269c841d4bc394b2574fa71dbfb8bce4ae5f": "- **Prepare fraud vendor comparison.** Ingrid will create a cost and false positive rate comparison of two alternative vendors for Walter. \"comparison of the two alternative fraud vendors\"",
+    "2f217984902d019e32536a80ea84a81fe060f5a0b733b787ea4d23d451566096": "- **Ask procurement to extend the current contract.** Ingrid commits to requesting a one-quarter extension to avoid pressure during negotiations. \"ask procurement to extend the current contract\"\n- **Send the contract extension request.** Ingrid states she will submit the request to procurement immediately. \"I'll send that request today\"\n- **Book a demo with the second vendor.** Ingrid plans to schedule a demonstration with the vendor recommended by Nadia. \"book a demo with the second vendor\"",
+    "7349317cc19dda1c3a62b884c527b994aa47e7abca1e7d9aad858493d4d0e93b": "- **Pull together an onboarding plan for the new hire.** Ingrid commits to creating a two-week plan including shadowing details. \"pull together an onboarding plan for her first two weeks\"\n- **Set up Joon as the new hire's mentor.** Ingrid will finalize the mentorship arrangement with Joon for the first month. \"set her up with Joon as her mentor\"\n- **Notify the new hire about the mentor.** Ingrid will inform the new employee of the mentor assignment before they start. \"I'll let her know before her start date\"\n- **Run quarterly career conversations with the team.** Ingrid will schedule and conduct these meetings with each team member. \"run the quarterly career conversations with each of you\"",
+    "cbe0d05399b8e3c73c7b7afb35c76fcd0beb8224d1b1f255a4d9cdeebc42628d": "SKIP",
+    "d8dad688860ff7e3933f211c0b9db3436ca069e4ee6fa338307a170748e2bab5": "- (inferred) Review feedback on the partial refunds design doc and finalize the implementation plan.\n- (inferred) Evaluate the fraud vendor comparison results to select a provider and initiate the procurement process.\n- (inferred) Define the specific metrics and data sources to be included in the weekly metrics email."
+  }
+}
