@@ -318,6 +318,10 @@ On the same machine, a live rerun of the `qwen2.5:14b` default scored precision 
   wall time of `qwen3:14b`. It is weakest on `unnamed-asks` (4 of 9 found), because its SELECT
   pass adds fewer turns where the owner is asked something without being named. Qwen3.8 has no
   14B size; 27B (about 18 GB loaded) is its smallest open model.
+- **`qwen3.8:27b` with thinking on** was run on `named-asks` only, to bound the time: F1 1.000
+  (9 of 9, no false positives) in 315.0 s, against 0.947 in 80.9 s with thinking off. It
+  generated about 340 tokens per call against about 570 for `qwen3:14b`, and no reply hit
+  `num_predict`. One fixture is not a run, so it is not committed.
 - **The think-on run was recorded before this flag existed**, with `think` left out of the
   request. Ollama 0.34.1 treats that as on for a thinking model, and all 67 calls returned
   reasoning. `--think on` records the same configuration.
