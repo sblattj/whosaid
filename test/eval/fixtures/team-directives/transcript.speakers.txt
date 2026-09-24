@@ -1,0 +1,33 @@
+# Speakers (6): Keiko_Example, Marisol_Example, Anders_Example, Bram_Example, Tunde_Example, SPEAKER_05
+[00:00:03] Marisol_Example: Okay, let's get started. Anders is joining us today for the planning part, so status first, then process, then planning.
+[00:00:12] Anders_Example: Thanks. I'll keep my part short.
+[00:00:16] Marisol_Example: Bram, you want to kick us off?
+[00:00:20] Bram_Example: Sure. I finished the cache migration yesterday, and the error rate on the search service is back to normal. Next I'm on the billing webhooks.
+[00:00:37] Marisol_Example: Nice. Bram, can you also own the on-call handoff doc this week? The last one was out of date.
+[00:00:46] Bram_Example: Yes, I'll update it today.
+[00:00:50] Marisol_Example: Tunde?
+[00:00:53] Tunde_Example: Mostly the mobile release. QA signed off this morning, so we ship Thursday unless something comes up.
+[00:01:08] Marisol_Example: Good. A couple of process things for everyone. Starting this sprint, every pull request needs a linked ticket before anyone reviews it.
+[00:01:21] Tunde_Example: Even for small fixes?
+[00:01:24] Marisol_Example: Even for small fixes, it's one click. And from now on, use the new release checklist for every deploy, no exceptions. We skipped steps twice last month.
+[00:01:40] SPEAKER_05: Where does that checklist live?
+[00:01:43] Marisol_Example: In the team wiki under releases. I'll pin it in the channel after this.
+[00:01:50] Anders_Example: One from me on process. Going forward, anything that takes more than half a day goes into the sprint. No side work off the board, I can't plan around invisible work.
+[00:02:08] Bram_Example: That includes support escalations?
+[00:02:11] Anders_Example: Yes, those too. Put them on the board with an estimate.
+[00:02:18] Marisol_Example: Also, the postmortem for last week's outage is out. I want everyone to read the incident design doc before Thursday's review and come with questions.
+[00:02:32] Tunde_Example: Is that the one with the new failover section?
+[00:02:36] Anders_Example: Yes. That section took us two weeks to agree on.
+[00:02:44] Marisol_Example: Keiko, one for you. Can you take the lead on the flaky deploy pipeline investigation this week? It failed three times on Monday.
+[00:02:55] Keiko_Example: Sure, I'll pull the runner logs today and write up what I find by Wednesday so we can decide on a fix together.
+[00:03:08] Marisol_Example: Perfect. Anders, over to you for planning.
+[00:03:12] Anders_Example: Thanks. Headcount got approved, so we'll open two backend roles next month.
+[00:03:20] Tunde_Example: Great news.
+[00:03:23] Anders_Example: For planning: team, please update your ticket estimates before Friday so I can plan capacity for next quarter. And all of you, finish the security training by the end of the month, compliance is chasing me.
+[00:03:42] Bram_Example: Is the security training the new one or last year's?
+[00:03:46] Anders_Example: The new one, it's about forty minutes. I'll send the updated org chart to everyone after this too.
+[00:03:55] Marisol_Example: We might move to trunk-based development someday, but probably not this year.
+[00:04:06] Tunde_Example: Everyone, lunch is on me Friday if you're around.
+[00:04:12] Marisol_Example: Thanks Tunde. Let's also move this sync to ten next week, I have a conflict.
+[00:04:20] Keiko_Example: Sounds good.
+[00:04:22] Marisol_Example: Thanks, everyone.

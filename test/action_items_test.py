@@ -108,6 +108,16 @@ BULLET_REPLIES = {
                        '- **Post the load test results in the channel.** Once the load test finishes.',
     ("00:02:40", ""): '- **Loop in finance when the vendor report goes out.** Bob asked for it. '
                       '"loop in finance when the report goes out"',
+    # DIRECTIVE_TRANSCRIPT (times kept clear of TRANSCRIPT's)
+    ("00:03:15", ""): '**TEAM: Link a ticket to every pull request before review.** A new team rule. '
+                      '"everyone links a ticket to every pull request"',
+    ("00:03:30", ""): '- **TEAM: Fill in the team survey by Friday.** Carol asks the team. '
+                      '"please fill in the team survey by Friday"',
+    ("00:03:45", ""): '- **TEAM: Finish the security training by the end of the month.** Dana sets a deadline. '
+                      '"all of you need to finish the security training"\n'
+                      '- **Send Dana the audit export by Wednesday.** Dana asks Alice. '
+                      '"Alice, can you send me the audit export by Wednesday"',
+    ("00:04:10", ""): '- **TEAM: Update the team wiki.** Dana asks for it. "please update the team wiki as well"',
 }
 NO_OWNER_BULLET_REPLIES = {
     ("00:00:05", ""): '- **ASK: Send the vendor report to Bob by Thursday.** Bob asks Alice. '
@@ -116,6 +126,16 @@ NO_OWNER_BULLET_REPLIES = {
                       '"I will send the vendor report on Wednesday afternoon"',
     ("00:01:20", ""): '- **ASK: Own the retro notes.** Bob asks Carol. "you own the retro notes this time"',
 }
+DIRECTIVE_TRANSCRIPT = """# Speakers (4): Alice_Example, Bob_Example, Carol_Example, Dana_Example
+# Role: Dana_Example = boss
+# Role: Alice_Example = boss
+[00:03:05] Bob_Example: Morning. Quick one before we start, nothing else from me.
+[00:03:15] Bob_Example: From now on everyone links a ticket to every pull request before asking for review.
+[00:03:30] Carol_Example: Everyone, please fill in the team survey by Friday.
+[00:03:45] Dana_Example: Also, all of you need to finish the security training by the end of the month. Alice, can you send me the audit export by Wednesday?
+[00:04:00] Bob_Example: Carol, you own the retro notes this time.
+[00:04:10] Dana_Example: Carol, please update the team wiki as well. Thanks all.
+"""
 INFER_REPLY = ("- (inferred) Confirm the board sync agenda with Bob.\n"
                "- (inferred) Share the refreshed dashboard link with Carol.\n"
                "- (inferred) Tell the new hires where the checklist lives.\n"
@@ -289,6 +309,74 @@ def test_name_regex_and_pieces() -> None:
           "chunks never cut a row and respect the limit")
 
 
+def plan_of(cfg: dict, text: str) -> "ai.Plan":
+    plan = ai.Plan(cfg)
+    turns = wsconfig.parse_turns(text)
+    plan.add_bosses(ai.bosses_of(text))
+    plan.build_prompts(ai.speakers_of(text, turns))
+    return plan
+
+
+def test_team_directives(stub: StubOllama, tmp: Path) -> None:
+    ws = tmp / "ws-directives"
+    ws.mkdir()
+    write_config(ws, stub.url)
+    cfg = wsconfig.load_config(ws)
+    stub.requests.clear()
+    md, stats = ai.draft(DIRECTIVE_TRANSCRIPT, "2026-09-24-0700", cfg)
+    select = stub.of_kind("Select every turn")[0]["messages"][0]["content"]
+    check("Also select every turn in which a LEADERSHIP speaker (Bob_Example, Dana_Example)" in select
+          and "even when Alice is not named and never speaks" in select,
+          "SELECT asks for team-wide leadership directives, boss roles included")
+    check("- LEADERSHIP (role-tagged boss): Dana_Example." in select, "roster names role-tagged bosses")
+    bullets = stub.of_kind("from ONE turn")
+    check("TEAM: <imperative title" in bullets[0]["messages"][0]["content"], "BULLETS offers the TEAM: shape")
+    check(any("by Dana_Example (leadership)" in r["messages"][1]["content"] for r in bullets),
+          "a role-tagged boss outside every group reads as leadership")
+    heads = [ln for ln in md.splitlines() if ln.startswith("## ")]
+    check(heads == ["## 1. Asks from leadership (Bob)", "## 2. Asks from team (Carol)",
+                    "## 3. Team directives from leadership (Bob, Dana)", "## 4. Alice's own commitments",
+                    "## 5. Inferred next steps"], f"boss roles join the directive heading, owner never: {heads}")
+    check(section(md, "## 3.") == [
+        '- **Alice_Example** [Bob 00:03:15] Link a ticket to every pull request before review. A new team '
+        'rule. "everyone links a ticket to every pull request"',
+        '- **Alice_Example** [Dana 00:03:45] Finish the security training by the end of the month. Dana '
+        'sets a deadline. "all of you need to finish the security training"',
+    ], f"leadership TEAM: bullets (one with no '- ' marker) are the owner's items, prefix stripped: "
+       f"{section(md, '## 3.')}")
+    check(section(md, "## 1.") == [
+        '- **Alice_Example** [Dana 00:03:45] Send Dana the audit export by Wednesday. Dana asks Alice. '
+        '"Alice, can you send me the audit export by Wednesday"',
+    ], "a role-tagged boss's direct ask lands in the leadership group's section")
+    check("survey" not in md.split("<details>")[0], "a TEAM: bullet from a non-leader is dropped")
+    check("wiki" not in md.split("<details>")[0],
+          "a leadership TEAM: bullet whose sentence opens 'Carol, ...' is Carol's task: dropped")
+    check(ai.addressee(plan_of(cfg, DIRECTIVE_TRANSCRIPT), "Perfect. Carol, can you send it? Thanks.",
+                       "can you send it") == "Carol"
+          and ai.addressee(plan_of(cfg, DIRECTIVE_TRANSCRIPT), "Team, please send it.", "please send it") == ""
+          and ai.addressee(plan_of(cfg, DIRECTIVE_TRANSCRIPT), "Alice, can you send it?", "can you send it") == "",
+          "addressee: a named other participant opening the sentence; not 'Team,' and not the owner")
+    parsed = workspace.parse_bullets_with_sections(md)
+    check([s for _, _, _, s in parsed if "directive" in s] == ["Team directives from leadership"] * 2,
+          "the roll-up type keeps 'leadership' so the worklist ranks directives as boss asks")
+
+    plan = ai.Plan(wsconfig.load_config(ws), owner="Bob_Example")
+    plan.build_prompts(["Bob_Example", "Carol_Example"])
+    check(plan.leaders == [] and plan.directive_section is None and "TEAM directive" not in plan.bullets_prompt
+          and "LEADERSHIP speaker" not in plan.select_prompt,
+          "the owner is never their own leadership; no leadership -> no directive section or TEAM rules")
+    ng = tmp / "ws-directives-nogroups"
+    ng.mkdir()
+    write_config(ng, stub.url, groups=False)
+    plan = ai.Plan(wsconfig.load_config(ng))
+    plan.add_bosses(ai.bosses_of(DIRECTIVE_TRANSCRIPT))
+    check(plan.headings == ["Asks of Alice", "Team directives from leadership (Dana)", "Alice's own commitments",
+                            "Inferred next steps"] and plan.commit_section == 2 and plan.inferred_section == 3,
+          f"boss roles alone add the directive section: {plan.headings}")
+    check(plan.section_for("Dana_Example", "ask") == 0 and plan.section_for("Dana_Example", "directive") == 1,
+          "without groups a boss's ask goes to 'Asks of', its directive to team directives")
+
+
 def test_owner_mode(stub: StubOllama, tmp: Path) -> None:
     ws = tmp / "ws-owner"
     ws.mkdir()
@@ -344,7 +432,10 @@ def test_owner_mode(stub: StubOllama, tmp: Path) -> None:
     # -- headings, in config order, numbered
     heads = [ln for ln in md.splitlines() if ln.startswith("## ")]
     check(heads == ["## 1. Asks from leadership (Bob)", "## 2. Asks from team (Carol)",
-                    "## 3. Alice's own commitments", "## 4. Inferred next steps"], f"headings: {heads}")
+                    "## 3. Team directives from leadership (Bob)", "## 4. Alice's own commitments",
+                    "## 5. Inferred next steps"], f"headings: {heads}")
+    check(section(md, "## 3.") == ["- none"],
+          "no directive in this meeting -> '- none'")
 
     # -- bullets: exact format, section by group, ungrouped SPEAKER_03 in the last group
     lead = section(md, "## 1.")
@@ -361,7 +452,7 @@ def test_owner_mode(stub: StubOllama, tmp: Path) -> None:
         '- **Alice_Example** [SPEAKER_03 00:01:00] Update the onboarding checklist for the new hires. '
         'Three start Monday. "update the onboarding checklist for the new hires"',
     ], f"team section (SPEAKER_03 falls into the last group): {team}")
-    own = section(md, "## 3.")
+    own = section(md, "## 4.")
     check(own == [
         '- **Alice_Example** [Alice 00:00:20] Send the vendor report on Wednesday. Alice will include '
         'the cost breakdown. "I will send the vendor report on Wednesday afternoon"',
@@ -373,7 +464,7 @@ def test_owner_mode(stub: StubOllama, tmp: Path) -> None:
         'test finishes. _(⚠ no quote)_',
     ], f"own commitments (dedupe, placeholder dropped, flags): {own}")
     check("imperative title" not in md and "SKIP" not in md, "SKIP bullets and placeholders never render")
-    inferred = section(md, "## 4.")
+    inferred = section(md, "## 5.")
     check(inferred == [
         "- **Alice_Example** [inferred] Confirm the board sync agenda with Bob.",
         "- **Alice_Example** [inferred] Share the refreshed dashboard link with Carol.",
@@ -397,6 +488,7 @@ def test_owner_mode(stub: StubOllama, tmp: Path) -> None:
     check(stats["evidence"] == 6 and stats["items"] == 8 and stats["flagged"] == 2
           and stats["inferred"] == 3, f"stats agree with the note: {stats}")
     check(stats["sections"] == {"Asks from leadership (Bob)": 2, "Asks from team (Carol)": 2,
+                                "Team directives from leadership (Bob)": 0,
                                 "Alice's own commitments": 4, "Inferred next steps": 3}, stats["sections"])
     ev_start = md.index("<details><summary>Evidence turns the draft was built from (verbatim, 6)</summary>")
     ev = md[ev_start:]
@@ -543,9 +635,9 @@ def test_infer_failure(stub: StubOllama, tmp: Path) -> None:
     check(stats["inferred"] == 0, f"zero inferred items when INFER fails: {stats}")
     check(stats.get("infer_error") is not None and "HTTP 500" in stats["infer_error"],
           f"the INFER failure is recorded in stats: {stats.get('infer_error')!r}")
-    check(section(md, "## 1.") and section(md, "## 2.") and section(md, "## 3."),
+    check(section(md, "## 1.") and section(md, "## 2.") and section(md, "## 4."),
           "the asks/commitments sections are unaffected by the INFER failure")
-    check(section(md, "## 4.") == ["- none"], "the inferred section is empty, not corrupted")
+    check(section(md, "## 5.") == ["- none"], "the inferred section is empty, not corrupted")
     note = md.splitlines()[4]
     check("Inferred next steps skipped" in note and "HTTP 500" in note,
           f"a short visible note about the INFER failure is in the note line: {note}")
@@ -698,7 +790,7 @@ def test_workspace_integration(stub: StubOllama, tmp: Path) -> None:
     check(rc == 0, "action-items --engine ollama exits 0")
     check(f"action items (ollama:qwen-stub) -> {meeting / 'action-items.md'}" in err, f"engine log: {err}")
     md = (meeting / "action-items.md").read_text()
-    check("## 3. Alice's own commitments" in md and "<details>" in md, "engine ollama wrote the sectioned draft")
+    check("## 4. Alice's own commitments" in md and "<details>" in md, "engine ollama wrote the sectioned draft")
     payload = json.loads(json_out.read_text())
     check(payload["source"] == "ollama" and payload["engine"] == "ollama:qwen-stub"
           and payload["stats"]["items"] == 8, f"--json-out carries engine + stats: {payload['engine']}")
@@ -806,6 +898,7 @@ def main() -> None:
             tmp = Path(d)
             test_name_regex_and_pieces()
             test_owner_mode(stub, tmp)
+            test_team_directives(stub, tmp)
             test_num_predict(stub, tmp)
             test_think(stub, tmp)
             test_infer_failure(stub, tmp)

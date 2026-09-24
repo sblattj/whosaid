@@ -8,6 +8,19 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ### Added
 
+- **Team directives from leadership.** When leadership sets a priority, deadline, process or
+  expectation for the whole team ("from now on every PR needs a linked ticket", "all of you
+  finish the security training by the end of the month"), the summarizer now drafts it as the
+  owner's item even when the owner is not named and never speaks. Such items get their own
+  section, "Team directives from leadership (<names>)", placed before the owner's commitments.
+  The roll-up type still contains "leadership", so the worklist ranks them like boss asks.
+  Leadership is the `[groups]` entry named `leadership` plus every speaker the transcript
+  role-tags `boss`. A team directive on a sentence that opens by naming one other participant
+  ("Sam, can you ...") is that person's task and is dropped by the script, whatever the model
+  says. Without leadership, the prompts and the layout are unchanged.
+- A `team-directives` eval fixture (owner nearly silent, two leadership speakers, 6 directives plus 1 optional)
+  and a `directive` gold kind.
+
 - **`[summarizer] think`, globally or per model.** A bool applies to every model; a table is
   looked up by exact model name, then the name without its tag, then its `default` key:
   `think = { "qwen3:14b" = true, default = false }`. Drafting stats carry the resolved value.
@@ -18,6 +31,8 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ### Fixed
 
+- A model reply bullet written without its leading `- ` (`**Title.** context "quote"`), which
+  `qwen3:14b` often does, is now parsed instead of silently dropped.
 - **Thinking models no longer reason before every summarizer call.** The Ollama request now
   always carries `think` (default `false`). Before this, `qwen3` and newer reasoned on each of
   the roughly 70 small calls per meeting, about 12 times slower on the eval, and a long enough

@@ -63,8 +63,17 @@ Configuration is <workspace>/whosaid.toml (see lib/wsconfig.py):
 Sections, numbered in this order: one "Asks from <group> (<first names>)" per
 configured group (speakers in no group, SPEAKER_NN included, fall into the LAST
 group, the way unidentified voices were treated as peers in the original
-tuning), then "<Owner>'s own commitments", then "Inferred next steps". With an
-owner but no groups: "Asks of <Owner>", own commitments, inferred. With no owner
+tuning), then "Team directives from leadership (<first names>)", then
+"<Owner>'s own commitments", then "Inferred next steps". With an owner but no
+groups: "Asks of <Owner>", team directives, own commitments, inferred.
+
+Leadership is the [groups] entry named "leadership" plus every speaker the
+transcript tags "# Role: NAME = boss". A leadership turn that sets a priority,
+deadline, process or expectation for the whole team counts as the owner's item
+even when the owner is not named and never speaks (the model marks it TEAM:);
+it lands in "Team directives from leadership". The section exists only when
+there is leadership. A "TEAM:" bullet from anyone else, or on a sentence that
+opens by naming one other participant ("Bram, can you ..."), is dropped. With no owner
 at all only the model SELECT pass runs, over every speaker, and the sections
 are "Asks" and "Commitments" grouped by speaker, then inferred. Empty sections
 render "- none".
@@ -117,11 +126,15 @@ RERUN_HINT = "`whosaid action-items --engine ollama`"
 
 SPEAKERS_HEADER_RE = re.compile(r"^#\s+Speakers?\s*\(\d+\)\s*:\s*(.+)$", re.IGNORECASE)
 ID_RE = re.compile(r"^\W*#?(\d+)\b")
-MODEL_BULLET_RE = re.compile(r"^\s*[-*]\s+\*\*(.+?)\*\*(.*)$")
+# the "- " marker is optional: qwen3 often writes a bare "**Title.** ..." line
+MODEL_BULLET_RE = re.compile(r"^\s*(?:[-*]\s+)?\*\*(.+?)\*\*(.*)$")
 QUOTE_RE = re.compile(r'"([^"]{6,})"')
 INFERRED_RE = re.compile(r"^\s*[-*]\s*\(inferred\)\s*:?\s*(\S.*)$", re.IGNORECASE)
-KIND_RE = re.compile(r"^\s*(ASK|COMMIT)\s*:\s*(.*)$", re.IGNORECASE)
+KIND_RE = re.compile(r"^\s*(ASK|COMMIT|TEAM)\s*:\s*(.*)$", re.IGNORECASE)
+ROLE_RE = re.compile(r"^#\s+Role:\s*(?P<name>.+?)\s*=\s*(?P<role>\S.*?)\s*$")
+LEADERSHIP_GROUP = "leadership"   # the [groups] entry whose team-wide directives are the owner's items
 PLACEHOLDER_RE = re.compile(r"<[^<>]*>")
+VOCATIVE_RE = re.compile(r"^([A-Z][a-z]+),\s")
 THINK_BLOCK_RE = re.compile(r"<think>.*?(?:</think>|\Z)", re.DOTALL | re.IGNORECASE)
 
 
@@ -146,6 +159,16 @@ def compile_name_re(aliases: list[str]) -> re.Pattern | None:
     if not alts:
         return None
     return re.compile(r"\b(?:" + "|".join(alts) + r")[a-z]*\b", re.IGNORECASE)
+
+
+def bosses_of(text: str) -> list[str]:
+    """Speakers tagged '# Role: NAME = boss' in the transcript header."""
+    roles: dict[str, str] = {}
+    for line in text.splitlines():
+        m = ROLE_RE.match(line.strip())
+        if m:
+            roles[m.group("name").strip()] = m.group("role").strip().lower()
+    return [n for n, r in roles.items() if r == "boss"]
 
 
 def speakers_of(text: str, turns: list[Turn]) -> list[str]:
@@ -347,6 +370,10 @@ class Plan:
                 members = [str(m).strip() for m in members if str(m).strip()]
                 self.groups[str(name)] = [m for m in members if m != self.owner]
         self._group_index = {m: i for i, ms in enumerate(self.groups.values()) for m in ms}
+        self._lead_index = next((i for i, g in enumerate(self.groups) if g.lower() == LEADERSHIP_GROUP), None)
+        # whose team-wide directives are the owner's items: [groups] leadership, then boss roles
+        self.leaders: list[str] = list(self.groups[list(self.groups)[self._lead_index]]) \
+            if self._lead_index is not None else []
 
         self.model = str(model or summ.get("model") or DEFAULT_MODEL)
         url = str(ollama or wsconfig.ollama_url(cfg)).strip().rstrip("/")
@@ -359,20 +386,38 @@ class Plan:
         self.num_predict = int(summ.get("num_predict") or DEFAULT_NUM_PREDICT)
         self.think = think_for(summ.get("think"), self.model)
         self.tz = str(ws.get("tz") or "")
+        self.select_prompt = self.bullets_prompt = self.infer_prompt = ""
+        self.other_firsts: set[str] = set()
+        self._layout()
 
+    def add_bosses(self, names: list[str]) -> None:
+        """Speakers role-tagged boss in this transcript join leadership."""
+        if not self.owner:
+            return
+        for n in names:
+            if n and n != self.owner and n not in self.leaders:
+                self.leaders.append(n)
+        self._layout()
+
+    def _layout(self) -> None:
         if self.owner and self.groups:
             self.headings = [
                 f"Asks from {g} ({', '.join(speaker_first_name(m) for m in ms) or 'nobody yet'})"
                 for g, ms in self.groups.items()
-            ] + [f"{self.owner_first}'s own commitments"]
+            ]
         elif self.owner:
-            self.headings = [f"Asks of {self.owner_first}", f"{self.owner_first}'s own commitments"]
+            self.headings = [f"Asks of {self.owner_first}"]
         else:
-            self.headings = ["Asks", "Commitments"]
+            self.headings = ["Asks"]
+        self.directive_section = None
+        if self.owner and self.leaders:
+            self.directive_section = len(self.headings)
+            self.headings.append(
+                f"Team directives from leadership ({', '.join(speaker_first_name(m) for m in self.leaders)})")
+        self.headings.append(f"{self.owner_first}'s own commitments" if self.owner else "Commitments")
         self.headings.append("Inferred next steps")
         self.commit_section = len(self.headings) - 2
         self.inferred_section = len(self.headings) - 1
-        self.select_prompt = self.bullets_prompt = self.infer_prompt = ""
 
     # sections and roles are decided here, never by the model
     def section_for(self, speaker: str, kind: str) -> int:
@@ -380,6 +425,10 @@ class Plan:
             return self.commit_section if kind == "commit" else 0
         if speaker == self.owner:
             return self.commit_section
+        if kind == "directive" and self.directive_section is not None:
+            return self.directive_section
+        if speaker in self.leaders and self._lead_index is not None:
+            return self._lead_index
         if self.groups:
             return self._group_index.get(speaker, len(self.groups) - 1)
         return 0
@@ -393,6 +442,8 @@ class Plan:
     def role_of(self, speaker: str) -> str:
         if self.owner and speaker == self.owner:
             return f"{self.owner_first}, the person these items are for"
+        if speaker in self.leaders:
+            return "leadership"
         g = self.group_of(speaker)
         if g:
             return g
@@ -406,7 +457,11 @@ class Plan:
                          f"items are for{also}.")
             for g, ms in self.groups.items():
                 lines.append(f"- {g.upper()}: {', '.join(ms) or '(nobody)'}.")
-            others = [s for s in speakers if s != self.owner and s not in self._group_index]
+            bosses = [m for m in self.leaders if m not in self._group_index]
+            if bosses:
+                lines.append(f"- LEADERSHIP (role-tagged boss): {', '.join(bosses)}.")
+            others = [s for s in speakers if s != self.owner and s not in self._group_index
+                      and s not in self.leaders]
             if others:
                 lines.append(f"- OTHER PARTICIPANTS: {', '.join(others)}.")
         else:
@@ -415,6 +470,9 @@ class Plan:
         return "\n".join(lines)
 
     def build_prompts(self, speakers: list[str]) -> None:
+        # first names a sentence can open with to address one other participant ("Bram, can you ...")
+        self.other_firsts = {speaker_first_name(s) for s in list(speakers) + list(self._group_index)
+                             if s != self.owner and not s.startswith("SPEAKER_")}
         roster = self.roster(speakers)
         head = ("You are given part of a diarized meeting transcript. Each speaker turn is one line: "
                 "an ID like `#37`, then `[HH:MM:SS] Speaker_Name:`, then the words spoken.\n"
@@ -427,24 +485,43 @@ class Plan:
                  "invent facts that are not in the turn.")
         if self.owner:
             f, up = self.owner_first, self.owner_first.upper()
+            lead = ", ".join(self.leaders)
+            team_select = (
+                f"Also select every turn in which a LEADERSHIP speaker ({lead}) sets a priority, "
+                f"deadline, process, rule or expectation for the whole team {f} is part of "
+                f"(\"everyone\", \"all of you\", \"the team\", \"from now on\", \"going forward\"), even "
+                f"when {f} is not named and never speaks. A leadership ask aimed at one specific other "
+                f"person is not one of these.\n") if self.leaders else ""
+            team_decide = (
+                f", or, when the speaker is LEADERSHIP ({lead}), a TEAM directive: a priority, deadline, "
+                f"process, rule or expectation set for the whole team {f} is part of, which counts even "
+                f"if {f} is not named") if self.leaders else ""
+            team_shape = (
+                f"- **TEAM: <imperative title: what the team must do>.** <one sentence of context> "
+                f"{quote}\n"
+                f"Use the TEAM: shape only for a leadership directive to the whole team. Not TEAM: a "
+                f"leadership ask of one other named person, the leader's own commitment (\"I'll send "
+                f"...\"), a status update, or an opinion.\n") if self.leaders else ""
             self.select_prompt = head + (
                 f"Select every turn in which someone OTHER than {f} asks {up} to do something, gives "
                 f"{f} a task, or tells {f} how something {f} owns should be done. This includes turns "
                 f"that continue such an ask in the following sentences without repeating the name. "
+                f"{team_select}"
                 f"Skip turns that only invite {f} to speak, other people's tasks, scheduling chatter, "
                 f"and small talk. If you are unsure, select it; a later step filters.\n") + tail
             self.bullets_prompt = (
                 f"You write action items for {up} from ONE turn of a meeting transcript. Earlier turns "
                 f"are shown only as context for who is being addressed.\n{roster}\n\n"
                 f"Decide whether the TURN contains an ask, task, or instruction directed at {up} by "
-                f"someone else, or, when the speaker is {f}, a commitment by {f} to do something.\n"
+                f"someone else, or, when the speaker is {f}, a commitment by {f} to do something"
+                f"{team_decide}.\n"
                 f"If it does not (someone else's task, a request aimed at a different person, a "
                 f"statement about {f} with no ask, status with no commitment, an invitation to speak, "
                 f"scheduling, small talk), output the single word SKIP.\n"
                 f"Otherwise output one bullet per distinct item and nothing else, each in exactly "
-                f"this shape:\n"
+                f"{'one of these shapes' if self.leaders else 'this shape'}:\n"
                 f"- **<imperative title: what {f} must do>.** <one sentence of context> {quote}\n"
-                + rules)
+                + team_shape + rules)
             self.infer_prompt = (
                 f"You are given {f}'s action items from one meeting (titles only). Write at most "
                 f"{MAX_INFERRED} implied next steps for {f} that follow from them: things that "
@@ -485,7 +562,7 @@ class Bullet:
     turn: int
     title: str
     rest: str
-    kind: str           # "ask" | "commit"
+    kind: str           # "ask" | "commit" | "directive"
     has_quote: bool
     verified: bool
 
@@ -529,6 +606,16 @@ def select_candidates(plan: Plan, turns: list[Turn], meeting: str, chat
     return ids, counts, tags
 
 
+def addressee(plan: Plan, text: str, quote: str) -> str:
+    """The other participant a quoted sentence opens by addressing ("Bram, can you ..."), or ""."""
+    i = text.lower().find(quote.lower().strip()[:40]) if quote.strip() else -1
+    if i < 0:
+        return ""
+    start = max(text.rfind(p, 0, i) for p in ".?!") + 1
+    m = VOCATIVE_RE.match(text[start:].lstrip())
+    return m.group(1) if m and m.group(1) in plan.other_firsts else ""
+
+
 def bullets_for(plan: Plan, turns: list[Turn], idx: int, chat) -> list[Bullet]:
     """Model calls for one candidate turn (one per sentence group) -> bullets,
     each verified against the turn text."""
@@ -565,6 +652,13 @@ def bullets_for(plan: Plan, turns: list[Turn], idx: int, chat) -> list[Bullet]:
                 title = km.group(2).strip()
                 if not plan.owner:
                     kind = "commit" if km.group(1).upper() == "COMMIT" else "ask"
+                elif km.group(1).upper() == "TEAM":
+                    # team-wide directives are the owner's items only when leadership gives them,
+                    # and a sentence that opens by naming one other participant is their task
+                    if t.speaker not in plan.leaders or any(addressee(plan, t.text, q)
+                                                            for q in QUOTE_RE.findall(rest)):
+                        continue
+                    kind = "directive"
             # "- **SKIP.**" written as a bullet, or a parroted "<placeholder>"
             if norm(title) in ("skip", "none") or len(norm(title)) < 4 or PLACEHOLDER_RE.search(title):
                 continue
@@ -635,6 +729,7 @@ def prepare(transcript_text: str, cfg: dict, *, model: str | None = None,
     plan = Plan(cfg, owner=owner, model=model, ollama=ollama)
     turns = parse_turns(transcript_text)
     speakers = speakers_of(transcript_text, turns)
+    plan.add_bosses(bosses_of(transcript_text))
     plan.build_prompts(speakers)
     if client is None:
         client = Ollama(plan.url, plan.model, plan.num_ctx, plan.timeout, num_predict=plan.num_predict,

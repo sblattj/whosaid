@@ -11,9 +11,10 @@ Each fixture is one directory holding exactly three files:
                            increasing, no continuation lines
   whosaid.toml             [workspace] owner (+ aliases), optional [groups];
                            read with wsconfig.load_config(<fixture dir>)
-  gold.json                schema 1: items (the owner's asks and commitments
-                           a good draft must contain) and distractors (turns
-                           that must produce no item)
+  gold.json                schema 1: items (the owner's asks, commitments and
+                           team-wide leadership directives a good draft must
+                           contain; kind ask | commit | directive) and
+                           distractors (turns that must produce no item)
 
 A predicted bullet matches a gold item when the bullet's turn time equals the
 item's `t` and any of the item's keywords, after action_items.norm(), is a
@@ -194,6 +195,8 @@ def validate(fixture_dir: str | os.PathLike) -> list[str]:
             elif header and m not in header:
                 bad(f"{CONFIG}: group {g!r} member {m!r} is not in the # Speakers header")
 
+    leaders = set(cfg["groups"].get(ai.LEADERSHIP_GROUP) or [])
+
     # -- items
     items = gold.get("items") if isinstance(gold.get("items"), list) else []
     if not isinstance(gold.get("items"), list):
@@ -228,8 +231,11 @@ def validate(fixture_dir: str | os.PathLike) -> list[str]:
         if turn is not None and speaker != turn.speaker:
             bad(f"{where}: speaker {speaker!r} != turn {it['t']} speaker {turn.speaker!r}")
         want = "commit" if speaker == owner else "ask"
+        if it.get("kind") == "directive" and speaker in leaders:
+            want = "directive"
         if it.get("kind") != want:
-            bad(f"{where}: kind {it.get('kind')!r}, want {want!r} (commit iff speaker is the owner)")
+            bad(f"{where}: kind {it.get('kind')!r}, want {want!r} (commit iff speaker is the owner; "
+                f"directive only from a [groups] leadership speaker)")
         if want == "commit" and turn is not None and len(turn.text) < COMMIT_MIN_CHARS:
             bad(f"{where}: owner commitment turn {it['t']} is {len(turn.text)} chars, "
                 f"want >= {COMMIT_MIN_CHARS}")

@@ -65,7 +65,10 @@ Each `test/eval/fixtures/<slug>/` holds three files:
  "distractors": [{"t": "00:01:20", "why": "..."}]}
 ```
 
-Each item is one action item the owner should get. `t` is the turn it comes from. `keywords` are
+Each item is one action item the owner should get. `kind` is `ask` (someone asks the owner),
+`commit` (the owner commits; only for the owner's own turns) or `directive` (a `[groups]`
+leadership speaker sets something for the whole team, with or without naming the owner).
+`t` is the turn it comes from. `keywords` are
 short phrases, and a drafted bullet counts as that item when its text contains any of them.
 `optional: true` marks an item the model may reasonably list or skip. A distractor is a turn that
 looks like an ask but is not one for the owner, such as a request aimed at someone else.

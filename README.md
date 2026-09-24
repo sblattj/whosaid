@@ -392,8 +392,13 @@ verbatim quote. Every quote is checked against its turn before it is kept; a mis
 rather than dropped silently, and the evidence turns are appended verbatim at the bottom of the
 file.
 
-Sections come from your config: the owner's own commitments, one section per `[groups]` entry
-(asks from leadership, asks from the team, and so on), and an inferred section for the rest. The
+Sections come from your config: one section per `[groups]` entry (asks from leadership, asks
+from the team, and so on), team directives from leadership, the owner's own commitments, and an
+inferred section for the rest. A team directive is a priority, deadline, process or expectation
+that leadership sets for the whole team, such as "from now on every PR needs a linked ticket". It
+counts as the owner's item even when the owner is never named and never speaks. Leadership is the
+`[groups]` entry named `leadership` plus anyone the transcript role-tags `boss`; without either,
+the section is left out. The
 file opens with a **DRAFT** banner so a reader knows it has not been reviewed, and ends with an
 evidence block of the exact turns each bullet came from. Read the evidence before folding
 anything into `_ACTION-ITEMS.md`.

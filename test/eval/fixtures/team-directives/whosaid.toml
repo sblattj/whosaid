@@ -1,0 +1,6 @@
+[workspace]
+owner = "Keiko_Example"
+
+[groups]
+leadership = ["Marisol_Example", "Anders_Example"]
+team = ["Bram_Example", "Tunde_Example"]
