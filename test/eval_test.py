@@ -691,6 +691,10 @@ def test_claude_cli(tmp: Path) -> None:
     cp = run_cli("--backend", "claude-cli", "--fixtures-dir", str(fixtures), extra_env=fenv)
     check(cp.returncode == 2 and "refusing" in cp.stderr and not dumps(dump),
           f"claude-cli + other fixtures dir -> refused before any call ({cp.returncode}, {cp.stderr})")
+    cp = run_cli("--backend", "claude-engine", "--fixtures-dir", str(fixtures),
+                 extra_env=dict(fenv, WHOSAID_CLAUDE_BIN=str(fake)))
+    check(cp.returncode == 2 and "refusing: --backend claude-engine" in cp.stderr and not dumps(dump),
+          f"claude-engine + other fixtures dir -> refused too ({cp.returncode}, {cp.stderr})")
     # ...unless told they are synthetic; then the full record path runs end to end
     out = tmp / "claude-out"
     cp = run_cli("--backend", "claude-cli", "--model", "sonnet", "--fixtures-dir", str(fixtures),

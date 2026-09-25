@@ -438,8 +438,9 @@ the model and a run from inside Claude Code matches the watcher's. The binary is
 `[summarizer] claude_bin`, else `WHOSAID_CLAUDE_BIN`, else `claude` on `PATH`, else
 `~/.local/bin/claude`, so the `whosaid watch` LaunchAgent finds it too. If the call fails, the
 engine warns and falls back to the local Ollama engine when `fallback = "ollama"` and Ollama is
-up, else writes the skeleton (exit 0). On the eval fixtures Opus scores F1 0.924 against 0.895 for
-`qwen3:14b` ([docs/eval.md](docs/eval.md)), with one call a meeting and no local model loaded.
+up, else writes the skeleton (exit 0). On the six eval fixtures the claude engine scores F1 0.960
+in 6 calls, against 0.899 for the same Opus model run through the per-turn pipeline (84 calls) and
+0.895 for `qwen3:14b` ([docs/eval.md](docs/eval.md)).
 
 ## Hands-free ingest: `whosaid watch`
 

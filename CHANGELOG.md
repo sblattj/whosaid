@@ -29,7 +29,10 @@ All notable changes to whosaid are documented here. This project adheres to
   and a parent Claude Code session's variables scrubbed. On failure it falls
   back to the local Ollama engine (`fallback = "ollama"`, the default, when Ollama is up) or the
   skeleton. New keys `claude_model`, `claude_timeout`, `claude_bin`, `fallback`, and the
-  `WHOSAID_CLAUDE_BIN` variable.
+  `WHOSAID_CLAUDE_BIN` variable. On the eval fixtures it scores F1 0.960 (precision 0.980, recall 0.941)
+  in 6 calls, against 0.899 for Opus through the per-turn pipeline in 84 calls.
+- A `claude-engine` eval backend and a committed `claude-engine-opus` recording, replayed by
+  `test/eval_test.py` like the others.
 - A `team-directives` eval fixture (owner nearly silent, two leadership speakers, 6 directives plus 1 optional)
   and a `directive` gold kind.
 

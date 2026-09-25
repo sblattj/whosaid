@@ -1,0 +1,151 @@
+{
+  "schema": 1,
+  "run": "claude-engine-opus",
+  "backend": "claude-engine",
+  "model": "opus",
+  "recorded": "2026-09-24",
+  "fixtures_sha256": "5ba11ca93f0529af6c4e101102e51efb09dd7e8ce4cce3e87f1088a4ec8b8d92",
+  "per_fixture": {
+    "aliases-no-groups": {
+      "tp": 7,
+      "fp": 0,
+      "fn": 2,
+      "bullets": 7,
+      "flagged": 0,
+      "inferred": 3,
+      "model_calls": 1,
+      "precision": 1.0,
+      "recall": 0.7778,
+      "f1": 0.875,
+      "flag_rate": 0.0,
+      "fp_tags": {
+        "distractor": 0,
+        "duplicate": 0,
+        "wrong-item": 0,
+        "unlabeled": 0
+      }
+    },
+    "distractor-heavy": {
+      "tp": 6,
+      "fp": 0,
+      "fn": 0,
+      "bullets": 6,
+      "flagged": 0,
+      "inferred": 3,
+      "model_calls": 1,
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0,
+      "flag_rate": 0.0,
+      "fp_tags": {
+        "distractor": 0,
+        "duplicate": 0,
+        "wrong-item": 0,
+        "unlabeled": 0
+      }
+    },
+    "long-status": {
+      "tp": 10,
+      "fp": 0,
+      "fn": 0,
+      "bullets": 10,
+      "flagged": 0,
+      "inferred": 3,
+      "model_calls": 1,
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0,
+      "flag_rate": 0.0,
+      "fp_tags": {
+        "distractor": 0,
+        "duplicate": 0,
+        "wrong-item": 0,
+        "unlabeled": 0
+      }
+    },
+    "named-asks": {
+      "tp": 9,
+      "fp": 0,
+      "fn": 0,
+      "bullets": 9,
+      "flagged": 0,
+      "inferred": 3,
+      "model_calls": 1,
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0,
+      "flag_rate": 0.0,
+      "fp_tags": {
+        "distractor": 0,
+        "duplicate": 0,
+        "wrong-item": 0,
+        "unlabeled": 0
+      }
+    },
+    "team-directives": {
+      "tp": 8,
+      "fp": 0,
+      "fn": 0,
+      "bullets": 8,
+      "flagged": 0,
+      "inferred": 3,
+      "model_calls": 1,
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0,
+      "flag_rate": 0.0,
+      "fp_tags": {
+        "distractor": 0,
+        "duplicate": 0,
+        "wrong-item": 0,
+        "unlabeled": 0
+      }
+    },
+    "unnamed-asks": {
+      "tp": 8,
+      "fp": 1,
+      "fn": 1,
+      "bullets": 9,
+      "flagged": 0,
+      "inferred": 3,
+      "model_calls": 1,
+      "precision": 0.8889,
+      "recall": 0.8889,
+      "f1": 0.8889,
+      "flag_rate": 0.0,
+      "fp_tags": {
+        "distractor": 0,
+        "duplicate": 0,
+        "wrong-item": 0,
+        "unlabeled": 1
+      }
+    }
+  },
+  "total": {
+    "tp": 48,
+    "fp": 1,
+    "fn": 3,
+    "bullets": 49,
+    "flagged": 0,
+    "inferred": 18,
+    "model_calls": 6,
+    "precision": 0.9796,
+    "recall": 0.9412,
+    "f1": 0.96,
+    "flag_rate": 0.0,
+    "fp_tags": {
+      "distractor": 0,
+      "duplicate": 0,
+      "wrong-item": 0,
+      "unlabeled": 1
+    }
+  },
+  "wall_seconds": {
+    "aliases-no-groups": 12.342,
+    "distractor-heavy": 9.905,
+    "long-status": 14.955,
+    "named-asks": 11.927,
+    "team-directives": 10.02,
+    "unnamed-asks": 11.217
+  }
+}

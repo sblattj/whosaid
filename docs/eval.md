@@ -16,13 +16,16 @@ The eval has two jobs:
 
 ## What leaves the machine
 
-**whosaid itself sends nothing anywhere, and nothing in this harness changes that.** `lib/` holds
-no cloud code and no cloud fallback. The summarizer talks only to Ollama on `127.0.0.1`.
+**whosaid sends nothing anywhere unless a workspace opts in with `[summarizer] engine =
+"claude"`**, which sends each transcript's text to Anthropic (see the README). The default
+engines talk only to Ollama on `127.0.0.1`, and nothing in this harness changes that.
 
-The `claude-cli` backend is different, so here is exactly what it does:
+The `claude-cli` and `claude-engine` backends are different, so here is exactly what they do:
 
-- It is developer tooling that lives only in `test/eval/run_eval.py`. whosaid never imports or
-  calls it, and it runs only when a developer passes `--backend claude-cli`.
+- `claude-cli` is developer tooling that lives only in `test/eval/run_eval.py`. whosaid never
+  imports or calls it, and it runs only when a developer passes `--backend claude-cli`.
+  `claude-engine` runs the opt-in engine's own code (`lib/claude_engine.py`), and only when a
+  developer passes `--backend claude-engine`.
 - It sends the **committed synthetic fixtures** in `test/eval/fixtures/` to Anthropic through the
   Claude Code CLI, and nothing else. Every person, project and meeting in those fixtures is made
   up, and every speaker label ends in `_Example`.
@@ -209,6 +212,14 @@ model sees only the summarizer's own prompts.
 - **Draft header.** lib stamps every draft "(local Ollama, offline)". Before saving a claude-cli
   draft, the runner rewrites that to "(claude-cli reference backend, eval only)".
 
+### The `claude-engine` backend
+
+`--backend claude-engine` scores the opt-in `engine = "claude"` itself: `lib/claude_engine.py`
+drafts each fixture with **one** whole-transcript `claude -p` call (the same isolation flags and
+env scrub as above), instead of running the per-turn pipeline with Claude as its model. The
+cassette holds that one reply; a replay feeds it back through the engine's own parsing,
+verification and rendering. Same cloud rule: committed synthetic fixtures only.
+
 ## Record and replay
 
 `--record` wraps each fixture's client in a recorder and writes three things. It writes nothing
@@ -265,27 +276,35 @@ every recording stops matching, and you need a fresh live run.
 
 ## Committed runs (recorded 2026-09-24, prompts from #42)
 
-Three runs are committed, over six fixtures. `python3 test/eval/run_eval.py --report` prints this
-comparison from them:
+Four runs are committed, over six fixtures. Three run the per-turn pipeline with different
+models; `claude-engine-opus` (added by #44) is the opt-in claude engine, one whole-transcript call
+per fixture. `python3 test/eval/run_eval.py --report` prints this comparison from them:
 
 | run | model | precision | recall | F1 | flag rate | model calls | wall s |
 |---|---|---|---|---|---|---|---|
+| claude-engine-opus | opus | 0.980 | 0.941 | 0.960 | 0.000 | 6 | 70.4 |
 | claude-cli-opus | opus | 0.845 | 0.961 | 0.899 | 0.000 | 84 | 321.4 |
 | ollama-qwen3-14b | qwen3:14b | 0.870 | 0.922 | 0.895 | 0.018 | 86 | 337.7 |
 | ollama-qwen2.5-14b | qwen2.5:14b | 0.750 | 0.824 | 0.785 | 0.036 | 81 | 571.8 |
 
-| fixture | claude-cli-opus | ollama-qwen3-14b | ollama-qwen2.5-14b |
-|---|---|---|---|
-| aliases-no-groups | 0.889 | 0.889 | 0.800 |
-| distractor-heavy | 0.857 | 0.769 | 0.714 |
-| long-status | 0.952 | 0.870 | 0.833 |
-| named-asks | 0.941 | 1.000 | 0.750 |
-| team-directives | 0.800 | 0.933 | 0.857 |
-| unnamed-asks | 0.947 | 0.889 | 0.737 |
+| fixture | claude-engine-opus | claude-cli-opus | ollama-qwen3-14b | ollama-qwen2.5-14b |
+|---|---|---|---|---|
+| aliases-no-groups | 0.875 | 0.889 | 0.889 | 0.800 |
+| distractor-heavy | 1.000 | 0.857 | 0.769 | 0.714 |
+| long-status | 1.000 | 0.952 | 0.870 | 0.833 |
+| named-asks | 1.000 | 0.941 | 1.000 | 0.750 |
+| team-directives | 1.000 | 0.800 | 0.933 | 0.857 |
+| unnamed-asks | 0.889 | 0.947 | 0.889 | 0.737 |
 
 Before #42, over the first five fixtures, the same three models scored F1 0.921 (opus), 0.821
 (`qwen3:14b`, thinking off) and 0.717 (`qwen2.5:14b`).
 
+- **The claude engine is the best run, with the same model.** Reading the whole transcript at
+  once, Opus drafts no duplicates (1 false positive in 49 bullets, against 9 in 60 per turn) and
+  finds every required item on four fixtures. Its 3 misses: two asks addressed only by an alias
+  on `aliases-no-groups`, and one `unnamed-asks` item it stamped on the reply turn a few seconds
+  later instead of the ask (that bullet also counts as its one false positive). Every cassette
+  records `resolved_model` `claude-opus-5-5`.
 - **Team directives.** `team-directives` is the fixture #42 added: the owner barely speaks and two
   leadership speakers set team-wide rules without naming them. The prompts before #42 excluded
   such turns by design. All three models now find at least 7 of its 8 required items.

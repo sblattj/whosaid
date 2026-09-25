@@ -15,10 +15,14 @@ Backends:
               it lives here in test/eval/, never in lib/, and it refuses any
               fixtures directory other than the committed synthetic one unless
               --allow-external-fixtures is given.
+  claude-engine  lib/claude_engine.py, the opt-in `engine = "claude"`: one
+              whole-transcript `claude -p` call per fixture instead of the
+              per-turn pipeline. Same cloud rule as claude-cli.
 
 Usage:
   python3 test/eval/run_eval.py --backend ollama --model qwen2.5:14b [--record]
   python3 test/eval/run_eval.py --backend claude-cli --model opus --record --jobs 4
+  python3 test/eval/run_eval.py --backend claude-engine --record --jobs 6
   python3 test/eval/run_eval.py --replay ollama-qwen2.5-14b
   python3 test/eval/run_eval.py --report
 
@@ -61,6 +65,7 @@ for _p in (REPO_DIR / "lib", EVAL_DIR):
         sys.path.insert(0, str(_p))
 
 import action_items as ai  # noqa: E402
+import claude_engine as ce  # noqa: E402
 import score as sc  # noqa: E402
 import wsconfig  # noqa: E402
 
@@ -68,7 +73,9 @@ SCHEMA = 1
 DEFAULT_FIXTURES = EVAL_DIR / "fixtures"
 DEFAULT_OUT = EVAL_DIR
 DEFAULT_OLLAMA = str(wsconfig.DEFAULTS["search"]["ollama"])
-DEFAULT_MODELS = {"ollama": ai.DEFAULT_MODEL, "claude-cli": "opus"}
+DEFAULT_MODELS = {"ollama": ai.DEFAULT_MODEL, "claude-cli": "opus", "claude-engine": ce.DEFAULT_MODEL}
+CLOUD_BACKENDS = ("claude-cli", "claude-engine")
+ENGINE_BACKEND = "claude-engine"     # drafts with claude_engine.draft, not the pipeline
 TRANSCRIPT_NAME = "transcript.speakers.txt"
 GOLD_NAME = "gold.json"
 
@@ -178,6 +185,10 @@ class Recorder:
         self.model = inner.model
         self.calls = 0
         self.cassette: dict[str, str] = {}
+
+    @property
+    def resolved_model(self) -> str:
+        return getattr(self.inner, "resolved_model", "")
 
     def chat(self, system: str, user: str, temperature: float = 0.0) -> str:
         self.calls += 1
@@ -309,17 +320,23 @@ def client_factory(backend: str, model: str, ollama: str = DEFAULT_OLLAMA, think
         return make
     if backend == "claude-cli":
         return lambda cfg: ClaudeCLI(model)
+    if backend == ENGINE_BACKEND:
+        return lambda cfg: ce.ClaudeCLI(model)
     raise ValueError(f"unknown backend {backend!r}")
 
 
 # ---- running ---------------------------------------------------------------------------
 
-def draft_fixture(fixtures_dir: Path, slug: str, cfg: dict, client, model: str) -> dict:
+def draft_fixture(fixtures_dir: Path, slug: str, cfg: dict, client, model: str, *,
+                  engine: bool = False) -> dict:
     fdir = Path(fixtures_dir) / slug
     text = (fdir / TRANSCRIPT_NAME).read_text()
     gold = json.loads((fdir / GOLD_NAME).read_text())
     t0 = time.monotonic()
-    markdown, stats = ai.draft(text, meeting=slug, cfg=cfg, model=model, client=client)
+    if engine:
+        markdown, stats = ce.draft(text, slug, cfg, client=client)
+    else:
+        markdown, stats = ai.draft(text, meeting=slug, cfg=cfg, model=model, client=client)
     wall = time.monotonic() - t0
     result = sc.score(markdown, gold, model_calls=stats["model_calls"])
     return {"slug": slug, "markdown": markdown, "stats": stats, "score": result,
@@ -327,7 +344,7 @@ def draft_fixture(fixtures_dir: Path, slug: str, cfg: dict, client, model: str) 
 
 
 def run_fixtures(fixtures_dir: Path, slugs: list[str], make_client, model: str, *,
-                 jobs: int = 1, wrap=None, progress=None) -> dict[str, dict]:
+                 jobs: int = 1, wrap=None, progress=None, engine: bool = False) -> dict[str, dict]:
     """Draft and score each fixture with a fresh client (wrapped by `wrap` when
     given). Exceptions propagate; with jobs > 1 the first one wins after the
     running fixtures finish."""
@@ -337,7 +354,7 @@ def run_fixtures(fixtures_dir: Path, slugs: list[str], make_client, model: str, 
         client = make_client(cfgs[slug])
         if wrap:
             client = wrap(slug, client)
-        res = draft_fixture(fixtures_dir, slug, cfgs[slug], client, model)
+        res = draft_fixture(fixtures_dir, slug, cfgs[slug], client, model, engine=engine)
         if progress:
             progress(res)
         return res
@@ -377,7 +394,8 @@ def record(fixtures_dir: Path, slugs: list[str], backend: str, model: str, make_
     run = run or run_slug(backend, model)
     sha = fixtures_sha256(fixtures_dir, slugs)
     runs = run_fixtures(fixtures_dir, slugs, make_client, model, jobs=jobs,
-                        wrap=lambda slug, c: Recorder(c), progress=progress)
+                        wrap=lambda slug, c: Recorder(c), progress=progress,
+                        engine=backend == ENGINE_BACKEND)
     today = date.today().isoformat()
     doc = results_doc(run, backend, model, today, sha, runs)
     p = paths(out_dir, run)
@@ -461,7 +479,8 @@ def replay(run: str, out_dir: Path = DEFAULT_OUT, fixtures_dir: Path = DEFAULT_F
             fixtures_dir, slugs, lambda cfg: None, model, jobs=jobs,
             wrap=lambda slug, _c: ReplayClient(cassettes[slug].get("calls") or {},
                                                str(cassettes[slug].get("model", model)),
-                                               name=f"{run}/{slug}"))
+                                               name=f"{run}/{slug}"),
+            engine=expected.get("backend") == ENGINE_BACKEND)
     except CassetteMiss as e:
         return 1, [f"MISMATCH {run}: {e}"], None
     got = results_doc(run, str(expected.get("backend", "")), model, "", sha, runs)
@@ -542,7 +561,8 @@ def build_parser() -> argparse.ArgumentParser:
     mode.add_argument("--replay", metavar="RUN", help="re-score a recorded run from its cassettes")
     mode.add_argument("--report", action="store_true", help="compare every recorded run")
     p.add_argument("--backend", choices=sorted(DEFAULT_MODELS), help="model backend for a live run")
-    p.add_argument("--model", help="model name (default: qwen2.5:14b for ollama, opus for claude-cli)")
+    p.add_argument("--model", help="model name (default: qwen2.5:14b for ollama, opus for claude-cli "
+                                   "and claude-engine)")
     p.add_argument("--ollama", default=DEFAULT_OLLAMA, help="Ollama base URL")
     p.add_argument("--think", choices=("on", "off"),
                    help="ollama backend: force [summarizer] think; 'on' records as <run>-think")
@@ -554,7 +574,7 @@ def build_parser() -> argparse.ArgumentParser:
                    help="root holding cassettes/ and results/")
     p.add_argument("--jobs", type=int, default=1, help="fixtures drafted concurrently (threads)")
     p.add_argument("--allow-external-fixtures", action="store_true",
-                   help="let --backend claude-cli read a fixtures dir other than the committed "
+                   help="let --backend claude-cli/claude-engine read a fixtures dir other than the committed "
                         "synthetic one (it sends those transcripts to a cloud model)")
     p.add_argument("-v", "--verbose", action="store_true",
                    help="print every bullet's verdict and every missed gold item")
@@ -581,9 +601,9 @@ def main(argv: list[str] | None = None) -> int:
     if not args.backend:
         build_parser().error("give --backend for a live run, or --replay RUN, or --report")
 
-    if (args.backend == "claude-cli" and fixtures_dir != DEFAULT_FIXTURES.resolve()
+    if (args.backend in CLOUD_BACKENDS and fixtures_dir != DEFAULT_FIXTURES.resolve()
             and not args.allow_external_fixtures):
-        print(f"refusing: --backend claude-cli sends transcripts to a cloud model and only reads "
+        print(f"refusing: --backend {args.backend} sends transcripts to a cloud model and only reads "
               f"the committed synthetic fixtures ({DEFAULT_FIXTURES.relative_to(REPO_DIR)}); "
               f"pass --allow-external-fixtures only for other SYNTHETIC fixtures", file=sys.stderr)
         return 2
@@ -613,7 +633,8 @@ def main(argv: list[str] | None = None) -> int:
             doc, runs = record(fixtures_dir, slugs, args.backend, model, make, out_dir,
                                jobs=jobs, progress=progress, run=run)
         else:
-            runs = run_fixtures(fixtures_dir, slugs, make, model, jobs=jobs, progress=progress)
+            runs = run_fixtures(fixtures_dir, slugs, make, model, jobs=jobs, progress=progress,
+                                engine=args.backend == ENGINE_BACKEND)
             doc = results_doc(run, args.backend, model, date.today().isoformat(),
                               fixtures_sha256(fixtures_dir, slugs), runs)
     except ai.SummarizerError as e:
