@@ -36,7 +36,7 @@ All notable changes to whosaid are documented here. This project adheres to
 ### Changed
 
 - The committed eval runs (`claude-cli-opus`, `ollama-qwen3-14b`, `ollama-qwen2.5-14b`) are
-  re-recorded on the #42 prompts over six fixtures: F1 0.924, 0.895 and 0.785. The
+  re-recorded on the #42 prompts over six fixtures: F1 0.899, 0.895 and 0.785. The
   `ollama-qwen3-14b-think` and `ollama-qwen3.8-27b` recordings were not re-recorded and are
   removed; their numbers stay in [docs/eval.md](docs/eval.md) as history.
 
@@ -58,6 +58,11 @@ All notable changes to whosaid are documented here. This project adheres to
   thought could hit `num_predict` and leave no answer. Reasoning a model leaves inline in its
   reply is stripped before parsing, and a model with no thinking mode gets an actionable hint
   when `think` is on.
+- The eval's claude-cli backend no longer inherits `ANTHROPIC_MODEL` /
+  `ANTHROPIC_DEFAULT_*_MODEL` or a parent Claude Code session's `CLAUDECODE` / `CLAUDE_CODE_*`
+  variables, which could silently remap `--model opus`; the OAuth token and provider selectors
+  still pass through. It also reads the resolved model from `modelUsage`, so every cassette
+  records `resolved_model` again.
 
 ## [1.6.0] - 2026-09-23
 

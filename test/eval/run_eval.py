@@ -84,7 +84,15 @@ CLAUDE_ISOLATION = ("--tools", "", "--strict-mcp-config", "--setting-sources", "
                     "--disable-slash-commands", "--no-session-persistence",
                     "--output-format", "json")
 # these outrank the subscription OAuth token and would bill the API instead
-CLAUDE_SCRUBBED_ENV = ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN")
+CLAUDE_SCRUBBED_ENV = ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN",       # would bill the API
+                       "ANTHROPIC_MODEL", "ANTHROPIC_DEFAULT_OPUS_MODEL",  # would remap `--model opus`
+                       "ANTHROPIC_DEFAULT_SONNET_MODEL", "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+                       "ANTHROPIC_SMALL_FAST_MODEL", "CLAUDECODE", "CLAUDE_EFFORT", "CLAUDE_PID",
+                       "CLAUDE_JOB_DIR")
+# a parent Claude Code session's CLAUDE_CODE_* vars (session id, messaging socket, ...) stay
+# behind too; only the ones that pick the login or the provider pass through
+CLAUDE_KEPT_ENV = ("CLAUDE_CODE_OAUTH_TOKEN", "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX",
+                   "CLAUDE_CODE_USE_FOUNDRY")
 CLAUDE_AUTH_HINT = ("log in with `claude` interactively, or mint a subscription token with "
                     "`claude setup-token` and export it as CLAUDE_CODE_OAUTH_TOKEN")
 
@@ -228,10 +236,8 @@ class ClaudeCLI:
 
     @staticmethod
     def child_env() -> dict[str, str]:
-        env = dict(os.environ)
-        for k in CLAUDE_SCRUBBED_ENV:
-            env.pop(k, None)
-        return env
+        return {k: v for k, v in os.environ.items() if k not in CLAUDE_SCRUBBED_ENV
+                and (not k.startswith("CLAUDE_CODE_") or k in CLAUDE_KEPT_ENV)}
 
     def chat(self, system: str, user: str, temperature: float = 0.0) -> str:
         del temperature                  # no such flag on the CLI
@@ -279,6 +285,9 @@ class ClaudeCLI:
                                      CLAUDE_AUTH_HINT)
         if proc.returncode != 0:
             raise _Retry(f"exit {proc.returncode}: {proc.stderr.strip()[:300]!r}")
+        usage = result.get("modelUsage")     # `--output-format json` prints no init event
+        if not self.resolved_model and isinstance(usage, dict) and len(usage) == 1:
+            self.resolved_model = next(iter(usage))
         return str(result.get("result") or "").strip()
 
 
