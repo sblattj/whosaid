@@ -360,7 +360,7 @@ set -e
 assert_eq "$RC" 0 "workspace omitted: \$WHOSAID_WORKSPACE applies"
 assert_eq "$(printf '%s\n' "$OUT" | tail -1)" "3 hit(s)." "single positional is the query, not the workspace"
 set +e
-OUT="$(cd "$WS" && python3 "$SEARCH_PY" speakers --json 2>/dev/null)"; RC=$?
+OUT="$(cd "$WS" && env -u WHOSAID_WORKSPACE python3 "$SEARCH_PY" speakers --json 2>/dev/null)"; RC=$?
 set -e
 assert_eq "$RC" 0 "workspace omitted: cwd with whosaid.toml applies"
 assert_eq "$(py 'len(d)')" "4" "cwd workspace: 4 speakers"
