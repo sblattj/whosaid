@@ -40,4 +40,11 @@ jobs:
           # the empty string and prxref falls back to 4096, which truncates
           # reasoning models before the findings JSON is emitted.
           PRXREF_LLM_MAX_TOKENS: ${{ vars.PRXREF_LLM_MAX_TOKENS || '32000' }}
-        run: uvx prxref review --pr-url "${{ github.event.pull_request.html_url }}" -v
+          # Wall-clock deadline for ONE worker chunk's completion, in seconds
+          # (prxref default 45). A big chunk on a reasoning model runs well past
+          # a minute, and a timed-out chunk is retried without repository context.
+          PRXREF_LLM_TIMEOUT: ${{ vars.PRXREF_LLM_TIMEOUT || '180' }}
+          # Repository context (prxref 0.16+): off, diff or repo. Off unless the
+          # repository variable opts in; see prxref's README, Repository Context.
+          PRXREF_REPO_CONTEXT: ${{ vars.PRXREF_REPO_CONTEXT || 'off' }}
+        run: uvx prxref@latest review --pr-url "${{ github.event.pull_request.html_url }}" -v
