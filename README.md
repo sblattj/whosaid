@@ -555,6 +555,25 @@ without FDA. The same applies to capture apps that sync via iCloud Drive (e.g. J
 Record): their files land under `~/Library`, so they cannot feed the no-FDA watcher — an App
 Store recorder is only an option if it writes into a folder you choose outside `~/Library`.
 
+The menu bar glyph works on a no-admin setup too, with one expected gap. Every glyph the
+SwiftBar plugin (`whosaid watch menubar`) shows except 🔴 REC comes from `watch status --json`
+and the workspace's `.watch.log` — no grant needed — so the idle/waiting/ingesting/done/
+warn/not-loaded glyphs, the dropdown links and actions, and the transition notifications all
+work untouched against a `--no-fda` watcher. 🔴 REC is the exception for two independent
+reasons:
+
+- **REC is a Voice-Memos-store signal by design.** "Recording right now" means a store row
+  with no synced file and 0 seconds; a plain folder has no in-progress signal, so a
+  `--no-fda` watcher never shows REC even with every grant in place — absence of the dot is
+  expected, not a failure.
+- **SwiftBar itself holds a separate Full Disk Access grant**, admin-gated exactly like the
+  watcher's. Without it the plugin's store probe fails silently — the REC dot never appears,
+  and the dropdown says so with a red "SwiftBar cannot read the Voice Memos store" line, a
+  link to the grant pane, and a relaunch action. Everything else in the menu keeps working.
+
+See [Menu bar glyph](#menu-bar-glyph-whosaid-watch-menubar-swiftbar) for the full story,
+including why a fresh grant needs a relaunch.
+
 ### Menu bar glyph: `whosaid watch menubar` (SwiftBar)
 
 `whosaid watch menubar install [--workspace <ws>] [--interval 10s]` symlinks a stdlib-only

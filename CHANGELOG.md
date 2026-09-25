@@ -6,8 +6,14 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ## [Unreleased]
 
+## [1.7.0] - 2026-09-24
+
 ### Added
 
+- **`whosaid doctor` reports the summarizer engine (issue #46).** Doctor now shows the
+  configured `[summarizer] engine`, and for `claude` probes that the binary resolves and a
+  `claude -p` call answers under the watcher's launchd-like environment. `whosaid watch install`
+  names the engine in its summary and warns that transcripts go to Anthropic when it is "claude".
 - **Team directives from leadership.** When leadership sets a priority, deadline, process or
   expectation for the whole team ("from now on every PR needs a linked ticket", "all of you
   finish the security training by the end of the month"), the summarizer now drafts it as the
@@ -53,6 +59,19 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ### Fixed
 
+- **`watch install` provisioning checks the codesign return code (issue #31).** A failing
+  codesign used to be silently ignored, leaving a half-provisioned agent tree whose unsigned
+  interpreter the Full Disk Access grant cannot key to. The return code is now checked, the
+  captured stderr is surfaced, the half-provisioned agent tree is removed, and install aborts
+  with remediation steps.
+- **The Full Disk Access deep-link uses the current macOS form (issue #34).** The pane path now
+  lives in one named constant,
+  `x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_AllFiles`,
+  shared between `watch install` and the SwiftBar plugin — mirrored, with a sync comment and a
+  drift-guard test so the two copies cannot drift.
+- Test hygiene: `search_test.sh` scrubs `WHOSAID_WORKSPACE` from the environment of the check
+  that must not inherit it, and the `commitments` / `roles` / `workspace` test scripts carry the
+  executable bit again.
 - A model reply bullet written without its leading `- ` (`**Title.** context "quote"`), which
   `qwen3:14b` often does, is now parsed instead of silently dropped.
 - **Thinking models no longer reason before every summarizer call.** The Ollama request now
@@ -66,6 +85,13 @@ All notable changes to whosaid are documented here. This project adheres to
   variables, which could silently remap `--model opus`; the OAuth token and provider selectors
   still pass through. It also reads the resolved model from `modelUsage`, so every cassette
   records `resolved_model` again.
+
+### Documentation
+
+- **The "No admin rights?" section covers the menu bar glyph (issue #32).** SwiftBar holds its
+  own admin-gated Full Disk Access grant; without it the plugin degrades gracefully and only the
+  🔴 REC indicator goes missing, and plain-folder (`--no-fda`) watchers never show REC
+  regardless.
 
 ## [1.6.0] - 2026-09-23
 
@@ -660,7 +686,8 @@ attributed to a person — who said what — with nothing ever leaving your Mac.
 - `ffmpeg` and `uv` (Homebrew). Python is used only through ephemeral `uv`
   environments — no persistent install is left behind.
 
-[Unreleased]: https://github.com/sblattj/whosaid/compare/v1.6.0...HEAD
+[Unreleased]: https://github.com/sblattj/whosaid/compare/v1.7.0...HEAD
+[1.7.0]: https://github.com/sblattj/whosaid/releases/tag/v1.7.0
 [1.6.0]: https://github.com/sblattj/whosaid/releases/tag/v1.6.0
 [1.5.0]: https://github.com/sblattj/whosaid/releases/tag/v1.5.0
 [1.4.0]: https://github.com/sblattj/whosaid/releases/tag/v1.4.0
