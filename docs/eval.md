@@ -265,18 +265,18 @@ comparison from them:
 
 | run | model | precision | recall | F1 | flag rate | model calls | wall s |
 |---|---|---|---|---|---|---|---|
-| claude-cli-opus | opus | 0.891 | 0.961 | 0.924 | 0.018 | 80 | 903.9 |
+| claude-cli-opus | opus | 0.845 | 0.961 | 0.899 | 0.000 | 84 | 321.4 |
 | ollama-qwen3-14b | qwen3:14b | 0.870 | 0.922 | 0.895 | 0.018 | 86 | 337.7 |
 | ollama-qwen2.5-14b | qwen2.5:14b | 0.750 | 0.824 | 0.785 | 0.036 | 81 | 571.8 |
 
 | fixture | claude-cli-opus | ollama-qwen3-14b | ollama-qwen2.5-14b |
 |---|---|---|---|
-| aliases-no-groups | 1.000 | 0.889 | 0.800 |
+| aliases-no-groups | 0.889 | 0.889 | 0.800 |
 | distractor-heavy | 0.857 | 0.769 | 0.714 |
 | long-status | 0.952 | 0.870 | 0.833 |
-| named-asks | 1.000 | 1.000 | 0.750 |
-| team-directives | 0.842 | 0.933 | 0.857 |
-| unnamed-asks | 0.875 | 0.889 | 0.737 |
+| named-asks | 0.941 | 1.000 | 0.750 |
+| team-directives | 0.800 | 0.933 | 0.857 |
+| unnamed-asks | 0.947 | 0.889 | 0.737 |
 
 Before #42, over the first five fixtures, the same three models scored F1 0.921 (opus), 0.821
 (`qwen3:14b`, thinking off) and 0.717 (`qwen2.5:14b`).
@@ -287,10 +287,20 @@ Before #42, over the first five fixtures, the same three models scored F1 0.921 
 - **A bare-bold reply bullet was being dropped.** `qwen3:14b` often writes `**Title.** ...` with
   no leading `- `. Before #42 the parser skipped those lines; on `team-directives` that alone cut
   its recall from 7 of 8 to 1 of 8.
-- **The reference is `opus`**, which resolved to `claude-opus-5-5` on the recording date. The
-  claude-cli backend has no temperature control, so a new live run of it can differ from this
-  one (its `unnamed-asks` SELECT pass picked a turn in one live run and skipped it in the next,
-  with the same prompt).
+- **The reference is `opus`**, which resolved to `claude-opus-5-5` on the recording date; every
+  cassette records it as `resolved_model`. The claude-cli backend has no temperature control, so a
+  new live run of it can differ from this one (its `unnamed-asks` SELECT pass picked a turn in one
+  live run and skipped it in the next, with the same prompt).
+- **Opus is tied with `qwen3:14b` here, not ahead.** Its recall is the best of the three (0.961),
+  but 8 of its 9 false positives are duplicates: a second bullet for an item it already drafted
+  from another turn. The per-turn pipeline reads one turn at a time, so it cannot see that the
+  item was already taken.
+- **A first recording of these prompts was not Opus 5.5.** It ran from a shell inside Claude Code
+  whose `ANTHROPIC_DEFAULT_OPUS_MODEL` remapped `--model opus` to another model, and it scored F1
+  0.924. The claude-cli backend now drops the model-alias variables and a parent Claude Code
+  session's `CLAUDECODE` / `CLAUDE_CODE_*` variables from the child, and reads the resolved model
+  from `modelUsage` when the CLI prints no init event, so the cassette always says which model
+  answered.
 - **Wall time is not comparable.** `wall s` is the sum of per-fixture drafting times. These runs
   were recorded on a 48 GB Apple M5 Pro under heavy unrelated load (load average 20 to 38), with
   the opus run in parallel. Unloaded, `qwen3:14b` took 177 to 194 s for all six fixtures.

@@ -566,6 +566,10 @@ if mode == "garbage":
     print("this is not json")
     sys.exit(0)
 bad = mode == "is_error"
+if mode == "single":                 # what `--output-format json` prints today: one result object
+    print(json.dumps({{"type": "result", "subtype": "success", "is_error": False, "result": "NONE",
+                      "modelUsage": {{"claude-fake-2": {{"inputTokens": 1}}}}}}))
+    sys.exit(0)
 print(json.dumps([
     {{"type": "system", "subtype": "init", "apiKeySource": "none", "model": "claude-fake-1"}},
     {{"type": "assistant", "message": {{}}}},
@@ -600,7 +604,9 @@ def test_claude_cli(tmp: Path) -> None:
     dump = fresh("ok")
     with env(WHOSAID_EVAL_CLAUDE_BIN=str(fake), FAKE_CLAUDE_DUMP=str(dump), FAKE_CLAUDE_MODE="ok",
              ANTHROPIC_API_KEY="sk-must-not-leak", ANTHROPIC_AUTH_TOKEN="tok-must-not-leak",
-             CLAUDE_CODE_OAUTH_TOKEN="oauth-passes-through"):
+             CLAUDE_CODE_OAUTH_TOKEN="oauth-passes-through", ANTHROPIC_DEFAULT_OPUS_MODEL="remapped",
+             ANTHROPIC_MODEL="remapped", CLAUDECODE="1", CLAUDE_CODE_SESSION_ID="parent-session",
+             CLAUDE_CODE_MESSAGING_SOCKET="/tmp/parent.sock"):
         c = rv.ClaudeCLI("sonnet")
         reply = c.chat("SYSTEM PROMPT TEXT", "USER MESSAGE TEXT", temperature=0.2)
         parent_still = os.environ.get("ANTHROPIC_API_KEY")
@@ -610,6 +616,10 @@ def test_claude_cli(tmp: Path) -> None:
     check("ANTHROPIC_API_KEY" not in cenv and "ANTHROPIC_AUTH_TOKEN" not in cenv,
           "API-key env vars are removed from the child")
     check(cenv.get("CLAUDE_CODE_OAUTH_TOKEN") == "oauth-passes-through", "the OAuth token passes through")
+    check(not {"ANTHROPIC_DEFAULT_OPUS_MODEL", "ANTHROPIC_MODEL"} & set(cenv),
+          "model-alias overrides are removed, so --model alone picks the model")
+    check(not {"CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "CLAUDE_CODE_MESSAGING_SOCKET"} & set(cenv),
+          "a parent Claude Code session's vars are removed")
     check(parent_still == "sk-must-not-leak", "the parent env is not modified")
     check(argv[0] == "-p" and after(argv, "--system-prompt") == "SYSTEM PROMPT TEXT"
           and after(argv, "--model") == "sonnet", f"-p, system prompt and model in argv: {argv}")
@@ -625,6 +635,13 @@ def test_claude_cli(tmp: Path) -> None:
           f"runs in a fresh temp dir that is removed afterwards ({cwd})")
     check(c.calls == 1 and c.resolved_model == "claude-fake-1" and c.model == "sonnet",
           "calls counted, resolved model read from the init event")
+
+    dump = fresh("single")
+    with env(WHOSAID_EVAL_CLAUDE_BIN=str(fake), FAKE_CLAUDE_DUMP=str(dump), FAKE_CLAUDE_MODE="single"):
+        c = rv.ClaudeCLI("opus")
+        reply = c.chat("S", "U")
+    check(reply == "NONE" and c.resolved_model == "claude-fake-2",
+          f"a lone result object: resolved model read from modelUsage ({c.resolved_model!r})")
 
     dump = fresh("err")
     with env(WHOSAID_EVAL_CLAUDE_BIN=str(fake), FAKE_CLAUDE_DUMP=str(dump), FAKE_CLAUDE_MODE="is_error"):
