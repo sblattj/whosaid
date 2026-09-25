@@ -706,6 +706,13 @@ cmd_doctor() {
     echo "  Ollama not reachable at $ollama_url: search falls back to exact; action items use --engine hook or none (optional: brew install ollama; ollama pull nomic-embed-text)"
   fi
 
+  # Summarizer engine (GitHub issue #46): informational like the Ollama lines
+  # above. Shows the configured engine; for the opt-in claude engine also
+  # resolves the binary and probes `claude -p` under the watcher's launchd-like
+  # environment, so an expired Claude Code login surfaces here instead of as a
+  # meeting quietly falling back to the skeleton.
+  doctor_summarizer
+
   if [[ -n "${WHOSAID_WORKSPACE:-}" ]]; then
     local ws_status_py="$REPO_DIR/lib/search.py"
     if [[ ! -d "$WHOSAID_WORKSPACE" ]]; then
@@ -733,6 +740,119 @@ cmd_doctor() {
 
   echo "--- avfoundation audio devices ---"
   ffmpeg -f avfoundation -list_devices true -i "" 2>&1 | awk '/AVFoundation audio devices:/{show=1} show' || true
+}
+
+# doctor_summarizer: the [summarizer] engine lines of `whosaid doctor`
+# (GitHub issue #46). The engine is read exactly the way the summarizer reads
+# it (lib/wsconfig.py load_config over wsconfig.resolve_workspace), and when
+# the opt-in claude engine is configured the binary is resolved with
+# claude_engine.resolve_bin and probed with one cheap `claude -p` call under
+# the watcher's launchd-like environment — a minimal env -i carrying only HOME
+# and the agent PATH from lib/watch.py, the env the launchd agent runs with —
+# so an expired login shows up in doctor instead of as a meeting falling back
+# to the skeleton. Every failure is a printed line; must never fail doctor.
+doctor_summarizer() {
+  local lib_dir="$REPO_DIR/lib"
+  if ! command -v python3 >/dev/null 2>&1; then
+    echo "  summarizer engine: unknown (needs python3)"
+    return 0
+  fi
+  if [[ ! -f "$lib_dir/wsconfig.py" ]]; then
+    echo "  summarizer engine: unknown (lib/wsconfig.py missing)"
+    return 0
+  fi
+  python3 - "$lib_dir" <<'PY' 2>&1 || echo "  summarizer engine: unknown (engine check failed)"
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+sys.path.insert(0, sys.argv[1])
+PROBE_TIMEOUT = 30      # s; a hung CLI must not hang doctor (Ollama check: 1.5 s)
+PROBE_MODEL = "haiku"   # the cheapest call; login health is model-independent
+
+try:
+    import wsconfig
+    try:
+        ws = wsconfig.resolve_workspace(None)
+    except SystemExit:  # no workspace configured: report the DEFAULTS engine (auto)
+        ws = Path(sys.argv[1]) / ".doctor-no-workspace"
+    cfg = wsconfig.load_config(ws)
+    engine = str(cfg["summarizer"].get("engine") or "auto").strip()
+    src = "whosaid.toml" if (ws / wsconfig.CONFIG_NAME).is_file() else "default"
+except Exception as e:  # noqa: BLE001  (this probe must never fail doctor)
+    print(f"  summarizer engine: unknown (cannot read config: {e})")
+    sys.exit(0)
+
+if engine != "claude":
+    try:
+        import workspace
+        known = engine in workspace.ENGINES
+    except Exception:
+        known = True  # cannot validate; just report the configured name
+    if not known:
+        print(f"✗ summarizer engine: {engine!r} is unknown (expected one of "
+              f"{', '.join(workspace.ENGINES)}) — fix [summarizer] engine in {wsconfig.CONFIG_NAME}")
+    elif engine == "auto":
+        print(f"  summarizer engine: auto ({src}) — auto never picks claude; claude runs "
+              f'only when [summarizer] engine = "claude"')
+    else:
+        print(f"  summarizer engine: {engine} ({src})")
+    sys.exit(0)  # no claude probe: auto never picks claude and locals never call it
+
+print(f"  summarizer engine: claude ({src}) — opt-in: action items send the transcript to Anthropic")
+try:
+    import claude_engine
+except Exception as e:  # noqa: BLE001
+    print(f"✗ cannot import lib/claude_engine.py ({e}) — fix: reinstall whosaid or file an issue")
+    sys.exit(0)
+binary = claude_engine.resolve_bin(str(cfg["summarizer"].get("claude_bin") or ""))
+if not binary:
+    print(f"✗ claude binary not found — fix: install the Claude Code CLI, or set "
+          f"[summarizer] claude_bin or {claude_engine.BIN_ENV} to its path")
+    sys.exit(0)
+print(f"✓ claude binary: {binary}")
+
+try:
+    import watch
+except Exception as e:  # noqa: BLE001
+    print(f"✗ cannot import lib/watch.py for the watcher agent PATH ({e}); `claude -p` probe skipped")
+    sys.exit(0)
+
+# The launchd watcher runs with a minimal environment; reproduce it exactly:
+# HOME plus the agent PATH from lib/watch.py and nothing else (a minimal
+# `env -i`), so a login that only works in this interactive shell is caught
+# here. argv mirrors claude_engine's isolated call shape.
+env = {"HOME": os.environ.get("HOME") or str(Path.home()), "PATH": watch.AGENT_PATH}
+argv = [binary, "-p", "Reply with the single word ok.", "--model", PROBE_MODEL,
+        *claude_engine.ISOLATION]
+cwd = tempfile.mkdtemp(prefix="whosaid-doctor-")
+try:
+    try:
+        proc = subprocess.run(argv, capture_output=True, text=True, env=env, cwd=cwd,
+                              timeout=PROBE_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        print(f"✗ `claude -p` timed out after {PROBE_TIMEOUT}s under the watcher's "
+              "launchd-like environment (HOME + agent PATH) — every meeting would fall "
+              "back while it hangs")
+        sys.exit(0)
+    except OSError as e:
+        print(f"✗ cannot run {binary}: {e}")
+        sys.exit(0)
+finally:
+    shutil.rmtree(cwd, ignore_errors=True)
+if proc.returncode == 0 and (proc.stdout or "").strip():
+    print(f"✓ `claude -p` answered under the watcher's launchd-like environment "
+          f"(HOME + agent PATH, model {PROBE_MODEL})")
+else:
+    detail = " ".join(((proc.stderr or "") + " " + (proc.stdout or "")).split())[:200]
+    print(f"✗ `claude -p` failed under the watcher's launchd-like environment "
+          f"(exit {proc.returncode}): {detail or 'no output'}")
+    print(f"  fix: {claude_engine.AUTH_HINT}")
+sys.exit(0)
+PY
 }
 
 # ollama_reachable URL: 0 when GET URL/api/tags answers within 1.5 s. curl when

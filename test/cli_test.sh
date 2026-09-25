@@ -12,6 +12,9 @@
 # Section 5 pushes a stub ingest through `--index` and needs ffmpeg/ffprobe
 # for the 1s fixture (SKIP without them). No models, no network: the index is
 # built with --no-embed so Ollama is never contacted.
+# Section 6 exercises the doctor summarizer-engine lines (GitHub issue #46)
+# with fake claude binaries in the temp dir — no real `claude` is resolved,
+# nothing touches the network.
 #
 # macOS/BSD only: BSD grep/awk, bash 3.2 (no associative arrays, no bash-4-isms).
 
@@ -72,6 +75,14 @@ assert_text() {  # assert_text <ERE-pattern> <text> <what>
     PASS=$((PASS + 1))
   else
     fail "$3: pattern [$1] not found in text: [$2]"
+  fi
+}
+
+assert_not_text() {  # assert_not_text <ERE-pattern> <text> <what>
+  if printf '%s\n' "$2" | grep -qE -- "$1"; then
+    fail "$3: pattern [$1] unexpectedly found in text: [$2]"
+  else
+    PASS=$((PASS + 1))
   fi
 }
 
@@ -437,6 +448,90 @@ print("ok")
     echo "SKIP: ingest --index section needs ffmpeg and ffprobe" >&2
   fi
 fi
+
+# ---------------------------------------------------------------------------
+# 6. doctor: the summarizer-engine lines (GitHub issue #46). Hermetic: the
+#    claude engine always points [summarizer] claude_bin at a fake binary in
+#    $TMP, so no real `claude` is resolved or run and no network is touched.
+# ---------------------------------------------------------------------------
+echo "-- doctor engine --"
+command -v python3 >/dev/null 2>&1 || fail "python3 is required for the doctor engine section"
+unset WHOSAID_CLAUDE_BIN  # a developer shell must not redirect the probe
+
+mkdir -p "$TMP/eng-bin"
+# ok: answers like a logged-in CLI. The checks also prove the probe ran the
+# way the watcher would: `-p` first, and under the launchd-like minimal env —
+# WHOSAID_OLLAMA is exported in this script's environment, so a probe that
+# sees it did not get the scrubbed env.
+cat > "$TMP/eng-bin/claude-ok" <<'EOF'
+#!/bin/bash
+[ "$1" = "-p" ] || { echo "probe must call claude with -p first" >&2; exit 9; }
+[ -n "${WHOSAID_OLLAMA:-}" ] && { echo "probe env leak: WHOSAID_OLLAMA visible" >&2; exit 9; }
+echo '{"type":"result","result":"ok"}'
+EOF
+chmod +x "$TMP/eng-bin/claude-ok"
+# expired login: the binary is there and runs, but answers non-zero on stderr.
+cat > "$TMP/eng-bin/claude-expired" <<'EOF'
+#!/bin/bash
+echo "Error: Invalid authorization, please log in again" >&2
+exit 1
+EOF
+chmod +x "$TMP/eng-bin/claude-expired"
+
+ENG_WS="$TMP/ws-engine"
+mkdir -p "$ENG_WS"
+
+# 6a. engine auto (no whosaid.toml): one engine line and no claude probe —
+#     auto never picks claude (issue #44).
+set +e
+OUT="$(WHOSAID_WORKSPACE="$ENG_WS" "$WHOSAID" doctor 2>&1)"
+RC=$?
+set -e
+assert_eq "$RC" 0 "'whosaid doctor' exits 0 with engine auto"
+assert_text 'summarizer engine: auto \(default\) — auto never picks claude' "$OUT" \
+  "doctor prints the auto engine line"
+assert_not_text 'claude binary' "$OUT" "engine auto triggers no claude probe"
+
+# 6b. engine claude: the binary resolves and answers under the probe env.
+printf '[summarizer]\nengine = "claude"\nclaude_bin = "%s/eng-bin/claude-ok"\n' "$TMP" \
+  > "$ENG_WS/whosaid.toml"
+set +e
+OUT="$(WHOSAID_WORKSPACE="$ENG_WS" "$WHOSAID" doctor 2>&1)"
+RC=$?
+set -e
+assert_eq "$RC" 0 "'whosaid doctor' exits 0 with engine claude (probe ok)"
+assert_text 'summarizer engine: claude \(whosaid\.toml\)' "$OUT" \
+  "doctor prints the claude engine line"
+assert_text "claude binary: $TMP/eng-bin/claude-ok" "$OUT" \
+  "doctor resolves the configured claude binary"
+assert_text '`claude -p` answered under the watcher' "$OUT" \
+  "the launchd-like claude -p probe succeeds (fake saw -p and a scrubbed env)"
+
+# 6c. engine claude with an expired login: doctor surfaces the failure, its
+#     stderr, and the login fix — without failing the report.
+printf '[summarizer]\nengine = "claude"\nclaude_bin = "%s/eng-bin/claude-expired"\n' "$TMP" \
+  > "$ENG_WS/whosaid.toml"
+set +e
+OUT="$(WHOSAID_WORKSPACE="$ENG_WS" "$WHOSAID" doctor 2>&1)"
+RC=$?
+set -e
+assert_eq "$RC" 0 "'whosaid doctor' still exits 0 with an expired claude login"
+assert_text '`claude -p` failed under the watcher' "$OUT" \
+  "doctor reports the failed claude -p probe"
+assert_text 'Invalid authorization, please log in again' "$OUT" \
+  "the probe surfaces the CLI's stderr"
+assert_text 'claude setup-token' "$OUT" "the failure hint names the login fix"
+
+# 6d. a local engine is reported as configured, with no claude probe.
+printf '[summarizer]\nengine = "ollama"\n' > "$ENG_WS/whosaid.toml"
+set +e
+OUT="$(WHOSAID_WORKSPACE="$ENG_WS" "$WHOSAID" doctor 2>&1)"
+RC=$?
+set -e
+assert_eq "$RC" 0 "'whosaid doctor' exits 0 with engine ollama"
+assert_text 'summarizer engine: ollama \(whosaid\.toml\)' "$OUT" \
+  "doctor prints a local engine as configured"
+assert_not_text 'claude binary' "$OUT" "a local engine triggers no claude probe"
 
 # ---------------------------------------------------------------------------
 echo ""
