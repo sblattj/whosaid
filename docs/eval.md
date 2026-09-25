@@ -190,9 +190,13 @@ model sees only the summarizer's own prompts.
 - **Auth is your Claude subscription.** Log in once with `claude`, or mint a long-lived token
   with `claude setup-token` and export it as `CLAUDE_CODE_OAUTH_TOKEN`. The runner removes
   `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN` from the CLI's environment, because either one
-  would take precedence over the subscription and bill the API instead.
-- **Output parsing.** `--output-format json` prints an array of events. The runner reads the
-  `result` event. It checks `is_error`, not `subtype`, because an auth failure arrives as
+  would take precedence over the subscription and bill the API instead. It also removes the
+  model-alias overrides (`ANTHROPIC_MODEL`, `ANTHROPIC_DEFAULT_OPUS_MODEL`, ...) and a parent
+  Claude Code session's `CLAUDECODE` / `CLAUDE_CODE_*` variables (the OAuth token and the
+  provider selectors pass through), so `--model` alone picks the model even when you run the
+  eval from a terminal inside Claude Code.
+- **Output parsing.** `--output-format json` prints either an array of events or, in current
+  CLI versions, the lone `result` object. The runner accepts both and reads the `result` event. It checks `is_error`, not `subtype`, because an auth failure arrives as
   `"subtype": "success", "is_error": true`. An `is_error` result raises right away, since the CLI
   has already retried API errors itself. Any other failure (a non-zero exit with no result,
   output that is not JSON, or a 300-second timeout) is retried once, then raised.
@@ -200,7 +204,8 @@ model sees only the summarizer's own prompts.
   0.2 for inferred next steps) are ignored, and two live runs can differ. The recorded cassette
   pins down what one run saw.
 - **Resolved model.** A model alias such as `opus` resolves to whatever that alias means on the
-  day. The cassette records the resolved model id as `resolved_model`.
+  day. The cassette records the resolved model id as `resolved_model`, taken from the init event
+  or, when the CLI prints none, from the result's `modelUsage`.
 - **Draft header.** lib stamps every draft "(local Ollama, offline)". Before saving a claude-cli
   draft, the runner rewrites that to "(claude-cli reference backend, eval only)".
 
