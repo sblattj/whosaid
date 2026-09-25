@@ -49,7 +49,11 @@ if log:
     with open(log, "a") as fh:
         fh.write(json.dumps({"argv": sys.argv[1:], "cwd": os.getcwd(), "stdin": stdin,
                              "api_key": "ANTHROPIC_API_KEY" in os.environ,
-                             "auth_token": "ANTHROPIC_AUTH_TOKEN" in os.environ}) + "\n")
+                             "auth_token": "ANTHROPIC_AUTH_TOKEN" in os.environ,
+                             "leaked": sorted(k for k in os.environ if k in (
+                                 "ANTHROPIC_DEFAULT_OPUS_MODEL", "ANTHROPIC_MODEL", "CLAUDECODE",
+                                 "CLAUDE_CODE_SESSION_ID", "CLAUDE_CODE_MESSAGING_SOCKET")),
+                             "oauth": os.environ.get("CLAUDE_CODE_OAUTH_TOKEN")}) + "\n")
 mode = os.environ.get("FAKE_CLAUDE_MODE", "ok")
 if mode == "garbage":
     print("not json at all")
@@ -159,12 +163,20 @@ def test_owner_mode(tmp: Path) -> None:
     cfg = wsconfig.load_config(ws)
     log = set_env(tmp, REPLY)
     os.environ["ANTHROPIC_API_KEY"] = "sk-should-not-leak"
-    os.environ["ANTHROPIC_AUTH_TOKEN"] = "tok-should-not-leak"
+    parent = {"ANTHROPIC_AUTH_TOKEN": "tok-should-not-leak", "ANTHROPIC_DEFAULT_OPUS_MODEL": "remapped",
+              "ANTHROPIC_MODEL": "remapped", "CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": "parent",
+              "CLAUDE_CODE_MESSAGING_SOCKET": "/tmp/parent.sock", "CLAUDE_CODE_OAUTH_TOKEN": "oauth-ok"}
+    saved = {k: os.environ.get(k) for k in parent}
+    os.environ.update(parent)
     try:
         md, stats = ce.draft(TRANSCRIPT, "2026-09-24-0700", cfg)
     finally:
         os.environ.pop("ANTHROPIC_API_KEY")
-        os.environ.pop("ANTHROPIC_AUTH_TOKEN")
+        for k, v in saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
 
     # -- the one call
     c = calls(log)
@@ -180,6 +192,8 @@ def test_owner_mode(tmp: Path) -> None:
     check("- directive: a LEADERSHIP speaker (Bob_Example, Dana_Example)" in sysprompt,
           "the system prompt names leadership, boss roles included")
     check(not c[0]["api_key"] and not c[0]["auth_token"], "API-key env vars are scrubbed")
+    check(c[0]["leaked"] == [], f"model-alias and parent-session vars are scrubbed: {c[0]['leaked']}")
+    check(c[0]["oauth"] == "oauth-ok", "the OAuth token passes through")
     check(c[0]["cwd"] != os.getcwd() and "whosaid-claude-" in c[0]["cwd"], "runs in an empty temp dir")
     check(not Path(c[0]["cwd"]).exists(), "the temp dir is removed")
     check("Meeting: 2026-09-24-0700" in c[0]["stdin"] and "[00:02:15] Alice_Example:" in c[0]["stdin"]

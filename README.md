@@ -431,7 +431,10 @@ says the transcript went to Anthropic.
 
 The call is isolated: no tools, no MCP servers, no settings, hooks, skills, or slash commands, no
 saved session, an empty temp directory as its cwd, and `ANTHROPIC_API_KEY` /
-`ANTHROPIC_AUTH_TOKEN` scrubbed so it runs on your Claude login, not an API key. The binary is
+`ANTHROPIC_AUTH_TOKEN` scrubbed so it runs on your Claude login, not an API key. Model-alias
+overrides (`ANTHROPIC_MODEL`, `ANTHROPIC_DEFAULT_OPUS_MODEL`, ...) and a parent Claude Code
+session's `CLAUDECODE` / `CLAUDE_CODE_*` variables are dropped too, so `claude_model` alone picks
+the model and a run from inside Claude Code matches the watcher's. The binary is
 `[summarizer] claude_bin`, else `WHOSAID_CLAUDE_BIN`, else `claude` on `PATH`, else
 `~/.local/bin/claude`, so the `whosaid watch` LaunchAgent finds it too. If the call fails, the
 engine warns and falls back to the local Ollama engine when `fallback = "ollama"` and Ollama is

@@ -25,7 +25,8 @@ All notable changes to whosaid are documented here. This project adheres to
   flags quotes no turn holds, and appends the verified evidence. **This sends the transcript's
   text to Anthropic**, so it is never the default and `auto` never picks it; the note under the
   banner says so. The call runs with no tools, MCP servers, settings or saved session, in an
-  empty temp dir, with `ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN` scrubbed. On failure it falls
+  empty temp dir, with `ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN`, the model-alias overrides
+  and a parent Claude Code session's variables scrubbed. On failure it falls
   back to the local Ollama engine (`fallback = "ollama"`, the default, when Ollama is up) or the
   skeleton. New keys `claude_model`, `claude_timeout`, `claude_bin`, `fallback`, and the
   `WHOSAID_CLAUDE_BIN` variable.

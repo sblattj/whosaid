@@ -65,7 +65,16 @@ BIN_CANDIDATES = ("~/.local/bin/claude", "~/.claude/local/claude", "/opt/homebre
                   "/usr/local/bin/claude")
 ISOLATION = ("--tools", "", "--strict-mcp-config", "--setting-sources", "",
              "--disable-slash-commands", "--no-session-persistence", "--output-format", "json")
-SCRUBBED_ENV = ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN")   # would bill the API instead
+SCRUBBED_ENV = ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN",       # would bill the API instead
+                "ANTHROPIC_MODEL", "ANTHROPIC_DEFAULT_OPUS_MODEL",  # would remap `--model opus`
+                "ANTHROPIC_DEFAULT_SONNET_MODEL", "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+                "ANTHROPIC_SMALL_FAST_MODEL", "CLAUDECODE", "CLAUDE_EFFORT", "CLAUDE_PID",
+                "CLAUDE_JOB_DIR")
+# a parent Claude Code session's CLAUDE_CODE_* vars (session id, messaging socket, ...) stay
+# behind too, so a run from a terminal inside Claude Code matches the launchd watcher's run;
+# only the ones that pick the login or the provider pass through
+KEPT_ENV = ("CLAUDE_CODE_OAUTH_TOKEN", "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX",
+            "CLAUDE_CODE_USE_FOUNDRY")
 AUTH_HINT = ("check `claude -p hi` by hand; log in with `claude`, or mint a token with "
              "`claude setup-token` and export CLAUDE_CODE_OAUTH_TOKEN")
 KINDS = ("ask", "directive", "commit")
@@ -105,10 +114,8 @@ class ClaudeCLI:
 
     @staticmethod
     def child_env() -> dict[str, str]:
-        env = dict(os.environ)
-        for k in SCRUBBED_ENV:
-            env.pop(k, None)
-        return env
+        return {k: v for k, v in os.environ.items() if k not in SCRUBBED_ENV
+                and (not k.startswith("CLAUDE_CODE_") or k in KEPT_ENV)}
 
     def chat(self, system: str, user: str, temperature: float = 0.0) -> str:
         del temperature                  # the CLI has no such flag
