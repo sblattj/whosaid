@@ -132,7 +132,11 @@ AGENT_PATH = ":".join([
     "/opt/homebrew/bin", "/opt/homebrew/sbin", "/usr/local/bin", "/usr/local/sbin",
     "/usr/bin", "/bin", "/usr/sbin", "/sbin",
 ])
-FDA_PANE_URL = "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles"
+# The System Settings (Ventura 13 ->) deep-link to the Full Disk Access pane; the
+# pre-Ventura `com.apple.preference.security?Privacy_AllFiles` anchor still resolves
+# (Apple maps old anchors) but is the deprecated form. Mirrored, stdlib-only by
+# design, in contrib/swiftbar/whosaid.10s.py — keep the two in sync (test/menubar_test.py).
+FDA_PANE_URL = "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_AllFiles"
 
 # The Whisper weights live in the local HF cache; with --offline every child skips
 # the doomed round-trip to huggingface.co (blocked networks, planes, privacy).
@@ -705,8 +709,24 @@ def provision_interpreter(dry: bool) -> str:
             f"install a Python with `uv python install 3.12`, pass --interpreter PATH, or set "
             f"WHOSAID_WATCH_AGENT_DIR to a writable location"
         ) from None
-    subprocess.run(["codesign", "-f", "-s", "-", str(AGENT_BIN)],
-                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    signed = subprocess.run(["codesign", "-f", "-s", "-", str(AGENT_BIN)],
+                            capture_output=True, text=True)
+    if signed.returncode != 0:
+        detail = (signed.stderr.strip() or signed.stdout.strip()
+                  or f"exit {signed.returncode}, no output")
+        log(f"WARN codesign of {AGENT_BIN} FAILED; codesign said: {detail}")
+        log("WARN the Full Disk Access grant is keyed to the binary's code signature:")
+        log("WARN an interpreter that was never signed can be granted FDA and still hit")
+        log("WARN EPERM reading the Voice Memos store - an uninstallable support trap.")
+        shutil.rmtree(AGENT_DIR, ignore_errors=True)  # never leave an unsigned binary behind
+        raise SystemExit(
+            f"whosaid: could not code-sign {AGENT_BIN} (codesign exit "
+            f"{signed.returncode}: {detail}); removed the half-provisioned copy. "
+            "Without the ad-hoc signature the Full Disk Access grant does not stick: "
+            "the watcher can be granted FDA yet still get EPERM reading the Voice "
+            "Memos store. Fix codesign (Apple's Command Line Tools: xcode-select "
+            "--install), then re-run whosaid watch install."
+        )
     if not (AGENT_BIN.is_file() and os.access(AGENT_BIN, os.X_OK)):
         raise SystemExit(f"whosaid: could not provision {AGENT_BIN}")
     return str(AGENT_BIN)
@@ -831,6 +851,11 @@ def cmd_install(args: argparse.Namespace) -> int:
     label = args.label or default_label(ws)
     interval = int(args.interval if args.interval is not None
                    else (cfg.get("watch") or {}).get("interval_seconds", 900))
+    # The engine the watcher's `whosaid ingest` runs for action items: [summarizer]
+    # engine in whosaid.toml, wsconfig DEFAULTS "auto" (same resolution as
+    # workspace.py's cmd_action_items). #44 made "auto" never pick claude — only an
+    # explicit "claude" config sends transcripts to Anthropic.
+    engine = str((cfg.get("summarizer") or {}).get("engine") or "auto")
     extra_env = parse_env_pairs(args.env)
     dry = args.dry_run
     source_explicit = bool(args.source)
@@ -891,6 +916,9 @@ def cmd_install(args: argparse.Namespace) -> int:
         log(f"plist     -> {target}")
         log(f"watch     -> {source}")
         log(f"speakers  -> {' '.join(hint_args) if hint_args else 'auto-detect (no [watch] speaker hints)'}")
+        log(f"engine    -> {engine}")
+        if engine == "claude":
+            log("WARNING: engine claude sends every new recording's transcript to Anthropic (cloud)")
         log(f"workspace -> {ws}")
         log(f"runs      -> {' '.join(data['ProgramArguments'])}")
         log(f"log       -> {ws / LOG_NAME}")
@@ -933,6 +961,9 @@ def cmd_install(args: argparse.Namespace) -> int:
         for line in capture_options():
             print(line)
         print(f"Tail the log with:   tail -f {ws / LOG_NAME}")
+    print(f"Summarizer engine: {engine}")
+    if engine == "claude":
+        print("WARNING: the claude engine sends every new recording's transcript to Anthropic (cloud).")
     print("Menu bar: install the SwiftBar glyph with:  whosaid watch menubar install")
     return 0
 

@@ -24,6 +24,7 @@ import importlib.util
 import json
 import os
 import plistlib
+import re
 import subprocess
 import sys
 import tempfile
@@ -305,6 +306,26 @@ def test_notify_once(P, tmp: Path) -> None:
           "waiting is a silent state")
 
 
+def test_fda_url_drift_guard() -> None:
+    """issue #34: lib/watch.py and the plugin must carry the SAME Full Disk Access
+    deep-link. The plugin is stdlib-only by design (it never imports lib/), so the
+    constant is mirrored, not shared — this guard keeps the two copies from drifting
+    (read both files and extract the constant; no lib import, matching this file's
+    plugin-only import style)."""
+    def fda_url(path: Path) -> str:
+        m = re.search(r'^FDA_PANE_URL = "([^"]+)"$', path.read_text(), re.M)
+        check(m is not None, f"FDA_PANE_URL constant present in {path}")
+        assert m is not None
+        return m.group(1)
+
+    watch_url = fda_url(WATCH_PY)
+    plugin_url = fda_url(PLUGIN)
+    check(watch_url == plugin_url,
+          "FDA_PANE_URL is identical in lib/watch.py and contrib/swiftbar/whosaid.10s.py")
+    check(watch_url.startswith("x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_AllFiles"),
+          "FDA_PANE_URL uses the System Settings (Ventura+) extension deep-link form")
+
+
 # ---- lib/watch.py menubar subcommands (subprocess, hermetic) -------------------------
 
 
@@ -500,6 +521,7 @@ def main() -> None:
         test_latest_meeting(plugin, TMP)
         test_action_tokens(plugin)
         test_notify_once(plugin, TMP)
+        test_fda_url_drift_guard()
         test_cli()
     print(f"PASS: {CHECKS} assertions")
 

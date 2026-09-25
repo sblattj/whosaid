@@ -68,6 +68,8 @@ import sys
 from pathlib import Path
 
 VOICE_MEMOS_STORE = Path.home() / "Library/Group Containers/group.com.apple.VoiceMemos.shared/Recordings"
+# keep in sync with lib/watch.py FDA_PANE_URL (the plugin is stdlib-only by design
+# and never imports lib/; test/menubar_test.py guards the two against drifting)
 FDA_PANE_URL = "x-apple.systempreferences:com.apple.settings.PrivacySecurity.extension?Privacy_AllFiles"
 STATE_FILE = Path.home() / ".cache/whosaid/menubar-state.json"
 LOG_NAME = ".watch.log"

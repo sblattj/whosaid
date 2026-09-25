@@ -6,7 +6,9 @@
 # Fully offline and self-contained: a temp workspace, a temp "source" folder
 # of fake .m4a files (touch, with old mtimes), a FAKE `whosaid` on PATH that
 # records its argv and creates the dated folder ingest would, a fake
-# `shortcuts` that fails loudly if anything ever calls it, and a synthetic
+# `shortcuts` that fails loudly if anything ever calls it, a fake `codesign`
+# (exit 0 by default; CODESIGN_FAIL=1 mimics broken Command Line Tools, for
+# the provisioning-failure path of issue #31), and a synthetic
 # CloudRecordings.db for the store-backed memos commands. No launchd agent is
 # ever loaded, no real Voice Memos store is read, nothing outside $TMP is
 # written (the dedicated-interpreter dir is redirected into $TMP).
@@ -371,6 +373,23 @@ run_watch install --into "$WS4" --source "$SRC4" --dry-run --no-open
 assert_eq "$RC" 0 "install --dry-run with no hints exits 0"
 assert_text "speakers +-> auto-detect \(no \[watch\] speaker hints\)" "$ERR" "dry run summary reports auto-detect when nothing is set"
 
+# install --dry-run names the summarizer engine in effect and warns when it is
+# claude (issue #46): only an explicit [summarizer] engine = "claude" means
+# cloud — the "auto" default never picks claude, so it never draws the warning.
+assert_text "engine +-> auto" "$ERR" "dry run summary names the engine (wsconfig default auto)"
+assert_no_text "Anthropic" "$ERR" "the auto engine draws no Anthropic transcript warning"
+
+WS_CL="$TMP/ws-claude"; SRC_CL="$TMP/src-claude"; mkdir -p "$WS_CL" "$SRC_CL"
+cat > "$WS_CL/whosaid.toml" <<'EOF'
+[summarizer]
+engine = "claude"
+EOF
+run_watch install --into "$WS_CL" --source "$SRC_CL" --dry-run --no-open
+assert_eq "$RC" 0 "install --dry-run with engine claude exits 0"
+assert_text "engine +-> claude" "$ERR" "dry run summary names the configured claude engine"
+assert_text "WARNING: engine claude sends every new recording's transcript to Anthropic" "$ERR" \
+  "the claude engine warns that every new recording's transcript goes to Anthropic (cloud)"
+
 # ---------------------------------------------------------------------------
 # 6d. invalid [watch] speaker-hint values: both `run` and `install --dry-run`
 #     refuse before touching anything (no lock taken, no whosaid call, no
@@ -613,6 +632,63 @@ OV_HOME="$OV/no-fda-home"; mkdir -p "$OV_HOME/Recordings"
 HOME="$OV_HOME" run_watch install --into "$OV_HOME/Recordings" --no-fda --dry-run
 assert_eq "$RC" 1 "install refuses when the --no-fda default source equals the workspace"
 assert_text "must be separate folders" "$ERR" "no-fda-default refusal names the overlap"
+
+# ---------------------------------------------------------------------------
+# 7d. real provisioning (issue #31): the codesign step's exit code is checked.
+#     A broken codesign (missing/damaged Command Line Tools) must abort install
+#     loudly, quoting codesign's stderr and explaining the FDA/EPERM trap, and
+#     must leave neither a half-provisioned unsigned binary nor a plist behind;
+#     a working codesign provisions the renamed, executable binary as before.
+#     Driven through the fake `codesign` on PATH (CODESIGN_FAIL=1 breaks it).
+# ---------------------------------------------------------------------------
+echo "-- 7d. provisioning checks codesign"
+cat > "$TMP/bin/codesign" <<'FAKE'
+#!/bin/bash
+# fake codesign: records its argv; CODESIGN_FAIL=1 mimics a broken Command
+# Line Tools install (nonzero exit + a stderr diagnostic).
+printf 'codesign %s\n' "$*" >> "$FAKE_LOG"
+if [ "${CODESIGN_FAIL:-0}" = "1" ]; then
+  echo "fake-codesign-error: unable to build chain to self-signed root" >&2
+  exit 9
+fi
+exit 0
+FAKE
+chmod +x "$TMP/bin/codesign"
+
+# failing codesign: `watch install` aborts during provisioning -- before any
+# plist is written or launchd is touched -- quoting codesign's stderr
+rm -rf "$TMP/prov-fail"
+reset_calls
+WHOSAID_WATCH_AGENT_DIR="$TMP/prov-fail" CODESIGN_FAIL=1 \
+  run_watch install --into "$WS2" --source "$SRC"
+assert_eq "$RC" 1 "install aborts (exit 1) when codesign fails"
+assert_text "^codesign -f -s - $TMP/prov-fail/bin/whosaid-watch$" "$(calls)" "provisioning invokes codesign -f -s - on the dedicated binary"
+assert_text "fake-codesign-error: unable to build chain to self-signed root" "$ERR" "codesign's stderr is quoted in the failure output"
+assert_text "WARN codesign .* FAILED" "$ERR" "a loud WARN banner names the failure"
+assert_text "EPERM" "$ERR" "the warning explains the FDA-granted-but-still-EPERM trap"
+assert_text "could not code-sign" "$ERR" "the abort message is clear"
+assert_missing "$TMP/prov-fail" "the half-provisioned, unsigned tree is removed (never silently reused by a later run)"
+assert_missing "$HOME/Library/LaunchAgents/$EXPECT_LABEL.plist" "codesign failure aborts before any plist is written"
+
+# succeeding codesign: provisioning completes exactly as before (same path,
+# same file-exists + executable verification).  Driven at the function level
+# because the CLI past this point writes a real plist and loads launchd; the
+# PROBE_SELECTION block above uses the same direct, production-function trick.
+rm -rf "$TMP/prov-ok"
+reset_calls
+set +e
+PROV_OK="$(WHOSAID_WATCH_AGENT_DIR="$TMP/prov-ok" PYTHONPATH="$REPO/lib" python3 -c \
+  'import watch; print(watch.provision_interpreter(False))' 2> "$TMP/.prov-ok.err")"
+RC_PROV=$?
+set -e
+PROV_ERR="$(cat "$TMP/.prov-ok.err")"
+assert_eq "$RC_PROV" 0 "provision_interpreter succeeds when codesign exits 0"
+assert_eq "$PROV_OK" "$TMP/prov-ok/bin/whosaid-watch" "returns the dedicated binary path, as before"
+assert_text "^codesign -f -s - $TMP/prov-ok/bin/whosaid-watch$" "$(calls)" "the success path signs the same binary"
+assert_text "provisioning the dedicated interpreter .* from " "$PROV_ERR" "the progress log line is unchanged"
+assert_exists "$TMP/prov-ok/bin/whosaid-watch" "the binary exists at the promised path (file-exists gate)"
+[ -x "$TMP/prov-ok/bin/whosaid-watch" ] && PASS=$((PASS + 1)) || fail "the provisioned binary is executable (X_OK gate)"
+rm -rf "$TMP/prov-ok"
 
 # ---------------------------------------------------------------------------
 # 8. memos list / pull on a plain folder
