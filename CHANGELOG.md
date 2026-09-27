@@ -6,6 +6,8 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ## [Unreleased]
 
+## [1.7.1] - 2026-09-26
+
 ### Fixed
 
 - **`whosaid roll-up` no longer crashes with `KeyError: 'CM-NNN'` after a commitment refresh.**
@@ -696,7 +698,8 @@ attributed to a person — who said what — with nothing ever leaving your Mac.
 - `ffmpeg` and `uv` (Homebrew). Python is used only through ephemeral `uv`
   environments — no persistent install is left behind.
 
-[Unreleased]: https://github.com/sblattj/whosaid/compare/v1.7.0...HEAD
+[Unreleased]: https://github.com/sblattj/whosaid/compare/v1.7.1...HEAD
+[1.7.1]: https://github.com/sblattj/whosaid/releases/tag/v1.7.1
 [1.7.0]: https://github.com/sblattj/whosaid/releases/tag/v1.7.0
 [1.6.0]: https://github.com/sblattj/whosaid/releases/tag/v1.6.0
 [1.5.0]: https://github.com/sblattj/whosaid/releases/tag/v1.5.0
