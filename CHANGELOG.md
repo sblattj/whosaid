@@ -6,6 +6,16 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ## [Unreleased]
 
+### Fixed
+
+- **`whosaid roll-up` no longer crashes with `KeyError: 'CM-NNN'` after a commitment refresh.**
+  When commitment sources or speaker roles change (for example after a relabel), the roll-up
+  re-folds every meeting under fresh ids and then restores the stable ids. Near misses recorded
+  during that fold kept the fresh ids, so rendering the "Possible duplicates (review)" section
+  of `_COMMITMENTS.md` looked up an id that no longer existed. The near misses are now rewritten
+  to the restored ids, and `possible_duplicates` drops any pair naming an id the corpus does not
+  hold. Regression test: `test/rollup_dupes_test.py`.
+
 ## [1.7.0] - 2026-09-24
 
 ### Added

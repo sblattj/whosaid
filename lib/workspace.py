@@ -1385,10 +1385,15 @@ def possible_duplicates(items: list[ActionItem],
                         near_misses: list[tuple[str, str, float]],
                         threshold: float) -> list[tuple[str, str, float]]:
     """Distinct corpus-item pairs scoring in [threshold - 0.10, threshold),
-    deduped by id pair, most similar first. Merged items are skipped."""
+    deduped by id pair, most similar first. Merged items are skipped, and so
+    is any near miss naming an id the corpus no longer holds (a stale fold-time
+    id must never reach the renderers, which look texts up by id)."""
     best: dict[tuple[str, str], float] = {}
+    live_ids = {it.id for it in items if it.status != "merged"}
 
     def add(id_a: str, id_b: str, ratio: float) -> None:
+        if id_a == id_b or id_a not in live_ids or id_b not in live_ids:
+            return
         key = tuple(sorted((id_a, id_b)))
         best[key] = max(best.get(key, 0.0), ratio)
 
@@ -2841,9 +2846,13 @@ def remember_commitment_edits(items: list[CommitmentItem]) -> None:
                 it.curated.pop(key, None)
 
 
-def restore_commitment_edits(fresh: list[CommitmentItem], previous: list[CommitmentItem]) -> None:
-    """Keep IDs and explicit edits while replacing all derived role evidence."""
+def restore_commitment_edits(fresh: list[CommitmentItem],
+                             previous: list[CommitmentItem]) -> dict[str, str]:
+    """Keep IDs and explicit edits while replacing all derived role evidence.
+    Returns {fresh fold-time id: restored id} for every item whose id changed,
+    so ids captured during the fold (near misses) can be rewritten to match."""
     used = set()
+    renamed: dict[str, str] = {}
     def evidence(it):
         return {(o.meeting, o.source, o.t_sec, normalize_text(o.text)) for o in it.occurrences}
     for it in fresh:
@@ -2855,6 +2864,8 @@ def restore_commitment_edits(fresh: list[CommitmentItem], previous: list[Commitm
         if candidates:
             old = max(candidates, key=lambda old: len(evidence(old) & evidence(it)))
             used.add(old.id)
+            if it.id != old.id:
+                renamed[it.id] = old.id
             it.id, it.curated = old.id, old.curated
             for key, value in it.curated.items():
                 if key in CM_CURATED_FIELDS:
@@ -2883,6 +2894,7 @@ def restore_commitment_edits(fresh: list[CommitmentItem], previous: list[Commitm
         if survivor.occurrences:
             survivor.first_seen = min(o.meeting for o in survivor.occurrences)
             survivor.last_seen = max(o.meeting for o in survivor.occurrences)
+    return renamed
 
 
 def cmd_rollup(args: argparse.Namespace) -> int:
@@ -3059,7 +3071,12 @@ def cmd_rollup(args: argparse.Namespace) -> int:
             f"(min_words={cm_cues['min_words']}); listed under 'Dropped fragments (review)' "
             f"in {cm_out.name}")
     if refresh_cm:
-        restore_commitment_edits(cm_items, previous_cm_items)
+        # The fold minted fresh ids and recorded near misses under them;
+        # restore maps items back to their stable ids, so rewrite the near
+        # misses too or the review section names ids that no longer exist.
+        renamed = restore_commitment_edits(cm_items, previous_cm_items)
+        cm_near_misses = [(renamed.get(a, a), renamed.get(b, b), r)
+                          for a, b, r in cm_near_misses]
     for it in cm_items:
         if not it.source_values:
             it.source_values = {k: getattr(it, k) for k in CM_CURATED_FIELDS}
