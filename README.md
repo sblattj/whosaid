@@ -254,6 +254,48 @@ statuses, types, retitles, and `(merged AI-NNN)` merge annotations (the merged i
 its id, rendered collapsed as `[merged → AI-NNN]`). Only `--rebuild` discards them. `--index`
 runs `whosaid index <ws>` right after the roll-up.
 
+### `whosaid teams ingest` — Microsoft Teams chat, no audio
+
+Many decisions and commitments are made in Teams chat, not in recorded calls. `whosaid teams
+ingest` adds a chat export to the same workspace. There is no diarization and no Whisper, because
+every message already names its author.
+
+```bash
+whosaid teams ingest teams-export.json --into ~/meetings --tz America/Los_Angeles --self Alice_Example
+whosaid roll-up ~/meetings --index
+```
+
+The input is the JSON hand-off from a browser scraper: a list of `{chat, author, timestamp_iso,
+epoch_ms, text}` records. [`contrib/teams-scraper/`](contrib/teams-scraper/README.md) documents
+the Teams web DOM contract that produces it. Ingest writes one dated folder per chat per local
+day (`YYYY-MM-DD-HHMM`, where the time is that day's first message). Each folder holds:
+
+- `teams.speakers.txt`: `[HH:MM:SS] Speaker: text` turns, stamped with the local time of day.
+- `teams.diarization.json`: the provenance sidecar. `source.kind` is `"teams-chat"`, and each
+  segment keeps the message's exact `epoch_ms`.
+
+Search, the graph, commitments and the worklist all read `teams.speakers.txt` the same way they
+read a recording's transcript. A search hit's `file` is `teams.speakers.txt`, and `whosaid graph
+<ws> meetings --kind teams-chat` (or the `kind` argument of the `whosaid_meetings` MCP tool)
+tells chat days apart from recordings. A folder with no audio takes its `created` time from the
+sidecar's `source.creation_time`. The roll-up audit treats it as text-only rather than flagging a
+missing transcript.
+
+Map Teams display names to the names you use elsewhere, and give people roles, in `whosaid.toml`:
+
+```toml
+[teams.names]
+"Doe, Jane (Vendor, consultant)" = "Jane_Example"
+
+[teams.roles]
+Jane_Example = "boss"
+```
+
+Unmapped authors keep their display name. When a role is not set in `[teams.roles]`, it comes
+from the voice registry's role for the same name. `--self NAME` overrides both. Re-ingesting an
+overlapping export is safe: messages are deduplicated on `epoch_ms` and merged into the existing
+folder, and `--dry-run` shows what would be written.
+
 ## Search your meetings
 
 A workspace with a dozen meetings is a corpus you cannot reread. `whosaid index` turns it into
@@ -1192,6 +1234,10 @@ placeholder speakers and `--no-embed` so Ollama is never contacted:
 - `./test/search_test.sh` covers `lib/search.py`: the FTS5 build, exact queries with filters,
   `context`, `speakers`, `status`, and the no-Ollama fallback.
 - `python3 test/graph_test.py` covers `lib/graph.py`: the entity tables, each view, and the wiki.
+- `python3 test/teams_chat_test.py` covers `whosaid teams ingest`: chat-day folders, turn
+  parsing, name and role mapping, idempotent re-ingest, and a CLI ingest → index → search run.
+- `python3 test/teams_manifest_test.py` covers audio-less folders in the roll-up and graph:
+  `created` from the sidecar, the `kind` field, and `meetings --kind`.
 - `python3 test/action_items_test.py` covers the built-in summarizer with a fake model:
   candidate selection, quote verification, section assignment, and the evidence block.
 - `python3 test/eval_test.py` covers the action-item eval harness with fake models: the scorer,

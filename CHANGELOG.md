@@ -6,6 +6,29 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ## [Unreleased]
 
+### Added
+
+- **`whosaid teams ingest <export.json> --into WS [--tz ZONE] [--self NAME] [--dry-run]`**
+  adds a Microsoft Teams chat export to the workspace as a source-tagged corpus (#49). It
+  writes one dated folder per chat per local day, holding `teams.speakers.txt` and a
+  `teams.diarization.json` sidecar with `source.kind = "teams-chat"` and each message's
+  `epoch_ms`. Display names map through `[teams.names]` in `whosaid.toml`. Roles come from
+  `[teams.roles]` or the voice registry, and `--self` overrides both. Re-ingesting is
+  idempotent: messages are deduplicated on `epoch_ms` and merged into the existing folder.
+  Tests: `test/teams_chat_test.py`.
+- **A `kind` for every meeting** (`teams-chat`, `audio`, or none) in `_workspace.json`, the
+  graph's `meeting` table, `whosaid graph <ws> meetings` (with a new `--kind K` filter), the
+  wiki's coverage table, and the `whosaid_meetings` MCP tool (new `kind` argument).
+- `contrib/teams-scraper/README.md` documents the Teams web DOM contract and the JSON hand-off
+  format.
+
+### Changed
+
+- **Audio-less meeting folders take their `created` time from the sidecar's
+  `source.creation_time`**, falling back to the folder name. It is no longer the folder name
+  alone. The roll-up audit marks a Teams chat folder as text-only instead of flagging a missing
+  transcript. Tests: `test/teams_manifest_test.py`.
+
 ## [1.7.1] - 2026-09-26
 
 ### Fixed

@@ -1043,6 +1043,7 @@ class Meeting:
     has_action_items: bool = False
     has_commitments: bool = False
     ingested_at: str = ""
+    kind: str | None = None   # sidecar source.kind (e.g. "teams-chat"), else "audio", else None
 
 
 def find_source_audio(folder: Path) -> Path | None:
@@ -1051,6 +1052,28 @@ def find_source_audio(folder: Path) -> Path | None:
         key=lambda p: (-p.stat().st_size, p.name),
     )
     return candidates[0] if candidates else None
+
+
+def sidecar_source_info(folder: Path) -> tuple[datetime | None, str | None]:
+    """(creation_time, kind) from the *.diarization.json sidecars' `source` blocks.
+
+    creation_time: the first sidecar whose source.creation_time parses.
+    kind: the first sidecar carrying a non-empty string source.kind."""
+    created: datetime | None = None
+    kind: str | None = None
+    for side in sorted(folder.glob("*.diarization.json")):
+        try:
+            data = json.loads(side.read_text())
+        except (OSError, ValueError):
+            continue
+        src = data.get("source") if isinstance(data, dict) else None
+        if not isinstance(src, dict):
+            continue
+        if created is None and isinstance(src.get("creation_time"), str):
+            created = parse_creation_time(src["creation_time"])
+        if kind is None and isinstance(src.get("kind"), str) and src["kind"].strip():
+            kind = src["kind"].strip()
+    return created, kind
 
 
 def scan_meeting(folder: Path, previous: Meeting | None) -> Meeting:
@@ -1064,6 +1087,11 @@ def scan_meeting(folder: Path, previous: Meeting | None) -> Meeting:
         if dur is not None:
             m.duration_s = dur
     created = probe_creation_time(audio) if audio else None
+    side_created, side_kind = sidecar_source_info(folder)
+    if created is None and audio is None:
+        # audio-less folder (e.g. a Teams chat): the sidecar carries the true timestamp
+        created = side_created
+    m.kind = side_kind or ("audio" if audio else None)
     if created is None:
         m.created = folder.name
     else:
@@ -1144,16 +1172,23 @@ def render_index(ws: Path, meetings: list[Meeting], orphans: list[str], stale: l
     for m in meetings:
         lines.append(
             f"| {m.folder} | {m.created or '—'} | {hms(m.duration_s)} | "
-            f"{'yes' if m.has_txt else 'NO'} | {'yes' if m.has_speakers else 'NO'} | "
+            f"{'yes' if m.has_txt else ('n/a' if m.kind == 'teams-chat' else 'NO')} | "
+            f"{'yes' if m.has_speakers else 'NO'} | "
             f"{'yes' if m.has_action_items else '—'} |"
         )
     lines += ["", "## Audit", ""]
     problems = 0
     for m in meetings:
+        chat = m.kind == "teams-chat"   # text-only source: no audio, no plain transcript .txt
         missing = [name for name, ok in (
-            ("transcript .txt", m.has_txt), ("speakers .speakers.txt", m.has_speakers),
+            ("transcript .txt", m.has_txt or chat), ("speakers .speakers.txt", m.has_speakers),
             ("action-items.md", m.has_action_items),
         ) if not ok]
+        if chat:
+            lines.append(f"- {m.folder}: teams-chat (text-only; no source audio or plain .txt expected)"
+                         + (f"  MISSING: {', '.join(missing)}" if missing else "  ok"))
+            problems += bool(missing)
+            continue
         if m.source_sha256:
             lines.append(
                 f"- {m.folder}: source={m.source_name} sha256={m.source_sha256[:16]}…"

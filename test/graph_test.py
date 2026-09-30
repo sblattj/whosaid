@@ -294,6 +294,7 @@ def rows(ws: Path, sql: str, *params) -> list[tuple]:
 def test_unit_parsing() -> None:
     check(graph.DATE_DIR_RE.pattern == workspace.DATE_DIR_RE.pattern,
           "graph.DATE_DIR_RE drifted from workspace.DATE_DIR_RE")
+    check(graph.AUDIO_EXTS == workspace.AUDIO_EXTS, "graph.AUDIO_EXTS drifted from workspace.AUDIO_EXTS")
     check(graph.fmt_t(721) == "12:01" and graph.fmt_t(3861) == "1:04:21",
           "fmt_t renders MM:SS and H:MM:SS")
     check(graph.fmt_t(None) == "" and graph.fmt_t(0) == "00:00" and graph.fmt_t(3600) == "1:00:00",
@@ -378,8 +379,8 @@ def test_build(ws: Path, n_seg: int) -> None:
                      ("Carol_Example", 1, 1, 1), ("SPEAKER_02", 1, 1, 0)], f"person: {people}")
 
     meetings = rows(ws, "SELECT * FROM meeting ORDER BY folder")
-    check(meetings == [(M1, "meeting.m4a", "2026-09-01T14:00:00Z", 1800.0, 30, 1, 1, 8),
-                       (M2, "notes.m4a", "2026-09-03T15:00:00Z", 1500.0, 25, 0, 1, 3)],
+    check(meetings == [(M1, "meeting.m4a", "2026-09-01T14:00:00Z", 1800.0, 30, 1, 1, 8, "audio"),
+                       (M2, "notes.m4a", "2026-09-03T15:00:00Z", 1500.0, 25, 0, 1, 3, "audio")],
           f"meeting: {meetings}")
 
     items = rows(ws, "SELECT * FROM action_item ORDER BY id")
@@ -617,9 +618,9 @@ def test_views(ws: Path) -> None:
     meetings = run_json("meetings", str(ws), "--json")
     check(meetings == [
         {"folder": M1, "source_name": "meeting.m4a", "created": "2026-09-01T14:00:00Z", "duration_s": 1800.0,
-         "minutes": 30, "dated": True, "has_action_items": True, "segments": 8},
+         "minutes": 30, "dated": True, "has_action_items": True, "segments": 8, "kind": "audio"},
         {"folder": M2, "source_name": "notes.m4a", "created": "2026-09-03T15:00:00Z", "duration_s": 1500.0,
-         "minutes": 25, "dated": False, "has_action_items": True, "segments": 3},
+         "minutes": 25, "dated": False, "has_action_items": True, "segments": 3, "kind": "audio"},
     ], f"meetings: {meetings}")
     p = run("meetings", str(ws))
     check("hand-named" in p.stdout and "dated" in p.stdout and "30m" in p.stdout, f"meetings human: {p.stdout}")
@@ -634,8 +635,8 @@ def test_wiki(ws: Path, root: Path) -> None:
         "Do not hand-edit",
         "`whosaid index`",
         "**Corpus:** 11 segments · 2 meetings · 4 speakers · 3 action items · 10 commitment occurrences · 5 PR refs.",
-        f"| `{M1}` | 2026-09-01T14:00:00Z | 30m | yes | 8 | yes |",
-        f"| `{M2}` | 2026-09-03T15:00:00Z | 25m | no | 3 | yes |",
+        f"| `{M1}` | audio | 2026-09-01T14:00:00Z | 30m | yes | 8 | yes |",
+        f"| `{M2}` | audio | 2026-09-03T15:00:00Z | 25m | no | 3 | yes |",
         "### Open (1)", "### Contingent (1)", "### Merged (1)",
         "- **AI-001** (leadership ask, owner: Alice_Example, asked by: Bob_Example, " + M1 + ") Ship the schema fix",
         f"    cited: `CM-001 {M1}@12:01`  `CM-001 {M1}@12:20`",

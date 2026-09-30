@@ -13,6 +13,7 @@
 #   whosaid mcp                   Run the MCP server (stdio) for AI agents / Claude.
 #   whosaid <audio> [...]         Transcribe (and, by default, diarize) audio file(s).
 #   whosaid ingest <a...> --into D  Transcribe into a dated meeting workspace.
+#   whosaid teams ingest <export.json> --into D  Ingest a Teams chat export as a source-tagged corpus.
 #   whosaid roll-up <dir>           Rebuild the meeting-workspace index and audit.
 #   whosaid index <ws>              Build the workspace search index, graph, and wiki.
 #   whosaid search <ws> "<q>"       Exact / meaning / hybrid search over every transcript.
@@ -172,6 +173,14 @@ USAGE
                                         recording, so you can listen and confirm
                                         an identity before trusting an auto-label
                                         or enrolling.
+  whosaid teams ingest <export.json> --into DIR [--tz ZONE] [--self NAME] [--dry-run]
+                                        Fold a Microsoft Teams chat export (JSON
+                                        hand-off from the DOM scraper) into the
+                                        workspace: one dated folder per chat per
+                                        local day, teams.speakers.txt plus a
+                                        teams.diarization.json sidecar tagged
+                                        source.kind = "teams-chat". Idempotent.
+                                        Names/roles: [teams.names], [teams.roles].
   whosaid ingest <audio> [<audio> ...] --into DIR [--folder-by created|mtime]
                                         [--tz ZONE] [--action-items] [--commitments]
                                         [--min-words N] [--hook CMD] [flags]
@@ -1447,6 +1456,17 @@ cmd_samples() {
   python3 "$REPO_DIR/lib/samples.py" "${pyargs[@]}"
 }
 
+# whosaid teams ingest <export.json> --into DIR [--tz ZONE] [--self NAME] [--dry-run]
+# Non-audio chat adapter (issue #49); all logic lives in lib/teams_chat.py (stdlib-only).
+cmd_teams() {
+  if want_help "$@"; then cmd_help; exit 0; fi
+  if [[ $# -eq 0 ]]; then
+    log "teams: usage: whosaid teams ingest <export.json> --into DIR [--tz ZONE] [--self NAME] [--dry-run]"
+    exit 1
+  fi
+  python3 "$REPO_DIR/lib/teams_chat.py" "$@"
+}
+
 # ---- speakers -----------------------------------------------------------------
 # Migration stays stdlib-only: a new machine can restore identities without
 # downloading or initializing diarization models.
@@ -1939,6 +1959,9 @@ case "${1:-}" in
     ;;
   speakers)
     cmd_speakers "${@:2}"
+    ;;
+  teams)
+    cmd_teams "${@:2}"
     ;;
   ingest)
     cmd_ingest "${@:2}"

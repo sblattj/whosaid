@@ -76,7 +76,7 @@ TABLES = ("person", "meeting", "action_item", "occurrence", "commitment", "pr_me
 SCHEMA = (
     "CREATE TABLE person(name TEXT PRIMARY KEY, turns INT, meetings INT, named INT)",
     "CREATE TABLE meeting(folder TEXT PRIMARY KEY, source_name TEXT, created TEXT, "
-    "duration_s REAL, minutes INT, dated INT, has_action_items INT, segments INT)",
+    "duration_s REAL, minutes INT, dated INT, has_action_items INT, segments INT, kind TEXT)",
     "CREATE TABLE action_item(id TEXT PRIMARY KEY, text TEXT, owner TEXT, status TEXT, "
     "type TEXT, first_seen TEXT, last_seen TEXT, merged_into TEXT, occurrences INT)",
     "CREATE TABLE occurrence(id TEXT, meeting TEXT, line INT)",
@@ -174,10 +174,21 @@ def _has_table(c: sqlite3.Connection, name: str) -> bool:
     return row is not None
 
 
+# Mirrors workspace.AUDIO_EXTS (graph must not import the roll-up; test/graph_test.py
+# guards against drift).
+AUDIO_EXTS = {".m4a", ".mp3", ".wav", ".flac", ".aac", ".ogg", ".opus", ".webm"}
+
+
+def has_audio(folder: Path) -> bool:
+    return folder.is_dir() and any(
+        p.is_file() and p.suffix.lower() in AUDIO_EXTS for p in folder.iterdir())
+
+
 def sidecar_source(folder: Path) -> dict:
-    """{'created', 'duration_s', 'source_name'} from the first *.diarization.json
-    sidecar's 'source' block (all None when absent)."""
-    out = {"created": None, "duration_s": None, "source_name": None}
+    """{'created', 'duration_s', 'source_name', 'kind'} from the first *.diarization.json
+    sidecar's 'source' block (all None when absent). `kind` is source.kind
+    (e.g. "teams-chat"), None for an audio sidecar that does not carry one."""
+    out = {"created": None, "duration_s": None, "source_name": None, "kind": None}
     for side in sorted(folder.glob("*.diarization.json")):
         data = _load_json(side, "sidecar")
         src = data.get("source") if data else None
@@ -187,6 +198,8 @@ def sidecar_source(folder: Path) -> dict:
         dur = src.get("duration_seconds")
         out["duration_s"] = float(dur) if isinstance(dur, (int, float)) else None
         out["source_name"] = Path(str(src["path"])).name if src.get("path") else None
+        k = src.get("kind")
+        out["kind"] = k.strip() if isinstance(k, str) and k.strip() else None
         break
     return out
 
@@ -201,16 +214,22 @@ def meeting_rows(ws: Path, seg_counts: dict[str, int]) -> list[tuple]:
         dur = entry.get("duration_s")
         dur = float(dur) if isinstance(dur, (int, float)) else None
         has_ai = bool(entry.get("has_action_items")) or (ws / folder / MEETING_MD_NAME).is_file()
+        kind = entry.get("kind")
+        if not (isinstance(kind, str) and kind):
+            # old manifest (pre-kind): derive from the sidecar, else audio presence
+            kind = (sidecar_source(ws / folder)["kind"]
+                    or ("audio" if entry.get("source_name") or has_audio(ws / folder) else None))
         rows[folder] = (folder, entry.get("source_name"), entry.get("created"), dur,
                         minutes_of(dur), int(bool(DATE_DIR_RE.match(folder))), int(has_ai),
-                        seg_counts.get(folder, 0))
+                        seg_counts.get(folder, 0), kind)
     for folder, _files in wsconfig.iter_meetings(ws):
         if folder in rows:
             continue
         side = sidecar_source(ws / folder)
         rows[folder] = (folder, side["source_name"], side["created"], side["duration_s"],
                         minutes_of(side["duration_s"]), int(bool(DATE_DIR_RE.match(folder))),
-                        int((ws / folder / MEETING_MD_NAME).is_file()), seg_counts.get(folder, 0))
+                        int((ws / folder / MEETING_MD_NAME).is_file()), seg_counts.get(folder, 0),
+                        side["kind"] or ("audio" if side["source_name"] or has_audio(ws / folder) else None))
     return [rows[k] for k in sorted(rows)]
 
 
@@ -316,7 +335,7 @@ def _fill(c: sqlite3.Connection, ws: Path) -> None:
     # meetings: manifest entries plus every folder holding *.speakers.txt
     seg_counts = {str(m): n for m, n in
                   c.execute("SELECT meeting, COUNT(*) FROM seg GROUP BY meeting").fetchall()}
-    c.executemany("INSERT OR REPLACE INTO meeting VALUES (?,?,?,?,?,?,?,?)",
+    c.executemany("INSERT OR REPLACE INTO meeting VALUES (?,?,?,?,?,?,?,?,?)",
                   meeting_rows(ws, seg_counts))
 
     # action items + their corpus occurrences
@@ -669,7 +688,8 @@ def print_prs(prs: list[dict]) -> None:
 def view_meetings(c: sqlite3.Connection) -> list[dict]:
     return [{"folder": r["folder"], "source_name": r["source_name"], "created": r["created"],
              "duration_s": r["duration_s"], "minutes": r["minutes"], "dated": bool(r["dated"]),
-             "has_action_items": bool(r["has_action_items"]), "segments": r["segments"]}
+             "has_action_items": bool(r["has_action_items"]), "segments": r["segments"],
+             "kind": r["kind"]}
             for r in c.execute("SELECT * FROM meeting ORDER BY folder")]
 
 
@@ -677,6 +697,7 @@ def print_meetings(meetings: list[dict]) -> None:
     for m in meetings:
         mins = f"{m['minutes']}m" if m["minutes"] is not None else "-"
         print(f"{m['folder']:32s} {m['created'] or '-':20s} {mins:>6s}  "
+              f"{m.get('kind') or '-':11s} "
               f"{'dated' if m['dated'] else 'hand-named':10s} {m['segments']:5d} seg  "
               f"{'action items' if m['has_action_items'] else '-'}")
     if not meetings:
@@ -724,11 +745,11 @@ def render_wiki(c: sqlite3.Connection, ws: Path, cfg: dict) -> str:
     w("")
     meetings = view_meetings(c)
     if meetings:
-        w("| Meeting | Created | Length | Dated | Segments | Action items |")
-        w("|---|---|---|---|---|---|")
+        w("| Meeting | Kind | Created | Length | Dated | Segments | Action items |")
+        w("|---|---|---|---|---|---|---|")
         for m in meetings:
             mins = f"{m['minutes']}m" if m["minutes"] is not None else "-"
-            w(f"| `{m['folder']}` | {m['created'] or '-'} | {mins} | {'yes' if m['dated'] else 'no'} | "
+            w(f"| `{m['folder']}` | {m['kind'] or '-'} | {m['created'] or '-'} | {mins} | {'yes' if m['dated'] else 'no'} | "
               f"{m['segments']} | {'yes' if m['has_action_items'] else '-'} |")
     else:
         w("_No meetings indexed yet._")
@@ -870,8 +891,12 @@ def cmd_prs(args: argparse.Namespace) -> int:
 def cmd_meetings(args: argparse.Namespace) -> int:
     with open_graph(_ws(args)) as c:
         meetings = view_meetings(c)
+    if args.kind:
+        meetings = [m for m in meetings if m["kind"] == args.kind]
     if args.json:
         _print_json(meetings)
+    elif args.kind and not meetings:
+        print(f"no meetings of kind '{args.kind}'.")
     else:
         print_meetings(meetings)
     return 0
@@ -945,6 +970,8 @@ def build_parser() -> argparse.ArgumentParser:
     pm = sub.add_parser("meetings", help="every meeting folder with coverage figures")
     pm.add_argument("ws", nargs="?", help=ws_help)
     pm.add_argument("--json", action="store_true", help="print a JSON array")
+    pm.add_argument("--kind", default=None, metavar="K",
+                    help='only meetings of this source kind, e.g. "teams-chat" or "audio"')
     pm.set_defaults(func=cmd_meetings)
 
     pw = sub.add_parser("wiki", help=f"render the generated wiki (default: <ws>/{WIKI_NAME})")
