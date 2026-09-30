@@ -265,9 +265,11 @@ whosaid teams ingest teams-export.json --into ~/meetings --tz America/Los_Angele
 whosaid roll-up ~/meetings --index
 ```
 
-The input is the JSON hand-off from a browser scraper: a list of `{chat, author, timestamp_iso,
-epoch_ms, text}` records. [`contrib/teams-scraper/`](contrib/teams-scraper/README.md) documents
-the Teams web DOM contract that produces it. Ingest writes one dated folder per chat per local
+The input is the output of the browser scraper in
+[`contrib/teams-scraper/`](contrib/teams-scraper/README.md). That can be its `raw_by_chat` map,
+a flat list or NDJSON of `{chat, author, ts, epoch, text}` records, or the same records with
+`timestamp_iso`/`epoch_ms`. The scraper's README also covers how to run it and the Teams web DOM
+contract it depends on. Ingest writes one dated folder per chat per local
 day (`YYYY-MM-DD-HHMM`, where the time is that day's first message). Each folder holds:
 
 - `teams.speakers.txt`: `[HH:MM:SS] Speaker: text` turns, stamped with the local time of day.
