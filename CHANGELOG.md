@@ -6,6 +6,8 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ## [Unreleased]
 
+## [1.8.2] - 2026-09-30
+
 ### Fixed
 
 - **The workspace `whosaid.toml` is no longer silently ignored under Python older than 3.11**
@@ -760,7 +762,8 @@ attributed to a person — who said what — with nothing ever leaving your Mac.
 - `ffmpeg` and `uv` (Homebrew). Python is used only through ephemeral `uv`
   environments — no persistent install is left behind.
 
-[Unreleased]: https://github.com/sblattj/whosaid/compare/v1.8.1...HEAD
+[Unreleased]: https://github.com/sblattj/whosaid/compare/v1.8.2...HEAD
+[1.8.2]: https://github.com/sblattj/whosaid/releases/tag/v1.8.2
 [1.8.1]: https://github.com/sblattj/whosaid/releases/tag/v1.8.1
 [1.8.0]: https://github.com/sblattj/whosaid/releases/tag/v1.8.0
 [1.7.1]: https://github.com/sblattj/whosaid/releases/tag/v1.7.1
