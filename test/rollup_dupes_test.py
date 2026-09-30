@@ -72,6 +72,16 @@ def main() -> None:
     ghost = w.possible_duplicates(fresh, [("CM-001", "CM-999", 0.8)], 0.99)
     check(all("CM-999" not in (a, b) for a, b, _ in ghost), "unknown id dropped")
     w.render_commitments_md(Path("."), fresh, ghost, [])
+
+    # Renderers never KeyError on a pair the corpus does not hold (#53), even if
+    # one bypasses possible_duplicates: both fall back to the other side's text.
+    md = w.render_commitments_md(Path("."), fresh, [("CM-001", "CM-999", 0.8)], [])
+    check('CM-001 ↔ CM-999 (0.80): "' + fresh[0].text + '"' in md, "commitments renderer falls back to a")
+    md = w.render_commitments_md(Path("."), fresh, [("CM-998", "CM-999", 0.8)], [])
+    check('"(text unavailable)"' in md, "commitments renderer placeholder")
+    ai = [w.ActionItem(id="AI-001", text=A)]
+    md = w.render_action_items_md(Path("."), ai, [("AI-001", "AI-999", 0.8)])
+    check('AI-001 ↔ AI-999 (0.80): "' + A + '"' in md, "action-items renderer falls back to a")
     print(f"PASS: {CHECKS} assertions")
 
 

@@ -32,6 +32,56 @@ set -euo pipefail
 # caller PATH (including watch install --env PATH=...) in its chosen order.
 export PATH="$PATH:$HOME/.local/bin:$HOME/bin:$HOME/homebrew/bin:$HOME/homebrew/sbin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/local/sbin"
 
+# ---- interpreter resolution (GitHub issue #52) --------------------------------
+# lib/wsconfig.py reads whosaid.toml with tomllib (Python 3.11+). A bare
+# `python3` can be older (stock macOS is 3.9), which silently dropped the
+# workspace owner, aliases, summarizer model and groups. Resolve ONE interpreter
+# here and run every module and inline snippet with "$WHOSAID_PY". Order:
+#   1. $WHOSAID_PYTHON (explicit override; used as given, never version-probed)
+#   2. first of python3, python3.13, python3.12, python3.11 on PATH that is >= 3.11
+#   3. `uv python find '>=3.11'`
+# None found: exit 1 for the commands that run Python (others, e.g. transcribe,
+# never touch it; doctor reports the gap).
+# The `uv run ... python` heavy paths pick their own interpreter and ignore this.
+py_ok() {  # py_ok CMD: 0 when CMD is a runnable Python >= 3.11
+  "$1" -c 'import sys; sys.exit(sys.version_info < (3, 11))' >/dev/null 2>&1
+}
+
+resolve_python() {  # prints the interpreter path; 1 when none qualifies
+  local cand found
+  if [[ -n "${WHOSAID_PYTHON:-}" ]]; then
+    printf '%s\n' "$WHOSAID_PYTHON"
+    return 0
+  fi
+  for cand in python3 python3.13 python3.12 python3.11; do
+    found="$(command -v "$cand" 2>/dev/null || true)"
+    if [[ -n "$found" ]] && py_ok "$found"; then
+      printf '%s\n' "$found"
+      return 0
+    fi
+  done
+  if command -v uv >/dev/null 2>&1; then
+    found="$(uv python find '>=3.11' 2>/dev/null | head -n 1 || true)"
+    if [[ -n "$found" ]] && py_ok "$found"; then
+      printf '%s\n' "$found"
+      return 0
+    fi
+  fi
+  return 1
+}
+
+WHOSAID_PY="$(resolve_python || true)"
+if [[ -z "$WHOSAID_PY" ]]; then
+  # Only the commands that run a lib/*.py module or inline snippet need it;
+  # transcribe/record/enroll/relabel/install/setup/mcp/help/version/doctor do not.
+  case "${1:-}" in
+    samples|speakers|teams|ingest|backfill|roll-up|rollup|commitments|worklist|index|search|context|graph|wiki|watch|memos)
+      echo "whosaid: no Python >= 3.11 found; set WHOSAID_PYTHON=/path/to/python3.11+ or run: uv python install 3.13" >&2
+      exit 1
+      ;;
+  esac
+fi
+
 # Follow symlinks so an installed ~/.local/bin/whosaid command still finds the
 # implementation and model helpers in this checkout.
 SOURCE="${BASH_SOURCE[0]}"
@@ -613,6 +663,13 @@ cmd_doctor() {
     echo "✗ architecture: $arch — whosaid requires Apple Silicon (arm64) for MLX/Metal"
   fi
 
+  # Interpreter every module runs under (issue #52); whosaid.toml needs >= 3.11.
+  if [[ -n "$WHOSAID_PY" ]]; then
+    echo "✓ python: $WHOSAID_PY ($("$WHOSAID_PY" -c 'import sys; print("%d.%d.%d" % sys.version_info[:3])' 2>/dev/null || echo unknown))"
+  else
+    echo "✗ python: no Python >= 3.11 found — fix: uv python install 3.13, or set WHOSAID_PYTHON=/path/to/python3.11+"
+  fi
+
   if command -v brew >/dev/null 2>&1; then
     echo "✓ Homebrew: $(brew --version 2>/dev/null | head -1)"
   else
@@ -682,8 +739,8 @@ cmd_doctor() {
   local speaker_db="${WHOSAID_SPEAKER_DB:-$HOME/.config/whosaid/speakers.json}"
   if [[ -f "$speaker_db" ]]; then
     local nvoiceprints=""
-    if command -v python3 >/dev/null 2>&1; then
-      nvoiceprints="$(python3 -c 'import json,sys;print(len(json.load(open(sys.argv[1])).get("speakers",[])))' "$speaker_db" 2>/dev/null || echo '?')"
+    if [[ -n "$WHOSAID_PY" ]]; then
+      nvoiceprints="$("$WHOSAID_PY" -c 'import json,sys;print(len(json.load(open(sys.argv[1])).get("speakers",[])))' "$speaker_db" 2>/dev/null || echo '?')"
     else
       nvoiceprints="$(grep -c '"name"' "$speaker_db" 2>/dev/null || echo '?')"
     fi
@@ -730,7 +787,7 @@ cmd_doctor() {
       echo "  workspace: $WHOSAID_WORKSPACE (index status unavailable: lib/search.py missing)"
     else
       local ws_status="" ws_rc=0
-      ws_status="$(python3 "$ws_status_py" status "$WHOSAID_WORKSPACE" 2>&1)" || ws_rc=$?
+      ws_status="$("$WHOSAID_PY" "$ws_status_py" status "$WHOSAID_WORKSPACE" 2>&1)" || ws_rc=$?
       if [[ "$ws_rc" -eq 0 ]]; then
         echo "✓ workspace: $WHOSAID_WORKSPACE"
       else
@@ -743,8 +800,8 @@ cmd_doctor() {
   fi
 
   # Menu bar plugin (GitHub issue #24): informational, never fails doctor.
-  if [[ -f "$WATCH_PY" ]] && command -v python3 >/dev/null 2>&1; then
-    python3 "$WATCH_PY" menubar status 2>/dev/null | sed 's/^/  menu bar: /' || true
+  if [[ -f "$WATCH_PY" ]] && [[ -n "$WHOSAID_PY" ]]; then
+    "$WHOSAID_PY" "$WATCH_PY" menubar status 2>/dev/null | sed 's/^/  menu bar: /' || true
   fi
 
   echo "--- avfoundation audio devices ---"
@@ -762,15 +819,15 @@ cmd_doctor() {
 # to the skeleton. Every failure is a printed line; must never fail doctor.
 doctor_summarizer() {
   local lib_dir="$REPO_DIR/lib"
-  if ! command -v python3 >/dev/null 2>&1; then
-    echo "  summarizer engine: unknown (needs python3)"
+  if [[ -z "$WHOSAID_PY" ]]; then
+    echo "  summarizer engine: unknown (needs Python >= 3.11; set WHOSAID_PYTHON)"
     return 0
   fi
   if [[ ! -f "$lib_dir/wsconfig.py" ]]; then
     echo "  summarizer engine: unknown (lib/wsconfig.py missing)"
     return 0
   fi
-  python3 - "$lib_dir" <<'PY' 2>&1 || echo "  summarizer engine: unknown (engine check failed)"
+  "$WHOSAID_PY" - "$lib_dir" <<'PY' 2>&1 || echo "  summarizer engine: unknown (engine check failed)"
 import os
 import shutil
 import subprocess
@@ -872,7 +929,7 @@ ollama_reachable() {
     curl -fsS --max-time 1.5 -o /dev/null "$url/api/tags" >/dev/null 2>&1 && return 0
     return 1
   fi
-  python3 - "$url" <<'PY' >/dev/null 2>&1
+  "$WHOSAID_PY" - "$url" <<'PY' >/dev/null 2>&1
 import sys, urllib.request
 try:
     with urllib.request.urlopen(sys.argv[1] + "/api/tags", timeout=1.5) as r:
@@ -1453,7 +1510,7 @@ cmd_samples() {
   [[ -n "$seconds" ]] && pyargs+=(--seconds "$seconds")
   [[ "$want_json" -eq 1 ]] && pyargs+=(--json)
 
-  python3 "$REPO_DIR/lib/samples.py" "${pyargs[@]}"
+  "$WHOSAID_PY" "$REPO_DIR/lib/samples.py" "${pyargs[@]}"
 }
 
 # whosaid teams ingest <export.json> --into DIR [--tz ZONE] [--self NAME] [--dry-run]
@@ -1464,7 +1521,7 @@ cmd_teams() {
     log "teams: usage: whosaid teams ingest <export.json> --into DIR [--tz ZONE] [--self NAME] [--dry-run]"
     exit 1
   fi
-  python3 "$REPO_DIR/lib/teams_chat.py" "$@"
+  "$WHOSAID_PY" "$REPO_DIR/lib/teams_chat.py" "$@"
 }
 
 # ---- speakers -----------------------------------------------------------------
@@ -1473,11 +1530,11 @@ cmd_teams() {
 cmd_speakers() {
   [[ $# -gt 0 ]] || { log "speakers: need export or import. usage: whosaid speakers export --out FILE | import FILE [--merge|--overwrite]"; exit 1; }
   case "$1" in
-    -h|--help) exec python3 "$REPO_DIR/lib/speaker_registry.py" "$@" ;;
+    -h|--help) exec "$WHOSAID_PY" "$REPO_DIR/lib/speaker_registry.py" "$@" ;;
     export|import) ;;
     *) log "speakers: unknown subcommand '$1'. usage: whosaid speakers export --out FILE | import FILE [--merge|--overwrite]"; exit 1 ;;
   esac
-  exec python3 "$REPO_DIR/lib/speaker_registry.py" "$@"
+  exec "$WHOSAID_PY" "$REPO_DIR/lib/speaker_registry.py" "$@"
 }
 
 # ---- ingest / roll-up (issue #2: meeting workspace) ----------------------------
@@ -1547,7 +1604,7 @@ cmd_ingest() {
     fi
   fi
   if [[ -n "$tz" ]]; then
-    python3 -c 'import sys; from zoneinfo import ZoneInfo; ZoneInfo(sys.argv[1])' "$tz" 2>/dev/null \
+    "$WHOSAID_PY" -c 'import sys; from zoneinfo import ZoneInfo; ZoneInfo(sys.argv[1])' "$tz" 2>/dev/null \
       || { log "ingest: unknown timezone '$tz'"; exit 1; }
   fi
 
@@ -1556,9 +1613,9 @@ cmd_ingest() {
     [[ -f "$audio" ]] || { log "file not found: $audio"; exit 1; }
 
     # identity + idempotence: skip BEFORE any transcription work
-    sha="$(python3 "$REPO_DIR/lib/workspace.py" hash "$audio")" \
+    sha="$("$WHOSAID_PY" "$REPO_DIR/lib/workspace.py" hash "$audio")" \
       || { log "ingest: hash failed for $audio"; exit 1; }
-    existing="$(python3 -c '
+    existing="$("$WHOSAID_PY" -c '
 import json, sys
 sha, manifest = sys.argv[1], sys.argv[2]
 try:
@@ -1586,7 +1643,7 @@ for m in meetings:
     else
       local fn_args=(folder-name "$audio")
       if [[ -n "$tz" ]]; then fn_args+=(--tz "$tz"); fi
-      fname="$(python3 "$REPO_DIR/lib/workspace.py" "${fn_args[@]}")" \
+      fname="$("$WHOSAID_PY" "$REPO_DIR/lib/workspace.py" "${fn_args[@]}")" \
         || { log "ingest: could not derive a folder name for $audio"; exit 1; }
     fi
 
@@ -1631,7 +1688,7 @@ for m in meetings:
     # and duplicates the meeting into a -2 folder. roll-up's scan_meeting keeps
     # ingested_at and recomputes every other field from the folder contents.
     if [[ "$copied" == "1" ]]; then
-      python3 -c '
+      "$WHOSAID_PY" -c '
 import json, os, sys, tempfile
 from datetime import datetime, timezone
 
@@ -1679,7 +1736,7 @@ except BaseException:
         local ai_args=(action-items --transcript "$transcript" --json-out "$folder/action-items.json")
         if [[ -n "$hook" ]]; then ai_args+=(--hook "$hook"); fi
         if [[ -n "$engine" ]]; then ai_args+=(--engine "$engine"); fi
-        python3 "$REPO_DIR/lib/workspace.py" "${ai_args[@]}" \
+        "$WHOSAID_PY" "$REPO_DIR/lib/workspace.py" "${ai_args[@]}" \
           || log "WARN action items failed for $fname (continuing)"
       else
         log "WARN no transcript found in $fname; skipping action items"
@@ -1695,7 +1752,7 @@ except BaseException:
       if [[ -s "$transcript" ]]; then
         local cm_args=(commitments --transcript "$transcript" --json-out "$folder/commitments.json")
         if [[ -n "$min_words" ]]; then cm_args+=(--min-words "$min_words"); fi
-        python3 "$REPO_DIR/lib/workspace.py" "${cm_args[@]}" \
+        "$WHOSAID_PY" "$REPO_DIR/lib/workspace.py" "${cm_args[@]}" \
           || log "WARN commitments failed for $fname (continuing)"
       else
         log "WARN no transcript found in $fname; skipping commitments"
@@ -1752,7 +1809,7 @@ cmd_rollup() {
     esac
   done
   [[ -z "$wsdir" ]] && { log "roll-up: need a workspace directory. e.g. whosaid roll-up meetings/"; exit 1; }
-  python3 "$REPO_DIR/lib/workspace.py" rollup "$wsdir" ${py_args[@]+"${py_args[@]}"}
+  "$WHOSAID_PY" "$REPO_DIR/lib/workspace.py" rollup "$wsdir" ${py_args[@]+"${py_args[@]}"}
   if [[ "$want_index" == "1" ]]; then
     cmd_index "$wsdir"
   fi
@@ -1766,7 +1823,7 @@ cmd_commitments() {
   want_help "$@" && { help_section "COMMITMENTS"; return 0; }
   require_module "$REPO_DIR/lib/workspace.py" commitments
   [[ $# -eq 0 || "${1:-}" == -* ]] && { log "commitments: need a workspace directory. e.g. whosaid commitments meetings/ --owner me"; exit 1; }
-  exec python3 "$REPO_DIR/lib/workspace.py" worklist "$@"
+  exec "$WHOSAID_PY" "$REPO_DIR/lib/workspace.py" worklist "$@"
 }
 
 # ---- workspace search / graph / wiki / watch / memos (issue #14) ----------------
@@ -1826,14 +1883,14 @@ cmd_index() {
   [[ -n "$ws" ]] && ws_args+=("$ws")
 
   local step
-  step="search: python3 lib/search.py build"
-  python3 "$SEARCH_PY" build ${ws_args[@]+"${ws_args[@]}"} ${build_args[@]+"${build_args[@]}"} \
+  step="search: "$WHOSAID_PY" lib/search.py build"
+  "$WHOSAID_PY" "$SEARCH_PY" build ${ws_args[@]+"${ws_args[@]}"} ${build_args[@]+"${build_args[@]}"} \
     || { log "index: step failed: $step"; exit 1; }
-  step="graph: python3 lib/graph.py build"
-  python3 "$GRAPH_PY" build ${ws_args[@]+"${ws_args[@]}"} \
+  step="graph: "$WHOSAID_PY" lib/graph.py build"
+  "$WHOSAID_PY" "$GRAPH_PY" build ${ws_args[@]+"${ws_args[@]}"} \
     || { log "index: step failed: $step"; exit 1; }
-  step="wiki: python3 lib/graph.py wiki"
-  python3 "$GRAPH_PY" wiki ${ws_args[@]+"${ws_args[@]}"} \
+  step="wiki: "$WHOSAID_PY" lib/graph.py wiki"
+  "$WHOSAID_PY" "$GRAPH_PY" wiki ${ws_args[@]+"${ws_args[@]}"} \
     || { log "index: step failed: $step"; exit 1; }
   log "✓ index complete${ws:+ ($ws)}"
 }
@@ -1848,7 +1905,7 @@ cmd_search() {
     exit 1
   fi
   require_module "$SEARCH_PY" search
-  exec python3 "$SEARCH_PY" query "$@"
+  exec "$WHOSAID_PY" "$SEARCH_PY" query "$@"
 }
 
 # whosaid context <ws> <meeting> <HH:MM:SS> [--before S] [--after S] [--json]
@@ -1860,7 +1917,7 @@ cmd_context() {
     exit 1
   fi
   require_module "$SEARCH_PY" context
-  exec python3 "$SEARCH_PY" context "$@"
+  exec "$WHOSAID_PY" "$SEARCH_PY" context "$@"
 }
 
 # whosaid graph <ws> items|item ID|person [Name]|prs|meetings|speakers|commitments [flags]
@@ -1886,11 +1943,11 @@ cmd_graph() {
   case "$view" in
     speakers)
       require_module "$SEARCH_PY" graph
-      exec python3 "$SEARCH_PY" speakers ${ws_args[@]+"${ws_args[@]}"} "$@"
+      exec "$WHOSAID_PY" "$SEARCH_PY" speakers ${ws_args[@]+"${ws_args[@]}"} "$@"
       ;;
     *)
       require_module "$GRAPH_PY" graph
-      exec python3 "$GRAPH_PY" "$view" ${ws_args[@]+"${ws_args[@]}"} "$@"
+      exec "$WHOSAID_PY" "$GRAPH_PY" "$view" ${ws_args[@]+"${ws_args[@]}"} "$@"
       ;;
   esac
 }
@@ -1905,7 +1962,7 @@ is_graph_view() {
 cmd_wiki() {
   if want_help "$@"; then help_section "WORKSPACE SEARCH"; exit 0; fi
   require_module "$GRAPH_PY" wiki
-  exec python3 "$GRAPH_PY" wiki "$@"
+  exec "$WHOSAID_PY" "$GRAPH_PY" wiki "$@"
 }
 
 # whosaid watch run|install|uninstall|status|menubar [flags]  -> lib/watch.py <sub> ...
@@ -1921,7 +1978,7 @@ cmd_watch() {
   esac
   require_module "$WATCH_PY" watch
   export WHOSAID_BIN="${WHOSAID_BIN:-$REPO_DIR/whosaid}"
-  exec python3 "$WATCH_PY" "$@"
+  exec "$WHOSAID_PY" "$WATCH_PY" "$@"
 }
 
 # whosaid memos list|pull|delete|shortcut-recipe [flags] -> lib/watch.py memos <sub> ...
@@ -1934,7 +1991,7 @@ cmd_memos() {
     *) log "memos: unknown subcommand '$1'. $usage"; exit 1 ;;
   esac
   require_module "$WATCH_PY" memos
-  exec python3 "$WATCH_PY" memos "$@"
+  exec "$WHOSAID_PY" "$WATCH_PY" memos "$@"
 }
 
 # ---- dispatch --------------------------------------------------------------------

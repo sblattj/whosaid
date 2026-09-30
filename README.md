@@ -86,6 +86,13 @@ absolute path. `WHOSAID_INSTALL_DIR=/another/bin ./whosaid install` selects anot
 directory. The installed command is a symlink to the checkout, so updating the checkout updates the
 command without copying or duplicating the implementation.
 
+whosaid's helper scripts need Python 3.11 or newer, because `whosaid.toml` is read with `tomllib`.
+The launcher picks one interpreter: `$WHOSAID_PYTHON` if it is set, otherwise the first of `python3`,
+`python3.13`, `python3.12` and `python3.11` on your `PATH` that is 3.11+, otherwise
+`uv python find '>=3.11'`. It skips the stock macOS `python3` (3.9) automatically. If no interpreter
+qualifies, commands that run Python stop with an error; `uv python install 3.13` fixes that.
+`whosaid doctor` shows which interpreter was picked.
+
 Homebrew is optional when `uv`, `ffmpeg`, and `ffprobe` are already installed. The launcher
 and watcher search `~/.local/bin`, `~/bin`, and `~/homebrew/bin` as well as the usual system
 prefixes. Setup can install a pinned, checksum-verified Apple Silicon `uv` archive into
@@ -888,6 +895,7 @@ the absolute path to the `whosaid` script for `command` if it is not on the clie
 
 | Variable | Purpose |
 |---|---|
+| `WHOSAID_PYTHON` | Python 3.11+ interpreter for the helper scripts (default: auto-detected, see Quickstart). |
 | `WHOSAID_MODEL` | Default Whisper model, overridden by `-m`. |
 | `WHOSAID_LANG` | Default transcription language, overridden by `-l`. |
 | `WHOSAID_VOICE_REFS` | Override the directory of enrollment voice clips (default: `voices/`). |
