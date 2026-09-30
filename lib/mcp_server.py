@@ -1153,7 +1153,9 @@ _DESC_WS_PERSON = (
 
 _DESC_WS_MEETINGS = (
     "List the meetings in the workspace as the graph knows them: folder, date, duration, "
-    "attendees (speaker labels), action-item count. The folder names are what whosaid_search "
+    "attendees (speaker labels), action-item count, and kind (source origin: \"teams-chat\" "
+    "for a Microsoft Teams chat folder, \"audio\" for a recorded meeting; pass kind to filter). "
+    "The folder names are what whosaid_search "
     "hits carry, what whosaid_context takes, and what the "
     "whosaid://workspace/meeting/{folder}/... resources use. Read-only."
 )
@@ -1377,12 +1379,12 @@ def whosaid_person(
 # 12) whosaid_meetings, 13) whosaid_prs, 14) whosaid_speakers
 # ---------------------------------------------------------------------------
 @mcp.tool(name="whosaid_meetings", description=_DESC_WS_MEETINGS, annotations=_read_only())
-def whosaid_meetings(workspace: Optional[str] = None) -> dict:
-    """Shell `graph.py meetings <ws> --json` and return {"ok", "meetings": [...], "count"}."""
+def whosaid_meetings(workspace: Optional[str] = None, kind: Optional[str] = None) -> dict:
+    """Shell `graph.py meetings <ws> [--kind K] --json` and return {"ok", "meetings": [...], "count"}."""
     ws, err = _resolve_ws(workspace)
     if err:
         return err
-    payload, err = _run_ws(GRAPH_PY, ["meetings", ws], ws)
+    payload, err = _run_ws(GRAPH_PY, ["meetings", ws] + (["--kind", kind] if kind else []), ws)
     if err:
         return err
     meetings = _as_list(payload, "meetings")
