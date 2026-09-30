@@ -114,8 +114,14 @@ def load_config(ws: Path) -> dict:
     if path.is_file():
         try:
             import tomllib  # Python 3.11+
-        except ImportError:  # pragma: no cover
-            log(f"WARN {CONFIG_NAME} needs Python 3.11+ (tomllib); using defaults")
+        except ImportError:
+            try:
+                import tomli as tomllib  # type: ignore[no-redef]  # backport for < 3.11
+            except ImportError:
+                tomllib = None
+        if tomllib is None:
+            log(f"WARN {CONFIG_NAME} IGNORED (needs Python 3.11+ or tomli): "
+                "owner/aliases/groups/summarizer fall back to defaults")
         else:
             try:
                 with open(path, "rb") as fh:

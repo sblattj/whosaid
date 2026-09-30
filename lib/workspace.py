@@ -1482,7 +1482,10 @@ def render_action_items_md(ws: Path, items: list[ActionItem],
                   "_Pairs scoring within 0.10 below the similarity threshold — "
                   "merge by hand if truly alike._", ""]
         for a, b, ratio in dupes:
-            lines.append(f"- {a} ↔ {b} ({ratio:.2f}): \"{texts[b]}\"")
+            # possible_duplicates only emits live ids, but a stale pair must never
+            # take the whole roll-up down with it (#53).
+            txt = texts.get(b) or texts.get(a) or "(text unavailable)"
+            lines.append(f"- {a} ↔ {b} ({ratio:.2f}): \"{txt}\"")
         lines.append("")
     return "\n".join(lines)
 
@@ -1983,7 +1986,10 @@ def render_commitments_md(ws: Path, items: list[CommitmentItem],
                   "_Pairs scoring within 0.10 below the similarity threshold — "
                   "merge by hand if truly alike._", ""]
         for a, b, ratio in dupes:
-            lines.append(f"- {a} ↔ {b} ({ratio:.2f}): \"{texts[b]}\"")
+            # possible_duplicates only emits live ids, but a stale pair must never
+            # take the whole roll-up down with it (#53).
+            txt = texts.get(b) or texts.get(a) or "(text unavailable)"
+            lines.append(f"- {a} ↔ {b} ({ratio:.2f}): \"{txt}\"")
         lines.append("")
     if dropped:
         lines += ["## Dropped fragments (review)", "",

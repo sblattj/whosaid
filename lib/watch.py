@@ -661,6 +661,12 @@ def compatible_copying_interpreter() -> str:
         if candidate in seen:
             continue
         seen.add(candidate)
+        try:  # the agent runs lib/watch.py -> wsconfig: needs tomllib (3.11+), issue #52
+            if subprocess.run([candidate, "-c", "import sys; sys.exit(sys.version_info < (3, 11))"],
+                              capture_output=True, timeout=30).returncode != 0:
+                continue
+        except (OSError, subprocess.TimeoutExpired):
+            continue
         with tempfile.TemporaryDirectory(prefix="whosaid-venv-probe-") as probe:
             try:
                 result = subprocess.run([candidate, "-m", "venv", "--copies", probe],
@@ -670,7 +676,7 @@ def compatible_copying_interpreter() -> str:
             if result.returncode == 0 and os.access(Path(probe) / "bin/python3", os.X_OK):
                 return candidate
     raise SystemExit(
-        "whosaid: no compatible Python could create the dedicated copied interpreter. "
+        "whosaid: no compatible Python (3.11+) could create the dedicated copied interpreter. "
         "Apple Command Line Tools Python cannot create venvs with --copies. Install a "
         "user-local Python (for example `uv python install 3.12`) and rerun, or pass "
         "--interpreter PATH to an executable you manage."

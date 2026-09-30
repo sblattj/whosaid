@@ -6,6 +6,28 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ## [Unreleased]
 
+### Fixed
+
+- **The workspace `whosaid.toml` is no longer silently ignored under Python older than 3.11**
+  (#52). On a stock macOS `python3` (3.9), the launcher dropped the owner, aliases, summarizer
+  model and groups. `whosaid` now resolves one interpreter: `$WHOSAID_PYTHON`, otherwise the first
+  of `python3`/`python3.13`/`python3.12`/`python3.11` that is 3.11+, otherwise
+  `uv python find '>=3.11'`. Every helper runs with it, and if none is found the Python-backed
+  commands exit 1 with the fix. `whosaid doctor` prints the chosen interpreter.
+  `lib/wsconfig.py` falls back to `tomli`, and its warning now says what is lost. The watcher's
+  interpreter probe also skips Pythons older than 3.11. Tests: `test/python_resolve_test.sh`.
+- **The "Possible duplicates (review)" renderers can no longer crash a roll-up** (#53). The
+  reported `KeyError: 'CM-095'` was fixed at the source in 1.7.1, because `possible_duplicates`
+  only emits pairs of live ids. Both `render_commitments_md` and `render_action_items_md` now
+  also fall back to the other item's text, or `(text unavailable)`, instead of subscripting,
+  so a stale pair can never throw away a finished fold. Regression checks in
+  `test/rollup_dupes_test.py`.
+
+### Changed
+
+- `requires-python` is now `>=3.11` (it was `>=3.10`, but `tomllib` needs 3.11), and the 3.10
+  classifier is removed.
+
 ## [1.8.1] - 2026-09-30
 
 ### Fixed
