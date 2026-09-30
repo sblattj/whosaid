@@ -274,5 +274,66 @@ def run(tmp: Path) -> None:
     check(json.loads(se0.stdout) == [], se0.stdout)
 
 
+    # ---- (h) the real scraper's shapes: {chat, author, ts, epoch, text}
+    def srec(chat, author, t, text):
+        # exactly as teams-chat-scraper.js builds it: ts = new Date(epoch).toISOString()
+        return {"chat": chat, "author": author,
+                "ts": datetime.fromtimestamp(t / 1000, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z",
+                "epoch": t, "text": text}
+
+    s_a = [srec(CHAT_A, DOE, T_A1, "first scraped line"), srec(CHAT_A, SELF, T_A2, "second scraped line")]
+    s_b = [srec(CHAT_B, DOE, T_B1, "zebrafish from the other chat"), srec(CHAT_B, SELF, T_B2, "reply")]
+    raw_by_chat = {c: {"chat": c, "harvested": len(m), "kept": len(m), "reachedCutoff": True, "messages": m}
+                   for c, m in ((CHAT_A, s_a), (CHAT_B, s_b))}
+    flat = sorted(s_a + s_b, key=lambda m: m["epoch"])
+    (tmp / "raw_by_chat.json").write_text(json.dumps(raw_by_chat), encoding="utf-8")
+    (tmp / "messages.json").write_text(json.dumps(flat), encoding="utf-8")
+    (tmp / "messages.ndjson").write_text("\n".join(json.dumps(m) for m in flat) + "\n\n", encoding="utf-8")
+    snaps = {}
+    for name in ("raw_by_chat.json", "messages.json", "messages.ndjson"):
+        w = fresh(tmp, "ws-" + name)
+        res = teams_chat.ingest(tmp / name, w, tz_flag=TZ, self_name=SELF)
+        snaps[name] = (folders(w), snapshot(w))
+        check(len(folders(w)) == 2 and len(res) == 2, f"{name}: 2 chat-days, got {folders(w)}")
+    check(snaps["raw_by_chat.json"] == snaps["messages.json"], "raw_by_chat == flat messages.json")
+    check(snaps["messages.json"] == snaps["messages.ndjson"], "flat messages.json == NDJSON")
+    txt = "".join(v for k, v in snaps["raw_by_chat.json"][1].items() if k.endswith("teams.speakers.txt"))
+    check("second scraped line" in txt and "zebrafish from the other chat" in txt, "scraped text ingested")
+    # a map record without its own chat takes the map key; epoch_ms beats epoch
+    nochat = {"K chat": {"messages": [{"author": DOE, "epoch": T_A1, "text": "keyed"}]}}
+    (tmp / "nochat.json").write_text(json.dumps(nochat), encoding="utf-8")
+    check([r["chat"] for r in teams_chat.load_export(tmp / "nochat.json")] == ["K chat"], "map key is the chat")
+    both = write_export(tmp, [{"chat": "C", "author": DOE, "epoch_ms": T_A1, "epoch": T_A2, "text": "x"}], "both.json")
+    check(teams_chat.load_export(both)[0]["epoch_ms"] == T_A1, "epoch_ms wins over epoch")
+    (tmp / "one.ndjson").write_text(json.dumps(flat[0]) + "\n", encoding="utf-8")
+    check(len(teams_chat.load_export(tmp / "one.ndjson")) == 1, "single-record NDJSON loads as one record")
+    # (d) ts only (no epoch), Z suffix and an offset; timestamp_iso beats ts; bool epoch rejected
+    def ms_of(rec_):
+        return teams_chat.load_export(write_export(tmp, [dict(chat="C", author=DOE, text="x", **rec_)], "one.json"))[0]["epoch_ms"]
+    check(ms_of({"ts": "2026-09-24T16:05:06.000Z"}) == T_A1, "ts with Z")
+    check(ms_of({"ts": "2026-09-24T09:05:06-07:00"}) == T_A1, "ts with offset")
+    check(ms_of({"timestamp_iso": "2026-09-24T16:05:06Z", "ts": "2001-01-01T00:00:00Z"}) == T_A1, "timestamp_iso before ts")
+    check(ms_of({"epoch": True, "ts": "2026-09-24T16:05:06Z"}) == T_A1, "bool epoch falls back to ts")
+    # NDJSON error names the line; blank lines are skipped in the count
+    (tmp / "badlines.ndjson").write_text(json.dumps(flat[0]) + "\n\n{oops\n", encoding="utf-8")
+    try:
+        teams_chat.load_export(tmp / "badlines.ndjson")
+    except teams_chat.TeamsError as e:
+        check("line 3" in str(e) and "\n" not in str(e), str(e))
+    else:
+        check(False, "expected TeamsError for a bad NDJSON line")
+    # (e) none of the four keys: exit 1 through the real CLI, key names in stderr
+    nokeys = write_export(tmp, [{"chat": "C", "author": DOE, "text": "no clock"}], "nokeys.json")
+    ne = subprocess.run([str(REPO / "whosaid"), "teams", "ingest", str(nokeys), "--into", str(ws_cli), "--tz", TZ],
+                        capture_output=True, text=True, env=cli_env, cwd=REPO)
+    check(ne.returncode == 1 and len(ne.stderr.strip().splitlines()) == 1, (ne.returncode, ne.stderr))
+    check(all(k in ne.stderr for k in ("epoch_ms", "epoch", "timestamp_iso", "ts")), ne.stderr)
+    # CLI accepts the scraper's raw_by_chat map
+    ws_raw = fresh(tmp, "ws-cli-raw")
+    rr = subprocess.run([str(REPO / "whosaid"), "teams", "ingest", str(tmp / "raw_by_chat.json"), "--into", str(ws_raw), "--tz", TZ],
+                        capture_output=True, text=True, env=cli_env, cwd=REPO)
+    check(rr.returncode == 0 and len(rr.stdout.strip().splitlines()) == 2, (rr.returncode, rr.stderr, rr.stdout))
+
+
 if __name__ == "__main__":
     main()

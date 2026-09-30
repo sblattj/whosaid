@@ -6,6 +6,19 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ## [Unreleased]
 
+### Fixed
+
+- **`whosaid teams ingest` now reads what the Teams scraper actually emits.** v1.8.0 required
+  `epoch_ms`, but the scraper writes `{chat, author, ts, epoch, text}` records grouped into a
+  `raw_by_chat` map, so every real export was rejected with `epoch_ms must be an integer`.
+  Ingest now accepts `epoch` or `epoch_ms` (falling back to `ts`/`timestamp_iso`), the
+  `raw_by_chat` map, a flat list, `{"messages": [...]}`, and NDJSON.
+
+### Added
+
+- `contrib/teams-scraper/teams-chat-scraper.js`, the browser scraper itself (plain page JS,
+  driven over CDP or pasted into the console), with run instructions in its README.
+
 ## [1.8.0] - 2026-09-30
 
 ### Added

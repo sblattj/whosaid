@@ -1,38 +1,55 @@
-# Teams chat scraper contract
+# Teams chat scraper
 
 `whosaid teams ingest` reads a JSON export of Microsoft Teams chat messages.
-This directory documents the browser scraper that produces that export: the
-Teams web client's DOM contract and the output shape. The scraper itself drives
-an authenticated browser session over the Chrome DevTools Protocol, so it lives
-outside whosaid's core. whosaid stays offline and only reads the JSON hand-off.
+[`teams-chat-scraper.js`](teams-chat-scraper.js) produces that export: it is
+plain page JavaScript that runs inside an already signed-in Teams web tab. You
+can drive it over the Chrome DevTools Protocol from any client (cdp-toolkit's
+`evaluate_script`, Playwright, a raw CDP socket), or paste it into the tab's
+console. It lives in `contrib/` because it needs a live browser session; whosaid
+itself stays offline and only reads the JSON the scraper hands over.
+
+## Running it
+
+1. Open `teams.cloud.microsoft` and sign in. Optionally set
+   `window.__TS_CUTOFF_DAYS = 14` first (the default is 7).
+2. Evaluate the whole file in the tab. It installs `window.__ts` and starts the
+   scrape without waiting for it to finish (see *Long scrapes* below).
+3. Poll with short calls until `window.__ts.done` is `true`, watching
+   `JSON.stringify(window.__ts.progress)`. A non-null `window.__ts.error` means
+   the scrape failed.
+4. Save `JSON.stringify(window.__ts.result)` to a file and ingest it:
+
+```bash
+whosaid teams ingest raw_by_chat.json --into ~/meetings --tz America/Los_Angeles --self Alice_Example
+```
 
 ## Output: the hand-off JSON
 
-Either a list of message records or an object with a `messages` list:
+`window.__ts.result` is `raw_by_chat`, an object keyed by chat name:
 
 ```json
-[
-  {"chat": "Project sync", "author": "Doe, Jane (Vendor, consultant)",
-   "timestamp_iso": "2026-09-24T16:05:06Z", "epoch_ms": 1790265906000,
-   "text": "i got the telemetry for the widget"}
-]
+{"Project sync": {"chat": "Project sync", "harvested": 40, "kept": 12, "reachedCutoff": true,
+  "messages": [
+    {"chat": "Project sync", "author": "Doe, Jane (Vendor, consultant)",
+     "ts": "2026-09-24T16:05:06.000Z", "epoch": 1790265906000,
+     "text": "i got the telemetry for the widget"}]}}
 ```
+
+`whosaid teams ingest` accepts that map, and also a flat list of the same
+records (`messages.json`), NDJSON with one record per line (`messages.ndjson`),
+or `{"messages": [...]}`. Each record's fields:
 
 | Field | Meaning |
 |---|---|
 | `chat` | Chat display name (left rail). |
 | `author` | Author display name, as Teams renders it. |
-| `timestamp_iso` | The message's `<time datetime>` value. |
-| `epoch_ms` | The message's `data-mid`: epoch milliseconds, and the dedup key. |
+| `epoch` (or `epoch_ms`) | The message's `data-mid`: epoch milliseconds, and the dedup key. |
+| `ts` (or `timestamp_iso`) | The same instant as ISO 8601. It is used only when there is no epoch. |
 | `text` | The message body as plain text. |
 | `chat_id`, `url` | Optional: the Teams conversation id and page URL. |
 
-Records may be unsorted and may repeat. Ingest dedups on `epoch_ms`, so
+Records may be unsorted and may repeat. Ingest dedups on the epoch, so
 re-running a scrape over an overlapping window is safe.
-
-```bash
-whosaid teams ingest teams-export.json --into ~/meetings --tz America/Los_Angeles
-```
 
 ## DOM contract (Teams web, `teams.cloud.microsoft`)
 

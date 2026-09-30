@@ -7,10 +7,12 @@ becomes one dated meeting folder holding
   teams.speakers.txt        the indexed artifact (parse_turns-compatible)
   teams.diarization.json    provenance sidecar; source.kind == "teams-chat"
 
-Input is a JSON hand-off file, either a list of message records or an object
-{"messages": [...], optional "chat_id", "url"}. A record is
-{"chat", "author", "timestamp_iso", "epoch_ms", "text"} plus optional
-"chat_id", "url". Records may be unsorted and duplicated (epoch_ms dedups).
+Input is a hand-off file: a list of message records, an object
+{"messages": [...], optional "chat_id", "url"}, the scraper's raw_by_chat map
+{"<chat>": {"messages": [...]}}, or NDJSON (one record per line). A record is
+{"chat", "author", "epoch_ms" | "epoch", "text"} with "timestamp_iso" | "ts"
+(ISO 8601) as the fallback clock, plus optional "chat_id", "url". epoch_ms wins
+over epoch. Records may be unsorted and duplicated (epoch dedups).
 
 Usage:
   python3 lib/teams_chat.py ingest <export.json> --into WS [--tz ZONE] [--self NAME] [--dry-run]
@@ -26,7 +28,7 @@ import json
 import os
 import re
 import sys
-from datetime import datetime, timezone, tzinfo
+from datetime import datetime, timedelta, timezone, tzinfo
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -50,29 +52,94 @@ def _one_line(value: str) -> str:
     return " ".join(str(value).split())
 
 
-def load_export(path: str | os.PathLike) -> list[dict]:
-    """Read the hand-off file into normalized records:
-    {chat, chat_id, url, author, epoch_ms, text}. Raises TeamsError."""
+def _iso_ms(value) -> int | None:
+    """ISO 8601 string (Z suffix or offset; naive means UTC) -> epoch ms, else None."""
+    if not isinstance(value, str) or not value.strip():
+        return None
+    v = value.strip()
+    if v[-1] in "Zz":
+        v = v[:-1] + "+00:00"
+    try:
+        dt = datetime.fromisoformat(v)
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return (dt - datetime(1970, 1, 1, tzinfo=timezone.utc)) // timedelta(milliseconds=1)
+
+
+def _record_ms(rec: dict) -> int | None:
+    """epoch_ms, else epoch (numbers, bool rejected), else ISO timestamp_iso, else ts."""
+    for key in ("epoch_ms", "epoch"):
+        v = rec.get(key)
+        if isinstance(v, (int, float)) and not isinstance(v, bool):
+            return int(v)
+    for key in ("timestamp_iso", "ts"):
+        ms = _iso_ms(rec.get(key))
+        if ms is not None:
+            return ms
+    return None
+
+
+def _parse_json_or_ndjson(path) -> object:
     try:
         with open(path, encoding="utf-8") as fh:
-            data = json.load(fh)
+            text = fh.read()
     except OSError as e:
         raise TeamsError(f"cannot read export {path}: {e.strerror or e}") from None
-    except (ValueError, UnicodeDecodeError) as e:
+    except UnicodeDecodeError as e:
         raise TeamsError(f"export {path} is not valid JSON: {e}") from None
+    try:
+        return json.loads(text)
+    except ValueError as e:
+        whole_err = e
+    # Not one JSON document: try NDJSON, one JSON object per non-blank line.
+    if not text.strip():
+        raise TeamsError(f"export {path} is not valid JSON: {whole_err}")
+    recs = []
+    for n, line in enumerate(text.splitlines(), 1):
+        if not line.strip():
+            continue
+        try:
+            recs.append(json.loads(line))
+        except ValueError as e:
+            raise TeamsError(f"export {path} is not valid JSON or NDJSON: line {n}: {e}") from None
+    return recs
+
+
+def load_export(path: str | os.PathLike) -> list[dict]:
+    """Read the hand-off file into normalized records:
+    {chat, chat_id, url, author, epoch_ms, text}. Raises TeamsError.
+    Accepts a list, {"messages": [...]}, a scraper raw_by_chat map
+    ({chat: {"messages": [...]}}), or NDJSON (one record per line)."""
+    data = _parse_json_or_ndjson(path)
     env_chat_id = env_url = None
     if isinstance(data, dict):
-        env_chat_id, env_url = data.get("chat_id"), data.get("url")
-        data = data.get("messages")
+        if "messages" not in data and data and all(
+                isinstance(v, dict) and isinstance(v.get("messages"), list) for v in data.values()):
+            flat: list = []
+            for key, val in data.items():
+                for m in val["messages"]:
+                    if isinstance(m, dict) and m.get("chat") is None:
+                        m = dict(m, chat=key)
+                    flat.append(m)
+            data = flat
+        elif "messages" not in data and "author" in data and "text" in data:
+            data = [data]  # a single-record NDJSON file parses as one object
+        else:
+            env_chat_id, env_url = data.get("chat_id"), data.get("url")
+            data = data.get("messages")
     if not isinstance(data, list):
-        raise TeamsError("export must be a list of messages or an object with a 'messages' list")
+        raise TeamsError("export must be a list of messages, an object with a 'messages' list, "
+                         "or a map of chat name to {'messages': [...]}")
     out: list[dict] = []
     for i, rec in enumerate(data):
         if not isinstance(rec, dict):
             raise TeamsError(f"message {i} is not an object")
-        ms = rec.get("epoch_ms")
-        if isinstance(ms, bool) or not isinstance(ms, (int, float)):
-            raise TeamsError(f"message {i}: epoch_ms must be an integer")
+        ms = _record_ms(rec)
+        if ms is None:
+            raise TeamsError(f"message {i}: needs a numeric epoch_ms or epoch, "
+                             "or an ISO 8601 timestamp_iso or ts")
         for key in ("chat", "author", "text"):
             if not isinstance(rec.get(key), str):
                 raise TeamsError(f"message {i}: '{key}' must be a string")
@@ -84,7 +151,7 @@ def load_export(path: str | os.PathLike) -> list[dict]:
             "chat_id": rec.get("chat_id") or env_chat_id or None,
             "url": rec.get("url") or env_url or None,
             "author": rec["author"],
-            "epoch_ms": int(ms),
+            "epoch_ms": ms,
             "text": rec["text"],
         })
     # A chat whose records carry a chat_id on only some of them is one chat:
