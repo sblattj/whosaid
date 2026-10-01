@@ -1291,6 +1291,29 @@ The client setup and history regressions have focused suites as well:
 - `python3 test/speaker_registry_migration_test.py` exercises private registry
   round trips, validation, conflict policies, permissions, and concurrent creation.
 
+### Running the suites
+
+Each suite is run directly; the runner depends on what it imports:
+
+- `*.sh` suites: `./test/<name>.sh`.
+- Stdlib-only Python suites (`graph_test.py`, `teams_chat_test.py`, ...):
+  `python3 test/<name>.py`.
+- numpy suites (`anchor`, `diarize_absorb`, `diarize_recovery`, `estimate_k`, `registry_matches`
+  import numpy; `local_labels` and `backfill` need it for the CLI they drive):
+  `uv run --quiet --with numpy python test/<name>_test.py`.
+- MCP suites (`mcp_descriptions_test.py`, `mcp_workspace_tools_test.py` import `mcp`):
+  `uv run --with "mcp[cli]" python test/<name>.py`.
+
+Couplings to know before editing code:
+
+- `test/graph_test.py` pins the `meeting` table as row tuples (`SELECT * FROM meeting`), the
+  `meetings --json` output, and the `| folder | kind | created | ...` wiki table row, so adding a
+  `meetings` column means editing those snapshots.
+- A speaker-registry fixture's `model` must be an ONNX basename (`"<name>.onnx"`);
+  `_validate_model` in `lib/speaker_registry.py` makes `read_json` reject anything else.
+- macOS has no GNU `timeout`. In-script deadlines use `perl -e 'alarm shift; exec @ARGV' <secs> <cmd>`
+  (see `test/enroll_from_file_test.sh`).
+
 ## License
 
 MIT — see [LICENSE](LICENSE).
