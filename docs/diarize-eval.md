@@ -135,4 +135,67 @@ closest OpenAI pairs are nearer to each other than one person usually is to them
 report puts a meeting in the **similar** bucket when two of its voices score 0.60 or more,
 and in the **distinct** bucket otherwise. Read the distinct bucket for clustering quality.
 
-<!-- RESULTS -->
+## Results (v1.10.0)
+
+Two sets of meetings were used. The 32 **tuning** meetings (`tune`, `tune-hard`, `tune-cameo` and
+`pilot`) found the bugs and set the fixes' thresholds. The 33 **held-out** meetings (`val-mixed`,
+`val-hard`, `val-cameo` and `val-long`, three of them 16–21 minutes) were generated with fresh
+seeds and were not looked at until fixes 1 and 2 below were written. Fix 3 came from them. "Before" is v1.9.0 and "after" is
+v1.10.0. Every number is a percentage pooled over the set's meetings.
+
+Held-out, all meetings:
+
+| mode | count acc | DER | turn acc | named right | named wrong |
+|---|---|---|---|---|---|
+| blind | 21.2 → 36.4 | 24.6 → 10.8 | 65.2 → 84.6 | | |
+| `--speakers N` | 30.3 → 100 | 17.5 → 9.2 | 79.4 → 86.8 | | |
+| all enrolled | 15.2 → 45.5 | 19.1 → 10.4 | 74.4 → 84.5 | 82.7 → 91.3 | 7.9 → 4.6 |
+| half enrolled | 21.2 → 45.5 | 18.4 → 11.3 | 72.0 → 84.4 | 38.9 → 41.0 | 1.9 → 3.8 |
+
+Tuning, all meetings:
+
+| mode | count acc | DER | turn acc | named right | named wrong |
+|---|---|---|---|---|---|
+| blind | 28.1 → 53.1 | 12.9 → 11.2 | 79.3 → 83.0 | | |
+| `--speakers N` | 46.9 → 100 | 19.8 → 9.0 | 76.0 → 85.9 | | |
+| all enrolled | 21.9 → 65.6 | 15.6 → 9.4 | 73.9 → 84.4 | 85.8 → 91.8 | 2.4 → 2.7 |
+| half enrolled | 18.8 → 65.6 | 14.1 → 10.4 | 76.7 → 83.6 | 39.8 → 42.1 | 2.3 → 2.9 |
+
+"Named right" in half-enrolled mode tops out near 50%, because half the talk belongs to voices
+nobody enrolled.
+
+Split by voice similarity, held-out blind mode reads 13.3 → 40.0% count accuracy and 15.3 → 8.8%
+DER on the 15 distinct meetings, against 20.0 → 33.3% and 34.1 → 12.8% on the 15 similar
+ones. Blind counts on similar meetings stay poor. Two OpenAI voices at 0.75 cosine merge into one
+speaker, and no threshold separates them without also splitting real people. `--speakers N`
+gets the count right either way.
+
+What changed, in the order it was found:
+
+1. **Short fragments folded (#59).** Clusters made only of sub-2 s turns ("Yeah.", "Right.")
+   were counted as speakers. They now fold into the nearest substantive voice at 0.40 cosine
+   or more.
+2. **Short audio takes the per-turn path (#68).** Under 15 minutes, whosaid used sherpa's
+   whole-file clustering. That path ignored the count estimator and returned fewer than N
+   speakers for `--speakers N` on 4 of 12 meetings.
+3. **`--ref` voices assigned best pair first.** The held-out run of fixes 1 and 2 showed refs
+   mode getting *worse* on similar voices: named-wrong went 7.9 → 19.6%, and to 35.4% on the
+   similar bucket. The cause was older than either fix. The `--ref` pass let each clip claim its
+   best free cluster in argument order. On m32-005, two similar voices merged into one cluster.
+   Marin (0.76) claimed it before Nova (0.93) was considered, and 44% of the meeting went out
+   under the wrong name. Fix 2 made such merges more common on short audio, which exposed the
+   bug. The registry pass had been fixed the same way in #60. With all three fixes,
+   named-wrong is 4.6%.
+
+**Tried and reverted (#69).** Letting an enrolled voice absorb tiny leftover clusters fixed
+one tuning meeting but put wrong names on two others. In both, an unenrolled speaker with
+under 30 s of talk counted as "tiny" and took an enrolled person's name. #69 stays open with
+the numbers.
+
+**Registry round trip.** Enrolling each meeting's voices into an isolated registry and
+re-running gave 2 of 2 names correct on the tuning set. On the cameo set, 2
+names came out wrong; the same 2 are wrong on v1.9.0, so they are not a regression.
+
+**Long meetings.** Fix 1's 2 s cutoff was set on 2-minute meetings. On the three 16–21-minute
+held-out meetings, blind DER went 35.8 → 7.7% and refs named-wrong 11.3 → 2.8%. The cutoff
+holds at that length too.

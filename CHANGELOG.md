@@ -25,11 +25,16 @@ All notable changes to whosaid are documented here. This project adheres to
   they score at least 0.40 cosine. A brief guest with a distinct voice is kept. The #38 fallback
   and the `--max-speakers` hint act on the folded count, and the fallback's threshold ladder
   runs only when the duration filter actually excluded turns. On 32 synthetic meetings, exact
-  blind counts went from 6 to 21.
+  counts went from 9 to 17 with no hint, and from 6 to 21 with half the voices enrolled.
 - **`--speakers N` and the count estimator now work on recordings under 15 minutes (#68).**
   Short audio used sherpa's whole-file clustering, which returned fewer than N speakers on 4
   of 12 meetings and never ran whosaid's estimator. It now takes the per-turn path as one
   window. `--no-chunk` keeps the old path.
+- **`--ref` voices are matched best pair first, not in argument order.** A clip given earlier
+  could claim a cluster that was a far better match for a later clip, so the later speaker's
+  talk went out under the wrong name. #60 had already fixed this for the registry pass. On 33
+  held-out synthetic meetings with every voice passed as `--ref`, the other two fixes alone
+  raised wrongly named talk time from 7.9% to 19.6%. With this fix it is 4.6%.
 
 ## [1.9.0] - 2026-10-06
 
