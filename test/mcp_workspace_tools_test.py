@@ -646,6 +646,33 @@ def test_fold_metadata(tmp: Path) -> None:
               f"relabel must retain existing count metadata: {relabeled}")
         check(calls[-1][-2:] == ["--auto", "--fold-unknown"],
               f"relabel metadata test must use the real fold CLI contract: {calls[-1]}")
+        check(out["suggested_max_speakers"] is None and relabeled["suggested_max_speakers"] is None,
+              f"a sidecar without the #59 hint must surface None: {out} {relabeled}")
+
+        # Issue #59 proposal 4: a saturated, unrecovered estimate carries a
+        # structured --max-speakers suggestion that both MCP result paths surface.
+        hint = "Auto count remains UNRELIABLE: primary found 44 clusters at its bound; " \
+               "20 is not a verified speaker count. Try `--max-speakers 8`."
+        sidecar.write_text(json.dumps({
+            "base": "sample", "num_speakers": 2,
+            "count_warning": hint, "suggested_max_speakers": 8,
+            "count_estimate": {"k": 20, "raw_k": 44, "saturated": True, "fallback": None,
+                               "suggested_max": 8},
+            "names": {"SPEAKER_00": "SPEAKER_00", "SPEAKER_01": "SPEAKER_01"},
+            "segments": [{"speaker": "SPEAKER_00"}, {"speaker": "SPEAKER_01"}],
+        }))
+        out = mcp_server.whosaid_transcribe(str(audio), outdir=str(outdir))
+        check(out["suggested_max_speakers"] == 8 and "--max-speakers 8" in out["summary"],
+              f"transcribe must surface the #59 suggestion: {out}")
+        relabeled = mcp_server.whosaid_relabel(str(sidecar), {}, auto=True)
+        check(relabeled["suggested_max_speakers"] == 8 and relabeled["count_warning"] == hint,
+              f"relabel must surface the #59 suggestion: {relabeled}")
+        # Only count_estimate carries it (e.g. a hand-edited sidecar): still surfaced.
+        data = json.loads(sidecar.read_text())
+        del data["suggested_max_speakers"]
+        sidecar.write_text(json.dumps(data))
+        out = mcp_server.whosaid_transcribe(str(audio), outdir=str(outdir))
+        check(out["suggested_max_speakers"] == 8, f"count_estimate.suggested_max fallback: {out}")
 
         # Workspace [diarize] hints (issue #59): an outdir inside a workspace gets them
         # when no speaker arg is passed; any explicit speaker arg replaces them.

@@ -1204,6 +1204,11 @@ deliberately if a real speaker is being missed.
   voices. Named speakers and transcript-only labels are protected. If you know roughly how many
   people were present, pass
   `--min-speakers`/`--max-speakers`; if you know exactly, pass `--speakers N`.
+  When the count still saturates and the fallback abstains, the warning ends with
+  `Try --max-speakers N`, and the sidecar and MCP result carry the same N as
+  `suggested_max_speakers`. N counts the clusters that have at least 3 substantive turns
+  at the normal cut. It is only a suggestion: the count itself does not change. To measure
+  the estimator on your own recordings, see [docs/count-eval.md](docs/count-eval.md).
   Note this estimator runs on the **chunked** path (recordings over 15 minutes, or any
   `--chunk-seconds`); shorter recordings use sherpa's own clustering, which takes an exact count
   only, so a `--min-speakers`/`--max-speakers` range there is reported as unenforced unless the
@@ -1318,7 +1323,8 @@ Each suite is run directly; the runner depends on what it imports:
 - `*.sh` suites: `./test/<name>.sh`.
 - Stdlib-only Python suites (`graph_test.py`, `teams_chat_test.py`, ...):
   `python3 test/<name>.py`.
-- numpy suites (`anchor`, `diarize_absorb`, `diarize_recovery`, `estimate_k`, `registry_matches`
+- numpy suites (`anchor`, `count_eval`, `diarize_absorb`, `diarize_recovery`, `estimate_k`,
+  `max_speakers_hint`, `registry_matches`
   import numpy; `local_labels` and `backfill` need it for the CLI they drive):
   `uv run --quiet --with numpy python test/<name>_test.py`.
 - MCP suites (`mcp_descriptions_test.py`, `mcp_workspace_tools_test.py` import `mcp`):
