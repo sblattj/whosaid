@@ -1290,6 +1290,12 @@ synthetic fixtures; whosaid itself never calls a cloud model. The recorded basel
 for the default `qwen2.5:14b` against 0.921 for the Claude `opus` reference, and most of the gap is
 precision. See [docs/eval.md](docs/eval.md).
 
+`test/diarize_eval/` measures diarization on synthetic meetings. It assembles fake meetings from
+text-to-speech voices with exact ground truth, then scores how many people whosaid found and
+who it says spoke each turn, blind, with `--speakers N`, and with enrolled voices. Only the
+scripted lines go to the TTS vendors, and only while the voice pool is rendered. The voices are
+TTS, not real people. See [docs/diarize-eval.md](docs/diarize-eval.md).
+
 `./test/roles_test.sh` covers speaker role tags offline: `--role`/`--save-role` validation, role
 preservation across registry re-saves, the `# Role:` header lines in `.speakers.txt`, the
 sidecar's `roles` key, and the `[role]` card label — no model download required.

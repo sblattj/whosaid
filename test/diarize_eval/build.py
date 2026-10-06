@@ -7,7 +7,7 @@
 stdlib only. Every random choice comes from random.Random(seed * 100003 + i),
 so a (seed, index) pair reproduces a meeting byte-for-byte, independent of
 --count. Output per meeting: <out>/m<seed>-<i:03d>/{audio.wav,truth.json};
-plus <out>/index.json. See /tmp/whosaid-synth/spec.md section 3 (format).
+plus <out>/index.json. Format: docs/diarize-eval.md ("Meeting format").
 """
 import argparse
 import json

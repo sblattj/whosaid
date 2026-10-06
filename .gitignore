@@ -7,6 +7,8 @@ recordings/*
 __pycache__/
 # speaker-count eval inputs are private voiceprints (docs/count-eval.md)
 test/count_eval/data/
+# synthetic diarization eval run results (docs/diarize-eval.md)
+test/diarize_eval/results/
 .codex/
 .claude/
 .opencode/

@@ -6,6 +6,34 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ## [Unreleased]
 
+### Added
+
+- **Synthetic-meeting diarization eval (`test/diarize_eval/`).** It renders a pool of TTS voices
+  (ElevenLabs and OpenAI; only the scripted lines in `lines.json` go to the vendors), assembles
+  seeded multi-speaker meetings with exact ground truth, and runs whosaid in four modes: blind,
+  `--speakers N`, all voices enrolled, and half enrolled. Each run is isolated from the real
+  registry, and the scores cover headcount, DER, per-turn and short-turn accuracy, named
+  right/wrong, and WER. `voice_sim.py` measures how separable the pool's voices are to whosaid's
+  own embedder, and the report splits meetings with a near-identical voice pair from the rest.
+  See `docs/diarize-eval.md`. Tests: `test/diarize_eval_test.py`,
+  `test/diarize_count_fixtures_test.py` (real TTS-voice embeddings, counted offline).
+
+### Fixed
+
+- **Short fragments no longer inflate the automatic speaker count (#59).** The count estimator
+  now folds each cluster made only of turns under 2 s into the nearest substantive voice when
+  they score at least 0.40 cosine. A brief guest with a distinct voice is kept. The #38 fallback
+  and the `--max-speakers` hint act on the folded count, and the fallback's threshold ladder
+  runs only when the duration filter actually excluded turns. On 32 synthetic meetings, exact
+  blind counts went from 6 to 21.
+- **`--speakers N` and the count estimator now work on recordings under 15 minutes (#68).**
+  Short audio used sherpa's whole-file clustering, which returned fewer than N speakers on 4
+  of 12 meetings and never ran whosaid's estimator. It now takes the per-turn path as one
+  window. `--no-chunk` keeps the old path.
+- **A named speaker's short turns no longer survive as extra unknown speakers (#69).** A
+  registry- or ref-named voice can now absorb tiny fragments, using the same 0.50 gate and 0.15
+  margin as between unknown clusters. It is never folded away itself.
+
 ## [1.9.0] - 2026-10-06
 
 ### Added
