@@ -6,6 +6,27 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ## [Unreleased]
 
+## [1.11.2] - 2026-10-06
+
+### Fixed
+
+- **A `--max-speakers` bound (or `max_speakers` in `whosaid.toml`) now caps the automatic
+  speaker count instead of setting it (#75).** Before, when the primary clustering saturated
+  under a bound, recovery was skipped, so every multi-person meeting came out with exactly
+  the bound (e.g. 8 speakers for a 4-person call). Now, if the plateau recovery abstains, the
+  substantive voice count is applied (`count_estimate.fallback.method` is
+  `bounded-substantive-count`), and k stays at the bound only when that many substantive
+  voices really are present. `whosaid reprocess --dry-run` flags affected meetings with a new
+  `bound-pinned` finding, including sidecars written by v1.11.0 and v1.11.1, so
+  `whosaid reprocess <ws>` re-diarizes them.
+- **A `reprocess`/`roll-up --refold` no longer burns commitment ids (#74).** A commitments
+  refresh re-mints every item before restoring old ids, and items that got no old id kept
+  their high fold-time ids, so `next_id` jumped by hundreds (one 590-item corpus went from
+  CM-16061 to CM-16573 for 28 new items). New items are now numbered compactly from the
+  previous `next_id`, near-miss pairs follow the rename, and an item whose text changed only
+  slightly after re-diarization (same meeting, similarity at least 0.85) keeps its old id.
+  Ids already burned are not reclaimed.
+
 ## [1.11.1] - 2026-10-06
 
 ### Fixed
