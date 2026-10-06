@@ -6,6 +6,10 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ## [Unreleased]
 
+### Fixed
+
+- MCP `whosaid_reprocess` now accepts `expected_speakers` and `match_threshold`, matching `whosaid reprocess --expected-speakers/--match-threshold`.
+
 ## [1.11.0] - 2026-10-06
 
 ### Added
