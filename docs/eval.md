@@ -14,6 +14,9 @@ The eval has two jobs:
    Claude Code CLI) to show how much of the gap is the local model and how much is the pipeline.
    This is a measuring stick only. whosaid never uses a cloud model.
 
+The speaker-count estimator has its own, separate offline eval: see
+[Speaker-count eval](count-eval.md).
+
 ## What leaves the machine
 
 **whosaid sends nothing anywhere unless a workspace opts in with `[summarizer] engine =
