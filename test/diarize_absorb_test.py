@@ -101,6 +101,28 @@ def test_ref_skip_no_double_naming():
           f"instead of naming a second cluster Matt, got {names['SPEAKER_01']}")
 
 
+def test_ref_pass_is_best_pair_first():
+    """--ref clips are assigned best-pair-first, not in argument order. Synthetic
+    meeting m32-005: two similar voices merged into one cluster; Marin (0.76) was
+    passed before Nova (0.93) and took it, so Nova's talk went out as Marin."""
+    nova = unit([1.0, 0.0, 0.0, 0.0])
+    marin = unit([0.82, 0.57, 0.0, 0.0])        # ~0.82 to Nova: a similar pair
+    jessica = unit([0.0, 0.0, 1.0, 0.0])
+    merged = unit([0.98, 0.2, 0.0, 0.0])        # mostly Nova, some Marin
+    cluster_emb = {"SPEAKER_00": merged, "SPEAKER_01": jessica}
+    s_marin = float(np.dot(merged, marin))
+    s_nova = float(np.dot(merged, nova))
+    check(0.5 <= s_marin < s_nova, f"test setup: Marin {s_marin:.3f} must trail Nova {s_nova:.3f}")
+    ref_voices = [("Jessica", jessica), ("Marin", marin), ("Nova", nova)]
+
+    names = {sp: sp for sp in cluster_emb}
+    d.name_clusters(cluster_emb, 0.50, 0.999, [], ref_voices, names)
+
+    check(names["SPEAKER_00"] == "Nova", f"merged cluster belongs to Nova, got {names['SPEAKER_00']}")
+    check(names["SPEAKER_01"] == "Jessica", f"01 should be Jessica, got {names['SPEAKER_01']}")
+    check("Marin" not in names.values(), f"Marin must not land anywhere: {names}")
+
+
 def test_reapply_does_not_annex_already_named_voice():
     """relabel --auto over a partly-named sidecar: a voice already placed on a
     cluster must NOT claim a second, low-confidence leftover via the 0.40 registry
@@ -230,6 +252,7 @@ def test_cards_header_carries_the_count_warning():
 def main():
     test_absorb_pass()
     test_ref_skip_no_double_naming()
+    test_ref_pass_is_best_pair_first()
     test_reapply_does_not_annex_already_named_voice()
     test_noisy_turns_do_not_saturate_the_cap()
     test_more_real_voices_than_the_cap_returns_the_cap()

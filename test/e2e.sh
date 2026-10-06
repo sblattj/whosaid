@@ -337,8 +337,9 @@ fi
 grep -q 'anchored clustering' "$TMP/anchor.log" \
   || { cat "$TMP/anchor.log" >&2; fail "--expected-speakers did NOT take the anchored clustering path"; }
 
-# The short clip would normally take the whole-file path; anchoring must force chunking.
-grep -q 'chunked diarization path' "$TMP/anchor.log" \
+# Anchoring needs per-turn voiceprints. A short clip gets them from one window over the
+# whole file (#68); only --no-chunk would reach the whole-file path, and anchoring overrides it.
+grep -q 'parallel diarization: 1 chunk(s)' "$TMP/anchor.log" \
   || { cat "$TMP/anchor.log" >&2; fail "--expected-speakers did not force the chunked path on a short file"; }
 
 grep -q 'Alice:' "$TMP/anchor/anchored.speakers.txt" \

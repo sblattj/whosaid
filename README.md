@@ -896,7 +896,7 @@ the absolute path to the `whosaid` script for `command` if it is not on the clie
 | `--anchor-threshold F` | Per-turn cosine required before `--expected-speakers` pins a turn to a known voice. Default `0.70`; turns below it fall through to ordinary clustering rather than taking a low-confidence name. |
 | `-j, --jobs N` | Parallel diarization workers for long audio (default: auto, ~cores−2, capped at 8). |
 | `--chunk-seconds S` | Window length for parallel diarization (default: auto — about `--jobs` windows, min 300s). |
-| `--no-chunk` | Diarize the whole file in a single pass (disable parallel chunking). |
+| `--no-chunk` | Diarize the whole file with sherpa's own clustering (no parallel chunking, no count estimator). |
 | `--match-threshold F` | Cosine similarity a known voice must reach before it may claim a cluster (alias `--ref-threshold`). Default `0.50`; a cluster whose best candidate scores below `F` keeps its anonymous `SPEAKER_NN` label rather than taking a low-confidence name. Raise it (e.g. `0.6`) if you see wrong names, lower it to catch more. |
 | `--absorb-threshold F` | Cosine similarity at which a *still-unnamed* cluster is folded into a known voice, merging phantom splits of one person. Default `0.85`. |
 | `--no-diarize` | Skip diarization; write the plain transcript only. |
@@ -1076,7 +1076,9 @@ recording length.
 non-overlapping time windows that are segmented and embedded concurrently across CPU workers, then a
 single global clustering pass over every turn's voiceprint recovers speakers that stay consistent
 across window boundaries. Because the clustering sees all turns at once, it recovers the same
-speakers as a single-pass run while finishing several times faster. Pass `--no-chunk` to force a single pass, or
+speakers as a single-pass run while finishing several times faster. Shorter recordings use the same
+per-turn clustering over one window, so the speaker-count estimator and `--min-speakers`/`--max-speakers`
+work at any length. Pass `--no-chunk` to use sherpa's whole-file clustering instead, or
 `--jobs`/`--chunk-seconds` to tune it.
 
 ## Output files
@@ -1209,10 +1211,9 @@ deliberately if a real speaker is being missed.
   `suggested_max_speakers`. N counts the clusters that have at least 3 substantive turns
   at the normal cut. It is only a suggestion: the count itself does not change. To measure
   the estimator on your own recordings, see [docs/count-eval.md](docs/count-eval.md).
-  Note this estimator runs on the **chunked** path (recordings over 15 minutes, or any
-  `--chunk-seconds`); shorter recordings use sherpa's own clustering, which takes an exact count
-  only, so a `--min-speakers`/`--max-speakers` range there is reported as unenforced unless the
-  two are equal.
+  The estimator runs at every recording length. Only `--no-chunk` skips it and uses sherpa's
+  own clustering, which takes an exact count only, so a `--min-speakers`/`--max-speakers`
+  range there is reported as unenforced unless the two are equal.
 - **`whosaid search --mode meaning` says Ollama is unreachable, or `index` skipped embeddings.**
   Meaning and hybrid search need Ollama with `nomic-embed-text` on `127.0.0.1:11434`
   (`brew install ollama && brew services start ollama && ollama pull nomic-embed-text`, or point
@@ -1288,6 +1289,12 @@ cloud model for comparison. That backend is opt-in developer tooling that sends 
 synthetic fixtures; whosaid itself never calls a cloud model. The recorded baseline is F1 0.717
 for the default `qwen2.5:14b` against 0.921 for the Claude `opus` reference, and most of the gap is
 precision. See [docs/eval.md](docs/eval.md).
+
+`test/diarize_eval/` measures diarization on synthetic meetings. It assembles fake meetings from
+text-to-speech voices with exact ground truth, then scores how many people whosaid found and
+who it says spoke each turn, blind, with `--speakers N`, and with enrolled voices. Only the
+scripted lines go to the TTS vendors, and only while the voice pool is rendered. The voices are
+TTS, not real people. See [docs/diarize-eval.md](docs/diarize-eval.md).
 
 `./test/roles_test.sh` covers speaker role tags offline: `--role`/`--save-role` validation, role
 preservation across registry re-saves, the `# Role:` header lines in `.speakers.txt`, the

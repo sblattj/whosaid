@@ -39,7 +39,9 @@ def test_recovery():
     assert len(d.cluster_segments(copy.deepcopy(clean), -1)[2]) == 2
     result = d.cluster_segments(copy.deepcopy(noisy), -1)
     segs, emb, speakers, estimate, _ = result
-    assert len(speakers) == 2 and estimate['fallback']['k'] == 2
+    # The brief fold explains the 0.6 s fragments before the plateau recovery is
+    # needed: every short-only cluster sits at 0.55 to its voice, above the gate.
+    assert len(speakers) == 2 and estimate['brief_fold']['folded'] >= 1
     assert estimate['raw_k'] == old['raw_k'] and estimate['saturated']
     assert [(s['start'],s['end']) for s in segs] == [(s['start'],s['end']) for s in noisy]
     assert d.cluster_segments(copy.deepcopy(noisy), -1)[0] == segs
@@ -49,7 +51,10 @@ def test_recovery():
     # One short distinct guest: varying only the guest makes recovery abstain.
     rng = np.random.default_rng(12)
     guest = {'start':9999.,'end':9999.6,'emb':unit(rng.normal(size=192)).tolist()}
-    assert d.cluster_segments(copy.deepcopy(noisy)+[guest], -1)[3]['fallback'] is None
+    with_guest = d.cluster_segments(copy.deepcopy(noisy)+[guest], -1)
+    assert with_guest[3]['fallback'] is None
+    assert len(with_guest[2]) == 3 and with_guest[3]['brief_fold']['kept_brief'] == 1, \
+        'a brief guest far from every voice is kept, not folded'
     for k in (6,8,25):
         x = turns(k, 30, seed=9)
         e = d.estimate_speakers(x, durations=np.full(len(x),15.))
@@ -112,13 +117,24 @@ def test_fold_original_evidence_survives_serialization():
     one = d.fold_unknown_clusters(segs,e,{sp:sp for sp in e},evidence=evidence)
     two = d.fold_unknown_clusters(*one[:3], evidence=json.loads(json.dumps(evidence)))
     assert len(one[2])==len(two[2])==1 and one[0]==two[0]
-    # A known voice competes even though it cannot be a destination.
+    # A known voice competes even though it cannot be a destination: folding an
+    # unknown fragment into a named voice turns a count error into a wrong name,
+    # which the synthetic eval measured on unenrolled voices (#69).
     e = {'Unknown':np.array([1.,0.,0.]), 'Host':np.array([0.,1.,0.]),
          'Tiny':np.array([.6,.8,0.])}
     segs=[{'start':i*10.,'end':i*10.+5.,'speaker':sp}
           for sp in ('Unknown','Host') for i in range(6)]
     segs.append({'start':99.,'end':99.6,'speaker':'Tiny'})
     assert len(d.fold_unknown_clusters(segs,e,{'Unknown':'Unknown','Host':'Named','Tiny':'Tiny'})[2])==3
+    # ...and never a source: a tiny NAMED cluster near an unknown voice stays.
+    folded = d.fold_unknown_clusters(segs,e,{'Unknown':'Unknown','Host':'Host','Tiny':'Guest'})
+    assert len(folded[2])==3 and folded[0][-1]['speaker']=='Tiny'
+    # ...and still competes: a fragment between a known and an unknown voice stays.
+    e['Tiny'] = unit(np.array([.7,.7,0.]))
+    assert len(d.fold_unknown_clusters(segs,e,{'Unknown':'Unknown','Host':'Named','Tiny':'Tiny'})[2])==3
+    # A local label is protected: never a destination.
+    e['Tiny'] = np.array([.6,.8,0.])
+    assert len(d.fold_unknown_clusters(segs,e,{sp:sp for sp in e},protected={'Host'})[2])==3
 
 
 def test_minimum_larger_than_reliable_pool():

@@ -6,6 +6,36 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ## [Unreleased]
 
+### Added
+
+- **Synthetic-meeting diarization eval (`test/diarize_eval/`).** It renders a pool of TTS voices
+  (ElevenLabs and OpenAI; only the scripted lines in `lines.json` go to the vendors), assembles
+  seeded multi-speaker meetings with exact ground truth, and runs whosaid in four modes: blind,
+  `--speakers N`, all voices enrolled, and half enrolled. Each run is isolated from the real
+  registry, and the scores cover headcount, DER, per-turn and short-turn accuracy, named
+  right/wrong, and WER. `voice_sim.py` measures how separable the pool's voices are to whosaid's
+  own embedder, and the report splits meetings with a near-identical voice pair from the rest.
+  See `docs/diarize-eval.md`. Tests: `test/diarize_eval_test.py`,
+  `test/diarize_count_fixtures_test.py` (real TTS-voice embeddings, counted offline).
+
+### Fixed
+
+- **Short fragments no longer inflate the automatic speaker count (#59).** The count estimator
+  now folds each cluster made only of turns under 2 s into the nearest substantive voice when
+  they score at least 0.40 cosine. A brief guest with a distinct voice is kept. The #38 fallback
+  and the `--max-speakers` hint act on the folded count, and the fallback's threshold ladder
+  runs only when the duration filter actually excluded turns. On 32 synthetic meetings, exact
+  counts went from 9 to 17 with no hint, and from 6 to 21 with half the voices enrolled.
+- **`--speakers N` and the count estimator now work on recordings under 15 minutes (#68).**
+  Short audio used sherpa's whole-file clustering, which returned fewer than N speakers on 4
+  of 12 meetings and never ran whosaid's estimator. It now takes the per-turn path as one
+  window. `--no-chunk` keeps the old path.
+- **`--ref` voices are matched best pair first, not in argument order.** A clip given earlier
+  could claim a cluster that was a far better match for a later clip, so the later speaker's
+  talk went out under the wrong name. #60 had already fixed this for the registry pass. On 33
+  held-out synthetic meetings with every voice passed as `--ref`, the other two fixes alone
+  raised wrongly named talk time from 7.9% to 19.6%. With this fix it is 4.6%.
+
 ## [1.9.0] - 2026-10-06
 
 ### Added

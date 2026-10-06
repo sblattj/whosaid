@@ -8,6 +8,11 @@ voice, plus short 0.6 s noisy turns that each open a singleton cluster (raw_k
 past the cap of 20), plus ONE brief distinct guest so the short-turn guard in
 estimate_speakers abstains (#59 proposal 3 keeps that guard as is).
 
+The short turns sit at cosine 0.30 to their voice by default: below the brief
+fold's gate (BRIEF_VOICE_GATE 0.40), so the fold keeps them as distinct and the
+count still saturates. At the #38 recipe's 0.55 the fold explains them and there
+is nothing left to hint about (test_brief_fold_resolves_saturation).
+
 Run:
     uv run --with numpy python test/max_speakers_hint_test.py
 """
@@ -38,8 +43,10 @@ def unit(v):
     return v / (np.linalg.norm(v) + 1e-9)
 
 
-def saturating_fixture(voices: int = TRUE_VOICES, guest: bool = True):
-    """(X, durations) for `voices` substantive voices + short noise (+ a brief guest)."""
+def saturating_fixture(voices: int = TRUE_VOICES, guest: bool = True, cohesion: float = 0.30):
+    """(X, durations) for `voices` substantive voices + short noise (+ a brief guest).
+
+    `cohesion` is each short turn's cosine to its own voice."""
     per = 20
     X = turns(voices, per, seed=59)
     bases = [unit(X[i * per:(i + 1) * per].sum(axis=0)) for i in range(voices)]
@@ -49,7 +56,7 @@ def saturating_fixture(voices: int = TRUE_VOICES, guest: bool = True):
         b = bases[i % voices]
         noise = rng.normal(size=192)
         noise = unit(noise - float(noise @ b) * b)
-        rows.append(0.55 * b + np.sqrt(1 - 0.55 ** 2) * noise)
+        rows.append(cohesion * b + np.sqrt(1 - cohesion ** 2) * noise)
         durs.append(0.6)
     if guest:
         rows.append(unit(np.random.default_rng(12).normal(size=192)))
@@ -69,7 +76,10 @@ def test_saturated_abstain_suggests():
     # suggestion (no durations => no ladder => no suggestion path at all).
     plain = d.estimate_speakers(X)
     check(est["k"] == plain["k"] == 20, f"k must stay the capped 20: {est['k']} / {plain['k']}")
-    check(np.array_equal(est["labels"], plain["labels"]), "primary labels must be unchanged")
+    # With durations the labels are the primary cut after the brief fold; the
+    # suggestion itself must not move them.
+    folded, _ = d.fold_brief_clusters(X, plain["labels"], dur)
+    check(np.array_equal(est["labels"], folded), "labels must be the folded primary cut")
     check(est["raw_k"] == plain["raw_k"], "raw_k must be unchanged")
     warning = d.count_recovery_warning(est, 20, 20)
     check(f"--max-speakers {n}" in warning, f"warning must carry the hint: {warning}")
@@ -86,19 +96,26 @@ def test_user_max_gives_no_suggestion():
     check("--max-speakers" not in (d.count_recovery_warning(est, 12, 12) or ""), "no hint text")
 
 
-def test_fallback_gives_no_suggestion():
-    # The #38 fixture: without the guest, recovery fires.
-    X, dur = saturating_fixture(guest=False)
+def test_brief_fold_resolves_saturation():
+    # The #38 recipe (short turns at 0.55 to their voice): the brief fold puts
+    # every fragment back on its voice, so the count is right and nothing is hinted.
+    X, dur = saturating_fixture(guest=False, cohesion=0.55)
     est = d.estimate_speakers(X, durations=dur)
-    check(est["saturated"] is True, "control must saturate")
-    check(est["fallback"] is not None, f"recovery must fire without the guest: {est}")
-    check(est["suggested_max"] is None, f"recovery firing must not also suggest: {est}")
-    check("--max-speakers" not in d.count_recovery_warning(est, 20, est["k"]), "no hint text")
+    check(est["saturated"] is True, "control must saturate the primary cut")
+    check(est["k"] == TRUE_VOICES and est["brief_fold"]["folded"] > 0, f"fold must resolve: {est}")
+    check(est["fallback"] is None and est["suggested_max"] is None, f"nothing left to hint: {est}")
+    check(d.count_recovery_warning(est, 20, est["k"]) is None or
+          "--max-speakers" not in d.count_recovery_warning(est, 20, est["k"]), "no hint text")
+    # With the guest, the guest is kept as its own speaker.
+    X, dur = saturating_fixture(guest=True, cohesion=0.55)
+    est = d.estimate_speakers(X, durations=dur)
+    check(est["k"] == TRUE_VOICES + 1 and est["brief_fold"]["kept_brief"] == 1,
+          f"the distinct guest survives the fold: {est}")
     from diarize_recovery_test import fixture
     _, noisy = fixture()
     seg_est = d.cluster_segments(copy.deepcopy(noisy), -1)[3]
-    check(seg_est["fallback"]["k"] == 2 and seg_est["suggested_max"] is None,
-          f"#38 fixture through cluster_segments must recover without a hint: {seg_est}")
+    check(seg_est["k"] == 2 and seg_est["suggested_max"] is None,
+          f"#38 fixture through cluster_segments must resolve without a hint: {seg_est}")
 
 
 def test_not_saturated_gives_no_suggestion():
@@ -149,7 +166,7 @@ def test_suggestion_clamp():
 if __name__ == "__main__":
     test_saturated_abstain_suggests()
     test_user_max_gives_no_suggestion()
-    test_fallback_gives_no_suggestion()
+    test_brief_fold_resolves_saturation()
     test_not_saturated_gives_no_suggestion()
     test_hint_reaches_cluster_segments_and_legacy_estimates()
     test_suggestion_clamp()
