@@ -263,6 +263,54 @@ TURN_COUNT="$(grep -cE "$TURN_PATTERN" "$SPEAKERS" || true)"
 SPEAKER_LABELS="$(grep -oE "$TURN_PATTERN" "$SPEAKERS" | sed -E 's/^\[[^]]*\][[:space:]]*//; s/:$//' | sort -u | tr '\n' ' ')"
 
 # ---------------------------------------------------------------------------
+# 7b. --reuse-asr: re-diarize from the existing whisper json without ASR.
+#     The json/txt must be byte- and mtime-identical; speakers.txt must be
+#     rewritten (the stale one is removed first, so a newer mtime proves it).
+# ---------------------------------------------------------------------------
+echo "-- checking --reuse-asr --"
+
+JSON="$TMP/out/$BASE.json"
+[ -s "$JSON" ] || fail "missing whisper json for --reuse-asr test: $JSON"
+JSON_MT="$(stat -f %m "$JSON")"; TXT_MT="$(stat -f %m "$TXT")"
+JSON_SHA="$(shasum "$JSON" | awk '{print $1}')"; TXT_SHA="$(shasum "$TXT" | awk '{print $1}')"
+SPK_MT="$(stat -f %m "$SPEAKERS")"
+sleep 2  # mtime has 1s resolution; make "newer" observable
+
+REUSE_LOG="$TMP/reuse.log"
+set +e
+WHOSAID_VOICE_REFS="$TMP/refs" "$REPO/whosaid" "$TMP/dialog.wav" -n "call.v1" --speakers 2 -o "$TMP/out" --reuse-asr > "$REUSE_LOG" 2>&1
+RC=$?
+set -e
+if [ "$RC" -ne 0 ]; then
+  cat "$REUSE_LOG" >&2
+  fail "whosaid --reuse-asr exited $RC (expected 0)"
+fi
+grep -q 'ASR skipped' "$REUSE_LOG" || fail "--reuse-asr did not log 'ASR skipped'"
+[ "$(stat -f %m "$JSON")" = "$JSON_MT" ] || fail "--reuse-asr modified $JSON (mtime changed)"
+[ "$(stat -f %m "$TXT")" = "$TXT_MT" ] || fail "--reuse-asr modified $TXT (mtime changed)"
+[ "$(shasum "$JSON" | awk '{print $1}')" = "$JSON_SHA" ] || fail "--reuse-asr changed the content of $JSON"
+[ "$(shasum "$TXT" | awk '{print $1}')" = "$TXT_SHA" ] || fail "--reuse-asr changed the content of $TXT"
+[ -s "$SPEAKERS" ] || fail "--reuse-asr left no speakers.txt: $SPEAKERS"
+[ "$(stat -f %m "$SPEAKERS")" -gt "$SPK_MT" ] || fail "--reuse-asr did not freshly rewrite $SPEAKERS (mtime not newer)"
+
+set +e
+WHOSAID_VOICE_REFS="$TMP/refs" "$REPO/whosaid" "$TMP/dialog.wav" -n "nonexistent.base" --reuse-asr -o "$TMP/out" > "$TMP/reuse-missing.log" 2>&1
+RC=$?
+set -e
+[ "$RC" -eq 1 ] || fail "--reuse-asr with a missing json exited $RC (expected 1)"
+grep -q 'ERROR --reuse-asr' "$TMP/reuse-missing.log" || fail "--reuse-asr with a missing json did not print the ERROR"
+[ ! -e "$TMP/out/nonexistent_base.json" ] || fail "--reuse-asr with a missing json ran ASR anyway"
+
+set +e
+WHOSAID_VOICE_REFS="$TMP/refs" "$REPO/whosaid" "$TMP/dialog.wav" -n "call.v1" --reuse-asr --no-diarize -o "$TMP/out" > "$TMP/reuse-nodiar.log" 2>&1
+RC=$?
+set -e
+[ "$RC" -eq 1 ] || fail "--reuse-asr --no-diarize exited $RC (expected 1)"
+grep -q 'ERROR --reuse-asr' "$TMP/reuse-nodiar.log" || fail "--reuse-asr --no-diarize did not print the ERROR"
+
+echo "--reuse-asr OK"
+
+# ---------------------------------------------------------------------------
 # 8. Registry: relabel persists a voiceprint, and a later run auto-names it.
 #    Covers `whosaid relabel` (cluster -> name, persisted) and the auto-name
 #    reload path. Uses the cached sidecar + a diarize-only reload (no Whisper).

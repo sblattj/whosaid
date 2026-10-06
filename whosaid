@@ -313,6 +313,9 @@ TRANSCRIBE FLAGS
                        label. Default 0.50 (WHOSAID_MATCH_THRESHOLD); raise it if
                        you see wrong names, lower it to catch more.
       --no-diarize     Skip speaker diarization.
+      --reuse-asr      Skip Whisper when <out>/<base>.json already exists and go straight
+                       to diarization (re-diarize without re-transcribing; errors if the
+                       json is missing; incompatible with --no-diarize).
       --diarize        Force diarization on (default already on).
   -h, --help          This message.
 
@@ -1261,6 +1264,7 @@ cmd_transcribe() {
   local OUTDIR=""
   local NAME=""
   local DIARIZE=1
+  local REUSE_ASR=0
   local SPEAKERS=""
   local JOBS=""
   local CHUNK_SECONDS=""
@@ -1283,6 +1287,7 @@ cmd_transcribe() {
       -n|--name)    NAME="$2"; shift 2 ;;
       --no-diarize) DIARIZE=0; shift ;;
       --diarize)    DIARIZE=1; shift ;;
+      --reuse-asr)  REUSE_ASR=1; shift ;;
       --speakers)   SPEAKERS="$2"; shift 2 ;;
       --min-speakers) MIN_SPEAKERS="$2"; shift 2 ;;
       --max-speakers) MAX_SPEAKERS="$2"; shift 2 ;;
@@ -1304,6 +1309,11 @@ cmd_transcribe() {
   [[ ${#AUDIO[@]} -eq 0 ]] && { log "no audio file given."; cmd_help; exit 1; }
   [[ -n "$NAME" && ${#AUDIO[@]} -gt 1 ]] && { log "--name only works with a single input."; exit 1; }
 
+  if [[ "$REUSE_ASR" == "1" && "$DIARIZE" != "1" ]]; then
+    log "ERROR --reuse-asr re-diarizes an existing transcript; it cannot be combined with --no-diarize."
+    exit 1
+  fi
+
   warn_if_not_arm64
   ensure_uv_and_ffmpeg
 
@@ -1324,9 +1334,17 @@ cmd_transcribe() {
     local base="${NAME:-$(basename "${audio%.*}")}"
     base="$(printf '%s' "$base" | tr -c 'A-Za-z0-9_-' '_')"
 
+    if [[ "$REUSE_ASR" == "1" && ! -f "$out/$base.json" ]]; then
+      log "ERROR --reuse-asr: no existing transcript at $out/$base.json to reuse."
+      exit 1
+    fi
+
     local helper_args=("$audio" --model "$MODEL" --outdir "$out" --lang "$LANG_CODE" --format "$FORMAT" --name "$base")
 
     local uv_err uv_rc=0 uv_status=()
+    if [[ "$REUSE_ASR" == "1" ]]; then
+      log "reusing existing transcript: $out/$base.json (ASR skipped)"
+    else
     uv_err="$(mktemp "${TMPDIR:-/tmp}/whosaid-uv.XXXXXX")"
     # Keep progress/warnings live on stderr, preserve stdout for callers, and
     # wait for tee to finish before inspecting the captured diagnostic.
@@ -1346,6 +1364,7 @@ cmd_transcribe() {
       exit "$uv_rc"
     fi
     rm -f "$uv_err"
+    fi
 
     local txt="$out/$base.txt"
     if [[ ! -s "$txt" ]]; then
@@ -1385,10 +1404,18 @@ cmd_transcribe() {
             dargs+=(--ref "$refname=$ref")
           done
         fi
-        if uv run --quiet --with sherpa-onnx --with numpy python "$DIARIZER" "${dargs[@]}"; then
-          :
-        else
+        # A re-run must not be satisfied by the previous run's speaker file: the
+        # exit-3 gate below only checks existence, so drop the stale one first
+        # (the diarizer rewrites the other sidecars itself).
+        [[ "$REUSE_ASR" == "1" ]] && rm -f "$out/$base.speakers.txt"
+        local diar_rc=0
+        uv run --quiet --with sherpa-onnx --with numpy python "$DIARIZER" "${dargs[@]}" || diar_rc=$?
+        if [[ "$diar_rc" -ne 0 ]]; then
           log "WARN diarization failed; plain transcript is unaffected."
+          if [[ "$REUSE_ASR" == "1" ]]; then
+            log "plain transcript kept at $txt; re-diarization failed (rc=$diar_rc)"
+            exit 3
+          fi
         fi
       else
         log "WARN diarizer script not found at $DIARIZER; skipping diarization for $audio."
