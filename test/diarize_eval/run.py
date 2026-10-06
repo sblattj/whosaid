@@ -9,6 +9,11 @@ Isolation: every whosaid call gets its own WHOSAID_SPEAKER_DB, a private
 WHOSAID_VOICE_REFS dir and an unused WHOSAID_WORKSPACE, with WHOSAID_OWNER unset.
 The user's real registry (~/.config/whosaid/speakers.json) and the repo voices/
 dir are fingerprinted before and after each call; any change aborts the run.
+
+When the pool has a voice_sim.json (voice_sim.py), every meeting is also bucketed
+by its closest voice pair: "similar" when two of its voices score >= 0.60 cosine
+to whosaid's own embedder, "distinct" otherwise. A similar pair tests the
+embedder, not clustering, so the report shows the two buckets apart.
 """
 import argparse
 import datetime
@@ -27,6 +32,7 @@ from score import score_meeting, aggregate  # noqa: E402
 
 MODES = ("blind", "hint", "refs", "refs-subset")
 REAL_REGISTRY = os.path.expanduser("~/.config/whosaid/speakers.json")
+SIMILAR_PAIR = 0.60
 
 
 def cache_root():
@@ -141,8 +147,24 @@ def run_one(whosaid, mdir, truth, mode, work, pool_root, extra=()):
     return row
 
 
+def max_voice_sim(truth, voice_sim):
+    """Highest enrollment-print cosine between two of the meeting's voices, or None."""
+    if not voice_sim:
+        return None
+    pos = {v: i for i, v in enumerate(voice_sim["ids"])}
+    idx = [pos[s["voice"]] for s in truth["speakers"] if s.get("voice") in pos]
+    if len(idx) < len(truth["speakers"]) or len(idx) < 2:
+        return None
+    return max(voice_sim["sim"][a][b] for i, a in enumerate(idx) for b in idx[i + 1:])
+
+
+def sim_bucket(row):
+    v = row.get("max_voice_sim")
+    return None if v is None else ("similar" if v >= SIMILAR_PAIR else "distinct")
+
+
 def summarize(rows_by_mm):
-    by_mode, by_tag = {}, {}
+    by_mode, by_tag, by_sim = {}, {}, {}
     modes = sorted({m for d in rows_by_mm.values() for m in d})
     for mode in modes:
         rows = [d[mode] for d in rows_by_mm.values() if mode in d]
@@ -152,7 +174,10 @@ def summarize(rows_by_mm):
         by_mode[mode] = agg
         tags = sorted({t for r in ok for t in r["tags"]})
         by_tag[mode] = {t: aggregate([r for r in ok if t in r["tags"]]) for t in tags}
-    return by_mode, by_tag
+        buckets = sorted({sim_bucket(r) for r in ok} - {None})
+        if buckets:
+            by_sim[mode] = {b: aggregate([r for r in ok if sim_bucket(r) == b]) for b in buckets}
+    return by_mode, by_tag, by_sim
 
 
 def f(x, pct=True):
@@ -163,12 +188,22 @@ def f(x, pct=True):
 
 def render(res):
     out = ["### %s  (%s, whosaid %s)" % (res["run"], res["date"], res.get("whosaid_version", "?")), "",
-           "| mode | n | failed | count acc | DER | turn acc | short-turn acc | WER |",
-           "|---|---|---|---|---|---|---|---|"]
+           "| mode | n | failed | count acc | DER | turn acc | short-turn acc | WER | named right | named wrong |",
+           "|---|---|---|---|---|---|---|---|---|---|"]
     for mode, a in res["by_mode"].items():
-        out.append("| %s | %s | %s | %s | %s | %s | %s | %s |" % (
+        out.append("| %s | %s | %s | %s | %s | %s | %s | %s | %s | %s |" % (
             mode, a.get("n_meetings", 0), a.get("n_failed", 0), f(a.get("count_accuracy")),
-            f(a.get("der")), f(a.get("turn_acc")), f(a.get("turn_acc_short")), f(a.get("wer"))))
+            f(a.get("der")), f(a.get("turn_acc")), f(a.get("turn_acc_short")), f(a.get("wer")),
+            f(a.get("named_correct_time")), f(a.get("named_wrong_time"))))
+    if res.get("by_sim"):
+        out += ["", "By closest voice pair (similar = cosine >= %.2f):" % SIMILAR_PAIR, "",
+                "| mode | voices | n | count acc | DER | turn acc | named wrong |",
+                "|---|---|---|---|---|---|---|"]
+        for mode, buckets in res["by_sim"].items():
+            for b, a in buckets.items():
+                out.append("| %s | %s | %s | %s | %s | %s | %s |" % (
+                    mode, b, a.get("n_meetings", 0), f(a.get("count_accuracy")), f(a.get("der")),
+                    f(a.get("turn_acc")), f(a.get("named_wrong_time"))))
     for mode in res["by_mode"]:
         rows = [d[mode] for d in res["per_meeting"].values()
                 if mode in d and not d[mode].get("failed")]
@@ -221,27 +256,36 @@ def main(argv=None):
     whosaid = os.path.abspath(args.whosaid)
     ver = subprocess.run([whosaid, "--version"], capture_output=True, text=True).stdout.strip()
     start_fp = fingerprint(whosaid)
+    voice_sim = None
+    vs_path = os.path.join(pool_root, "voice_sim.json")
+    if os.path.exists(vs_path):
+        with open(vs_path) as fh:
+            voice_sim = json.load(fh)
     per = {}
     for mid in ids:
         with open(os.path.join(mdir, mid, "truth.json")) as fh:
             truth = json.load(fh)
+        closest = max_voice_sim(truth, voice_sim)
         per[mid] = {}
         for mode in modes:
             cached = os.path.join(work, mid, mode, "result.json")
             if os.path.exists(cached) and not args.force:
                 with open(cached) as fh:
                     per[mid][mode] = json.load(fh)
+                per[mid][mode]["max_voice_sim"] = closest
                 print("[cached] %s %s" % (mid, mode), file=sys.stderr)
                 continue
             print("[run] %s %s" % (mid, mode), file=sys.stderr, flush=True)
             row = run_one(whosaid, mdir, truth, mode, work, pool_root, args.extra.split())
+            row["max_voice_sim"] = closest
             atomic_json(cached, row)
             per[mid][mode] = row
     if fingerprint(whosaid) != start_fp:
         raise SystemExit("ISOLATION BREACH: real registry / repo voices changed during the run")
-    by_mode, by_tag = summarize(per)
+    by_mode, by_tag, by_sim = summarize(per)
     res = {"schema": 1, "run": run_name, "date": datetime.datetime.now().isoformat(timespec="seconds"),
-           "whosaid_version": ver, "extra": args.extra, "per_meeting": per, "by_mode": by_mode, "by_tag": by_tag}
+           "whosaid_version": ver, "extra": args.extra, "per_meeting": per, "by_mode": by_mode, "by_tag": by_tag,
+           "by_sim": by_sim}
     path = os.path.join(args.results, run_name + ".json")
     atomic_json(path, res)
     print(render(res))

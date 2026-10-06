@@ -14,6 +14,7 @@ from pathlib import Path
 REPO_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_DIR / "test" / "diarize_eval"))
 
+import run  # noqa: E402
 import score as sc  # noqa: E402
 
 
@@ -282,6 +283,37 @@ class Aggregate(unittest.TestCase):
         self.assertEqual(g["named_correct_time"], 0.4)
         self.assertEqual(g["named_wrong_time"], 0.6)
         self.assertIsNone(g["wer"])
+
+
+class VoiceSimilarity(unittest.TestCase):
+    SIM = {"ids": ["a", "b", "c"], "sim": [[1, .2, .7], [.2, 1, .4], [.7, .4, 1]]}
+
+    def truth(self, *voices):
+        return {"speakers": [{"name": v.upper(), "voice": v} for v in voices]}
+
+    def test_max_pair(self):
+        self.assertEqual(run.max_voice_sim(self.truth("a", "b"), self.SIM), .2)
+        self.assertEqual(run.max_voice_sim(self.truth("a", "b", "c"), self.SIM), .7)
+        self.assertIsNone(run.max_voice_sim(self.truth("a", "zz"), self.SIM), "unknown voice")
+        self.assertIsNone(run.max_voice_sim(self.truth("a", "b"), None), "no voice_sim.json")
+
+    def test_buckets_reach_summary_and_report(self):
+        good = sc.score_meeting(TRUTH3, PERFECT3, "blind")
+        bad = sc.score_meeting(TRUTH3, H(("S0", 0, 20), ("S1", 20, 30)), "blind")
+        per = {"m1": {"blind": dict(good, tags=[], max_voice_sim=.3, meeting="m1")},
+               "m2": {"blind": dict(bad, tags=[], max_voice_sim=.75, meeting="m2")},
+               "m3": {"blind": dict(good, tags=[], max_voice_sim=None, meeting="m3")}}
+        by_mode, _, by_sim = run.summarize(per)
+        self.assertEqual(by_mode["blind"]["n_meetings"], 3)
+        self.assertEqual(by_sim["blind"]["distinct"]["count_accuracy"], 1.0)
+        self.assertEqual(by_sim["blind"]["similar"]["count_accuracy"], 0.0)
+        self.assertEqual(by_sim["blind"]["similar"]["n_meetings"], 1)
+        text = run.render({"run": "r", "date": "d", "by_mode": by_mode, "by_sim": by_sim, "per_meeting": per})
+        self.assertIn("| blind | similar | 1 | 0.0% |", text)
+        self.assertIn("named wrong |", text)
+        # A results file from before the split still renders.
+        self.assertNotIn("closest voice pair", run.render({"run": "r", "date": "d", "by_mode": by_mode,
+                                                          "per_meeting": per}))
 
 
 if __name__ == "__main__":
