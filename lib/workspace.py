@@ -2008,7 +2008,8 @@ def render_commitments_md(ws: Path, items: list[CommitmentItem],
 # ---- dedupe matcher: difflib plus optional loopback embeddings -----------------------
 
 EMBED_THRESHOLD = 0.90       # cosine at or above which two texts are the same item
-EMBED_TIMEOUT = 20.0         # seconds for the one batched /api/embed call
+EMBED_TIMEOUT = 20.0         # seconds per /api/embed call
+EMBED_BATCH = 128            # texts per /api/embed call (2,000 in one call took ~28 s)
 FAKE_EMBED_DIMS = 512
 LOOPBACK_HOSTS = ("127.0.0.1", "localhost", "::1")
 
@@ -2051,7 +2052,7 @@ class TextMatcher:
     when embeddings are available a cosine >= embed_threshold also counts,
     which catches rewordings difflib misses ("write the runbook for the
     platform team" vs "for the platform team write the runbook"). Vectors
-    come from one batched POST to a loopback Ollama /api/embed per prime()
+    come from batched POSTs (EMBED_BATCH texts each) to a loopback Ollama /api/embed per prime()
     and are cached for the run; any failure flips the matcher to difflib
     only for the rest of the run, so a flaky model never changes fold
     results half-way through. The near-miss review band stays difflib."""
@@ -2073,7 +2074,7 @@ class TextMatcher:
         return self.mode in ("embed", "fake")
 
     def prime(self, texts) -> None:
-        """Embed every not-yet-cached text in one call (no-op for difflib)."""
+        """Embed every not-yet-cached text, EMBED_BATCH per call (no-op for difflib)."""
         if not self.semantic:
             return
         todo = sorted({normalize_text(t) for t in texts} - set(self._vectors) - {""})
@@ -2084,7 +2085,9 @@ class TextMatcher:
                 self._vectors[t] = fake_embed(t)
             return
         try:
-            vecs = self._post_embed(todo)
+            vecs = []
+            for i in range(0, len(todo), EMBED_BATCH):
+                vecs += self._post_embed(todo[i:i + EMBED_BATCH])
         except Exception as e:  # noqa: BLE001
             log(f"WARN embeddings unavailable ({e}); dedupe falls back to difflib only")
             self.mode = "difflib"

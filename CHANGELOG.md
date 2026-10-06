@@ -8,13 +8,16 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ### Fixed
 
+- **Roll-up dedupe no longer drops to difflib on big workspaces.** Every commitment was embedded in
+  one `/api/embed` call with a 20 s timeout; around 2,000 texts that call timed out and the whole
+  run silently fell back to difflib. Texts now go in batches of 128 (`EMBED_BATCH`), each with
+  its own timeout; any failed batch still falls back as before. Test: `test/embed_batch_test.py`.
+
 - **`--max-speakers` / `--min-speakers` now hold on calls under 15 minutes (#59).** Short audio
   took the whole-file path, whose clustering only takes an exact count, so a range was ignored
   with a warning (a 15 min call came back with 42 speakers under `--max-speakers 8`). A range
   now takes the chunked path whenever the audio is long enough to split; it applies to
   `[watch] max_speakers` too. Test: `test/chunk_path_test.py`.
-
-### Fixed
 
 - **A long single turn no longer kills diarization (#56).** The speaker-embedding model crashed
   (ONNX broadcast error) on a ~145 s monologue, and the worker exception dropped every speaker
