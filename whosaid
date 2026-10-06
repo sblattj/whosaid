@@ -242,7 +242,7 @@ USAGE
                                         meeting folder (idempotent by content
                                         hash; skips anything already ingested).
   whosaid roll-up <dir> [--action-items] [--similarity-threshold F] [--rebuild]
-                        [--index] [--owner NAME|me] [--all-owners]
+                        [--refold MEETING]... [--index] [--owner NAME|me] [--all-owners]
                                         Rebuild the workspace index, audit,
                                         action-item corpus, dev-commitments corpus,
                                         and the ranked _WORKLIST-<Owner>.md.
@@ -1854,6 +1854,8 @@ cmd_rollup() {
       -o|--out)           py_args+=("$1" "$2"); shift 2 ;;
       --action-items-out) py_args+=("$1" "$2"); shift 2 ;;
       --similarity-threshold) py_args+=("$1" "$2"); shift 2 ;;
+      --refold)           [[ $# -ge 2 ]] || { log "roll-up: --refold needs a meeting folder"; exit 1; }
+                          py_args+=("$1" "$2"); shift 2 ;;
       --owner)            py_args+=("$1" "$2"); shift 2 ;;
       -h|--help)          cmd_help; exit 0 ;;
       -*)                 log "unknown option: $1"; cmd_help; exit 1 ;;
