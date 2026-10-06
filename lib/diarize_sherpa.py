@@ -586,6 +586,13 @@ def estimate_speakers(X: np.ndarray, thresh: float = AGGLOM_THRESHOLD,
     `max_speakers`, `suggested_max` carries a `--max-speakers N` hint (#59; see
     suggest_max_speakers). It is reporting only: `k` and `labels` ignore it.
 
+    When the caller DID set `max_speakers` (#75), the bound caps the estimate and
+    never sets it: if the primary saturates at the bound and the plateau
+    abstains, the substantive voice count (suggest_max_speakers against the
+    bound) is applied as k, recorded as fallback method
+    "bounded-substantive-count". If the substantive voices alone reach the bound,
+    k stays at the bound. `suggested_max` stays None in that path.
+
     Returns {"method", "threshold", "k", "raw_k", "cap", "min", "max",
              "saturated", "labels", "fallback", "suggested_max"}.
     """
@@ -646,8 +653,20 @@ def estimate_speakers(X: np.ndarray, thresh: float = AGGLOM_THRESHOLD,
                             "reliable_turns": int(len(reliable)),
                             "excluded_short_turns": int(len(X) - len(reliable)),
                             "counts": ladder, "threshold": round(float(cut), 4)}
-            elif saturated and k >= eff_cap and not (max_speakers and max_speakers > 0):
-                suggested = suggest_max_speakers(R, merges, thresh, cap, min_speakers)
+            elif saturated and k >= eff_cap:
+                if max_speakers and max_speakers > 0:
+                    # #75: a bound caps the estimate, it never sets it. The primary
+                    # saturated and the plateau abstained, so count the substantive
+                    # voices against the BOUND (None = they alone reach it: k stays).
+                    n_sub = suggest_max_speakers(R, merges, thresh, eff_cap, min_speakers)
+                    if n_sub is not None:
+                        k = n_sub
+                        fallback = {"method": "bounded-substantive-count", "k": int(n_sub),
+                                    "reliable_turns": int(len(reliable)),
+                                    "excluded_short_turns": int(len(X) - len(reliable)),
+                                    "bound": int(eff_cap)}
+                else:
+                    suggested = suggest_max_speakers(R, merges, thresh, cap, min_speakers)
     if min_speakers and min_speakers > 0:
         k = max(k, min_speakers)
     k = max(1, min(k, len(X)))
@@ -1375,8 +1394,11 @@ def count_recovery_warning(estimate, before, after, fold_note=None):
     parts = []
     if estimate and estimate.get("fallback"):
         f = estimate["fallback"]
+        how = (f"the bound of {f['bound']} was only a cap, and counting substantive voices gave {f['k']} from "
+               if f.get("method") == "bounded-substantive-count" else
+               f"duration-filtered stable cuts estimated {f['k']} from ")
         parts.append(f"Auto count recovery: primary found {estimate['raw_k']} clusters; "
-                     f"duration-filtered stable cuts estimated {f['k']} from "
+                     f"{how}"
                      f"{f['reliable_turns']} substantive turns. "
                      + (f"Explicit bounds required fitting all turns at k={estimate['k']}. "
                         if estimate['k'] > f['reliable_turns'] else
