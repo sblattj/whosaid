@@ -350,6 +350,22 @@ def whosaid_transcribe(
             args += ["--expected-speakers", name]
     if anchor_threshold is not None:
         args += ["--anchor-threshold", str(anchor_threshold)]
+    # No speaker hint passed: an output folder inside a workspace takes that
+    # workspace's whosaid.toml [diarize] hints, exactly as `whosaid ingest` does.
+    speaker_hints_from: Optional[str] = None
+    if diarize and not any(a in wsconfig.SPEAKER_FLAGS for a in args):
+        ws = wsconfig.find_workspace(Path(out))
+        if ws is not None:
+            ws_args, ws_err = wsconfig.workspace_speaker_args(ws)
+            if ws_err:
+                return {
+                    "ok": False,
+                    "error": f"{ws / wsconfig.CONFIG_NAME}: {ws_err}",
+                    "fix": "fix the [diarize] section, or pass speakers/min_speakers/max_speakers explicitly",
+                }
+            if ws_args:
+                args += ws_args
+                speaker_hints_from = f"{ws / wsconfig.CONFIG_NAME} [diarize]: {' '.join(ws_args)}"
     if not diarize:
         args.append("--no-diarize")
     if match_threshold is not None:
@@ -465,6 +481,7 @@ def whosaid_transcribe(
         "named_speakers": named_speakers,
         "unnamed_clusters": unnamed_clusters,
         "speaker_cards": speaker_cards,
+        "speaker_hints_from": speaker_hints_from,
         "next_step": next_step,
         "summary": summary,
     }

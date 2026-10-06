@@ -6,6 +6,17 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ## [Unreleased]
 
+### Added
+
+- **Workspace-wide speaker hints: `[diarize]` in `whosaid.toml` (#59).** `[watch]`'s
+  `speakers` / `min_speakers` / `max_speakers` / `expected_speakers` only reached watcher
+  ingests, so a manual `whosaid ingest` or MCP `whosaid_transcribe` into the same workspace
+  still auto-counted (and saturated at 20). `[diarize]` takes the same keys and applies to
+  every `ingest --into` the workspace and to MCP transcribe whose output folder is inside it.
+  It is a default: any speaker flag on the command (the watcher's `[watch]` hints included)
+  replaces it. A bad value makes ingest, MCP transcribe and `watch run`/`install` refuse.
+  Tests: `test/workspace_speaker_args_test.py`, `test/mcp_workspace_tools_test.py`.
+
 ### Fixed
 
 - **Roll-up dedupe no longer drops to difflib on big workspaces.** Every commitment was embedded in

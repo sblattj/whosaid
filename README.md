@@ -423,6 +423,9 @@ source = ""                      # folder to watch (default: the macOS Voice Mem
 # min_speakers = 2               # lower bound on auto-detected speaker count
 # max_speakers = 4               # upper bound (a ceiling for a mixed-size meeting workspace)
 # expected_speakers = ["Alice_Example", "Bob_Example"]   # roster, or "Alice_Example,Bob_Example"
+
+[diarize]                        # same four keys, for EVERY ingest into this workspace
+# max_speakers = 8               # e.g. a ceiling near the team's real headcount
 ```
 
 **What `_search.db` is.** One SQLite file in the workspace: an FTS5 table of every turn (meeting,
@@ -534,6 +537,12 @@ hint — and take effect on the very next pass with no reinstall, since `run` re
 `whosaid.toml` each time it runs; `install`'s `--dry-run` summary echoes the hints it would use.
 An invalid value (a non-whole-number, `min_speakers` above `max_speakers`, an empty name) makes
 both `run` and `install` refuse, naming the bad key.
+
+`[diarize]` takes the same four keys and applies to every `whosaid ingest --into` the workspace
+(manual or watcher) and to MCP `whosaid_transcribe` when its output folder sits inside the
+workspace. It is a default, not a merge: any speaker flag on the command (including the
+watcher's own `[watch]` hints) replaces the whole `[diarize]` set for that run. A bad value
+makes ingest, MCP transcribe, `run` and `install` refuse, naming the bad key.
 
 Reinstall preserves saved environment settings, including custom tool paths. Current exported
 certificate settings and explicit `--env` values can override saved values; `--env` takes final

@@ -37,6 +37,10 @@ Per-workspace config is an optional TOML file, <workspace>/whosaid.toml:
   [watch]
   source = ""                    # folder to watch (default: macOS Voice Memos store)
 
+  [diarize]                      # speaker hints for every ingest into this workspace
+  max_speakers = 8               # also speakers / min_speakers / expected_speakers;
+                                 # skipped when the command passes its own speaker flags
+
 Environment overrides: WHOSAID_WORKSPACE, WHOSAID_OWNER, WHOSAID_OLLAMA,
 WHOSAID_SUMMARIZER_MODEL. Unknown keys are kept, so callers can add their own.
 """
@@ -66,6 +70,7 @@ DEFAULTS: dict = {
     },
     "search": {"ollama": "http://127.0.0.1:11434", "embed_model": "nomic-embed-text", "embed": True},
     "watch": {"source": "", "stable_seconds": 120, "max_wait_seconds": 900, "interval_seconds": 900},
+    "diarize": {},
 }
 
 # diarize_sherpa.py renders "[HH:MM:SS] Name: text"; "Name (MM:SS): text" is the
@@ -142,6 +147,107 @@ def load_config(ws: Path) -> dict:
         groups[str(name)] = [str(m) for m in members]
     cfg["groups"] = groups
     return cfg
+
+
+def diarize_hints(wcfg: dict, section: str = "watch") -> tuple[list[str], str | None]:
+    """Extra transcribe/ingest args for a section's speaker hints (`speakers`,
+    `min_speakers`, `max_speakers`, `expected_speakers`), or an error message
+    naming the bad key. `section` is "watch" (the watcher's own hints) or
+    "diarize" (every ingest into the workspace, and MCP transcribe into it).
+    Nobody gets asked how many people were in the room, so blind auto-detect
+    is the default; these let a workspace pin what it already knows (README
+    'Hands-free ingest').
+
+    Unset or empty keys mean today's behavior exactly: no extra args. Each of
+    `speakers`/`min_speakers`/`max_speakers` must be a whole number >= 1 (a
+    bool is rejected even though Python's bool is an int subclass), and
+    `min_speakers` may not exceed `max_speakers`. `expected_speakers` is a
+    list of names or one comma-separated string (either way, an empty name
+    after stripping is an error); the args are joined into one
+    `--expected-speakers A,B`, which is how the whosaid launcher forwards a
+    single occurrence's comma-separated value straight to the diarizer.
+
+    Arg order is fixed: --speakers, --min-speakers, --max-speakers,
+    --expected-speakers.
+    """
+
+    def positive_int(key: str) -> tuple[int | None, str | None]:
+        value = wcfg.get(key)
+        if value is None:
+            return None, None
+        if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+            return None, f"[{section}] {key} must be a whole number >= 1 (got {value!r})"
+        return value, None
+
+    speakers, err = positive_int("speakers")
+    if err:
+        return [], err
+    min_speakers, err = positive_int("min_speakers")
+    if err:
+        return [], err
+    max_speakers, err = positive_int("max_speakers")
+    if err:
+        return [], err
+    if min_speakers is not None and max_speakers is not None and min_speakers > max_speakers:
+        return [], (f"[{section}] min_speakers ({min_speakers}) must be <= "
+                     f"max_speakers ({max_speakers})")
+
+    raw_expected = wcfg.get("expected_speakers")
+    names: list[str] = []
+    if raw_expected:
+        if isinstance(raw_expected, str):
+            candidates = raw_expected.split(",")
+        elif isinstance(raw_expected, list):
+            candidates = raw_expected
+        else:
+            return [], (f"[{section}] expected_speakers must be a list of names or a "
+                         f"comma-separated string (got {raw_expected!r})")
+        for candidate in candidates:
+            name = str(candidate).strip()
+            if not name:
+                return [], f"[{section}] expected_speakers has an empty name (got {raw_expected!r})"
+            names.append(name)
+
+    args: list[str] = []
+    if speakers is not None:
+        args += ["--speakers", str(speakers)]
+    if min_speakers is not None:
+        args += ["--min-speakers", str(min_speakers)]
+    if max_speakers is not None:
+        args += ["--max-speakers", str(max_speakers)]
+    if names:
+        args += ["--expected-speakers", ",".join(names)]
+    return args, None
+
+
+SPEAKER_FLAGS = ("--speakers", "--min-speakers", "--max-speakers", "--expected-speakers")
+
+
+def find_workspace(path: Path) -> Path | None:
+    """The nearest folder at or above `path` holding whosaid.toml or _workspace.json."""
+    p = Path(path).expanduser().resolve()
+    for cand in (p, *p.parents):
+        if (cand / CONFIG_NAME).is_file() or (cand / MANIFEST_NAME).is_file():
+            return cand
+    return None
+
+
+def workspace_speaker_args(ws: Path) -> tuple[list[str], str | None]:
+    """The workspace's `[diarize]` speaker hints as transcribe args (see diarize_hints)."""
+    return diarize_hints(load_config(ws).get("diarize") or {}, "diarize")
+
+
+def _cli(argv: list[str]) -> int:
+    """`wsconfig.py speaker-args <ws>`: one arg per line, or exit 1 with the error."""
+    if len(argv) == 2 and argv[0] == "speaker-args":
+        args, err = workspace_speaker_args(Path(argv[1]))
+        if err:
+            log(err)
+            return 1
+        print("\n".join(args))
+        return 0
+    log("usage: wsconfig.py speaker-args <workspace>")
+    return 2
 
 
 def search_db(ws: Path) -> Path:
@@ -231,3 +337,7 @@ def speaker_first_name(label: str) -> str:
     if label.startswith("SPEAKER_"):
         return label
     return label.split("_")[0].split(" ")[0]
+
+
+if __name__ == "__main__":
+    sys.exit(_cli(sys.argv[1:]))

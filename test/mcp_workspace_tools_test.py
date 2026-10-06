@@ -646,6 +646,25 @@ def test_fold_metadata(tmp: Path) -> None:
               f"relabel must retain existing count metadata: {relabeled}")
         check(calls[-1][-2:] == ["--auto", "--fold-unknown"],
               f"relabel metadata test must use the real fold CLI contract: {calls[-1]}")
+
+        # Workspace [diarize] hints (issue #59): an outdir inside a workspace gets them
+        # when no speaker arg is passed; any explicit speaker arg replaces them.
+        out = mcp_server.whosaid_transcribe(str(audio), outdir=str(outdir))
+        check("--max-speakers" not in calls[-1] and out["speaker_hints_from"] is None,
+              f"no workspace -> no hints: {calls[-1]}")
+        (tmp / "whosaid.toml").write_text("[diarize]\nmax_speakers = 8\n")
+        out = mcp_server.whosaid_transcribe(str(audio), outdir=str(outdir))
+        check(calls[-1][-2:] == ["--max-speakers", "8"] and "[diarize]" in (out["speaker_hints_from"] or ""),
+              f"outdir inside a workspace takes [diarize]: {calls[-1]} {out.get('speaker_hints_from')}")
+        mcp_server.whosaid_transcribe(str(audio), outdir=str(outdir), speakers=2)
+        check("--max-speakers" not in calls[-1] and "--speakers" in calls[-1],
+              f"explicit speakers replaces [diarize]: {calls[-1]}")
+        n = len(calls)
+        (tmp / "whosaid.toml").write_text("[diarize]\nmax_speakers = 0\n")
+        out = mcp_server.whosaid_transcribe(str(audio), outdir=str(outdir))
+        check(out["ok"] is False and "[diarize] max_speakers" in out["error"] and len(calls) == n,
+              f"bad [diarize] refuses before running: {out}")
+        (tmp / "whosaid.toml").unlink()
     finally:
         mcp_server._run_cli = saved
 
