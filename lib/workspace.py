@@ -3220,6 +3220,11 @@ def cmd_rollup(args: argparse.Namespace) -> int:
         renamed = restore_commitment_edits(cm_items, previous_cm_items)
         cm_near_misses = [(renamed.get(a, a), renamed.get(b, b), r)
                           for a, b, r in cm_near_misses]
+        # The fresh ids handed back to stable ones are unused again: rewind
+        # next_id to just past the highest live id, never below where it was.
+        live = [int(it.id.split("-")[1]) for it in cm_items
+                if it.id.startswith("CM-") and it.id.split("-")[1].isdigit()]
+        cm_next_id[0] = max(int(commitments_data.get("next_id", 1)), max(live, default=0) + 1)
     for it in cm_items:
         if not it.source_values:
             it.source_values = {k: getattr(it, k) for k in CM_CURATED_FIELDS}

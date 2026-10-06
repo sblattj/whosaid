@@ -176,6 +176,37 @@ def main() -> None:
         r = rollup(ws, "--refold", f"{M1}={Path(tmp) / 'missing.md'}")
         check(r.returncode == 2, f"missing OLD_MD exits 2 (got {r.returncode})")
 
+        # --- a commitments refresh (new speaker labels) keeps CM ids and does
+        # not burn ids: next_id stays put when nothing new appears.
+        ws = fresh(tmp, "cm-refresh")
+        (ws / M1).mkdir()
+
+        def cm_json(speaker: str, texts: list[str]) -> None:
+            items = [{"speaker": speaker, "speaker_role": None, "text": t, "time": "00:00:00",
+                      "cue": "i will", "negative": False, "priority": "normal"} for t in texts]
+            (ws / M1 / "commitments.json").write_text(json.dumps(
+                {"source": "heuristic", "speakers": [speaker], "roles": {}, "min_words": 2,
+                 "items": items, "dropped": []}))
+        cm_json("SPEAKER_00", [f"I will {X_TXT.lower()}", f"I will {Y_TXT.lower()}"])
+        check(rollup(ws).returncode == 0, "cm refresh: initial")
+        before = json.loads((ws / "_commitments.json").read_text())
+        check(before["next_id"] == 3, f"cm refresh: initial next_id ({before['next_id']})")
+        cm_json("Zaphod", [f"I will {X_TXT.lower()}", f"I will {Y_TXT.lower()}"])
+        r = rollup(ws)
+        check(r.returncode == 0 and "replacing derived contributions" in r.stderr + r.stdout,
+              "cm refresh: fingerprint refresh ran")
+        after = json.loads((ws / "_commitments.json").read_text())
+        check(sorted(i["id"] for i in after["items"]) == ["CM-001", "CM-002"], "cm refresh: ids kept")
+        check({i["speaker"] for i in after["items"]} == {"Zaphod"}, "cm refresh: speakers follow")
+        check(after["next_id"] == 3, f"cm refresh: next_id not burned ({after['next_id']})")
+        cm_json("Zaphod", [f"I will {X_TXT.lower()}", f"I will {Y_TXT.lower()}", f"I will {Z_TXT.lower()}"])
+        check(rollup(ws).returncode == 0, "cm refresh: third run")
+        after = json.loads((ws / "_commitments.json").read_text())
+        z = [i for i in after["items"] if Z_TXT.lower() in i["text"].lower()]
+        check(len(z) == 1 and int(z[0]["id"].split("-")[1]) >= 3
+              and after["next_id"] > int(z[0]["id"].split("-")[1]),
+              f"cm refresh: new item minted above the old max ({after['next_id']}, {z})")
+
         # --- error paths.
         r = rollup(ws, "--refold", "2020-01-01-0000")
         check(r.returncode == 2, f"unknown folder exits 2 (got {r.returncode})")
