@@ -1169,7 +1169,12 @@ def name_clusters(cluster_emb: dict, ref_threshold: float, absorb_threshold: flo
         log(f"  registry: {entry_name} best {best} sim {left[best]:.3f} "
             f"< {ref_threshold}, left unnamed")
 
-    # Pass 2: --ref clips (still-unnamed only; skip a name the registry already used).
+    # Pass 2: --ref clips (still-unnamed only; skip a name the registry already used),
+    # assigned globally best-first like pass 1. Taking refs in argument order let a
+    # weaker ref claim a cluster that was a far better match for a later one: two
+    # similar voices merged into one cluster, Marin took it at 0.76 before Nova
+    # (0.93) was considered, and Nova's whole talk time went out under Marin's name.
+    ref_sims = {}
     for ref_name, remb in ref_voices:
         remb = unit(remb)
         allsims = {sp: float(np.dot(remb, unit(e))) for sp, e in cluster_emb.items()}
@@ -1177,17 +1182,27 @@ def name_clusters(cluster_emb: dict, ref_threshold: float, absorb_threshold: flo
         if ref_name in registry_named:
             log(f"ref {ref_name}: already named by registry, skipping")
             continue
-        sims = {sp: v for sp, v in allsims.items() if names.get(sp, sp) == sp}
-        if not sims:
+        for sp, v in allsims.items():
+            ref_sims[(ref_name, sp)] = max(v, ref_sims.get((ref_name, sp), -1.0))
+    placed = set()
+    for (ref_name, best), sim in sorted(ref_sims.items(), key=lambda kv: -kv[1]):
+        if sim < ref_threshold:
+            break
+        if ref_name in placed or names.get(best, best) != best:
             continue
-        best = max(sims, key=sims.get)
-        record(best, ref_name, sims[best], ref_threshold,
-               sims[best] >= ref_threshold, "ref")
-        if sims[best] >= ref_threshold:
-            names[best] = ref_name
-            log(f"  ref: {best} -> {ref_name} (sim {sims[best]:.3f})")
-        else:
-            log(f"WARN ref {ref_name}: best similarity {sims[best]:.3f} < {ref_threshold}, cluster left unnamed")
+        record(best, ref_name, sim, ref_threshold, True, "ref")
+        names[best] = ref_name
+        placed.add(ref_name)
+        log(f"  ref: {best} -> {ref_name} (sim {sim:.3f})")
+    for ref_name in dict.fromkeys(n for n, _ in ref_voices):
+        if ref_name in placed or ref_name in registry_named:
+            continue
+        left = {sp: v for (n, sp), v in ref_sims.items() if n == ref_name and names.get(sp, sp) == sp}
+        if not left:
+            continue
+        best = max(left, key=left.get)
+        record(best, ref_name, left[best], ref_threshold, False, "ref")
+        log(f"WARN ref {ref_name}: best similarity {left[best]:.3f} < {ref_threshold}, cluster left unnamed")
 
     # Pass 3: absorb phantom splits into the nearest known voice.
     for sp, e in cluster_emb.items():
