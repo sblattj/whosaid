@@ -26,6 +26,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 from typing import Literal, Optional
 
@@ -214,7 +215,9 @@ _DESC_TRANSCRIBE = (
     "transcripts). If you already know who was in the room, pass `expected_speakers` "
     "(names of voices you have enrolled) — clustering is then anchored to their "
     "voiceprints, absentees are dropped, and nobody has to guess a count. Any speaker "
-    "role tags (self/boss/…) come back under `roles`. Keywords: "
+    "role tags (self/boss/…) come back under `roles`. If diarization fails the result is "
+    "ok=false, partial=true with `diarization_error`; the plain transcript is still written. "
+    "Keywords: "
     "transcribe, diarize, speaker diarization, who spoke, meeting "
     "notes, call recording, whisper, voice attribution, subtitles, srt, vtt."
 )
@@ -275,6 +278,16 @@ _DESC_SAMPLES = (
     "sample clip, listen to speaker, verify identity, confirm voice, spot check, per-speaker "
     "snippet, sanity check a label."
 )
+
+
+def _diarization_reason(proc) -> str:
+    """The most specific failure line from the CLI's output, for diarization_error."""
+    lines = [ln.strip() for ln in ((proc.stderr or "") + "\n" + (proc.stdout or "")).splitlines() if ln.strip()]
+    for pat in ("Error:", "Exception", "[E:", "ERROR", "error:", "failed"):
+        hits = [ln for ln in lines if pat in ln and "plain transcript" not in ln]
+        if hits:
+            return hits[-1][-500:]
+    return f"no speaker output from this run (exit {proc.returncode})"
 
 
 # ---------------------------------------------------------------------------
@@ -371,6 +384,7 @@ def whosaid_transcribe(
     if match_threshold is not None:
         args += ["--match-threshold", str(match_threshold)]
 
+    started = time.time()
     proc = _run_cli(args)
 
     base = _base_for(audio)
@@ -393,6 +407,34 @@ def whosaid_transcribe(
             "ok": False,
             "error": (proc.stderr or proc.stdout or "transcript was not produced").strip()[-1000:],
             "fix": fix,
+        }
+
+    # Diarization failure (GitHub issue #56): the CLI keeps the plain transcript and
+    # exits 3, or exits 0 when a previous run's speaker files are still on disk. Either
+    # way this run wrote no fresh sidecar, so nothing speaker-related below is trusted.
+    diarization_error: Optional[str] = None
+    if diarize:
+        fresh = sidecar_path.exists() and sidecar_path.stat().st_mtime >= started - 1.0
+        if proc.returncode == 3 or not fresh:
+            diarization_error = _diarization_reason(proc)
+
+    if diarization_error:
+        stale = [str(p) for p in (speakers_txt, speaker_cards_path, sidecar_path) if p.exists()]
+        return {
+            "ok": False,
+            "partial": True,
+            "base": base,
+            "outdir": str(out_dir),
+            "transcript_txt": str(transcript_txt),
+            "diarization_error": diarization_error,
+            "stale_speaker_files": stale,
+            "error": f"diarization failed; only the plain transcript was written: {diarization_error}",
+            "fix": "run whosaid_doctor; if the error names an ONNX/embedding failure, update whosaid "
+                   "and retry, or retry with diarize=false for a plain transcript",
+            "next_step": ("Speaker labels are missing for this run. Do not relabel"
+                          + (" (the speaker files on disk are from an earlier run)" if stale else "")
+                          + "; fix the error and transcribe again."),
+            "summary": f"Transcribed {base}: plain transcript only; diarization FAILED.",
         }
 
     speakers_text = _read_text_or_none(speakers_txt)

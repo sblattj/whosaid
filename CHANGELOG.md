@@ -19,6 +19,13 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ### Fixed
 
+- **MCP `whosaid_transcribe` reports a diarization failure (#56).** A diarizer crash used to
+  come back as `ok: true`, `num_speakers: null` and "All speakers named." It now returns
+  `ok: false`, `partial: true`, a `diarization_error` with the CLI's reason, and the plain
+  transcript path. A run that left only an earlier run's speaker files on disk is caught too
+  (listed in `stale_speaker_files`), so an agent never relabels last week's sidecar.
+  Test: `test/mcp_workspace_tools_test.py`.
+
 - **Roll-up dedupe no longer drops to difflib on big workspaces.** Every commitment was embedded in
   one `/api/embed` call with a 20 s timeout; around 2,000 texts that call timed out and the whole
   run silently fell back to difflib. Texts now go in batches of 128 (`EMBED_BATCH`), each with

@@ -669,6 +669,48 @@ def test_fold_metadata(tmp: Path) -> None:
         mcp_server._run_cli = saved
 
 
+def test_diarization_failure(tmp: Path) -> None:
+    """GitHub issue #56: a diarization crash must not come back as ok/"All speakers named"."""
+    outdir = tmp / "diarize-fail"
+    outdir.mkdir()
+    audio = tmp / "long.m4a"
+    audio.write_bytes(b"fake")
+    rc = {"code": 3}
+    stderr = ("[E:onnxruntime] Non-zero status code returned while running Where node.\n"
+              "whosaid: WARN diarization failed; plain transcript is unaffected.\n"
+              "whosaid: plain transcript saved at x.txt; diarization failed (see warnings above)\n")
+
+    def fake_cli(args, timeout=None):
+        (outdir / "long.txt").write_text("hello\n")
+        return subprocess.CompletedProcess(args, rc["code"], stdout="", stderr=stderr)
+
+    saved = mcp_server._run_cli
+    mcp_server._run_cli = fake_cli
+    try:
+        out = mcp_server.whosaid_transcribe(str(audio), outdir=str(outdir))
+        check(out["ok"] is False and out.get("partial") is True,
+              f"exit 3 must be ok=false/partial: {out}")
+        check("onnxruntime" in (out.get("diarization_error") or ""),
+              f"diarization_error carries the CLI's reason: {out}")
+        check("All speakers named" not in out["next_step"] and out["transcript_txt"].endswith("long.txt"),
+              f"next_step must not claim success; transcript path still returned: {out}")
+
+        # exit 0 but only an earlier run's sidecar on disk: still a failure, files flagged stale
+        rc["code"] = 0
+        old = outdir / "long.diarization.json"
+        old.write_text(json.dumps({"num_speakers": 2, "names": {"SPEAKER_00": "Alice_Example"}, "segments": []}))
+        os.utime(old, (1_000_000, 1_000_000))
+        out = mcp_server.whosaid_transcribe(str(audio), outdir=str(outdir))
+        check(out["ok"] is False and str(old) in out.get("stale_speaker_files", []),
+              f"stale sidecar must not pass as this run's result: {out}")
+
+        out = mcp_server.whosaid_transcribe(str(audio), outdir=str(outdir), diarize=False)
+        check(out["ok"] is True and "diarization_error" not in out,
+              f"diarize=false never reports a diarization failure: {out}")
+    finally:
+        mcp_server._run_cli = saved
+
+
 def test_resources(tmp: Path) -> None:
     ws = make_workspace(tmp / "resources")
     outside = tmp / "resources" / "outside"
@@ -790,6 +832,7 @@ def main() -> None:
             test_runner(tmp)
             test_relabel_flags()
             test_fold_metadata(tmp)
+            test_diarization_failure(tmp)
             test_resources(tmp)
             test_registration()
         finally:
