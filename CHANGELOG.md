@@ -30,9 +30,6 @@ All notable changes to whosaid are documented here. This project adheres to
   Short audio used sherpa's whole-file clustering, which returned fewer than N speakers on 4
   of 12 meetings and never ran whosaid's estimator. It now takes the per-turn path as one
   window. `--no-chunk` keeps the old path.
-- **A named speaker's short turns no longer survive as extra unknown speakers (#69).** A
-  registry- or ref-named voice can now absorb tiny fragments, using the same 0.50 gate and 0.15
-  margin as between unknown clusters. It is never folded away itself.
 
 ## [1.9.0] - 2026-10-06
 
