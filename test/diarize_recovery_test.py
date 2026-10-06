@@ -39,7 +39,9 @@ def test_recovery():
     assert len(d.cluster_segments(copy.deepcopy(clean), -1)[2]) == 2
     result = d.cluster_segments(copy.deepcopy(noisy), -1)
     segs, emb, speakers, estimate, _ = result
-    assert len(speakers) == 2 and estimate['fallback']['k'] == 2
+    # The brief fold explains the 0.6 s fragments before the plateau recovery is
+    # needed: every short-only cluster sits at 0.55 to its voice, above the gate.
+    assert len(speakers) == 2 and estimate['brief_fold']['folded'] >= 1
     assert estimate['raw_k'] == old['raw_k'] and estimate['saturated']
     assert [(s['start'],s['end']) for s in segs] == [(s['start'],s['end']) for s in noisy]
     assert d.cluster_segments(copy.deepcopy(noisy), -1)[0] == segs
@@ -49,7 +51,10 @@ def test_recovery():
     # One short distinct guest: varying only the guest makes recovery abstain.
     rng = np.random.default_rng(12)
     guest = {'start':9999.,'end':9999.6,'emb':unit(rng.normal(size=192)).tolist()}
-    assert d.cluster_segments(copy.deepcopy(noisy)+[guest], -1)[3]['fallback'] is None
+    with_guest = d.cluster_segments(copy.deepcopy(noisy)+[guest], -1)
+    assert with_guest[3]['fallback'] is None
+    assert len(with_guest[2]) == 3 and with_guest[3]['brief_fold']['kept_brief'] == 1, \
+        'a brief guest far from every voice is kept, not folded'
     for k in (6,8,25):
         x = turns(k, 30, seed=9)
         e = d.estimate_speakers(x, durations=np.full(len(x),15.))

@@ -1,0 +1,628 @@
+{
+ "schema": 1,
+ "lines": [
+  {
+   "id": "L001",
+   "kind": "short",
+   "text": "Yeah."
+  },
+  {
+   "id": "L002",
+   "kind": "short",
+   "text": "Right, makes sense."
+  },
+  {
+   "id": "L003",
+   "kind": "short",
+   "text": "Mm-hm."
+  },
+  {
+   "id": "L004",
+   "kind": "short",
+   "text": "Okay."
+  },
+  {
+   "id": "L005",
+   "kind": "short",
+   "text": "Sure."
+  },
+  {
+   "id": "L006",
+   "kind": "short",
+   "text": "Got it."
+  },
+  {
+   "id": "L007",
+   "kind": "short",
+   "text": "Sounds good."
+  },
+  {
+   "id": "L008",
+   "kind": "short",
+   "text": "Agreed."
+  },
+  {
+   "id": "L009",
+   "kind": "short",
+   "text": "Fair enough."
+  },
+  {
+   "id": "L010",
+   "kind": "short",
+   "text": "Exactly."
+  },
+  {
+   "id": "L011",
+   "kind": "short",
+   "text": "I think so."
+  },
+  {
+   "id": "L012",
+   "kind": "short",
+   "text": "Not yet."
+  },
+  {
+   "id": "L013",
+   "kind": "short",
+   "text": "Good point."
+  },
+  {
+   "id": "L014",
+   "kind": "short",
+   "text": "Let's do that."
+  },
+  {
+   "id": "L015",
+   "kind": "short",
+   "text": "Okay, thanks."
+  },
+  {
+   "id": "L016",
+   "kind": "short",
+   "text": "That works."
+  },
+  {
+   "id": "L017",
+   "kind": "short",
+   "text": "Right."
+  },
+  {
+   "id": "L018",
+   "kind": "short",
+   "text": "Oh, interesting."
+  },
+  {
+   "id": "L019",
+   "kind": "short",
+   "text": "I can do that."
+  },
+  {
+   "id": "L020",
+   "kind": "short",
+   "text": "Yes, please."
+  },
+  {
+   "id": "L021",
+   "kind": "short",
+   "text": "No, not really."
+  },
+  {
+   "id": "L022",
+   "kind": "short",
+   "text": "Perfect."
+  },
+  {
+   "id": "L023",
+   "kind": "short",
+   "text": "Totally."
+  },
+  {
+   "id": "L024",
+   "kind": "short",
+   "text": "Hold on a second."
+  },
+  {
+   "id": "L025",
+   "kind": "short",
+   "text": "Mm, maybe."
+  },
+  {
+   "id": "L026",
+   "kind": "short",
+   "text": "Alright then."
+  },
+  {
+   "id": "L027",
+   "kind": "short",
+   "text": "Wait, really?"
+  },
+  {
+   "id": "L028",
+   "kind": "short",
+   "text": "That's fine."
+  },
+  {
+   "id": "L029",
+   "kind": "short",
+   "text": "Sorry, go ahead."
+  },
+  {
+   "id": "L030",
+   "kind": "short",
+   "text": "Understood."
+  },
+  {
+   "id": "L031",
+   "kind": "medium",
+   "text": "I looked at the numbers this morning and the trend is basically flat compared to last month."
+  },
+  {
+   "id": "L032",
+   "kind": "medium",
+   "text": "Can we move the review to Thursday afternoon, since a few people are out until then?"
+  },
+  {
+   "id": "L033",
+   "kind": "medium",
+   "text": "The vendor said they would send the updated quote by the end of the week."
+  },
+  {
+   "id": "L034",
+   "kind": "medium",
+   "text": "I think we should talk to the client before we commit to that timeline."
+  },
+  {
+   "id": "L035",
+   "kind": "medium",
+   "text": "We finished most of the migration, but a couple of edge cases are still failing in testing."
+  },
+  {
+   "id": "L036",
+   "kind": "medium",
+   "text": "Does anyone have a strong opinion on whether we ship the smaller version first?"
+  },
+  {
+   "id": "L037",
+   "kind": "medium",
+   "text": "My concern is that the new process adds an extra approval step without really reducing risk."
+  },
+  {
+   "id": "L038",
+   "kind": "medium",
+   "text": "Let me share my screen so everyone can see the current draft of the plan."
+  },
+  {
+   "id": "L039",
+   "kind": "medium",
+   "text": "The feedback from the last round of interviews was mostly positive, with a few notes on communication."
+  },
+  {
+   "id": "L040",
+   "kind": "medium",
+   "text": "We should probably write this down so we do not have the same conversation again next quarter."
+  },
+  {
+   "id": "L041",
+   "kind": "medium",
+   "text": "I will follow up with the finance team and get a clear answer on the budget."
+  },
+  {
+   "id": "L042",
+   "kind": "medium",
+   "text": "Honestly, I would rather spend another week on testing than risk a rough launch."
+  },
+  {
+   "id": "L043",
+   "kind": "medium",
+   "text": "The main blocker right now is that we are still waiting on access to the shared environment."
+  },
+  {
+   "id": "L044",
+   "kind": "medium",
+   "text": "If we split the work into two phases, the first one could be done by the middle of the month."
+  },
+  {
+   "id": "L045",
+   "kind": "medium",
+   "text": "I am not sure that metric tells us what we think it tells us."
+  },
+  {
+   "id": "L046",
+   "kind": "medium",
+   "text": "Last time we tried this approach, it took twice as long as anyone expected."
+  },
+  {
+   "id": "L047",
+   "kind": "medium",
+   "text": "Could you send me the notes from that meeting so I can catch up before tomorrow?"
+  },
+  {
+   "id": "L048",
+   "kind": "medium",
+   "text": "The customer support queue has been quieter this week, which is a nice change."
+  },
+  {
+   "id": "L049",
+   "kind": "medium",
+   "text": "We need an owner for this item, otherwise it will just sit on the list forever."
+  },
+  {
+   "id": "L050",
+   "kind": "medium",
+   "text": "I can take the first pass at the document and then pass it along for comments."
+  },
+  {
+   "id": "L051",
+   "kind": "medium",
+   "text": "It sounds like we all agree on the goal, but we disagree about how to get there."
+  },
+  {
+   "id": "L052",
+   "kind": "medium",
+   "text": "Just to clarify, are we talking about the internal release or the public one?"
+  },
+  {
+   "id": "L053",
+   "kind": "medium",
+   "text": "The design team has a few mockups ready, and I think they look really promising."
+  },
+  {
+   "id": "L054",
+   "kind": "medium",
+   "text": "We are about ten percent over budget, mostly because of the extra contractor hours."
+  },
+  {
+   "id": "L055",
+   "kind": "medium",
+   "text": "I would suggest we put a pin in that and come back to it after the break."
+  },
+  {
+   "id": "L056",
+   "kind": "medium",
+   "text": "The new hire is settling in well and has already picked up a couple of small tasks."
+  },
+  {
+   "id": "L057",
+   "kind": "medium",
+   "text": "There was a short outage yesterday evening, but the system recovered on its own within minutes."
+  },
+  {
+   "id": "L058",
+   "kind": "medium",
+   "text": "Before we go further, I want to make sure we are solving the right problem."
+  },
+  {
+   "id": "L059",
+   "kind": "medium",
+   "text": "Let's keep the next update short and focus only on what has changed since Monday."
+  },
+  {
+   "id": "L060",
+   "kind": "medium",
+   "text": "I heard back from the legal team, and they need a few more days to review it."
+  },
+  {
+   "id": "L061",
+   "kind": "medium",
+   "text": "The survey results came in, and people mostly want clearer priorities from leadership."
+  },
+  {
+   "id": "L062",
+   "kind": "medium",
+   "text": "Our biggest risk is that the schedule depends on a single person being available the whole time."
+  },
+  {
+   "id": "L063",
+   "kind": "medium",
+   "text": "I think the proposal is solid, but the cost section needs a little more detail."
+  },
+  {
+   "id": "L064",
+   "kind": "medium",
+   "text": "We can automate most of that report, which would save about two hours every week."
+  },
+  {
+   "id": "L065",
+   "kind": "medium",
+   "text": "Please add your questions to the shared document so we can answer them in order."
+  },
+  {
+   "id": "L066",
+   "kind": "medium",
+   "text": "Somebody mentioned earlier that the deadline might slip, and I want to understand why."
+  },
+  {
+   "id": "L067",
+   "kind": "medium",
+   "text": "The pilot group gave us useful feedback, especially about how confusing the first screen is."
+  },
+  {
+   "id": "L068",
+   "kind": "medium",
+   "text": "I would like to revisit the decision about the schedule once we have more data."
+  },
+  {
+   "id": "L069",
+   "kind": "medium",
+   "text": "For the record, I raised the same concern in the planning session last week."
+  },
+  {
+   "id": "L070",
+   "kind": "medium",
+   "text": "If nobody objects, I will go ahead and schedule the follow-up for next Tuesday."
+  },
+  {
+   "id": "L071",
+   "kind": "medium",
+   "text": "We got a lot done this sprint, but the carryover work is starting to pile up."
+  },
+  {
+   "id": "L072",
+   "kind": "medium",
+   "text": "The documentation is out of date, so new people keep running into the same problems."
+  },
+  {
+   "id": "L073",
+   "kind": "medium",
+   "text": "It might be worth asking the client whether they would prefer weekly or monthly updates."
+  },
+  {
+   "id": "L074",
+   "kind": "medium",
+   "text": "I do not think we can promise that date without cutting something from the scope."
+  },
+  {
+   "id": "L075",
+   "kind": "medium",
+   "text": "Let me check my calendar real quick, because I think I have a conflict that morning."
+  },
+  {
+   "id": "L076",
+   "kind": "medium",
+   "text": "That is a great question, and honestly I do not have a good answer yet."
+  },
+  {
+   "id": "L077",
+   "kind": "medium",
+   "text": "The quarterly goals look reasonable, but I worry we are trying to do too many things."
+  },
+  {
+   "id": "L078",
+   "kind": "medium",
+   "text": "We are waiting on one last approval, and then we can send everything out."
+  },
+  {
+   "id": "L079",
+   "kind": "medium",
+   "text": "Can somebody remind me what we decided about the rollout plan last time?"
+  },
+  {
+   "id": "L080",
+   "kind": "medium",
+   "text": "I have been hearing the same complaint from several teams, so it is probably worth fixing."
+  },
+  {
+   "id": "L081",
+   "kind": "medium",
+   "text": "It took longer than expected, but the final result is much cleaner than the original."
+  },
+  {
+   "id": "L082",
+   "kind": "medium",
+   "text": "Let's make sure that whoever joins late gets a quick summary of what we covered."
+  },
+  {
+   "id": "L083",
+   "kind": "medium",
+   "text": "The test results look good on my end, but I would like a second pair of eyes."
+  },
+  {
+   "id": "L084",
+   "kind": "medium",
+   "text": "We could try a smaller experiment first and see whether it makes a difference."
+  },
+  {
+   "id": "L085",
+   "kind": "medium",
+   "text": "I think the timeline is realistic as long as nothing unexpected comes up."
+  },
+  {
+   "id": "L086",
+   "kind": "medium",
+   "text": "Thanks for pulling that together, it saves me a lot of time this afternoon."
+  },
+  {
+   "id": "L087",
+   "kind": "medium",
+   "text": "My understanding is that the contract renews next month, so we should decide soon."
+  },
+  {
+   "id": "L088",
+   "kind": "medium",
+   "text": "We have a few open questions, but none of them should block us from starting."
+  },
+  {
+   "id": "L089",
+   "kind": "medium",
+   "text": "I will be offline for a couple of hours after lunch, so please message me if it is urgent."
+  },
+  {
+   "id": "L090",
+   "kind": "medium",
+   "text": "Does that change the priority, or should we still treat it as the top item?"
+  },
+  {
+   "id": "L091",
+   "kind": "long",
+   "text": "So here is where I think we are. The first milestone is basically done, the second one is about halfway through, and the third has not really started because we are waiting on a decision. If we can get that decision this week, I think we still hit the original date without anyone working weekends."
+  },
+  {
+   "id": "L092",
+   "kind": "long",
+   "text": "I want to push back a little on the idea that we should rewrite the whole thing. It works today, customers are not complaining, and a rewrite would take months. I would rather fix the two or three parts that actually cause trouble and leave everything else alone until we have a real reason to change it."
+  },
+  {
+   "id": "L093",
+   "kind": "long",
+   "text": "Let me walk through what happened last week, because I think there are some lessons in it. We shipped a change on Tuesday, noticed a problem on Wednesday, and rolled it back on Thursday. The issue was not the change itself, it was that nobody was watching the right dashboard when it went out."
+  },
+  {
+   "id": "L094",
+   "kind": "long",
+   "text": "What I keep hearing from the people who use this every day is that it is not slow, it is just unpredictable. Sometimes it takes a second and sometimes it takes a minute, and they cannot tell why. So I think before we optimize anything, we should figure out what is causing the variation in the first place."
+  },
+  {
+   "id": "L095",
+   "kind": "long",
+   "text": "There are really three options on the table. We can keep the current vendor and accept the price increase, we can switch to the cheaper one and take on some migration work, or we can build a small version ourselves. My gut says the second one, but I would like to see a rough estimate for the migration first."
+  },
+  {
+   "id": "L096",
+   "kind": "long",
+   "text": "I know everyone is busy, so I will try to keep this brief. The goal for the quarter is to reduce the time it takes to onboard a new customer from three weeks to one. To get there, we need to simplify the forms, automate the account setup, and cut the number of handoffs between teams in half."
+  },
+  {
+   "id": "L097",
+   "kind": "long",
+   "text": "One thing I noticed when I read through the proposal is that it assumes the team will have the same headcount all year. Given what we know about hiring, that seems optimistic. I would suggest we plan for the case where we are one or two people short and see what we would have to drop."
+  },
+  {
+   "id": "L098",
+   "kind": "long",
+   "text": "Okay, so the feedback from the workshop was interesting. People liked the new layout, but a surprising number of them got stuck on the very first step. When we watched a few of them try it, they all hesitated at the same spot, so I think a small change there could make a big difference."
+  },
+  {
+   "id": "L099",
+   "kind": "long",
+   "text": "I think the root of our disagreement is that we are optimizing for different things. One side wants to move fast and learn from real usage, and the other side wants to avoid anything that could embarrass us in front of a big client. Both are reasonable, so maybe we pick a smaller group to try it with."
+  },
+  {
+   "id": "L100",
+   "kind": "long",
+   "text": "Here is the update on the budget. We started the year with a reasonable cushion, but a couple of unplanned expenses ate into it, and the hiring plan is still pending. If we hold the current pace, we will end the year slightly over, so I would like us to look for a few places to trim."
+  },
+  {
+   "id": "L101",
+   "kind": "long",
+   "text": "I had a conversation with a few of the engineers yesterday, and the common theme was that they spend too much time in meetings and not enough time on focused work. I am not saying we should cancel everything, but maybe we can pick one day a week with no meetings at all and see how it goes."
+  },
+  {
+   "id": "L102",
+   "kind": "long",
+   "text": "The way I see it, the biggest unknown is how many people will actually use the new feature. If it is a handful, then the simple version is fine. If it is thousands, we need to think about performance and support. So let's find a cheap way to measure interest before we invest heavily."
+  },
+  {
+   "id": "L103",
+   "kind": "long",
+   "text": "Just so we are all on the same page, the plan is to freeze changes on Friday, run the full set of tests over the weekend, and then do a staged rollout starting Monday morning. If anything looks off in the first hour, we pause and investigate. Does anyone see a problem with that approach?"
+  },
+  {
+   "id": "L104",
+   "kind": "long",
+   "text": "I want to thank everyone for the work on this project. It was a tough few months, and the team handled a lot of surprises. Looking back, I think the thing that helped most was having a short check-in every morning, so let's keep doing that on the next project instead of dropping it."
+  },
+  {
+   "id": "L105",
+   "kind": "long",
+   "text": "There is a part of the process that nobody really owns, and that is the handoff between the sales side and the delivery side. Details get lost, customers have to repeat themselves, and our people end up guessing. I think we need one person responsible for making sure that handoff is clean every single time."
+  },
+  {
+   "id": "L106",
+   "kind": "long",
+   "text": "From a technical standpoint, the change is small, but the risk is in everything that depends on it. There are a few other services that read the same data, and we do not have a complete list of them. So my recommendation is to spend a day mapping those dependencies before we touch anything."
+  },
+  {
+   "id": "L107",
+   "kind": "long",
+   "text": "I would like to propose a different way of running these weekly meetings. Instead of everyone giving a status update, we send the updates in writing beforehand, and use the meeting time only for questions and decisions. That way we get to the interesting conversations sooner and nobody has to sit through a long list."
+  },
+  {
+   "id": "L108",
+   "kind": "long",
+   "text": "When I talked to the client last week, they were pretty clear about what matters most to them. It is not the extra features, it is reliability and clear communication. If we promise a date, they want us to hit it, and if we are going to miss, they want to hear about it early rather than late."
+  },
+  {
+   "id": "L109",
+   "kind": "long",
+   "text": "Let me explain why I think the estimate is so high. The work itself is not complicated, but there are a lot of small pieces that need to be coordinated, and each one needs review. When I added it all up, it came to about six weeks, and I added a buffer because there are always surprises."
+  },
+  {
+   "id": "L110",
+   "kind": "long",
+   "text": "I have been thinking about how we measure success for this effort, and I am not satisfied with just counting how many people signed up. A better measure might be how many of them are still using it after a month. That tells us whether we actually built something useful rather than something that merely sounds good."
+  },
+  {
+   "id": "L111",
+   "kind": "long",
+   "text": "Looking at the support tickets from the past quarter, about half of them come from just three issues. If we fix those three, we could cut the volume dramatically and free up the support team to work on more valuable things. I would argue that is a better use of our time than building anything new."
+  },
+  {
+   "id": "L112",
+   "kind": "long",
+   "text": "There was some confusion last time about who was supposed to send the follow-up, so let me be explicit. I will write up the summary today, share it with the group by the end of the day, and then each owner is responsible for updating their own item in the tracker before the next meeting."
+  },
+  {
+   "id": "L113",
+   "kind": "long",
+   "text": "I am a little worried about the schedule. We have a hard deadline in six weeks, and the part that is most uncertain is also the part that comes last. If it slips, there will be no time to recover. Maybe we can reorder the work so the risky piece happens earlier and we learn sooner."
+  },
+  {
+   "id": "L114",
+   "kind": "long",
+   "text": "The cleanest way to explain the issue is with an example. Imagine a customer places an order, and a few seconds later changes their mind and cancels it. Right now, those two actions can arrive out of order, so the cancel is ignored. It does not happen often, but when it does, it is very confusing."
+  },
+  {
+   "id": "L115",
+   "kind": "long",
+   "text": "I think we should be honest with ourselves about what happened. We moved quickly, skipped a few steps, and paid for it later with rework. That is not a disaster, but it is a pattern. So for the next one, let's agree up front on a minimal checklist, and let's actually follow it even when we are rushed."
+  },
+  {
+   "id": "L116",
+   "kind": "long",
+   "text": "From the survey, we learned that people feel they do not have enough context about why decisions are made. They see the result, but not the reasoning. One simple thing we could do is write a short note with each major decision explaining the options we considered, and why we picked the one we did."
+  },
+  {
+   "id": "L117",
+   "kind": "long",
+   "text": "Here is what I would do if it were up to me. First, I would talk to three or four customers and ask what they actually need. Second, I would build the smallest thing that addresses it. Third, I would put it in front of them within a couple of weeks and see whether it solves their problem."
+  },
+  {
+   "id": "L118",
+   "kind": "long",
+   "text": "I understand the appeal of adding more detail to the report, but I worry nobody will read it. The people who need the summary want a page, not twenty. So I suggest we keep the main document short, and put the supporting data in an appendix for anyone who wants to dig deeper."
+  },
+  {
+   "id": "L119",
+   "kind": "long",
+   "text": "A quick reminder about the process for requesting time off. Please put it on the shared calendar as early as you can, and let your manager know directly as well. If several people on the same team want the same week, we will try to work it out fairly, but earlier requests do get priority."
+  },
+  {
+   "id": "L120",
+   "kind": "long",
+   "text": "Something that came up in the retrospective is that we often learn about problems only after a customer reports them. That is backwards. We should be catching them first. So I would like us to invest in better monitoring and alerts, even if it means pausing a feature or two for a short while."
+  },
+  {
+   "id": "L121",
+   "kind": "long",
+   "text": "My take on the candidate is that they are strong technically and communicate clearly, but they have limited experience leading a team. That is not necessarily a dealbreaker, since the role would start small. I would feel comfortable moving forward as long as we pair them with someone experienced for the first few months."
+  }
+ ],
+ "enroll": [
+  {
+   "id": "E1",
+   "text": "On a quiet Sunday morning, there is something satisfying about making a slow breakfast. You put the kettle on, slice some bread, and let the pan warm up while the light comes through the window. The eggs take only a few minutes, but the whole routine feels unhurried. Afterward, you carry your plate to the table, pour a second cup of coffee, and read for a while. Nothing important happens, and that is exactly the point. By the time the dishes are done, the day has barely begun, and the rest of the weekend stretches out, full of small, easy possibilities."
+  },
+  {
+   "id": "E2",
+   "text": "Planting a vegetable garden begins with patience. First, you choose a sunny spot and loosen the soil with a shovel, pulling out stones and old roots. Then you mix in compost, which makes the ground dark and crumbly. Small seeds go in shallow rows, each one labeled so you remember what is where. For the next few weeks, you water every morning and watch for the first green shoots. When the tomatoes finally ripen in late summer, the work feels worthwhile. Even a modest harvest tastes better than anything from a store, because you waited for it."
+  },
+  {
+   "id": "E3",
+   "text": "Taking the train to work has its own kind of rhythm. You walk to the station, tap your card, and find a seat near the window if you are lucky. Some people read, some listen to music, and others simply watch the city slide past. Occasionally the train slows down for no obvious reason, and everyone glances up at the same moment, then returns to what they were doing. When it reaches your stop, you step out into the crowd, take a breath of cool air, and head up the stairs toward the street, ready for the day."
+  },
+  {
+   "id": "E4",
+   "text": "Learning to cook a new dish is mostly a matter of paying attention. You read the recipe twice, set out all the ingredients, and chop everything before the heat goes on. The first attempt is rarely perfect. Maybe the sauce is a bit thin or the vegetables are slightly overcooked. But you taste as you go, adjust the salt, and make a note for next time. After the third or fourth try, your hands seem to know what to do, and the dish becomes something you can make on a busy weeknight without thinking about it at all."
+  }
+ ]
+}

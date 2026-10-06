@@ -359,6 +359,48 @@ SPEAKER_CAP = 20
 # on the channel-varied fixture, which is how this number was corrected.
 AGGLOM_THRESHOLD = float(os.environ.get("WHOSAID_COUNT_THRESHOLD", "0.58"))
 
+# A cluster none of whose turns reaches SUBSTANTIVE_TURN_SECONDS is not, by
+# itself, evidence of another speaker: a TitaNet-small print of a sub-2 s turn
+# is noisy enough that the same voice's "yeah"/"right" scatter into clusters of
+# their own. Measured on 32 synthetic meetings (test/diarize_eval, 2-6 TTS
+# voices, 1-3 min): most extra clusters the 0.58 cut minted were made only of
+# turns under 2 s, and the estimate was right on 6/32. Such a cluster is folded
+# into the nearest substantive voice when its centroid reaches BRIEF_VOICE_GATE
+# against it, and is KEPT as a speaker when it is far from every one: a brief
+# guest with a distinct voice must not vanish for being brief. Same-voice
+# fragments sat mostly at cosine 0.40-0.70 to their own voice, brief distinct
+# guests at 0.23-0.38. With the fold the estimate was right on 21/32.
+SUBSTANTIVE_TURN_SECONDS = 2.0
+BRIEF_VOICE_GATE = 0.40
+
+
+def fold_brief_clusters(X: np.ndarray, labels: np.ndarray, durations) -> tuple:
+    """Fold clusters made only of short turns into the nearest substantive voice.
+
+    Returns (labels renumbered 0..k-1, {"primary_k", "folded", "kept_brief"}).
+    A no-op when no cluster has a substantive turn (nothing to fold into)."""
+    duration = np.asarray(durations, dtype=float)
+    k = int(labels.max()) + 1 if len(labels) else 0
+    sub = [c for c in range(k) if np.any(duration[labels == c] >= SUBSTANTIVE_TURN_SECONDS)]
+    info = {"primary_k": k, "folded": 0, "kept_brief": 0}
+    if not sub or len(sub) == k:
+        return labels, info
+    C = np.array([X[labels == c].sum(axis=0) for c in sub])
+    C /= np.linalg.norm(C, axis=1, keepdims=True) + 1e-9
+    out = labels.copy()
+    for c in range(k):
+        if c in sub:
+            continue
+        v = X[labels == c].sum(axis=0)
+        sims = (v / (np.linalg.norm(v) + 1e-9)) @ C.T
+        if float(sims.max()) >= BRIEF_VOICE_GATE:
+            out[labels == c] = sub[int(np.argmax(sims))]
+            info["folded"] += 1
+        else:
+            info["kept_brief"] += 1
+    _, out = np.unique(out, return_inverse=True)
+    return out.astype(int), info
+
 
 def _average_linkage_merges(D: np.ndarray) -> list:
     """Full average-linkage (UPGMA) dendrogram over a square distance matrix.
@@ -470,15 +512,27 @@ def estimate_speakers(X: np.ndarray, thresh: float = AGGLOM_THRESHOLD,
     raw_k = int(labels.max()) + 1 if len(labels) else 0
     eff_cap = min(cap, max_speakers) if max_speakers and max_speakers > 0 else cap
     saturated = raw_k >= eff_cap
-    k = min(raw_k, eff_cap)
+    brief = None
+    if durations is not None and raw_k > 1:
+        labels, brief = fold_brief_clusters(X, labels, durations)
+        if brief["folded"]:
+            log(f"speaker-count: folded {brief['folded']} short-turn-only cluster(s) into "
+                f"substantive voices ({raw_k} -> {int(labels.max()) + 1})")
+    k = min(int(labels.max()) + 1 if len(labels) else 0, eff_cap)
     fallback = None
     # Duration filtering is only a recovery path, never the normal estimator.
     # A stable cut on substantive turns is evidence for a count; a smaller cap
     # alone is not. Keep the primary result and saturation for auditability.
-    if durations is not None and (saturated or raw_k > max(3, len(X) // 4)):
+    # Judged on the folded count: once the brief fold has explained the extra
+    # clusters there is nothing left for the plateau to recover (on a 6-voice
+    # synthetic meeting it otherwise collapsed a correct 6 to 2).
+    if durations is not None and (saturated or k > max(3, len(X) // 4)):
         duration = np.asarray(durations, dtype=float)
         reliable = np.flatnonzero(duration >= 1.0)
-        if len(reliable) >= 10:
+        # If the filter excluded nothing, the ladder below merely re-cuts the
+        # same turns at looser thresholds: that is not recovery, and on a
+        # 15-turn 6-voice meeting it merged six voices into two.
+        if len(X) > len(reliable) >= 10:
             R = X[reliable]
             merges = _average_linkage_merges(1.0 - R @ R.T)
             ladder = []
@@ -487,7 +541,7 @@ def estimate_speakers(X: np.ndarray, thresh: float = AGGLOM_THRESHOLD,
                 lab = _cut_merges(len(R), merges, 1.0 - cut)
                 count = int(lab.max()) + 1
                 ladder.append(count)
-                if len(ladder) >= 2 and count == ladder[-2] and count < raw_k and count < eff_cap:
+                if len(ladder) >= 2 and count == ladder[-2] and count < k and count < eff_cap:
                     # Do not collapse into a count supported only by isolated
                     # long noisy turns. Brief distinct guests can still survive
                     # as clusters; require most, not all, turns to be supported.
@@ -514,7 +568,7 @@ def estimate_speakers(X: np.ndarray, thresh: float = AGGLOM_THRESHOLD,
     k = max(1, min(k, len(X)))
     if fallback:
         log(f"speaker-count recovery: primary {raw_k} -> stable substantive count {k}")
-    elif saturated:
+    elif saturated and k >= eff_cap:
         log(f"WARN speaker-count estimate hit the bound of {eff_cap} "
             f"(agglomerative at cosine {thresh:.2f} found {raw_k}); the count is NOT trustworthy")
     return {
@@ -528,6 +582,7 @@ def estimate_speakers(X: np.ndarray, thresh: float = AGGLOM_THRESHOLD,
         "saturated": bool(saturated),
         "labels": labels,
         "fallback": fallback,
+        "brief_fold": brief,
     }
 
 
@@ -1528,6 +1583,15 @@ def main() -> None:
     else:  # auto: ~`jobs` windows, but never shorter than 300s (keeps enough voice per chunk)
         chunk_seconds = max(300.0, float(math.ceil(total_dur / jobs))) if total_dur else 0.0
     use_chunk = wants_chunked(args, total_dur, chunk_seconds, jobs)
+    if not use_chunk and not args.no_chunk and total_dur > 0:
+        # Short audio still goes through whosaid's own per-turn clustering, as ONE
+        # window over the whole file: same segmentation, but the count comes from
+        # the calibrated estimator and an exact --speakers N is honoured. sherpa's
+        # whole-file FastClustering (still reachable with --no-chunk) returned
+        # fewer clusters than an exact num_clusters on synthetic 2-4 voice
+        # meetings (3 asked, 2 returned), and its blind count was right on 1 of 4.
+        use_chunk = True
+        chunk_seconds = max(total_dur, 1.0)
 
     # Lazy embedder for --ref clip matching (the chunked path builds no in-main extractor).
     _ref_ex = {}

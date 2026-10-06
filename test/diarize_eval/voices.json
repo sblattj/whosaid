@@ -1,0 +1,277 @@
+{
+ "schema": 1,
+ "voices": [
+  {
+   "id": "el-roger",
+   "name": "Roger",
+   "vendor": "elevenlabs",
+   "voice_id": "CwhRBWXzGAHq8TQ4Fs17",
+   "gender": "male",
+   "accent": "american"
+  },
+  {
+   "id": "el-sarah",
+   "name": "Sarah",
+   "vendor": "elevenlabs",
+   "voice_id": "EXAVITQu4vr4xnSDxMaL",
+   "gender": "female",
+   "accent": "american"
+  },
+  {
+   "id": "el-laura",
+   "name": "Laura",
+   "vendor": "elevenlabs",
+   "voice_id": "FGY2WhTYpPnrIDTdsKH5",
+   "gender": "female",
+   "accent": "american"
+  },
+  {
+   "id": "el-charlie",
+   "name": "Charlie",
+   "vendor": "elevenlabs",
+   "voice_id": "IKne3meq5aSn9XLyUdCD",
+   "gender": "male",
+   "accent": "australian"
+  },
+  {
+   "id": "el-george",
+   "name": "George",
+   "vendor": "elevenlabs",
+   "voice_id": "JBFqnCBsd6RMkjVDRZzb",
+   "gender": "male",
+   "accent": "british"
+  },
+  {
+   "id": "el-callum",
+   "name": "Callum",
+   "vendor": "elevenlabs",
+   "voice_id": "N2lVS1w4EtoT3dr4eOWO",
+   "gender": "male",
+   "accent": "american"
+  },
+  {
+   "id": "el-river",
+   "name": "River",
+   "vendor": "elevenlabs",
+   "voice_id": "SAz9YHcvj6GT2YYXdXww",
+   "gender": "neutral",
+   "accent": "american"
+  },
+  {
+   "id": "el-harry",
+   "name": "Harry",
+   "vendor": "elevenlabs",
+   "voice_id": "SOYHLrjzK2X1ezoPC6cr",
+   "gender": "male",
+   "accent": "american"
+  },
+  {
+   "id": "el-liam",
+   "name": "Liam",
+   "vendor": "elevenlabs",
+   "voice_id": "TX3LPaxmHKxFdv7VOQHJ",
+   "gender": "male",
+   "accent": "american"
+  },
+  {
+   "id": "el-alice",
+   "name": "Alice",
+   "vendor": "elevenlabs",
+   "voice_id": "Xb7hH8MSUJpSbSDYk0k2",
+   "gender": "female",
+   "accent": "british"
+  },
+  {
+   "id": "el-matilda",
+   "name": "Matilda",
+   "vendor": "elevenlabs",
+   "voice_id": "XrExE9yKIg1WjnnlVkGX",
+   "gender": "female",
+   "accent": "american"
+  },
+  {
+   "id": "el-will",
+   "name": "Will",
+   "vendor": "elevenlabs",
+   "voice_id": "bIHbv24MWmeRgasZH58o",
+   "gender": "male",
+   "accent": "american"
+  },
+  {
+   "id": "el-jessica",
+   "name": "Jessica",
+   "vendor": "elevenlabs",
+   "voice_id": "cgSgspJ2msm6clMCkdW9",
+   "gender": "female",
+   "accent": "american"
+  },
+  {
+   "id": "el-eric",
+   "name": "Eric",
+   "vendor": "elevenlabs",
+   "voice_id": "cjVigY5qzO86Huf0OWal",
+   "gender": "male",
+   "accent": "american"
+  },
+  {
+   "id": "el-bella",
+   "name": "Bella",
+   "vendor": "elevenlabs",
+   "voice_id": "hpp4J3VqNfWAUOO0d1Us",
+   "gender": "female",
+   "accent": "american"
+  },
+  {
+   "id": "el-chris",
+   "name": "Chris",
+   "vendor": "elevenlabs",
+   "voice_id": "iP95p4xoKVk53GoZ742B",
+   "gender": "male",
+   "accent": "american"
+  },
+  {
+   "id": "el-brian",
+   "name": "Brian",
+   "vendor": "elevenlabs",
+   "voice_id": "nPczCjzI2devNBz1zQrb",
+   "gender": "male",
+   "accent": "american"
+  },
+  {
+   "id": "el-daniel",
+   "name": "Daniel",
+   "vendor": "elevenlabs",
+   "voice_id": "onwK4e9ZLuTAKqWW03F9",
+   "gender": "male",
+   "accent": "british"
+  },
+  {
+   "id": "el-lily",
+   "name": "Lily",
+   "vendor": "elevenlabs",
+   "voice_id": "pFZP5JQG7iQjIQuC4Bku",
+   "gender": "female",
+   "accent": "british"
+  },
+  {
+   "id": "el-adam",
+   "name": "Adam",
+   "vendor": "elevenlabs",
+   "voice_id": "pNInz6obpgDQGcFmaJgB",
+   "gender": "male",
+   "accent": "american"
+  },
+  {
+   "id": "el-bill",
+   "name": "Bill",
+   "vendor": "elevenlabs",
+   "voice_id": "pqHfZKP75CvOlQylNhV4",
+   "gender": "male",
+   "accent": "american"
+  },
+  {
+   "id": "oa-alloy",
+   "name": "Alloy",
+   "vendor": "openai",
+   "voice_id": "alloy",
+   "gender": "neutral",
+   "accent": "american"
+  },
+  {
+   "id": "oa-ash",
+   "name": "Ash",
+   "vendor": "openai",
+   "voice_id": "ash",
+   "gender": "male",
+   "accent": "american"
+  },
+  {
+   "id": "oa-ballad",
+   "name": "Ballad",
+   "vendor": "openai",
+   "voice_id": "ballad",
+   "gender": "male",
+   "accent": "american"
+  },
+  {
+   "id": "oa-coral",
+   "name": "Coral",
+   "vendor": "openai",
+   "voice_id": "coral",
+   "gender": "female",
+   "accent": "american"
+  },
+  {
+   "id": "oa-echo",
+   "name": "Echo",
+   "vendor": "openai",
+   "voice_id": "echo",
+   "gender": "male",
+   "accent": "american"
+  },
+  {
+   "id": "oa-fable",
+   "name": "Fable",
+   "vendor": "openai",
+   "voice_id": "fable",
+   "gender": "male",
+   "accent": "american"
+  },
+  {
+   "id": "oa-nova",
+   "name": "Nova",
+   "vendor": "openai",
+   "voice_id": "nova",
+   "gender": "female",
+   "accent": "american"
+  },
+  {
+   "id": "oa-onyx",
+   "name": "Onyx",
+   "vendor": "openai",
+   "voice_id": "onyx",
+   "gender": "male",
+   "accent": "american"
+  },
+  {
+   "id": "oa-sage",
+   "name": "Sage",
+   "vendor": "openai",
+   "voice_id": "sage",
+   "gender": "female",
+   "accent": "american"
+  },
+  {
+   "id": "oa-shimmer",
+   "name": "Shimmer",
+   "vendor": "openai",
+   "voice_id": "shimmer",
+   "gender": "female",
+   "accent": "american"
+  },
+  {
+   "id": "oa-verse",
+   "name": "Verse",
+   "vendor": "openai",
+   "voice_id": "verse",
+   "gender": "male",
+   "accent": "american"
+  },
+  {
+   "id": "oa-marin",
+   "name": "Marin",
+   "vendor": "openai",
+   "voice_id": "marin",
+   "gender": "female",
+   "accent": "american"
+  },
+  {
+   "id": "oa-cedar",
+   "name": "Cedar",
+   "vendor": "openai",
+   "voice_id": "cedar",
+   "gender": "male",
+   "accent": "american"
+  }
+ ]
+}
