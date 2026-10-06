@@ -140,8 +140,9 @@ and in the **distinct** bucket otherwise. Read the distinct bucket for clusterin
 Two sets of meetings were used. The 32 **tuning** meetings (`tune`, `tune-hard`, `tune-cameo` and
 `pilot`) found the bugs and set the fixes' thresholds. The 33 **held-out** meetings (`val-mixed`,
 `val-hard`, `val-cameo` and `val-long`, three of them 16–21 minutes) were generated with fresh
-seeds and were not looked at until fixes 1 and 2 below were written. Fix 3 came from them. "Before" is v1.9.0 and "after" is
-v1.10.0. Every number is a percentage pooled over the set's meetings.
+seeds and were not looked at until fixes 1 and 2 below were written. Fix 3 came from them. "Before" is v1.8.2, where the branch started.
+v1.9.0 shipped in between, and by its changelog it changed only how the count is reported, not the
+count itself. "After" is v1.10.0. Every number is a percentage pooled over the set's meetings.
 
 Held-out, all meetings:
 
@@ -162,7 +163,9 @@ Tuning, all meetings:
 | half enrolled | 18.8 → 65.6 | 14.1 → 10.4 | 76.7 → 83.6 | 39.8 → 42.1 | 2.3 → 2.9 |
 
 "Named right" in half-enrolled mode tops out near 50%, because half the talk belongs to voices
-nobody enrolled.
+nobody enrolled. Named-wrong in that mode rose 1.9 → 3.8% held out. The likely cause, not traced
+meeting by meeting: the per-turn path (fix 2 below) merges clusters more readily, and when an unenrolled voice merges into an enrolled one, its
+talk takes the enrolled name.
 
 Split by voice similarity, held-out blind mode reads 13.3 → 40.0% count accuracy and 15.3 → 8.8%
 DER on the 15 distinct meetings, against 20.0 → 33.3% and 34.1 → 12.8% on the 15 similar

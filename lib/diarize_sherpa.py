@@ -1087,9 +1087,10 @@ def name_clusters(cluster_emb: dict, ref_threshold: float, absorb_threshold: flo
       1. registry one-best — each known voiceprint claims at most one cluster at
          cosine >= ref_threshold (default 0.50), assigned best-pair-first across
          all voices so registry order never decides a contested cluster.
-      2. --ref clips — each reference voice claims its best cluster (>= ref_threshold),
-         but a ref whose name the registry already assigned is skipped, so one
-         person never lands on two cards.
+      2. --ref clips — each reference voice claims at most one cluster (>= ref_threshold),
+         assigned best-pair-first across all refs so argument order never decides a
+         contested cluster; a ref whose name the registry already assigned is skipped,
+         so one person never lands on two cards.
       3. absorb — every cluster still unnamed whose centroid cosine to ANY known
          voice (registry entries AND --ref voices) is >= absorb_threshold takes
          that name. Multiple clusters may share a name; the cards merge them.
