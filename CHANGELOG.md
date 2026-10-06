@@ -6,6 +6,8 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ## [Unreleased]
 
+## [1.10.0] - 2026-10-06
+
 ### Added
 
 - **Synthetic-meeting diarization eval (`test/diarize_eval/`).** It renders a pool of TTS voices
