@@ -151,7 +151,7 @@ def test_fold_match_schema():
     import tempfile
     record = {"cluster":"SPEAKER_02", "name":"Host", "similarity":.2,
               "threshold":.5, "matched":False, "pass":"registry"}
-    payload = {"registry_matches":[record], "source":{"path":"fixture.wav",
+    payload = {"whosaid_version":"1.11.0", "registry_matches":[record], "source":{"path":"fixture.wav",
                "duration_seconds":100., "creation_time":None}}
     checker = Path(__file__).with_name('check_sidecar_schema.py')
     with tempfile.TemporaryDirectory() as tmp:
