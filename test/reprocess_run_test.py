@@ -368,6 +368,22 @@ def main() -> None:
         e.run(A, "--no-items", "--match-threshold", "0.7")
         check(e.of("transcribe")[0][7:] == ["--speakers", "3", "--match-threshold", "0.7"],
               f"--match-threshold keeps workspace hints: {e.of('transcribe')[0]}")
+        # --- no flag, no workspace hint: the meeting's original count flags are reused.
+        for tag, mode, want in [
+                ("orig1", "as hinted (--num-speakers 4)", ["--speakers", "4"]),
+                ("orig2", "auto-detected, bounded 2-6, fold 7 -> 5",
+                 ["--min-speakers", "2", "--max-speakers", "6"]),
+                ("orig3", "auto-detected", [])]:
+            e = Env(tmp, tag)
+            e.meeting(A, dict(old_sidecar(), detect_mode=mode))
+            e.config(A, speakers=NEW_SPEAKERS, sidecar=new_sidecar())
+            e.run(A, "--no-items")
+            check(e.of("transcribe")[0][7:] == want, f"{mode!r} -> {e.of('transcribe')[0][7:]}")
+        e = Env(tmp, "orig4")
+        e.meeting(A, dict(old_sidecar(), detect_mode="as hinted (--num-speakers 4)"))
+        e.config(A, speakers=NEW_SPEAKERS, sidecar=new_sidecar())
+        e.run(A, "--no-items", "--speakers", "3")
+        check(e.of("transcribe")[0][7:] == ["--speakers", "3"], "explicit flag beats the original count")
         e = standard(tmp, "hints5")
         (e.ws / "whosaid.toml").write_text("[diarize]\nspeakers = 0\n")
         r = e.run(A, "--no-items")

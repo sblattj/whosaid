@@ -46,6 +46,22 @@ SUBSTANTIVE_TURN_SECONDS = 2.0
 SHORT_AUDIO_SECONDS = 900.0
 
 _HINT_RE = re.compile(r"^as hinted \(--num-speakers (\d+)\)")
+_BOUND_RE = re.compile(r"^auto-detected, bounded (\d+)-(\d+)")
+_SPEAKER_FLAGS = ("--speakers", "--min-speakers", "--max-speakers", "--expected-speakers")
+
+
+def original_speaker_args(sidecar: dict) -> list:
+    """The count flags the meeting was first diarized with, recovered from
+    detect_mode (the only place they survive): `--speakers N` or the
+    `--min/--max-speakers` bounds. Expected-speaker names are not recorded."""
+    mode = str(sidecar.get("detect_mode") or "")
+    m = _HINT_RE.match(mode)
+    if m:
+        return ["--speakers", m.group(1)]
+    m = _BOUND_RE.match(mode)
+    if m:
+        return ["--min-speakers", m.group(1), "--max-speakers", m.group(2)]
+    return []
 
 # First release whose diarizer stamps `whosaid_version` into the sidecar; any
 # stamp at or above it carries every v1.10 diarization fix.
@@ -390,6 +406,13 @@ def reprocess_meeting(ws: Path, name: str, info: dict, args, bin_path: str, spea
         log(f"reprocess: {name}: FAILED ({reason}); restored from {backup}")
         return res
 
+    # With no explicit flag and no workspace hint, keep the count the meeting
+    # was first run with; otherwise a `--speakers N` meeting would go blind.
+    if not any(a in _SPEAKER_FLAGS for a in speaker_args):
+        orig = original_speaker_args(old)
+        if orig:
+            log(f"reprocess: {name}: reusing original count flags: {' '.join(orig)}")
+            speaker_args = [*orig, *speaker_args]
     rc = _call([bin_path, "transcribe", info["audio"], "-o", folder, "-n", base,
                 "--reuse-asr", *speaker_args], "transcribe")
     if rc != 0:
