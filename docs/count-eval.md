@@ -30,10 +30,10 @@ directory. The file holds `X` (the per-turn embeddings), `durations`, `raw_k`,
 (`--expected-speakers`) the estimator sees only the turns no anchor claimed, so
 that file is `<base>-residual.npz`, and its label is the number of people who were
 NOT named. Nothing is written when the variable is unset, or when `--speakers N`
-fixes the count, because then the estimator does not run. Only the chunked
-diarization path runs the estimator. That path is taken for recordings over 15
-minutes, and also when you pass `--chunk-seconds`, a `--min-speakers`/`--max-speakers`
-range, or `--expected-speakers`. The dump changes no other output.
+fixes the count, because then the estimator does not run. Every diarization
+runs the estimator except `--no-chunk`, which hands the whole file to sherpa's own
+clustering. Recordings under 15 minutes go through the same per-turn path as one
+window. The dump changes no other output.
 
 ## 2. Label
 

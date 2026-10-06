@@ -303,7 +303,7 @@ TRANSCRIBE FLAGS
                        turn to a known voice. Default 0.70 (WHOSAID_ANCHOR_THRESHOLD).
   -j, --jobs N         Parallel diarization workers for long audio (default: auto).
       --chunk-seconds S Window length for parallel diarization (default: auto).
-      --no-chunk       Diarize the whole file in one pass (disable parallel chunking).
+      --no-chunk       Diarize with sherpa's whole-file clustering (no chunking, no count estimator).
       --absorb-threshold F  Cosine ≥ F folds a still-unnamed cluster into a known
                        voice (registry/enrolled), so a person split across clusters
                        merges into one speaker. Default 0.85 (WHOSAID_ABSORB_THRESHOLD).

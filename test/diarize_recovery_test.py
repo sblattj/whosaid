@@ -117,13 +117,24 @@ def test_fold_original_evidence_survives_serialization():
     one = d.fold_unknown_clusters(segs,e,{sp:sp for sp in e},evidence=evidence)
     two = d.fold_unknown_clusters(*one[:3], evidence=json.loads(json.dumps(evidence)))
     assert len(one[2])==len(two[2])==1 and one[0]==two[0]
-    # A known voice competes even though it cannot be a destination.
+    # A known voice is a destination for a tiny fragment closer to it.
     e = {'Unknown':np.array([1.,0.,0.]), 'Host':np.array([0.,1.,0.]),
          'Tiny':np.array([.6,.8,0.])}
     segs=[{'start':i*10.,'end':i*10.+5.,'speaker':sp}
           for sp in ('Unknown','Host') for i in range(6)]
     segs.append({'start':99.,'end':99.6,'speaker':'Tiny'})
+    folded = d.fold_unknown_clusters(segs,e,{'Unknown':'Unknown','Host':'Named','Tiny':'Tiny'})
+    assert len(folded[2])==2 and folded[0][-1]['speaker']=='Host', folded[0][-1]
+    assert np.allclose(folded[1]['Host'], e['Host']), 'a named print is never moved'
+    # ...but never a source: a tiny NAMED cluster near an unknown voice stays.
+    folded = d.fold_unknown_clusters(segs,e,{'Unknown':'Unknown','Host':'Host','Tiny':'Guest'})
+    assert len(folded[2])==3 and folded[0][-1]['speaker']=='Tiny'
+    # ...and still competes: a fragment between a known and an unknown voice stays.
+    e['Tiny'] = unit(np.array([.7,.7,0.]))
     assert len(d.fold_unknown_clusters(segs,e,{'Unknown':'Unknown','Host':'Named','Tiny':'Tiny'})[2])==3
+    # A local label is protected: never a destination.
+    e['Tiny'] = np.array([.6,.8,0.])
+    assert len(d.fold_unknown_clusters(segs,e,{sp:sp for sp in e},protected={'Host'})[2])==3
 
 
 def test_minimum_larger_than_reliable_pool():

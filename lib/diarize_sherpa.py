@@ -1214,8 +1214,11 @@ def fold_unknown_clusters(segs, cluster_emb, names, *, protected=(), minimum=1, 
     Original centroids provide complete-link evidence for substantive merges;
     tiny fragments may attach to a substantive voice at cosine >=0.50 with a
     0.15 margin over other voices. No step updates the matching references.
-    Local/named clusters cannot be sources or destinations. A short guest with a
-    distinct voice therefore survives even if it is a single turn. Centroids are
+    Local/named clusters are never sources. A substantive registry- or
+    ref-named cluster is a destination for tiny fragments only (same gate and
+    margin), so a known voice's short turns do not survive as extra unknown
+    speakers; local labels stay protected. A short guest with a distinct voice
+    therefore survives even if it is a single turn. Centroids are
     duration-weighted approximations because old sidecars lack per-turn prints.
     """
     speakers = sorted({s["speaker"] for s in segs})
@@ -1238,6 +1241,11 @@ def fold_unknown_clusters(segs, cluster_emb, names, *, protected=(), minimum=1, 
         return [np.asarray(r["embedding"]) / (np.linalg.norm(r["embedding"]) + 1e-9)
                 for r in records]
     groups = {sp: [sp] for sp in anonymous}
+    # Named voices that may receive tiny fragments: their own print is the
+    # reference, and they never move.
+    named_refs = {sp: np.asarray(cluster_emb[sp]) / (np.linalg.norm(cluster_emb[sp]) + 1e-9)
+                  for sp in speakers if sp in cluster_emb and names.get(sp, sp) != sp
+                  and sp not in protected and talk[sp] >= 20.0 and nturns[sp] >= 5}
     def group_records(sp):
         return [record for member in groups[sp] for record in evidence[member]]
     def group_support(sp):
@@ -1246,6 +1254,8 @@ def fold_unknown_clusters(segs, cluster_emb, names, *, protected=(), minimum=1, 
     def group_reference(sp):
         # Use an original member print, never a recomputed centroid. The same
         # group representation survives serialization and additional rounds.
+        if sp in named_refs:
+            return named_refs[sp]
         v = np.asarray(max(group_records(sp), key=lambda r: r["talk"])["embedding"])
         return v / (np.linalg.norm(v) + 1e-9)
     mapping = {sp: sp for sp in speakers}
@@ -1278,6 +1288,10 @@ def fold_unknown_clusters(segs, cluster_emb, names, *, protected=(), minimum=1, 
                     similarity = min(float(a @ b) for a in left for b in right)
                     gate = 0.85
                 candidates.append((similarity, target, gate))
+            if source_talk < 30.0 and (source_turns < 5 or source_talk / source_turns < 1.0):
+                for target, ref in named_refs.items():
+                    similarity = min(float(a @ ref) for a in original_prints(groups[source]))
+                    candidates.append((similarity, target, 0.50))
             candidates.sort(reverse=True)
             if not candidates:
                 continue
@@ -1290,7 +1304,7 @@ def fold_unknown_clusters(segs, cluster_emb, names, *, protected=(), minimum=1, 
             # Named/local voices are protected destinations, but still compete:
             # a fragment closer to a known voice cannot be annexed by an unknown.
             for sp in speakers:
-                if sp not in anonymous and sp in cluster_emb:
+                if sp not in anonymous and sp in cluster_emb and sp != target:
                     v = np.asarray(cluster_emb[sp])
                     v = v / (np.linalg.norm(v) + 1e-9)
                     runner_up = max(runner_up, max(float(a @ v) for a in original_prints(groups[source])))
@@ -1300,12 +1314,15 @@ def fold_unknown_clusters(segs, cluster_emb, names, *, protected=(), minimum=1, 
                 continue
             for sp in groups[source]:
                 mapping[sp] = target
-            groups[target].extend(groups.pop(source))
+            if target in named_refs:
+                groups.pop(source)
+            else:
+                groups[target].extend(groups.pop(source))
     kept = sorted(set(mapping.values()))
     merged_emb = dict(cluster_emb)
     for target in kept:
         members = [sp for sp in speakers if mapping[sp] == target and sp in cluster_emb]
-        if len(members) > 1:
+        if len(members) > 1 and target not in named_refs:
             v = sum(np.asarray(cluster_emb[sp]) * max(talk[sp], 1e-6) for sp in members)
             merged_emb[target] = v / (np.linalg.norm(v) + 1e-9)
     merged_emb = {sp: merged_emb[sp] for sp in kept if sp in merged_emb}
@@ -1613,7 +1630,8 @@ def main() -> None:
     ap.add_argument("--chunk-seconds", type=float, default=0.0,
                     help="window length for parallel diarization (0=auto by --jobs; only long audio)")
     ap.add_argument("--no-chunk", action="store_true",
-                    help="force single-process, whole-file diarization (disable chunking)")
+                    help="use sherpa's whole-file FastClustering instead of whosaid's per-turn "
+                         "clustering (no count estimator; a count range is not enforced)")
     ap.add_argument("--relabel", metavar="SIDECAR.diarization.json",
                     help="apply CLUSTER=NAME assignments (via --save-speaker) to a cached "
                          "diarization sidecar and re-render outputs; no re-diarization")
@@ -1769,8 +1787,8 @@ def main() -> None:
         # which takes an EXACT num_clusters or nothing — it has no notion of a
         # range. A degenerate range (min == max) is therefore the only bound we
         # can honour here; anything wider is announced as unenforced rather than
-        # silently ignored. The agglomerative estimator only runs on the chunked
-        # (>15 min) path, which is where issue #5's saturation was measured.
+        # silently ignored. Only --no-chunk reaches this path; every other run
+        # uses the per-turn path and its agglomerative estimator.
         whole_file_k = args.num_speakers
         if whole_file_k < 0 and args.min_speakers and args.min_speakers == args.max_speakers:
             whole_file_k = args.min_speakers
@@ -1779,7 +1797,7 @@ def main() -> None:
         elif whole_file_k < 0 and (args.min_speakers or args.max_speakers):
             log("WARN --min-speakers/--max-speakers are not enforced on the whole-file "
                 "path (sherpa FastClustering takes an exact count only); pass equal "
-                "min/max for an exact count, or --chunk-seconds to force the chunked path.")
+                "min/max for an exact count, or drop --no-chunk.")
         config = make_diar_config(whole_file_k)
         if not config.validate():
             sys.exit("diarize: FATAL invalid config (model files missing?)")

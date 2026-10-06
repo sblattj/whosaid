@@ -102,8 +102,9 @@ The pipeline, per file:
 non-overlapping time windows that are segmented and embedded concurrently across a process pool,
 then a single global clustering pass over every window's voiceprints recovers speakers that stay
 consistent across window boundaries — in practice the same speakers as a single-pass run, finishing
-several times faster. `--no-chunk` forces a single pass; `-j/--jobs` and `--chunk-seconds` tune the
-worker count and window length.
+several times faster. Shorter audio takes the same per-turn path as a single window, so the count
+estimator runs at every length. `--no-chunk` uses sherpa's whole-file FastClustering instead;
+`-j/--jobs` and `--chunk-seconds` tune the worker count and window length.
 
 **Relabel without re-diarizing.** `whosaid relabel <base> SPEAKER_02=Jane …` reads the
 `<base>.diarization.json` sidecar, rewrites `<base>.speakers.txt` and `<base>.speaker-cards.txt`
