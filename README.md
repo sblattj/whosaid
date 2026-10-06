@@ -287,7 +287,7 @@ $EDITOR ./meetings/_ACTION-ITEMS.md        # 3. review the refolded corpus
   `--all`, `reprocess` takes exactly the meetings with a finding; `MEETING` names (folder
   names) or `--all` override that.
 - **No ASR.** Each meeting is re-run as `whosaid transcribe --reuse-asr`, which reuses the
-  existing `<base>.json`. Diarization takes seconds per meeting. Regenerating action items runs
+  existing `<base>.json`. Diarization takes seconds to a minute per meeting. Regenerating action items runs
   the summarizer once per meeting, and the `claude` engine is a cloud call per meeting (see
   [The claude engine](#the-claude-engine-opt-in-cloud)); `--engine E` and `--hook CMD` choose
   the summarizer as in `ingest`. `--no-items` skips regenerating action items and commitments.

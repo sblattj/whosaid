@@ -6,6 +6,8 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ## [Unreleased]
 
+## [1.11.0] - 2026-10-06
+
 ### Added
 
 - **`whosaid reprocess <ws>` re-diarizes older meetings without re-running ASR.** Meetings
@@ -34,6 +36,13 @@ All notable changes to whosaid are documented here. This project adheres to
 - **MCP tool `whosaid_reprocess`** wraps `whosaid reprocess`; `dry_run` defaults to true.
 - **The sidecar `<base>.diarization.json` records `whosaid_version`.** Sidecars from v1.11.0 on
   are current and are never flagged by the reprocess detector.
+
+### Fixed
+
+- **A commitments refresh no longer skips CM ids.** When a meeting's commitment sources or roles
+  changed, roll-up re-folded every meeting with fresh ids and mapped them back to the stable ones,
+  but left `next_id` past the throwaway ids, so each refresh burned as many ids as the corpus
+  held. `next_id` now rewinds to just past the highest live id, never below its old value.
 
 ## [1.10.0] - 2026-10-06
 
