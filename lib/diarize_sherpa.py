@@ -1183,21 +1183,27 @@ def count_recovery_warning(estimate, before, after, fold_note=None):
 
 
 def save_print_guarded(reg: dict, cluster: str, person: str, emb_vec, emb_model: str,
-                       base: str, ref_threshold: float, force: bool) -> None:
+                       base: str, ref_threshold: float, force: bool,
+                       blend: bool = False) -> None:
     """Replace person's registry print with this cluster's embedding (#19).
 
     Refuses the replacement when the cluster barely matches the print it is
     about to overwrite (cosine < ref_threshold) — that is how a clean print
     gets swapped for a mixed cluster. --force overrides; --no-save avoids
     this path entirely.
+
+    With blend=True an existing print is averaged with the cluster instead of
+    replaced (mean of the two unit vectors, renormalized), so a recording made
+    under new conditions widens the print rather than overwriting it. The same
+    guard applies; with no existing print the cluster is saved as-is.
     """
     cur = next((s for s in reg.get("speakers", [])
                 if s.get("name") == person and s.get("model") == emb_model
                 and s.get("embedding")), None)
+    def unit(v):
+        v = np.asarray(v, dtype=np.float32)
+        return v / (np.linalg.norm(v) + 1e-9)
     if not force and cur is not None:
-        def unit(v):
-            v = np.asarray(v, dtype=np.float32)
-            return v / (np.linalg.norm(v) + 1e-9)
         sim = float(np.dot(unit(emb_vec), unit(cur["embedding"])))
         if sim < ref_threshold:
             sys.exit(f"diarize: FATAL registry: {cluster} matches '{person}' current print "
@@ -1206,8 +1212,13 @@ def save_print_guarded(reg: dict, cluster: str, person: str, emb_vec, emb_model:
                        if not (s.get("name") == person and s.get("model") == emb_model)]
     # _registry_entry preserves unknown keys (e.g. "role") from the entry the
     # guard inspected, so a guarded re-save never drops a role tag.
-    reg["speakers"].append(_registry_entry(person, emb_model, emb_vec.tolist(), base, old=cur))
-    log(f"registry: saved {cluster} as '{person}' -> {SPEAKER_DB}")
+    added = base
+    if blend and cur is not None:
+        emb_vec = unit(unit(cur["embedding"]) + unit(emb_vec))
+        added = f"{cur.get('added', '')}+blend:{base}"
+    reg["speakers"].append(_registry_entry(person, emb_model, emb_vec.tolist(), added, old=cur))
+    verb = "blended" if blend and cur is not None else "saved"
+    log(f"registry: {verb} {cluster} as '{person}' -> {SPEAKER_DB}")
 
 
 def do_relabel(args) -> None:
@@ -1240,7 +1251,8 @@ def do_relabel(args) -> None:
             log(f"relabel: labeled {cluster} as '{person}' (transcript-only; registry untouched)")
         elif cluster in cluster_emb:
             save_print_guarded(reg, cluster, person, cluster_emb[cluster], emb_model, base,
-                               args.ref_threshold, getattr(args, "force", False))
+                               args.ref_threshold, getattr(args, "force", False),
+                               getattr(args, "blend", False))
             local_labels.pop(cluster, None)
             wrote_registry = True
         else:
@@ -1405,6 +1417,9 @@ def main() -> None:
     ap.add_argument("--force", action="store_true",
                     help="with --save-speaker/--relabel: replace a registry print even when "
                          "the new cluster's similarity to it is below the match threshold")
+    ap.add_argument("--blend", action="store_true",
+                    help="with --save-speaker/--relabel: average the cluster into the existing "
+                         "registry print instead of replacing it (same similarity guard)")
     ap.add_argument("--note", default=None, metavar="TEXT",
                     help="with --no-save: short provenance note stored with each local label")
     ap.add_argument("--no-registry", action="store_true",
@@ -1674,7 +1689,8 @@ def main() -> None:
                 log(f"relabel: labeled {cluster} as '{person}' (transcript-only; registry untouched)")
                 continue
             save_print_guarded(reg, cluster, person, cluster_emb[cluster], EMB_NAME, base,
-                               args.ref_threshold, getattr(args, "force", False))
+                               args.ref_threshold, getattr(args, "force", False),
+                               getattr(args, "blend", False))
             names[cluster] = person
             local_labels.pop(cluster, None)
             wrote_registry = True

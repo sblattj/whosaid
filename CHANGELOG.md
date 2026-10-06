@@ -6,6 +6,15 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ## [Unreleased]
 
+### Added
+
+- **`relabel --blend` strengthens a voiceprint instead of replacing it.** A relabel used to
+  overwrite the saved print with one cluster, so a print taken from a 1:1 call could match the same
+  person worse in group meetings. `--blend` averages the cluster into the existing print
+  (renormalized) and records `+blend:<base>` in the entry's `added` field; the role tag and the
+  similarity guard are kept. Also on `transcribe --save-speaker` and as `blend` on the
+  `whosaid_relabel` MCP tool. Tests: `test/local_labels_test.py`, `test/relabel_no_save_test.sh`.
+
 ## [1.8.2] - 2026-09-30
 
 ### Fixed

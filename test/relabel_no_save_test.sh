@@ -75,6 +75,12 @@ assert_eq "$RC" 1 "'relabel ... --no-save' with no sidecar exits 1"
 assert_contains "$OUT" "could not find a diarization sidecar" "'--no-save' reaches sidecar resolution"
 assert_not_contains "$OUT" "unexpected arg" "'--no-save' is not rejected as an unexpected arg"
 
+echo "-- --blend parses and hits the sidecar-missing path --"
+run_w relabel does-not-exist SPEAKER_00=Alice --blend
+assert_eq "$RC" 1 "'relabel ... --blend' with no sidecar exits 1"
+assert_contains "$OUT" "could not find a diarization sidecar" "'--blend' reaches sidecar resolution"
+assert_not_contains "$OUT" "unexpected arg" "'--blend' is not rejected as an unexpected arg"
+
 echo "-- --force parses and hits the sidecar-missing path --"
 run_w relabel does-not-exist SPEAKER_00=Alice --force
 assert_eq "$RC" 1 "'relabel ... --force' with no sidecar exits 1"

@@ -207,6 +207,10 @@ USAGE
                                         the speaker cards. Replacing a registry print
                                         whose similarity to the cluster is below the
                                         match threshold requires --force.
+  whosaid relabel <base> SPEAKER_NN=Name --blend
+                                        Average the cluster into Name's saved print
+                                        instead of replacing it, so a new recording
+                                        strengthens the print (same guard as above).
   whosaid speakers export --out FILE
   whosaid speakers import FILE [--merge|--overwrite]
                                         Export a private, portable speaker-registry backup or
@@ -1447,6 +1451,7 @@ cmd_relabel() {
                     roles+=(--save-role "$2"); shift 2 ;;
       --no-save)   extra+=(--no-save); shift ;;
       --force)     extra+=(--force); shift ;;
+      --blend)     extra+=(--blend); shift ;;
       --note)      extra+=(--note "$2"); shift 2 ;;
       *=*)         specs+=(--save-speaker "$1"); shift ;;
       *)           if [[ -z "$target" ]]; then target="$1"; else log "relabel: unexpected arg '$1'"; exit 1; fi; shift ;;

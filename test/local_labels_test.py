@@ -12,6 +12,9 @@ test/local_labels_test.py) so the argparse wiring is exercised:
   * the guard blocks a registry replacement when the new cluster is
     orthogonal to the print it would overwrite; --force overrides; a
     high-similarity replacement stays silent.
+  * --blend averages the cluster into the existing print (renormalized),
+    records "+blend:<base>" provenance, keeps the role, saves the cluster
+    as-is when there is no print, and is still blocked by the guard.
   * --auto honors local labels (explicit names win, labels preserved).
   * test/check_sidecar_schema.py accepts the local_labels payload.
 
@@ -196,6 +199,57 @@ def test_high_similarity_replacement_is_silent():
               f"the high-sim replacement must still save the print, got {hit}")
 
 
+def test_blend_averages_into_existing_print():
+    with tempfile.TemporaryDirectory() as td:
+        tmp = Path(td)
+        sidecar = write_sidecar(tmp)
+        reg, out = tmp / "speakers.json", tmp / "out"
+        seed = [0.6, 0.8] + [0.0] * (DIM - 2)  # unit vector, sim 0.60 to E00: passes the guard
+        seed_registry(reg, [dict(print_entry("Alice_Example", seed), role="peer")])
+
+        r = run_cli(["--relabel", str(sidecar), "--outdir", str(out),
+                     "--save-speaker", "SPEAKER_00=Alice_Example", "--blend"], reg)
+        check(r.returncode == 0, f"--blend must exit 0: {r.stderr}")
+        check("registry: blended SPEAKER_00 as 'Alice_Example'" in r.stderr,
+              f"stderr must say the print was blended: {r.stderr}")
+        hit = saved_print(reg, "Alice_Example")
+        norm = (1.6 ** 2 + 0.8 ** 2) ** 0.5
+        want = [1.6 / norm, 0.8 / norm] + [0.0] * (DIM - 2)
+        check(hit is not None and all(abs(a - b) < 1e-5 for a, b in zip(hit["embedding"], want)),
+              f"--blend must save the renormalized mean of print and cluster, got {hit}")
+        check(hit["added"] == "seed+blend:m", f"--blend must record provenance, got {hit['added']}")
+        check(hit.get("role") == "peer", f"--blend must keep the role tag, got {hit}")
+
+
+def test_blend_without_existing_print_saves_cluster():
+    with tempfile.TemporaryDirectory() as td:
+        tmp = Path(td)
+        sidecar = write_sidecar(tmp)
+        reg, out = tmp / "speakers.json", tmp / "out"
+        seed_registry(reg, [])
+
+        r = run_cli(["--relabel", str(sidecar), "--outdir", str(out),
+                     "--save-speaker", "SPEAKER_00=Alice_Example", "--blend"], reg)
+        check(r.returncode == 0, f"--blend with no print must exit 0: {r.stderr}")
+        hit = saved_print(reg, "Alice_Example")
+        check(hit is not None and hit["embedding"] == E00 and hit["added"] == "m",
+              f"--blend with no print must save the cluster as-is, got {hit}")
+
+
+def test_blend_keeps_the_guard():
+    with tempfile.TemporaryDirectory() as td:
+        tmp = Path(td)
+        sidecar = write_sidecar(tmp)
+        reg, out = tmp / "speakers.json", tmp / "out"
+        seed_registry(reg, [print_entry("Alice_Example", ORTH)])
+        before = reg.read_bytes()
+
+        r = run_cli(["--relabel", str(sidecar), "--outdir", str(out),
+                     "--save-speaker", "SPEAKER_00=Alice_Example", "--blend"], reg)
+        check(r.returncode != 0, "--blend must still refuse an orthogonal cluster")
+        check(reg.read_bytes() == before, "a blocked blend must not touch the registry")
+
+
 def test_auto_honors_local_labels():
     with tempfile.TemporaryDirectory() as td:
         tmp = Path(td)
@@ -230,6 +284,9 @@ def main() -> None:
     test_guard_blocks_orthogonal_replacement()
     test_force_overrides_guard()
     test_high_similarity_replacement_is_silent()
+    test_blend_averages_into_existing_print()
+    test_blend_without_existing_print_saves_cluster()
+    test_blend_keeps_the_guard()
     test_auto_honors_local_labels()
     print(f"\nPASS: {CHECKS} assertions")
 

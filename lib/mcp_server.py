@@ -233,7 +233,8 @@ _DESC_RELABEL = (
     "+ outputs are renamed but the registry is untouched (composes with auto=true); note adds "
     "a provenance string stored with each local label; force=true overrides the guard that "
     "refuses replacing a registry print whose similarity to the cluster is below "
-    "match_threshold. Keywords: rename speaker, label speaker, assign name, identify voice, "
+    "match_threshold; blend=true averages the cluster into the existing registry print instead "
+    "of replacing it (same guard), to strengthen a voiceprint from a new recording. Keywords: rename speaker, label speaker, assign name, identify voice, "
     "who is SPEAKER_00, correct labels."
 )
 
@@ -511,6 +512,7 @@ def whosaid_relabel(
     force: bool = False,
     note: Optional[str] = None,
     fold_unknown: bool = False,
+    blend: bool = False,
 ) -> dict:
     """Name SPEAKER_NN clusters and persist them, by shelling `whosaid relabel`.
 
@@ -528,7 +530,8 @@ def whosaid_relabel(
     are renamed but the registry is untouched (composes with auto=True). note
     is a provenance string stored with each local label. force=True overrides
     the guard that refuses replacing a registry print when the cluster's
-    similarity to it is below the match threshold.
+    similarity to it is below the match threshold. blend=True averages each
+    assigned cluster into the existing print instead of replacing it.
     """
     if not isinstance(assignments, dict) or (not assignments and not auto):
         return {
@@ -594,6 +597,8 @@ def whosaid_relabel(
         args.append("--no-save")
     if force:
         args.append("--force")
+    if blend:
+        args.append("--blend")
     if note:
         args += ["--note", note]
     if outdir:
