@@ -18,9 +18,14 @@ v1.10 fixes" from the shape of `<folder>/transcript.diarization.json`:
                          were assigned in argument order before v1.10.
                          Skipped when `brief_fold` is present (that sidecar is
                          already v1.10).
+  bound-pinned           (#75) `--max-speakers` bound set, the primary
+                         saturated, no recovery fallback, and the count came
+                         out equal to the bound (before v1.11.2 the bound set
+                         the count instead of capping it).
 
 A sidecar stamped `whosaid_version` >= 1.11.0 (written by lib/diarize_sherpa.py
-from that release on) is current and gets no findings.
+from that release on) gets only the bound-pinned check; one stamped >= 1.11.2
+is current and gets no findings.
 
 Usage:
     python lib/reprocess.py scan <ws> [meeting ...] [--json]
@@ -66,6 +71,9 @@ def original_speaker_args(sidecar: dict) -> list:
 # First release whose diarizer stamps `whosaid_version` into the sidecar; any
 # stamp at or above it carries every v1.10 diarization fix.
 CURRENT_VERSION = (1, 11, 0)
+# First release where a --max-speakers bound caps the auto count instead of
+# setting it (#75); stamps below it may carry a bound-pinned count.
+BOUND_FIX_VERSION = (1, 11, 2)
 
 
 def log(msg: str) -> None:
@@ -107,7 +115,7 @@ def scan_sidecar(data) -> list:
     if not isinstance(data, dict):
         return []
     stamp = _version_tuple(data.get("whosaid_version"))
-    if stamp is not None and stamp >= CURRENT_VERSION:
+    if stamp is not None and stamp >= BOUND_FIX_VERSION:
         return []
     mode = data.get("detect_mode")
     mode = mode if isinstance(mode, str) else ""
@@ -118,6 +126,18 @@ def scan_sidecar(data) -> list:
     resolved = resolved if isinstance(resolved, int) and not isinstance(resolved, bool) else None
     auto = mode.startswith("auto-detected")
     findings: list = []
+
+    # #75: under a --max-speakers bound a saturated count was set to the bound.
+    bound = _BOUND_RE.match(mode)
+    if (bound and isinstance(ce, dict) and ce.get("saturated") is True
+            and not ce.get("fallback") and resolved == int(bound.group(2))):
+        findings.append(_finding(
+            "bound-pinned", "likely",
+            f"auto count saturated at the --max-speakers bound of {resolved} "
+            f"(primary found {ce.get('raw_k')} clusters); before v1.11.2 the bound "
+            "set the count instead of capping it"))
+    if stamp is not None and stamp >= CURRENT_VERSION:
+        return findings
 
     # #59: brief-only clusters inflated the automatic count.
     if auto and isinstance(ce, dict) and "brief_fold" not in ce:

@@ -280,10 +280,13 @@ $EDITOR ./meetings/_ACTION-ITEMS.md        # 3. review the refolded corpus
 - **The detector (`--dry-run`).** It reads each meeting's `<base>.diarization.json` and prints
   findings per meeting. `likely`: `brief-fragments` (an auto count that includes a cluster made
   only of turns under 2 s) and `short-hinted-undercount` (audio under 900 s, `--speakers N`
-  hinted, fewer than N found). `possible`: `short-whole-file` (audio under 900 s, auto count,
+  hinted, fewer than N found), and `bound-pinned` (a `--max-speakers` bound, or `max_speakers`
+  in `whosaid.toml`, set a saturated auto count to the bound instead of capping it; fixed in
+  v1.11.2). `possible`: `short-whole-file` (audio under 900 s, auto count,
   no count estimate; a v1.10 `--no-chunk` run looks the same) and `ref-order` (two or more
   `--ref` voices matched, which were assigned in argument order before v1.10). Sidecars written
-  by v1.11.0 or later carry `whosaid_version` and are never flagged. With no `MEETING` and no
+  by v1.11.0 or v1.11.1 are checked for `bound-pinned` only; v1.11.2 or later are never
+  flagged. With no `MEETING` and no
   `--all`, `reprocess` takes exactly the meetings with a finding; `MEETING` names (folder
   names) or `--all` override that.
 - **No ASR.** Each meeting is re-run as `whosaid transcribe --reuse-asr`, which reuses the

@@ -4,7 +4,9 @@ corpus WITHOUT --rebuild, so ids, statuses and hand edits survive. Offline;
 run: uv run --quiet python test/rollup_refold_test.py"""
 from __future__ import annotations
 
+import difflib
 import json
+import re
 import subprocess
 import sys
 import tempfile
@@ -29,6 +31,10 @@ X_TXT = "Draft the quarterly budget proposal for finance"
 Y_TXT = "Migrate the billing database to the new cluster"
 Z_TXT = "Schedule the vendor security audit interview"
 W_TXT = "Publish the onboarding handbook revision to the wiki"
+
+
+def w_ratio(a: str, b: str) -> float:
+    return difflib.SequenceMatcher(None, a.lower(), b.lower()).ratio()
 
 
 def meeting(ws: Path, name: str, bullets: list[str]) -> None:
@@ -206,6 +212,97 @@ def main() -> None:
         check(len(z) == 1 and int(z[0]["id"].split("-")[1]) >= 3
               and after["next_id"] > int(z[0]["id"].split("-")[1]),
               f"cm refresh: new item minted above the old max ({after['next_id']}, {z})")
+
+        # --- issue #74: a refresh must not burn CM ids. Two meetings fold in
+        # order, so a genuinely new commitment in the EARLIER meeting is minted
+        # below the later meeting's fresh ids; restore hands the old ids back
+        # and the new item used to keep its high fold-time id.
+        M1_CM = [f"I will {t}" for t in (
+            "draft the quarterly budget proposal for finance",
+            "migrate the billing database to the new cluster",
+            "schedule the vendor security audit interview",
+            "publish the onboarding handbook revision to the wiki")]
+        M2_CM = [f"I will {t}" for t in (
+            "rotate the production signing keys before friday",
+            "interview two candidates for the analyst opening",
+            "renegotiate the office lease renewal terms",
+            "prepare the board slides on churn trends")]
+        NEW_CM = "I will order replacement laptops for the support team"
+
+        def cm_at(ws: Path, folder: str, speaker: str, texts: list[str]) -> None:
+            (ws / folder).mkdir(exist_ok=True)
+            items = [{"speaker": speaker, "speaker_role": None, "text": t, "time": "00:00:00",
+                      "cue": "i will", "negative": False, "priority": "normal"} for t in texts]
+            (ws / folder / "commitments.json").write_text(json.dumps(
+                {"source": "heuristic", "speakers": [speaker], "roles": {}, "min_words": 2,
+                 "items": items, "dropped": []}))
+
+        def cm_corpus(ws: Path) -> dict:
+            return json.loads((ws / "_commitments.json").read_text())
+
+        def cm_num(i: dict) -> int:
+            return int(i["id"].split("-")[1])
+
+        ws = fresh(tmp, "cm-burn")
+        (ws / "whosaid.toml").write_text("[search]\nembed = false\n")
+        cm_at(ws, M1, "SPEAKER_00", M1_CM)
+        cm_at(ws, M2, "SPEAKER_00", M2_CM)
+        check(rollup(ws).returncode == 0, "cm burn: initial")
+        before = cm_corpus(ws)
+        check(before["next_id"] == 9 and len(before["items"]) == 8, f"cm burn: initial next_id {before['next_id']}")
+        cm_at(ws, M1, "Zaphod", M1_CM + [NEW_CM])
+        cm_at(ws, M2, "Zaphod", M2_CM)
+        r = rollup(ws)
+        check(r.returncode == 0 and "replacing derived contributions" in r.stderr + r.stdout,
+              "cm burn: fingerprint refresh ran")
+        after = cm_corpus(ws)
+        old_ids = {i["id"] for i in before["items"]}
+        new = [i for i in after["items"] if NEW_CM in i["text"]]
+        check(len(new) == 1, "cm burn: one new item")
+        check(old_ids <= {i["id"] for i in after["items"]}, "cm burn: every old id kept")
+        check(after["next_id"] == before["next_id"] + 1,
+              f"cm burn: next_id advances by one new item (got {after['next_id']}, want {before['next_id'] + 1})")
+        check(new[0]["id"] == "CM-009", f"cm burn: new item takes the old next_id (got {new[0]['id']})")
+
+        # --- issue #74: a near-identical text keeps its id; a different one does not.
+        ws = fresh(tmp, "cm-fuzzy")
+        (ws / "whosaid.toml").write_text("[search]\nembed = false\n")
+        cm_at(ws, M1, "SPEAKER_00", M1_CM)
+        check(rollup(ws).returncode == 0, "cm fuzzy: initial")
+        before = cm_corpus(ws)
+        ids = {i["text"]: i["id"] for i in before["items"]}
+        tweaked = M1_CM[0] + " team"
+        check(w_ratio(M1_CM[0], tweaked) >= 0.85, "cm fuzzy: fixture ratio >= 0.85")
+        cm_at(ws, M1, "Zaphod", [tweaked, M1_CM[1], M1_CM[2], "I will repaint the lobby walls this weekend"])
+        check(rollup(ws).returncode == 0, "cm fuzzy: refresh")
+        after = cm_corpus(ws)
+        got = {i["text"]: i["id"] for i in after["items"]}
+        check(got[tweaked] == ids[M1_CM[0]], f"cm fuzzy: near-identical keeps its id ({got[tweaked]})")
+        check(got["I will repaint the lobby walls this weekend"] == "CM-005",
+              "cm fuzzy: different text gets the next fresh id")
+        check(M1_CM[3] not in got, "cm fuzzy: dropped item gone")
+        check(after["next_id"] == 6, f"cm fuzzy: next_id counts only the genuinely new item ({after['next_id']})")
+
+        # --- issue #74: near-miss review pairs follow renumbered ids.
+        near_a = "I will send the revised launch proposal to the team tomorrow morning"
+        near_b = "I will send the revised launch plan to the whole team by tomorrow"
+        ws = fresh(tmp, "cm-near")
+        # difflib only: a local Ollama must not fold the near-miss pair together.
+        (ws / "whosaid.toml").write_text("[search]\nembed = false\n")
+        cm_at(ws, M1, "SPEAKER_00", M1_CM)
+        cm_at(ws, M2, "SPEAKER_00", M2_CM)
+        check(rollup(ws).returncode == 0, "cm near: initial")
+        cm_at(ws, M1, "Zaphod", M1_CM + [near_a, near_b])
+        cm_at(ws, M2, "Zaphod", M2_CM)
+        check(rollup(ws).returncode == 0, "cm near: refresh")
+        after = cm_corpus(ws)
+        ids = {i["text"]: i["id"] for i in after["items"]}
+        check({ids[near_a], ids[near_b]} == {"CM-009", "CM-010"}, f"cm near: compact new ids ({ids[near_a]}, {ids[near_b]})")
+        check(after["next_id"] == 11, f"cm near: next_id ({after['next_id']})")
+        md = (ws / "_COMMITMENTS.md").read_text()
+        pair = re.search(r"- (CM-\d+) ↔ (CM-\d+) \(", md)
+        check(bool(pair) and {pair.group(1), pair.group(2)} == {"CM-009", "CM-010"},
+              f"cm near: review pair names the renumbered ids ({pair and pair.groups()})")
 
         # --- error paths.
         r = rollup(ws, "--refold", "2020-01-01-0000")

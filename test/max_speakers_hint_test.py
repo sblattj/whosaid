@@ -91,7 +91,11 @@ def test_saturated_abstain_suggests():
 def test_user_max_gives_no_suggestion():
     X, dur = saturating_fixture()
     est = d.estimate_speakers(X, durations=dur, max_speakers=12)
-    check(est["saturated"] is True and est["fallback"] is None, f"control must still saturate: {est}")
+    check(est["saturated"] is True, f"control must still saturate: {est}")
+    # #75: under a user bound the substantive count is APPLIED (not hinted), so
+    # the 8 real voices come back as 8, not the bound of 12.
+    check(est["fallback"]["method"] == "bounded-substantive-count" and est["k"] == TRUE_VOICES,
+          f"a bound must cap, not set, the count: {est}")
     check(est["suggested_max"] is None, f"a user cap must never produce a suggestion: {est}")
     check("--max-speakers" not in (d.count_recovery_warning(est, 12, 12) or ""), "no hint text")
 

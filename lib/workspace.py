@@ -2957,15 +2957,35 @@ def remember_commitment_edits(items: list[CommitmentItem]) -> None:
                 it.curated.pop(key, None)
 
 
+CM_REFOLD_MATCH_RATIO = 0.85  # a refold keeps the old id of a same-meeting near-identical text
+
+
 def restore_commitment_edits(fresh: list[CommitmentItem],
-                             previous: list[CommitmentItem]) -> dict[str, str]:
+                             previous: list[CommitmentItem],
+                             next_id: int | None = None) -> dict[str, str]:
     """Keep IDs and explicit edits while replacing all derived role evidence.
-    Returns {fresh fold-time id: restored id} for every item whose id changed,
-    so ids captured during the fold (near misses) can be rewritten to match."""
+    Pass 1 matches on shared evidence or identical text; pass 2 (issue #74)
+    gives a still-unmatched item the id of a still-unused old item that shares
+    a meeting with it and reads near-identically (CM_REFOLD_MATCH_RATIO), one
+    to one, best ratio first. With `next_id` (the corpus counter before the
+    refold) the items that got no old id are renumbered compactly from it, in
+    mint order, so the refold burns no ids. Returns {fresh fold-time id:
+    final id} for every item whose id changed, so ids captured during the
+    fold (near misses) can be rewritten to match."""
     used = set()
     renamed: dict[str, str] = {}
     def evidence(it):
         return {(o.meeting, o.source, o.t_sec, normalize_text(o.text)) for o in it.occurrences}
+    def adopt(it, old):
+        used.add(old.id)
+        matched.add(id(it))
+        if it.id != old.id:
+            renamed[it.id] = old.id
+        it.id, it.curated = old.id, old.curated
+        for key, value in it.curated.items():
+            if key in CM_CURATED_FIELDS:
+                setattr(it, key, value)
+    matched: set[int] = set()
     for it in fresh:
         candidates = [old for old in previous if old.id not in used and
                       (evidence(old) & evidence(it) or
@@ -2973,14 +2993,36 @@ def restore_commitment_edits(fresh: list[CommitmentItem],
                            for o in old.occurrences if o.text))]
         it.source_values = {k: getattr(it, k) for k in CM_CURATED_FIELDS}
         if candidates:
-            old = max(candidates, key=lambda old: len(evidence(old) & evidence(it)))
-            used.add(old.id)
-            if it.id != old.id:
-                renamed[it.id] = old.id
-            it.id, it.curated = old.id, old.curated
-            for key, value in it.curated.items():
-                if key in CM_CURATED_FIELDS:
-                    setattr(it, key, value)
+            adopt(it, max(candidates, key=lambda old: len(evidence(old) & evidence(it))))
+    pairs = []
+    for n, it in enumerate(fresh):
+        if id(it) in matched:
+            continue
+        meetings = {o.meeting for o in it.occurrences}
+        for m, old in enumerate(previous):
+            old_texts = {normalize_text(t) for t in [old.text] + [o.text for o in old.occurrences] if t}
+            if old.id in used or not meetings & {o.meeting for o in old.occurrences}:
+                continue
+            ratio = max((difflib.SequenceMatcher(None, normalize_text(it.text), t).ratio()
+                         for t in old_texts), default=0.0)
+            if ratio >= CM_REFOLD_MATCH_RATIO:
+                pairs.append((-ratio, n, m))
+    for _, n, m in sorted(pairs):
+        if id(fresh[n]) not in matched and previous[m].id not in used:
+            adopt(fresh[n], previous[m])
+    if next_id is not None:
+        minted = [it for it in fresh if id(it) not in matched]
+        mapping = {}
+        for offset, it in enumerate(minted):
+            mapping[it.id] = f"CM-{next_id + offset:03d}"
+        for it in minted:
+            old_id = it.id
+            it.id = mapping[old_id]
+            if old_id != it.id:
+                renamed[old_id] = it.id
+        for it in fresh:
+            if it.merged_into in mapping:
+                it.merged_into = mapping[it.merged_into]
     for old in previous:
         if old.id not in used and old.curated:
             # An explicit human decision outlives its automatic evidence.
@@ -3217,14 +3259,16 @@ def cmd_rollup(args: argparse.Namespace) -> int:
         # The fold minted fresh ids and recorded near misses under them;
         # restore maps items back to their stable ids, so rewrite the near
         # misses too or the review section names ids that no longer exist.
-        renamed = restore_commitment_edits(cm_items, previous_cm_items)
+        old_next_id = int(commitments_data.get("next_id", 1))
+        renamed = restore_commitment_edits(cm_items, previous_cm_items, old_next_id)
         cm_near_misses = [(renamed.get(a, a), renamed.get(b, b), r)
                           for a, b, r in cm_near_misses]
-        # The fresh ids handed back to stable ones are unused again: rewind
-        # next_id to just past the highest live id, never below where it was.
+        # Items that got no stable id were renumbered compactly from the old
+        # next_id (#74), so next_id lands just past the highest live id and
+        # never below where it was.
         live = [int(it.id.split("-")[1]) for it in cm_items
                 if it.id.startswith("CM-") and it.id.split("-")[1].isdigit()]
-        cm_next_id[0] = max(int(commitments_data.get("next_id", 1)), max(live, default=0) + 1)
+        cm_next_id[0] = max(old_next_id, max(live, default=0) + 1)
     for it in cm_items:
         if not it.source_values:
             it.source_values = {k: getattr(it, k) for k in CM_CURATED_FIELDS}

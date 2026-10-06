@@ -146,6 +146,60 @@ def test_max_speakers_lowers_the_cap_and_saturates():
     check(est["max"] == 4, f"estimate record must carry max=4: {est}")
 
 
+def noisy_meeting(voices: int, per: int = 20, short: int = 90, cohesion: float = 0.30,
+                  seed: int = 75):
+    """(X, durations): `voices` substantive 15 s voices plus short 0.6 s noisy turns
+    that each open a singleton cluster (the #59 shape; no brief distinct guest)."""
+    X = turns(voices, per, seed=seed)
+    unit = lambda v: v / (np.linalg.norm(v) + 1e-9)
+    bases = [unit(X[i * per:(i + 1) * per].sum(axis=0)) for i in range(voices)]
+    rng = np.random.default_rng(seed)
+    rows, durs = list(X), [15.0] * len(X)
+    for i in range(short):
+        b = bases[i % voices]
+        noise = rng.normal(size=DIM)
+        noise = unit(noise - float(noise @ b) * b)
+        rows.append(cohesion * b + np.sqrt(1 - cohesion ** 2) * noise)
+        durs.append(0.6)
+    return np.array(rows, dtype=np.float32), np.array(durs)
+
+
+def test_bound_caps_the_count_instead_of_setting_it():
+    """#75: with max_speakers=8, a 4-person meeting whose short noisy turns saturate
+    the primary came out as exactly 8. A bound caps the estimate; it never sets it."""
+    X, dur = noisy_meeting(4)
+    est = d.estimate_speakers(X, max_speakers=8, durations=dur)
+    check(est["saturated"] is True, f"fixture must saturate the bound: raw_k {est['raw_k']}")
+    check(est["k"] == 4, f"a bound of 8 must not set a 4-voice meeting to {est['k']}")
+    check(est["k"] < 8, f"k must stay under the bound: {est}")
+    fb = est["fallback"]
+    check(fb is not None and fb["method"] == "bounded-substantive-count",
+          f"the applied count must be auditable: {fb}")
+    check(fb["k"] == 4 and fb["bound"] == 8 and fb["excluded_short_turns"] == 90
+          and fb["reliable_turns"] == 80, f"{fb}")
+    check(est["suggested_max"] is None, f"the count was applied, not hinted: {est}")
+    check(est["max"] == 8, f"estimate record must carry max=8: {est}")
+    lab = d.cluster_estimated(X, est, dur)
+    check(len(set(lab.tolist())) == 4, f"cluster_estimated must fit 4 clusters, got {len(set(lab.tolist()))}")
+    check(d.count_recovery_warning(est, est["raw_k"], est["k"]) is not None, "recovery must be reported")
+
+
+def test_min_max_range_lands_on_the_real_count():
+    X, dur = noisy_meeting(4)
+    est = d.estimate_speakers(X, min_speakers=2, max_speakers=6, durations=dur)
+    check(est["k"] == 4, f"--min 2 --max 6 must land on 4, got {est['k']}")
+    est = d.estimate_speakers(X, min_speakers=5, max_speakers=6, durations=dur)
+    check(est["k"] == 5, f"the minimum still outranks the substantive count: {est['k']}")
+
+
+def test_bound_below_the_real_count_still_clamps_with_durations():
+    X, dur = noisy_meeting(8)
+    est = d.estimate_speakers(X, max_speakers=4, durations=dur)
+    check(est["saturated"] is True and est["k"] == 4,
+          f"8 real voices exceed a bound of 4; k must stay 4: {est['k']}")
+    check(est["fallback"] is None and est["suggested_max"] is None, f"nothing to apply: {est}")
+
+
 def test_min_speakers_raises_the_estimate():
     X = turns(2, 80, seed=7)
     est = d.estimate_speakers(X, min_speakers=5)
@@ -220,6 +274,9 @@ def main():
     test_six_speaker_meeting()
     test_saturation_is_reported_not_hidden()
     test_max_speakers_lowers_the_cap_and_saturates()
+    test_bound_caps_the_count_instead_of_setting_it()
+    test_min_max_range_lands_on_the_real_count()
+    test_bound_below_the_real_count_still_clamps_with_durations()
     test_min_speakers_raises_the_estimate()
     test_bounds_do_not_bind_when_the_estimate_is_inside_them()
     test_estimate_k_wrapper_agrees()
