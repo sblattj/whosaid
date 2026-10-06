@@ -1655,7 +1655,7 @@ _DESC_WS_REPROCESS = (
     "all_meetings=true takes every meeting; `meetings` is a list of folder names. "
     "speakers/min_speakers/max_speakers/engine/hook override the diarization settings. "
     "expected_speakers is a list of known voice names (the roster, sent as one comma list) that "
-    "anchors diarization to those enrolled voices. match_threshold (0 to 1) is the cosine a known "
+    "anchors diarization to those enrolled voices. match_threshold (above 0, at most 1) is the cosine a known "
     "voice must reach to claim a cluster. "
     "Not read-only and slow when applied (minutes per meeting); run the dry run first. "
     "Workspace = the `workspace` argument or WHOSAID_WORKSPACE. Keywords: reprocess, "
