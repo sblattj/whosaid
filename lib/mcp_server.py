@@ -1638,6 +1638,117 @@ def whosaid_worklist(
 
 
 # ---------------------------------------------------------------------------
+# 17) whosaid_reprocess (mutating; dry run by default)
+# ---------------------------------------------------------------------------
+REPROCESS_TIMEOUT = 3600.0  # seconds: re-diarizing many meetings takes minutes each
+
+_DESC_WS_REPROCESS = (
+    "Re-diarize meetings in a workspace whose speaker sidecars predate the v1.10 diarizer fixes "
+    "(wraps `whosaid reprocess`). DEFAULT IS A DRY RUN (dry_run=true): it prints the scan report "
+    "and the plan and changes nothing; pass dry_run=false to apply. When applied it rewrites each "
+    "meeting's speaker-labeled transcript and diarization sidecar from the existing Whisper "
+    "<base>.json, so ASR is NOT re-run, carries over transcript-only (no_save) labels, "
+    "regenerates per-meeting action items and commitments (skip with no_items=true), then re-runs "
+    "the workspace roll-up so corpus item ids and hand edits survive. Every touched meeting is "
+    "first backed up to <workspace>/_reprocess-backups/<meeting>/<UTC timestamp>/. With no "
+    "`meetings` and all_meetings=false it takes only the meetings the detector flags; "
+    "all_meetings=true takes every meeting; `meetings` is a list of folder names. "
+    "speakers/min_speakers/max_speakers/engine/hook override the diarization settings. "
+    "Not read-only and slow when applied (minutes per meeting); run the dry run first. "
+    "Workspace = the `workspace` argument or WHOSAID_WORKSPACE. Keywords: reprocess, "
+    "re-diarize, redo speakers, fix speaker labels, old meetings, backfill."
+)
+
+
+@mcp.tool(
+    name="whosaid_reprocess",
+    description=_DESC_WS_REPROCESS,
+    annotations=ToolAnnotations(
+        read_only_hint=False,
+        destructive_hint=False,
+        idempotent_hint=False,
+        open_world_hint=False,
+    ),
+)
+def whosaid_reprocess(
+    workspace: Optional[str] = None,
+    meetings: Optional[list[str]] = None,
+    dry_run: bool = True,
+    all_meetings: bool = False,
+    no_items: bool = False,
+    speakers: Optional[int] = None,
+    min_speakers: Optional[int] = None,
+    max_speakers: Optional[int] = None,
+    engine: Optional[str] = None,
+    hook: Optional[str] = None,
+) -> dict:
+    """Shell `whosaid reprocess <ws> [meetings...] [flags]`; dry_run (default) adds --dry-run.
+
+    Returns {"ok", "returncode", "dry_run", "workspace", "stdout", "stderr"} where stdout
+    is the CLI's report/summary lines and stderr is its last lines. Validation failures
+    come back as the usual {"ok": False, "error", "hint"} before anything is shelled.
+    """
+    ws, err = _resolve_ws(workspace)
+    if err:
+        return err
+    folders = [str(m).strip() for m in (meetings or [])]
+    for m in folders:
+        if not _safe_folder(m):
+            return _ws_error(
+                f"invalid meeting folder '{m}'",
+                "pass bare meeting folder names (no slashes, no '..', not hidden)",
+            )
+    counts = {"speakers": speakers, "min_speakers": min_speakers, "max_speakers": max_speakers}
+    for key, val in counts.items():
+        if val is None:
+            continue
+        try:
+            n = int(val)
+        except (TypeError, ValueError):
+            return _ws_error(f"invalid {key} '{val}'", "pass a whole number >= 1")
+        if n < 1:
+            return _ws_error(f"{key} must be >= 1, got {n}", "pass a whole number >= 1")
+        counts[key] = n
+    args: list = ["reprocess", str(ws), *folders]
+    if dry_run:
+        args.append("--dry-run")
+    if all_meetings:
+        args.append("--all")
+    if no_items:
+        args.append("--no-items")
+    for key, flag in (("speakers", "--speakers"), ("min_speakers", "--min-speakers"),
+                      ("max_speakers", "--max-speakers")):
+        if counts[key] is not None:
+            args += [flag, str(counts[key])]
+    if engine and engine.strip():
+        args += ["--engine", engine.strip()]
+    if hook and hook.strip():
+        args += ["--hook", hook.strip()]
+    try:
+        proc = _run_cli(args, timeout=REPROCESS_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        return {
+            "ok": False,
+            "dry_run": bool(dry_run),
+            "workspace": str(ws),
+            "error": f"whosaid reprocess timed out after {REPROCESS_TIMEOUT:.0f}s",
+            "hint": "meetings already finished keep their new output and a backup; "
+                    "re-run on the remaining meetings (name them in `meetings`)",
+        }
+    except OSError as exc:
+        return _ws_error(f"could not start whosaid: {exc}", "run whosaid_doctor")
+    err_lines = (proc.stderr or "").strip().splitlines()
+    return {
+        "ok": proc.returncode == 0,
+        "returncode": proc.returncode,
+        "dry_run": bool(dry_run),
+        "workspace": str(ws),
+        "stdout": (proc.stdout or "").strip(),
+        "stderr": "\n".join(err_lines[-20:]),
+    }
+
+
+# ---------------------------------------------------------------------------
 # Resource: whosaid://guide (on-demand deep detail — not in the always-loaded schema)
 # ---------------------------------------------------------------------------
 _GUIDE = """# whosaid — deep reference (whosaid://guide)

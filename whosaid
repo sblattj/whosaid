@@ -15,6 +15,7 @@
 #   whosaid ingest <a...> --into D  Transcribe into a dated meeting workspace.
 #   whosaid teams ingest <export.json> --into D  Ingest a Teams chat export as a source-tagged corpus.
 #   whosaid roll-up <dir>           Rebuild the meeting-workspace index and audit.
+#   whosaid reprocess <ws> [M...]   Re-diarize meetings an older diarizer got wrong; keep labels and edits.
 #   whosaid index <ws>              Build the workspace search index, graph, and wiki.
 #   whosaid search <ws> "<q>"       Exact / meaning / hybrid search over every transcript.
 #   whosaid context <ws> <mtg> <t>  Verbatim turns around a timestamp.
@@ -75,7 +76,7 @@ if [[ -z "$WHOSAID_PY" ]]; then
   # Only the commands that run a lib/*.py module or inline snippet need it;
   # transcribe/record/enroll/relabel/install/setup/mcp/help/version/doctor do not.
   case "${1:-}" in
-    samples|speakers|teams|ingest|backfill|roll-up|rollup|commitments|worklist|index|search|context|graph|wiki|watch|memos)
+    samples|speakers|teams|ingest|backfill|roll-up|rollup|reprocess|commitments|worklist|index|search|context|graph|wiki|watch|memos)
       echo "whosaid: no Python >= 3.11 found; set WHOSAID_PYTHON=/path/to/python3.11+ or run: uv python install 3.13" >&2
       exit 1
       ;;
@@ -94,7 +95,7 @@ REPO_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
 
 # Single source of truth for the released version. Bump this alongside the
 # CHANGELOG.md entry and git tag at release time.
-WHOSAID_VERSION="1.10.0"
+WHOSAID_VERSION="1.11.0"
 
 HELPER="$REPO_DIR/lib/transcribe_mlx.py"
 DIARIZER="$REPO_DIR/lib/diarize_sherpa.py"
@@ -242,10 +243,20 @@ USAGE
                                         meeting folder (idempotent by content
                                         hash; skips anything already ingested).
   whosaid roll-up <dir> [--action-items] [--similarity-threshold F] [--rebuild]
-                        [--index] [--owner NAME|me] [--all-owners]
+                        [--refold MEETING[=OLD_MD]]... [--index] [--owner NAME|me] [--all-owners]
                                         Rebuild the workspace index, audit,
                                         action-item corpus, dev-commitments corpus,
                                         and the ranked _WORKLIST-<Owner>.md.
+  whosaid reprocess <ws> [MEETING ...] [--dry-run] [--all] [--no-items]
+                         [--speakers N] [--min-speakers N] [--max-speakers N]
+                         [--expected-speakers A,B] [--match-threshold X]
+                         [--engine E] [--hook CMD]
+                                        Re-diarize meetings a pre-1.10 diarizer got
+                                        wrong (default: those the scan flags; --all
+                                        or MEETING names override), reusing the
+                                        existing ASR. Backs up to <ws>/_reprocess-backups/,
+                                        carries transcript-only labels over, regenerates
+                                        action items/commitments, then refolds the corpora.
   whosaid commitments <ws> [--owner NAME|me] [--all-owners] [--json] [-o FILE]
                                         Print the ranked worklist (P1/P2/P3) of
                                         what one person signed up for, across
@@ -313,6 +324,9 @@ TRANSCRIBE FLAGS
                        label. Default 0.50 (WHOSAID_MATCH_THRESHOLD); raise it if
                        you see wrong names, lower it to catch more.
       --no-diarize     Skip speaker diarization.
+      --reuse-asr      Skip Whisper when <out>/<base>.json already exists and go straight
+                       to diarization (re-diarize without re-transcribing; errors if the
+                       json is missing; incompatible with --no-diarize).
       --diarize        Force diarization on (default already on).
   -h, --help          This message.
 
@@ -425,6 +439,13 @@ ROLL-UP FLAGS
                       Dedupe similarity threshold, 0.5–1.0 (default: 0.82).
                       Pairs within 0.10 below it are listed for review.
   --rebuild           Reset manifest + corpus, rebuild from folders on disk.
+  --refold MEETING[=OLD_MD]
+                      Re-read one already-folded meeting's regenerated
+                      action-items.md (repeatable; implies --action-items).
+                      Ids, hand-set status and titles survive; owners follow
+                      the new speaker labels. OLD_MD (the meeting's previous
+                      action-items.md) lets a hand-retitled item re-match.
+                      whosaid reprocess passes it from its backup.
   Roll-up also maintains the dev-commitments corpus — _COMMITMENTS.md +
   _commitments.json (CM-NNN ids) — automatically when per-meeting commitments
   (from ingest --commitments) exist, and regenerates _WORKLIST-<Owner>.md
@@ -1261,6 +1282,7 @@ cmd_transcribe() {
   local OUTDIR=""
   local NAME=""
   local DIARIZE=1
+  local REUSE_ASR=0
   local SPEAKERS=""
   local JOBS=""
   local CHUNK_SECONDS=""
@@ -1283,6 +1305,7 @@ cmd_transcribe() {
       -n|--name)    NAME="$2"; shift 2 ;;
       --no-diarize) DIARIZE=0; shift ;;
       --diarize)    DIARIZE=1; shift ;;
+      --reuse-asr)  REUSE_ASR=1; shift ;;
       --speakers)   SPEAKERS="$2"; shift 2 ;;
       --min-speakers) MIN_SPEAKERS="$2"; shift 2 ;;
       --max-speakers) MAX_SPEAKERS="$2"; shift 2 ;;
@@ -1304,6 +1327,11 @@ cmd_transcribe() {
   [[ ${#AUDIO[@]} -eq 0 ]] && { log "no audio file given."; cmd_help; exit 1; }
   [[ -n "$NAME" && ${#AUDIO[@]} -gt 1 ]] && { log "--name only works with a single input."; exit 1; }
 
+  if [[ "$REUSE_ASR" == "1" && "$DIARIZE" != "1" ]]; then
+    log "ERROR --reuse-asr re-diarizes an existing transcript; it cannot be combined with --no-diarize."
+    exit 1
+  fi
+
   warn_if_not_arm64
   ensure_uv_and_ffmpeg
 
@@ -1324,28 +1352,37 @@ cmd_transcribe() {
     local base="${NAME:-$(basename "${audio%.*}")}"
     base="$(printf '%s' "$base" | tr -c 'A-Za-z0-9_-' '_')"
 
+    if [[ "$REUSE_ASR" == "1" && ! -f "$out/$base.json" ]]; then
+      log "ERROR --reuse-asr: no existing transcript at $out/$base.json to reuse."
+      exit 1
+    fi
+
     local helper_args=("$audio" --model "$MODEL" --outdir "$out" --lang "$LANG_CODE" --format "$FORMAT" --name "$base")
 
     local uv_err uv_rc=0 uv_status=()
-    uv_err="$(mktemp "${TMPDIR:-/tmp}/whosaid-uv.XXXXXX")"
-    # Keep progress/warnings live on stderr, preserve stdout for callers, and
-    # wait for tee to finish before inspecting the captured diagnostic.
-    {
-      if uv run --quiet --with mlx-whisper python "$HELPER" "${helper_args[@]}" \
-          2>&1 1>&3 | tee "$uv_err" >&2; then
-        uv_rc=0
-      else
-        uv_status=("${PIPESTATUS[@]}")
-        uv_rc="${uv_status[0]}"
-        if [[ "$uv_rc" -eq 0 ]]; then uv_rc="${uv_status[1]}"; fi
+    if [[ "$REUSE_ASR" == "1" ]]; then
+      log "reusing existing transcript: $out/$base.json (ASR skipped)"
+    else
+      uv_err="$(mktemp "${TMPDIR:-/tmp}/whosaid-uv.XXXXXX")"
+      # Keep progress/warnings live on stderr, preserve stdout for callers, and
+      # wait for tee to finish before inspecting the captured diagnostic.
+      {
+        if uv run --quiet --with mlx-whisper python "$HELPER" "${helper_args[@]}" \
+            2>&1 1>&3 | tee "$uv_err" >&2; then
+          uv_rc=0
+        else
+          uv_status=("${PIPESTATUS[@]}")
+          uv_rc="${uv_status[0]}"
+          if [[ "$uv_rc" -eq 0 ]]; then uv_rc="${uv_status[1]}"; fi
+        fi
+      } 3>&1
+      if [[ "$uv_rc" -ne 0 ]]; then
+        diagnose_uv_failure "$uv_err"
+        rm -f "$uv_err"
+        exit "$uv_rc"
       fi
-    } 3>&1
-    if [[ "$uv_rc" -ne 0 ]]; then
-      diagnose_uv_failure "$uv_err"
       rm -f "$uv_err"
-      exit "$uv_rc"
     fi
-    rm -f "$uv_err"
 
     local txt="$out/$base.txt"
     if [[ ! -s "$txt" ]]; then
@@ -1385,10 +1422,18 @@ cmd_transcribe() {
             dargs+=(--ref "$refname=$ref")
           done
         fi
-        if uv run --quiet --with sherpa-onnx --with numpy python "$DIARIZER" "${dargs[@]}"; then
-          :
-        else
+        # A re-run must not be satisfied by the previous run's speaker file: the
+        # exit-3 gate below only checks existence, so drop the stale one first
+        # (the diarizer rewrites the other sidecars itself).
+        [[ "$REUSE_ASR" == "1" ]] && rm -f "$out/$base.speakers.txt"
+        local diar_rc=0
+        uv run --quiet --with sherpa-onnx --with numpy python "$DIARIZER" "${dargs[@]}" || diar_rc=$?
+        if [[ "$diar_rc" -ne 0 ]]; then
           log "WARN diarization failed; plain transcript is unaffected."
+          if [[ "$REUSE_ASR" == "1" ]]; then
+            log "plain transcript kept at $txt; re-diarization failed (rc=$diar_rc)"
+            exit 3
+          fi
         fi
       else
         log "WARN diarizer script not found at $DIARIZER; skipping diarization for $audio."
@@ -1827,6 +1872,8 @@ cmd_rollup() {
       -o|--out)           py_args+=("$1" "$2"); shift 2 ;;
       --action-items-out) py_args+=("$1" "$2"); shift 2 ;;
       --similarity-threshold) py_args+=("$1" "$2"); shift 2 ;;
+      --refold)           [[ $# -ge 2 ]] || { log "roll-up: --refold needs a meeting folder"; exit 1; }
+                          py_args+=("$1" "$2"); shift 2 ;;
       --owner)            py_args+=("$1" "$2"); shift 2 ;;
       -h|--help)          cmd_help; exit 0 ;;
       -*)                 log "unknown option: $1"; cmd_help; exit 1 ;;
@@ -1838,6 +1885,17 @@ cmd_rollup() {
   if [[ "$want_index" == "1" ]]; then
     cmd_index "$wsdir"
   fi
+}
+
+# whosaid reprocess <ws> [MEETING ...] [flags]
+# Thin bash front for `python3 lib/reprocess.py run`, which owns the logic (scan,
+# backup, `transcribe --reuse-asr`, label carry-over, regeneration, roll-up). It
+# calls back into this launcher for transcribe/relabel/roll-up via WHOSAID_BIN.
+cmd_reprocess() {
+  require_module "$REPO_DIR/lib/reprocess.py" reprocess
+  [[ $# -eq 0 ]] && { log "reprocess: need a workspace directory. e.g. whosaid reprocess meetings/ --dry-run"; exit 1; }
+  WHOSAID_BIN="${WHOSAID_BIN:-$REPO_DIR/whosaid}" \
+    exec "$WHOSAID_PY" "$REPO_DIR/lib/reprocess.py" run "$@"
 }
 
 # whosaid commitments <ws> [--owner NAME|me] [--all-owners] [--json] [-o FILE]
@@ -2053,6 +2111,9 @@ case "${1:-}" in
     ;;
   roll-up|rollup)
     cmd_rollup "${@:2}"
+    ;;
+  reprocess)
+    cmd_reprocess "${@:2}"
     ;;
   commitments|worklist)
     cmd_commitments "${@:2}"

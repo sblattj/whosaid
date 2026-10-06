@@ -121,7 +121,7 @@ the models as usual.
 | `whosaid enroll [Name]` | Records ~45s from the mic reading a printed passage, saves `voices/<Name>.wav`. See [Speaker identity: enrollment clips vs. the registry](#speaker-identity-enrollment-clips-vs-the-registry). |
 | `whosaid enroll <Name> --from FILE [--ss T] [--t D\|--to T] [--force]` | Extracts a clip from an existing recording instead of the mic (extract → verify → save, no interaction). `--ss`/`--t`/`--to` accept seconds or `M:SS`/`H:MM:SS`; same ≥15s/non-silent bar as mic enrollment. |
 | `whosaid record [--label L]` | Foreground mic capture to `recordings/<timestamp>[-label].m4a`, then transcribes automatically. |
-| `whosaid <audio>… [flags]` | The default command: transcribe + diarize + label one or more audio files. `whosaid transcribe <audio>…` is the same command written explicitly (matching the `whosaid_transcribe` MCP tool name). |
+| `whosaid <audio>… [flags]` | The default command: transcribe + diarize + label one or more audio files. `--reuse-asr` skips Whisper when `<out>/<base>.json` already exists and re-diarizes only (errors if the json is missing; not valid with `--no-diarize`). `whosaid transcribe <audio>…` is the same command written explicitly (matching the `whosaid_transcribe` MCP tool name). |
 | `whosaid relabel <base> SPEAKER_02=Jane …` | Put real names on clusters after reading the speaker cards. Rewrites the transcript + cards and saves each named voiceprint to the local registry for future transcripts — refusing (unless `--force`) to overwrite an existing registry entry the new cluster doesn't match (similarity below the match threshold, default 0.50). No re-transcription. |
 | `whosaid relabel <base> SPEAKER_04=Alice --blend` | Average the cluster into Alice's saved print instead of replacing it, to strengthen the print from a new recording. Same similarity guard as a normal relabel. See [Speaker identity: enrollment clips vs. the registry](#speaker-identity-enrollment-clips-vs-the-registry). |
 | `whosaid relabel <base> SPEAKER_04=Alice --no-save [--note TEXT]` | Transcript-only label: renames the cluster in the transcript + cards and never writes to the registry. For a speaker the conversation makes obvious but whose cluster is a poor voiceprint — a long mixed cluster saved as that person would degrade their enrolled print. The label is kept in the sidecar (`local_labels`), survives `relabel --auto` and `whosaid samples`, and each card is marked `Alice_Example  (transcript-only label; registry untouched)`. See [Speaker identity: enrollment clips vs. the registry](#speaker-identity-enrollment-clips-vs-the-registry). |
@@ -131,7 +131,8 @@ the models as usual.
 | `whosaid speakers import FILE [--merge\|--overwrite]` | Restore a registry backup. An existing destination requires an explicit conflict policy; `--overwrite` replaces the entire registry. |
 | `whosaid samples <base> [-o DIR] [--audio FILE] [--per-speaker N] [--seconds S] [--json]` | Export one short representative WAV per speaker cluster — the longest diarized segment, clamped to `--seconds` (default 8) — so you can listen and confirm an identity before trusting an auto-label or enrolling. Cuts from the sidecar's own `source.path`, or an explicit `--audio FILE` for a sidecar written before that metadata existed. |
 | `whosaid ingest <audio>… --into DIR [--action-items] [--engine E] [--index]` | Transcribe a batch into dated meeting folders (idempotent by content hash). `--engine` picks the action-item summarizer, `--index` runs roll-up + index afterwards. See [Meeting workspaces](#meeting-workspaces). |
-| `whosaid roll-up <ws> [--action-items] [--index] [--owner NAME\|me] [--all-owners]` | Rebuild the workspace index (`_INDEX.md`), audit, the deduplicated action-item and dev-commitments corpora, and the owner's ranked `_WORKLIST-<Owner>.md`; `--index` then rebuilds the search index too. |
+| `whosaid roll-up <ws> [--action-items] [--refold MEETING[=OLD_MD]]... [--index] [--owner NAME\|me] [--all-owners]` | Rebuild the workspace index (`_INDEX.md`), audit, the deduplicated action-item and dev-commitments corpora, and the owner's ranked `_WORKLIST-<Owner>.md`; `--index` then rebuilds the search index too. `--refold MEETING[=OLD_MD]` (repeatable; implies `--action-items`, not valid with `--rebuild`) re-reads one already-folded meeting's regenerated `action-items.md`: ids, hand-set status and titles survive, owners follow the new speaker labels; `OLD_MD` is the meeting's previous file, so a hand-retitled item re-matches. |
+| `whosaid reprocess <ws> [MEETING ...] [--dry-run] [--all] [--no-items] [--speakers N] [--min-speakers N] [--max-speakers N] [--expected-speakers A,B] [--match-threshold X] [--engine E] [--hook CMD]` | Re-diarize meetings an older diarizer got wrong, reusing the existing ASR (`transcribe --reuse-asr`), keeping `--no-save` labels and hand edits, with backups in `<ws>/_reprocess-backups/`. `--dry-run` only reports. See [Upgrading to 1.11](#upgrading-to-111-reprocess-older-meetings). |
 | `whosaid commitments <ws> [--owner NAME\|me] [--all-owners] [--json] [-o FILE]` | Print the ranked personal worklist (P1/P2/P3) on demand from the corpora, without a roll-up. See [Dev-commitments](#dev-commitments). |
 | `whosaid index <ws> [--no-embed] [--rebuild]` | Build `<ws>/_search.db` (full text, optional embeddings, entity graph) and `<ws>/_WIKI.md`. See [Search your meetings](#search-your-meetings). |
 | `whosaid search <ws> "<query>" [--mode exact\|meaning\|hybrid] [--speaker S] [--meeting M] [-k N] [--json]` | Search every speaker-labeled transcript; each hit is a meeting, a timestamp, a speaker, and a snippet. |
@@ -261,6 +262,59 @@ same contract, `_COMMITMENTS.md`) are folded back on the next roll-up and surviv
 statuses, types, retitles, and `(merged AI-NNN)` merge annotations (the merged item stays at
 its id, rendered collapsed as `[merged → AI-NNN]`). Only `--rebuild` discards them. `--index`
 runs `whosaid index <ws>` right after the roll-up.
+
+### Upgrading to 1.11: reprocess older meetings
+
+v1.10 fixed two diarizer faults: short fragments inflated the automatic speaker count, and
+recordings under 15 minutes ignored `--speakers N` and undercounted. Meetings processed before
+that keep their old speaker split, and their action items and commitments inherit it (a phantom
+"speaker" owns items, or two people are merged into one). `whosaid reprocess` re-diarizes them
+without re-running Whisper.
+
+```bash
+whosaid reprocess ./meetings --dry-run     # 1. what would change; touches nothing
+whosaid reprocess ./meetings               # 2. re-diarize the flagged meetings (or --all)
+$EDITOR ./meetings/_ACTION-ITEMS.md        # 3. review the refolded corpus
+```
+
+- **The detector (`--dry-run`).** It reads each meeting's `<base>.diarization.json` and prints
+  findings per meeting. `likely`: `brief-fragments` (an auto count that includes a cluster made
+  only of turns under 2 s) and `short-hinted-undercount` (audio under 900 s, `--speakers N`
+  hinted, fewer than N found). `possible`: `short-whole-file` (audio under 900 s, auto count,
+  no count estimate; a v1.10 `--no-chunk` run looks the same) and `ref-order` (two or more
+  `--ref` voices matched, which were assigned in argument order before v1.10). Sidecars written
+  by v1.11.0 or later carry `whosaid_version` and are never flagged. With no `MEETING` and no
+  `--all`, `reprocess` takes exactly the meetings with a finding; `MEETING` names (folder
+  names) or `--all` override that.
+- **No ASR.** Each meeting is re-run as `whosaid transcribe --reuse-asr`, which reuses the
+  existing `<base>.json`. Diarization takes seconds to a minute per meeting. Regenerating action items runs
+  the summarizer once per meeting, and the `claude` engine is a cloud call per meeting (see
+  [The claude engine](#the-claude-engine-opt-in-cloud)); `--engine E` and `--hook CMD` choose
+  the summarizer as in `ingest`. `--no-items` skips regenerating action items and commitments.
+- **Speaker counts.** The flags a meeting was first diarized with (`--speakers N` or the
+  `--min/--max-speakers` bounds, recovered from the sidecar's `detect_mode`) are reused unless
+  you pass `--speakers`, `--min-speakers`, `--max-speakers`, or `--expected-speakers`, which
+  replace them. Expected-speaker names are not recorded in the sidecar, so they are not
+  recovered. `--match-threshold X` sets the registry match threshold.
+- **Preserved.** `relabel --no-save` labels carry over to the new clusters by segment overlap.
+  A role is never re-applied for a name the registry already knows. Then `reprocess` runs
+  `whosaid roll-up <ws> --action-items --refold MEETING=<backup>/action-items.md` for each
+  regenerated meeting, so corpus ids (`AI-NNN`/`CM-NNN`), hand-set status, and hand-edited titles
+  survive while owners follow the new speaker labels.
+- **Backups and restore.** Before touching a meeting, `reprocess` copies its
+  `<base>.speakers.txt`, `<base>.speaker-cards.txt`, `<base>.rttm`, `<base>.diarization.json`,
+  `action-items.{md,json}`, and `commitments.{md,json}` to
+  `<ws>/_reprocess-backups/<meeting>/<UTC timestamp>/`, and restores them itself if a step
+  fails. To undo a run you did not want, copy those files back into the meeting folder, then
+  run `whosaid roll-up <ws> --refold MEETING` (a plain roll-up skips already-folded meetings). The `_`-prefixed folder is
+  skipped by roll-up and workspace scans; delete it when you are satisfied.
+
+On 8 synthetic meetings first processed by v1.8.2 (ground truth known), the total absolute
+speaker-count error went from 11 to 6, and the two meetings run with `--speakers N` went from 2
+speakers found (of 5 and of 3) to exact. Whisper was skipped in 8 of 8, and a `--no-save` label,
+a hand-set `done`, and a hand retitle all survived the refold with ids unchanged.
+
+The MCP tool `whosaid_reprocess` wraps the same command; its `dry_run` defaults to true.
 
 ### `whosaid teams ingest` — Microsoft Teams chat, no audio
 
@@ -825,6 +879,7 @@ Add it to your MCP client config:
 | `whosaid_doctor` | Read-only readiness check — models cached, deps present, mic/audio devices — run this first when a transcribe fails. |
 | `whosaid_enroll_from_file` | Enrolls a named voice from an existing audio clip, no mic needed. |
 | `whosaid_samples` | Exports one short representative WAV per speaker cluster (longest segment, clamped to `seconds`) so you can listen and confirm an identity before trusting a label. |
+| `whosaid_reprocess` | Re-diarizes older meetings in a workspace (wraps `whosaid reprocess`, reusing the existing ASR). Mutating, but `dry_run` defaults to true: it reports the plan and changes nothing until you pass `dry_run=false`. |
 
 `enroll` and `record` (microphone capture) stay CLI-only — they need an interactive terminal and
 Microphone permission. The first `whosaid_transcribe` call downloads ~1.5 GB of models; call
@@ -1093,7 +1148,7 @@ work at any length. Pass `--no-chunk` to use sherpa's whole-file clustering inst
 | `<base>.rttm` | Raw diarization turns, standard RTTM format. |
 | `<base>.speakers.txt` | Speaker-labeled transcript: Whisper text merged with diarization turns and enrollment names; carries `# Role: NAME = ROLE` header lines when speakers have role tags. |
 | `<base>.speaker-cards.txt` | One card per speaker with turn count, talk time, and representative snippets — read it to identify who each `SPEAKER_NN` is, then name them with `whosaid relabel`. |
-| `<base>.diarization.json` | Cached segments + per-cluster voiceprints, so `whosaid relabel` can rename and persist speakers without re-diarizing. Also carries `registry_matches` and `source` (below). |
+| `<base>.diarization.json` | Cached segments + per-cluster voiceprints, so `whosaid relabel` can rename and persist speakers without re-diarizing. Also carries `registry_matches`, `source` (below), and, from v1.11.0, `whosaid_version`, which `whosaid reprocess` uses to skip meetings that need no re-diarization. |
 | `<base>.samples/` | Created on demand by `whosaid samples <base>`: one short representative WAV per speaker cluster (`SPEAKER_NN[-Name].wav`), for a quick human listen before trusting an auto-label. |
 
 A meeting workspace (`whosaid ingest --into <ws>`) adds these at the workspace root. Underscored

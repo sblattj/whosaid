@@ -64,6 +64,7 @@ def write_sidecar(tmp: Path) -> Path:
     sidecar = tmp / "m.diarization.json"
     sidecar.write_text(json.dumps({
         "base": "m",
+        "whosaid_version": "1.11.0",  # relabel must carry the stamp through (checked below)
         "emb_model": EMB_MODEL,
         "num_speakers": 2,
         "names": {"SPEAKER_00": "SPEAKER_00", "SPEAKER_01": "SPEAKER_01"},

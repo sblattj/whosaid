@@ -213,6 +213,20 @@ def probe_creation_time(path: str) -> str | None:
     return out.stdout.strip() or None
 
 
+def whosaid_version() -> str | None:
+    """The release this diarizer ships in, read from lib/__init__.py by path.
+    This file runs as a script (`uv run python lib/diarize_sherpa.py`), so the
+    `lib` package is not importable. `whosaid reprocess` uses the stamp to tell
+    current sidecars from pre-1.10 ones."""
+    import re
+    try:
+        text = (Path(__file__).resolve().parent / "__init__.py").read_text()
+    except OSError:
+        return None
+    m = re.search(r'^__version__\s*=\s*"([^"]+)"', text, re.M)
+    return m.group(1) if m else None
+
+
 def source_metadata(path: str) -> dict:
     """Recording provenance for the sidecar: absolute path, duration, creation time.
 
@@ -1946,6 +1960,7 @@ def main() -> None:
     suggested_max_speakers = (count_estimate or {}).get("suggested_max")
     sidecar_data = {
         "base": base,
+        "whosaid_version": whosaid_version(),
         "emb_model": EMB_NAME,
         "num_speakers": len(speakers),
         "names": names,

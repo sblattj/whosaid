@@ -86,7 +86,7 @@ Subcommands (the `whosaid` bash CLI shells out to this module via
 
   rollup <workspace-dir> [--action-items] [-o INDEX.md] [--action-items-out F]
          [--commitments-out F] [--similarity-threshold F] [--rebuild]
-         [--owner NAME|me] [--all-owners]
+         [--refold MEETING]... [--owner NAME|me] [--all-owners]
       The workspace aggregate. Two JSON state files live in the workspace dir:
         _workspace.json    manifest: one entry per dated meeting folder
         _action-items.json living deduplicated action-item corpus
@@ -1366,12 +1366,20 @@ def fold_meeting(meeting_folder: str, bullets: list[tuple],
                  items: list[ActionItem], next_id: list[int],
                  threshold: float = SIMILARITY_THRESHOLD,
                  near_misses: list[tuple[str, str, float]] | None = None,
-                 matcher: "TextMatcher | None" = None) -> list[ActionItem]:
+                 matcher: "TextMatcher | None" = None,
+                 reassign_owner: bool = False,
+                 aliases: "dict[str, list[str]] | None" = None) -> list[ActionItem]:
     """Bullets are (line, owner, text) or (line, owner, text, section); a
     section becomes the type of a new item, or of a matched item that has
     none yet (hand-set types were reconciled before folding and win).
     `matcher` (optional) adds the embedding rule on top of the difflib
-    threshold; without one this is the historical difflib-only fold."""
+    threshold; without one this is the historical difflib-only fold.
+    `reassign_owner` (refold only): a matched item whose earliest meeting is
+    this one takes the bullet's owner, so a re-diarized meeting's new speaker
+    labels replace the old ones (the first matching bullet wins).
+    `aliases` (refold only): item id -> extra texts the item also answers to
+    (the meeting's previous bullet text, so a hand-retitled item still
+    re-matches its regenerated bullet)."""
     if matcher is not None:
         matcher.prime([e[2] for e in bullets] + [it.text for it in items])
     for entry in bullets:
@@ -1386,6 +1394,13 @@ def fold_meeting(meeting_folder: str, bullets: list[tuple],
             it_norm = normalize_text(it.text)
             ratio = similarity(norm, it_norm)
             hit = ratio >= threshold if matcher is None else matcher.matches(norm, it_norm, ratio)
+            for alt in (aliases or {}).get(it.id, []) if not hit else []:
+                alt_norm = normalize_text(alt)
+                alt_ratio = similarity(norm, alt_norm)
+                if (alt_ratio >= threshold if matcher is None
+                        else matcher.matches(norm, alt_norm, alt_ratio)):
+                    hit = True
+                    break
             if hit and match is None:
                 match = it
             elif it.status != "merged" and threshold - NEAR_MISS_BAND <= ratio < threshold:
@@ -1403,7 +1418,10 @@ def fold_meeting(meeting_folder: str, bullets: list[tuple],
             target = item
             log(f"  + {item.id} (new{', ' + section if section else ''}): {text}")
         else:
-            if not target.owner and owner:
+            first_here = not any(o.meeting == meeting_folder for o in target.occurrences)
+            if owner and (not target.owner or (
+                    reassign_owner and first_here
+                    and all(meeting_folder <= o.meeting for o in target.occurrences))):
                 target.owner = owner
             if not target.type and section and target.status != "merged":
                 target.type = section
@@ -1413,6 +1431,55 @@ def fold_meeting(meeting_folder: str, bullets: list[tuple],
             log(f"  = {target.id} (dedup, {len(target.occurrences)}×): {text}")
         if best_below is not None and near_misses is not None:
             near_misses.append((target.id, best_below[1].id, best_below[0]))
+    return items
+
+
+def _curated(it: ActionItem, items: list[ActionItem]) -> bool:
+    """True when an item carries state that must outlive its last occurrence:
+    a hand-set status/text/type, or any merge relationship."""
+    return (it.status != "open"
+            or bool(it.merged_into)
+            or bool(it.md_text and it.text != it.md_text)
+            or bool(it.md_type and it.type != it.md_type)
+            or any(o.merged_into == it.id for o in items))
+
+
+def refold_meeting(meeting_folder: str, new_bullets: list[tuple],
+                   items: list[ActionItem], next_id: list[int],
+                   threshold: float = SIMILARITY_THRESHOLD,
+                   near_misses: list[tuple[str, str, float]] | None = None,
+                   matcher: "TextMatcher | None" = None,
+                   old_bullets: list[tuple] | None = None) -> list[ActionItem]:
+    """Replace one already-folded meeting's contribution to the corpus (its
+    action-items.md was regenerated). Strips the meeting's occurrences from
+    every item (merged included), re-folds `new_bullets`, then drops untouched
+    open items left with no occurrence at all. Ids never renumber: matched
+    items keep theirs, new bullets mint from `next_id`, and hand-edited or
+    merge-related orphans are kept (their occurrences just shrink).
+    The strip must precede fold_meeting (its dedup guard skips a meeting
+    already recorded on the target). Orphans are dropped AFTER the fold so an
+    unchanged bullet re-matches its old item instead of minting a new id.
+    `old_bullets` (the meeting's previous action-items.md, parsed) lets an
+    item also match on the bullet text its stripped occurrence pointed at,
+    which keeps a hand-retitled item from being minted again."""
+    old_text = {e[0]: e[2] for e in old_bullets or []}
+    aliases: dict[str, list[str]] = {}
+    for it in items:
+        for o in it.occurrences:
+            if o.meeting == meeting_folder and o.line in old_text:
+                aliases.setdefault(it.id, []).append(old_text[o.line])
+        it.occurrences = [o for o in it.occurrences if o.meeting != meeting_folder]
+    fold_meeting(meeting_folder, new_bullets, items, next_id, threshold, near_misses, matcher,
+                 reassign_owner=True, aliases=aliases)
+    for it in items:
+        if it.occurrences:
+            seen = [o.meeting for o in it.occurrences]
+            it.first_seen, it.last_seen = min(seen), max(seen)
+    kept = [it for it in items if it.occurrences or _curated(it, items)]
+    for it in items:
+        if it not in kept:
+            log(f"  - {it.id} dropped (no occurrence left after refold): {it.text}")
+    items[:] = kept
     return items
 
 
@@ -2950,6 +3017,24 @@ def cmd_rollup(args: argparse.Namespace) -> int:
     if not ws.is_dir():
         log(f"rollup: workspace dir not found: {ws}")
         return 1
+    refold_prev: dict[str, Path] = {}
+    for spec in args.refold or []:
+        name, _, prev = spec.partition("=")
+        if prev:
+            refold_prev[name] = Path(prev)
+    refold = list(dict.fromkeys(spec.partition("=")[0] for spec in args.refold or []))
+    if refold:
+        if args.rebuild:
+            log("rollup: --refold cannot be combined with --rebuild")
+            return 2
+        for name in refold:
+            if name.startswith(("_", ".")) or not (ws / name).is_dir():
+                log(f"rollup: --refold {name}: not a meeting folder in {ws}")
+                return 2
+            if name in refold_prev and not refold_prev[name].is_file():
+                log(f"rollup: --refold {name}: previous action items not found: {refold_prev[name]}")
+                return 2
+        args.action_items = True
 
     if args.rebuild:
         log("--rebuild: resetting manifest + corpus and rebuilding from folders")
@@ -3013,6 +3098,20 @@ def cmd_rollup(args: argparse.Namespace) -> int:
 
     near_misses: list[tuple[str, str, float]] = []
     if args.action_items:
+        for name in refold:
+            md_path = ws / name / "action-items.md"
+            folded.discard(name)
+            if md_path.is_file():
+                bullets = parse_bullets_with_sections(md_path.read_text())
+                log(f"refolding {name}/action-items.md ({len(bullets)} item(s))")
+            else:
+                bullets = []
+                log(f"  {name}: no action-items.md; stripping its occurrences only")
+            old = (parse_bullets_with_sections(refold_prev[name].read_text())
+                   if name in refold_prev else None)
+            refold_meeting(name, bullets, items, next_id,
+                           args.similarity_threshold, near_misses, matcher, old)
+            folded.add(name)
         for folder in dated:
             md_path = folder / "action-items.md"
             if not md_path.is_file():
@@ -3121,6 +3220,11 @@ def cmd_rollup(args: argparse.Namespace) -> int:
         renamed = restore_commitment_edits(cm_items, previous_cm_items)
         cm_near_misses = [(renamed.get(a, a), renamed.get(b, b), r)
                           for a, b, r in cm_near_misses]
+        # The fresh ids handed back to stable ones are unused again: rewind
+        # next_id to just past the highest live id, never below where it was.
+        live = [int(it.id.split("-")[1]) for it in cm_items
+                if it.id.startswith("CM-") and it.id.split("-")[1].isdigit()]
+        cm_next_id[0] = max(int(commitments_data.get("next_id", 1)), max(live, default=0) + 1)
     for it in cm_items:
         if not it.source_values:
             it.source_values = {k: getattr(it, k) for k in CM_CURATED_FIELDS}
@@ -3288,6 +3392,11 @@ def build_parser() -> argparse.ArgumentParser:
                     help="difflib ratio at or above which two items fold together "
                          "(0.5-1.0, default: %(default)s); pairs within 0.10 below it "
                          "are listed as possible duplicates")
+    pr.add_argument("--refold", action="append", default=None, metavar="MEETING[=OLD_MD]",
+                    help="re-read one already-folded meeting's action-items.md into the "
+                         "corpus (repeatable; implies --action-items; keeps ids and hand "
+                         "edits, unlike --rebuild). OLD_MD is the meeting's previous "
+                         "action-items.md, so hand-retitled items still re-match")
     pr.add_argument("--rebuild", action="store_true",
                     help="reset manifest + corpus and rebuild from folders")
     pr.add_argument("--owner", default=None,

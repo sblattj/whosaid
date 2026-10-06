@@ -797,6 +797,59 @@ def test_resources(tmp: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# whosaid_reprocess: argument -> CLI mapping via a stubbed _run_cli (nothing is executed)
+# ---------------------------------------------------------------------------
+def test_reprocess(tmp: Path) -> None:
+    calls: list = []
+
+    def fake_cli(args, timeout=None):
+        calls.append(([str(a) for a in args], timeout))
+        return subprocess.CompletedProcess(args, 0, stdout="dry run: 1 meeting(s)\n", stderr="")
+
+    ws = make_workspace(tmp / "reprocess")
+    saved = mcp_server._run_cli
+    mcp_server._run_cli = fake_cli
+    try:
+        out = mcp_server.whosaid_reprocess(workspace=str(ws))
+        argv, to = calls[-1]
+        check(argv == ["reprocess", str(ws.resolve()), "--dry-run"], f"default must be a dry run: {argv}")
+        check(to == mcp_server.REPROCESS_TIMEOUT >= 3600, f"generous timeout passed: {to}")
+        check(out["ok"] is True and out["dry_run"] is True and out["returncode"] == 0
+              and "dry run" in out["stdout"] and out["stderr"] == "", f"dry-run result shape: {out}")
+
+        out = mcp_server.whosaid_reprocess(
+            workspace=str(ws), meetings=["m1", "m2"], dry_run=False, all_meetings=True, no_items=True,
+            speakers=3, min_speakers=2, max_speakers=4, engine="sherpa", hook="echo hi")
+        argv, _ = calls[-1]
+        check(argv == ["reprocess", str(ws.resolve()), "m1", "m2", "--all", "--no-items",
+                       "--speakers", "3", "--min-speakers", "2", "--max-speakers", "4",
+                       "--engine", "sherpa", "--hook", "echo hi"], f"apply argv: {argv}")
+        check(out["dry_run"] is False and "--dry-run" not in argv, f"dry_run=false must drop --dry-run: {out}")
+
+        before = len(calls)
+        for bad in (dict(meetings=["../x"]), dict(meetings=[".hid"]), dict(meetings=["a/b"]),
+                    dict(speakers=0), dict(max_speakers="x")):
+            out = mcp_server.whosaid_reprocess(workspace=str(ws), **bad)
+            check(out["ok"] is False and "hint" in out, f"{bad} must be rejected: {out}")
+        out = mcp_server.whosaid_reprocess(workspace=str(tmp / "nope"))
+        check(out["ok"] is False, f"bad workspace rejected: {out}")
+        check(len(calls) == before, "validation failures must not shell")
+
+        mcp_server._run_cli = lambda args, timeout=None: subprocess.CompletedProcess(
+            args, 1, stdout="partial\n", stderr="\n".join(f"e{i}" for i in range(30)))
+        out = mcp_server.whosaid_reprocess(workspace=str(ws), dry_run=False)
+        check(out["ok"] is False and out["returncode"] == 1 and out["stderr"].splitlines()[-1] == "e29"
+              and len(out["stderr"].splitlines()) == 20, f"failure keeps rc and stderr tail: {out}")
+
+        def slow(args, timeout=None):
+            raise subprocess.TimeoutExpired(args, timeout)
+        mcp_server._run_cli = slow
+        out = mcp_server.whosaid_reprocess(workspace=str(ws), dry_run=False)
+        check(out["ok"] is False and "timed out" in out["error"], f"timeout surfaces as error: {out}")
+    finally:
+        mcp_server._run_cli = saved
+
+
 # Registration (works against the stub's dicts and the real SDK's managers)
 # ---------------------------------------------------------------------------
 def test_registration() -> None:
@@ -858,6 +911,7 @@ def main() -> None:
             clear_env()
             test_runner(tmp)
             test_relabel_flags()
+            test_reprocess(tmp)
             test_fold_metadata(tmp)
             test_diarization_failure(tmp)
             test_resources(tmp)
