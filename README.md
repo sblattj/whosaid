@@ -1263,6 +1263,9 @@ placeholder speakers and `--no-embed` so Ollama is never contacted:
 - `python3 test/graph_test.py` covers `lib/graph.py`: the entity tables, each view, and the wiki.
 - `python3 test/teams_chat_test.py` covers `whosaid teams ingest`: chat-day folders, turn
   parsing, name and role mapping, idempotent re-ingest, and a CLI ingest → index → search run.
+- `node test/teams_scraper_pills_test.js` runs the Teams scraper against a stub DOM (no real
+  Teams): a pressed filter pill is cleared before chats are listed, recorded on `__ts.pills`,
+  warned about when the chat count changes, and restored at the end (#57).
 - `python3 test/teams_manifest_test.py` covers audio-less folders in the roll-up and graph:
   `created` from the sidecar, the `kind` field, and `meetings --kind`.
 - `python3 test/action_items_test.py` covers the built-in summarizer with a fake model:
