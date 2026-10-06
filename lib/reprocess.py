@@ -300,6 +300,14 @@ def _read_json(path: Path):
         return None
 
 
+def _registry_names() -> set:
+    """Names in the speaker registry (WHOSAID_SPEAKER_DB, as the diarizer reads it)."""
+    db = Path(os.environ.get("WHOSAID_SPEAKER_DB",
+                             Path.home() / ".config" / "whosaid" / "speakers.json"))
+    reg = _read_json(db) or {}
+    return {s.get("name") for s in reg.get("speakers", []) if isinstance(s, dict)}
+
+
 def _is_skeleton(path: Path) -> bool:
     try:
         return SKELETON_MARK in path.read_text()
@@ -406,14 +414,16 @@ def reprocess_meeting(ws: Path, name: str, info: dict, args, bin_path: str, spea
                 return fail(f"relabel {cluster} exited {rc}", rc)
         # Roles: the diarizer re-derives them from the registry by NAME, so a
         # registry-named speaker needs nothing. Only a sidecar-only role (set with
-        # --no-save + --role on a local label) is lost; re-apply it by name.
+        # --no-save + --role on a local label) is lost; re-apply it by name. A name
+        # the registry knows is skipped: relabel --role would write the registry.
         old_roles = old.get("roles") if isinstance(old.get("roles"), dict) else {}
         new_roles = (_read_json(sidecar) or {}).get("roles") or {}
+        known = _registry_names()
         missing = []
         for ent in carried.values():
             nm = ent.get("name")
             tag = f"{nm}={old_roles[nm]}" if nm in old_roles else None
-            if tag and nm not in new_roles and tag not in missing:
+            if tag and nm not in new_roles and nm not in known and tag not in missing:
                 missing.append(tag)
         if missing:
             argv = [bin_path, "relabel", folder / base]

@@ -138,7 +138,9 @@ class Env:
 
     def run(self, *args):
         import os
-        env = dict(os.environ, WHOSAID_BIN=str(self.bin), FAKE_DIR=str(self.fake_dir))
+        env = dict(os.environ, WHOSAID_BIN=str(self.bin), FAKE_DIR=str(self.fake_dir),
+                   WHOSAID_SPEAKER_DB=str(self.fake_dir / "speakers.json"),
+                   WHOSAID_VOICE_REFS=str(self.fake_dir / "no-refs"))
         env.pop("WHOSAID_ACTION_ITEMS_HOOK", None)
         return subprocess.run([sys.executable, str(RUN_PY), "run", str(self.ws), *args],
                               capture_output=True, text=True, env=env, timeout=120)
@@ -273,6 +275,12 @@ def main() -> None:
         e.run("--no-items")
         check(all("--role" not in c for c in e.of("relabel")),
               f"role already in the new sidecar (registry) -> no --role: {e.of('relabel')}")
+        e = standard(tmp, "roles3", local_labels={"SPEAKER_00": {"name": "Zed", "note": None}},
+                     roles={"Zed": "boss"})
+        (e.fake_dir / "speakers.json").write_text(json.dumps({"speakers": [{"name": "Zed"}]}))
+        e.run("--no-items")
+        check(all("--role" not in c for c in e.of("relabel")),
+              f"registry knows Zed (no role) -> no --role, registry untouched: {e.of('relabel')}")
 
         # --- speakers unchanged: no regeneration, no roll-up.
         e = standard(tmp, "same")
