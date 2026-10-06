@@ -265,7 +265,8 @@ def main() -> None:
     check(rp_ann.get("readOnlyHint") is False, f"reprocess must not be read-only: {rp_ann}")
     check(not rp["inputSchema"].get("required"), "reprocess has no required params")
     check(set(rp_props) == {"workspace", "meetings", "dry_run", "all_meetings", "no_items", "speakers",
-                            "min_speakers", "max_speakers", "engine", "hook"},
+                            "min_speakers", "max_speakers", "expected_speakers", "match_threshold",
+                            "engine", "hook"},
           f"reprocess params: {sorted(rp_props)}")
     check(rp_props["dry_run"].get("default") is True, f"reprocess dry_run must default true: {rp_props['dry_run']}")
     check(rp_props["all_meetings"].get("default") is False, "reprocess all_meetings must default false")

@@ -826,9 +826,24 @@ def test_reprocess(tmp: Path) -> None:
                        "--engine", "sherpa", "--hook", "echo hi"], f"apply argv: {argv}")
         check(out["dry_run"] is False and "--dry-run" not in argv, f"dry_run=false must drop --dry-run: {out}")
 
+        out = mcp_server.whosaid_reprocess(
+            workspace=str(ws), dry_run=False, max_speakers=4, engine="sherpa",
+            expected_speakers=[" Alice ", "Bob"], match_threshold=0.6)
+        argv, _ = calls[-1]
+        check(argv == ["reprocess", str(ws.resolve()), "--max-speakers", "4",
+                       "--expected-speakers", "Alice,Bob", "--match-threshold", "0.6",
+                       "--engine", "sherpa"], f"roster/threshold argv: {argv}")
+        check(out["ok"] is True, f"roster/threshold call ok: {out}")
+        mcp_server.whosaid_reprocess(workspace=str(ws), expected_speakers=[], match_threshold=1)
+        argv, _ = calls[-1]
+        check("--expected-speakers" not in argv and argv[-2:] == ["--match-threshold", "1.0"],
+              f"empty roster omitted, threshold 1 ok: {argv}")
+
         before = len(calls)
         for bad in (dict(meetings=["../x"]), dict(meetings=[".hid"]), dict(meetings=["a/b"]),
-                    dict(speakers=0), dict(max_speakers="x")):
+                    dict(speakers=0), dict(max_speakers="x"),
+                    dict(expected_speakers=["a,b"]), dict(expected_speakers=["Al", " "]), dict(match_threshold=0),
+                    dict(match_threshold=1.5), dict(match_threshold="x")):
             out = mcp_server.whosaid_reprocess(workspace=str(ws), **bad)
             check(out["ok"] is False and "hint" in out, f"{bad} must be rejected: {out}")
         out = mcp_server.whosaid_reprocess(workspace=str(tmp / "nope"))

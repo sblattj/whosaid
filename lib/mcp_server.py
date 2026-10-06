@@ -1654,6 +1654,9 @@ _DESC_WS_REPROCESS = (
     "`meetings` and all_meetings=false it takes only the meetings the detector flags; "
     "all_meetings=true takes every meeting; `meetings` is a list of folder names. "
     "speakers/min_speakers/max_speakers/engine/hook override the diarization settings. "
+    "expected_speakers is a list of known voice names (the roster, sent as one comma list) that "
+    "anchors diarization to those enrolled voices. match_threshold (above 0, at most 1) is the cosine a known "
+    "voice must reach to claim a cluster. "
     "Not read-only and slow when applied (minutes per meeting); run the dry run first. "
     "Workspace = the `workspace` argument or WHOSAID_WORKSPACE. Keywords: reprocess, "
     "re-diarize, redo speakers, fix speaker labels, old meetings, backfill."
@@ -1679,6 +1682,8 @@ def whosaid_reprocess(
     speakers: Optional[int] = None,
     min_speakers: Optional[int] = None,
     max_speakers: Optional[int] = None,
+    expected_speakers: Optional[list[str]] = None,
+    match_threshold: Optional[float] = None,
     engine: Optional[str] = None,
     hook: Optional[str] = None,
 ) -> dict:
@@ -1709,6 +1714,25 @@ def whosaid_reprocess(
         if n < 1:
             return _ws_error(f"{key} must be >= 1, got {n}", "pass a whole number >= 1")
         counts[key] = n
+    roster: list[str] = []
+    for name in (expected_speakers or []):
+        nm = str(name).strip()
+        if not nm or "," in nm:
+            return _ws_error(
+                f"invalid expected_speakers entry '{name}'",
+                "pass one known voice name per list item (non-empty, no commas)",
+            )
+        roster.append(nm)
+    threshold: Optional[float] = None
+    if match_threshold is not None:
+        try:
+            threshold = float(match_threshold)
+        except (TypeError, ValueError):
+            return _ws_error(f"invalid match_threshold '{match_threshold}'",
+                             "pass a number greater than 0 and at most 1 (default 0.50)")
+        if not (0.0 < threshold <= 1.0):
+            return _ws_error(f"match_threshold must be in (0, 1], got {threshold}",
+                             "pass a number greater than 0 and at most 1 (default 0.50)")
     args: list = ["reprocess", str(ws), *folders]
     if dry_run:
         args.append("--dry-run")
@@ -1720,6 +1744,10 @@ def whosaid_reprocess(
                       ("max_speakers", "--max-speakers")):
         if counts[key] is not None:
             args += [flag, str(counts[key])]
+    if roster:
+        args += ["--expected-speakers", ",".join(roster)]
+    if threshold is not None:
+        args += ["--match-threshold", str(threshold)]
     if engine and engine.strip():
         args += ["--engine", engine.strip()]
     if hook and hook.strip():
