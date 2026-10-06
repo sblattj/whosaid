@@ -6,6 +6,13 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ## [Unreleased]
 
+### Fixed
+
+- **A long single turn no longer kills diarization (#56).** The speaker-embedding model crashed
+  (ONNX broadcast error) on a ~145 s monologue, and the worker exception dropped every speaker
+  label for the meeting. Inputs longer than 30 s (`EMBED_MAX_SECONDS`) are now embedded in equal
+  pieces and averaged. Test: `test/long_turn_embed_test.py`.
+
 ### Added
 
 - **`relabel --blend` strengthens a voiceprint instead of replacing it.** A relabel used to

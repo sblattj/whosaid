@@ -55,6 +55,7 @@ EMB_URLS = [
 EMB_MODEL = CACHE / EMB_NAME
 
 SAMPLE_RATE = 16000
+EMBED_MAX_SECONDS = 30.0  # longest single input to the speaker-embedding model (#56)
 
 # ---- local speaker registry -------------------------------------------------
 # Persisted voiceprints (name -> embedding) so a person you identify ONCE is
@@ -240,11 +241,22 @@ def make_diar_config(num_speakers: int):
 
 def make_embed(ex):
     """Return an embed(wave)->unit-vector closure over a sherpa embedding extractor."""
-    def embed(wave: np.ndarray) -> np.ndarray:
+    def embed_one(wave: np.ndarray) -> np.ndarray:
         st = ex.create_stream()
         st.accept_waveform(SAMPLE_RATE, wave)
         st.input_finished()
         v = np.array(ex.compute(st), dtype=np.float32)
+        return v / (np.linalg.norm(v) + 1e-9)
+
+    def embed(wave: np.ndarray) -> np.ndarray:
+        # The embedding model crashes on very long input (#56: a ~145 s monologue hit an
+        # ONNX broadcast error and killed the whole diarization). Embed long waves in
+        # equal pieces of at most EMBED_MAX_SECONDS and average the unit vectors (duration-weighted).
+        step = int(EMBED_MAX_SECONDS * SAMPLE_RATE)
+        if len(wave) <= step:
+            return embed_one(wave)
+        pieces = np.array_split(wave, -(-len(wave) // step))  # equal pieces, none above step
+        v = sum(len(p) * embed_one(p) for p in pieces)
         return v / (np.linalg.norm(v) + 1e-9)
     return embed
 
