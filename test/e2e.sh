@@ -526,7 +526,7 @@ echo "output artifacts + formats OK"
 #     surface: it must still report BOTH the active speaker-embedding model
 #     line AND the speaker-registry line, and the registry line must reflect
 #     the exported temp WHOSAID_SPEAKER_DB (never the user's real registry).
-#     rc is not decisive on its own — doctor legitimately prints '✗' lines for
+#     rc is not decisive on its own — doctor rightly prints '✗' lines for
 #     optional/missing deps — but it is reported in any failure message.
 # ---------------------------------------------------------------------------
 echo "-- checking doctor report --"
@@ -572,6 +572,99 @@ fi
   || fail "--no-diarize still produced a speaker-labeled transcript ($TMP/plain/plain.speakers.txt) — diarization was NOT skipped"
 
 echo "--no-diarize path OK"
+
+# ---------------------------------------------------------------------------
+# 12b. `whosaid reprocess` — a real ingested workspace, a transcript-only
+#      (--no-save) label, then `reprocess --all`. The label must survive, the
+#      Whisper json must be untouched, existing action-item ids must be stable,
+#      the sidecar must carry the version stamp, and a backup must exist. The
+#      action-items hook is a fixed script, so no network or LLM is involved.
+# ---------------------------------------------------------------------------
+echo "-- checking reprocess --"
+
+export WHOSAID_VOICE_REFS="$TMP/refs"
+WS="$TMP/ws"
+AI_HOOK="$TMP/ai-hook.sh"
+cat > "$AI_HOOK" <<'HOOK'
+#!/bin/sh
+cat >/dev/null
+printf '# Action items\n\n- **Alice:** Draft the quarterly budget proposal for finance\n- **Bob:** Migrate the billing database to the new cluster\n'
+HOOK
+chmod +x "$AI_HOOK"
+
+RP_LOG="$TMP/reprocess-ingest.log"
+set +e
+"$REPO/whosaid" ingest "$TMP/dialog.wav" --into "$WS" --speakers 2 --commitments \
+  --engine hook --hook "$AI_HOOK" > "$RP_LOG" 2>&1
+RC=$?
+set -e
+[ "$RC" -eq 0 ] || { cat "$RP_LOG" >&2; fail "reprocess section: ingest exited $RC"; }
+MEETING="$(ls "$WS" | grep -E '^[0-9]{4}-' | head -n 1)"
+[ -n "$MEETING" ] || fail "reprocess section: ingest made no dated meeting folder in $WS"
+MF="$WS/$MEETING"
+[ -s "$MF/transcript.speakers.txt" ] && [ -s "$MF/transcript.diarization.json" ] \
+  || fail "reprocess section: ingest left no speaker transcript/sidecar in $MF"
+[ -s "$MF/action-items.md" ] || fail "reprocess section: ingest left no action-items.md"
+
+set +e
+"$REPO/whosaid" roll-up "$WS" --action-items > "$TMP/reprocess-rollup.log" 2>&1
+RC=$?
+set -e
+[ "$RC" -eq 0 ] || { cat "$TMP/reprocess-rollup.log" >&2; fail "reprocess section: roll-up exited $RC"; }
+[ -s "$WS/_action-items.json" ] || fail "reprocess section: roll-up wrote no _action-items.json"
+ids_of() { python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print("\n".join(sorted(i["id"]+" "+i["text"] for i in d["items"])))' "$1"; }
+IDS_BEFORE="$(ids_of "$WS/_action-items.json")"
+[ -n "$IDS_BEFORE" ] || fail "reprocess section: the corpus has no action items to track"
+
+# Transcript-only label on one cluster (prefer one still carrying its raw id).
+CLUSTER="$(python3 -c '
+import json, sys
+n = json.load(open(sys.argv[1]))["names"]
+raw = [k for k, v in sorted(n.items()) if k == v]
+print((raw or sorted(n))[0])' "$MF/transcript.diarization.json")"
+set +e
+"$REPO/whosaid" relabel "$MF/transcript" "$CLUSTER=Zaphod" --no-save --note "e2e label" > "$TMP/reprocess-relabel.log" 2>&1
+RC=$?
+set -e
+[ "$RC" -eq 0 ] || { cat "$TMP/reprocess-relabel.log" >&2; fail "reprocess section: relabel --no-save exited $RC"; }
+grep -q 'Zaphod' "$MF/transcript.speakers.txt" || fail "reprocess section: --no-save label not in speakers.txt before reprocess"
+
+JSON_SHA_BEFORE="$(shasum "$MF/transcript.json" | awk '{print $1}')"
+RP_RUN_LOG="$TMP/reprocess-run.log"
+set +e
+"$REPO/whosaid" reprocess "$WS" --all --speakers 2 --engine hook --hook "$AI_HOOK" > "$RP_RUN_LOG" 2>&1
+RC=$?
+set -e
+if [ "$RC" -ne 0 ]; then
+  echo "---- whosaid reprocess log ----" >&2
+  cat "$RP_RUN_LOG" >&2
+  fail "whosaid reprocess --all exited $RC (expected 0)"
+fi
+BK="$(ls -d "$WS"/_reprocess-backups/"$MEETING"/*/ 2>/dev/null | head -n 1)"
+[ -n "$BK" ] && [ -s "${BK}transcript.speakers.txt" ] && [ -s "${BK}transcript.diarization.json" ] \
+  || { cat "$RP_RUN_LOG" >&2; fail "reprocess did not leave a backup under $WS/_reprocess-backups/$MEETING/"; }
+grep -q 'Zaphod' "$MF/transcript.speakers.txt" \
+  || { cat "$RP_RUN_LOG" >&2; fail "the --no-save label was lost by reprocess"; }
+[ "$(shasum "$MF/transcript.json" | awk '{print $1}')" = "$JSON_SHA_BEFORE" ] \
+  || fail "reprocess changed the Whisper transcript json"
+IDS_AFTER="$(ids_of "$WS/_action-items.json")"
+[ "$IDS_AFTER" = "$IDS_BEFORE" ] \
+  || { echo "before: $IDS_BEFORE" >&2; echo "after:  $IDS_AFTER" >&2; fail "reprocess changed the action-item ids/texts in _action-items.json"; }
+python3 "$REPO/test/check_sidecar_schema.py" "$MF/transcript.diarization.json" > "$TMP/reprocess-schema.log" 2>&1 \
+  || { cat "$TMP/reprocess-schema.log" >&2; fail "reprocessed sidecar failed the schema check (whosaid_version?)"; }
+python3 -c '
+import json, re, sys
+v = json.load(open(sys.argv[1])).get("whosaid_version")
+want = re.search(r"__version__ = \"([^\"]+)\"", open(sys.argv[2]).read()).group(1)
+sys.exit(0 if v == want else 1)' "$MF/transcript.diarization.json" "$REPO/lib/__init__.py" \
+  || fail "sidecar whosaid_version does not match lib/__init__.py"
+
+DRY_OUT="$("$REPO/whosaid" reprocess "$WS" --dry-run 2>/dev/null)" || fail "reprocess --dry-run exited non-zero"
+printf '%s\n' "$DRY_OUT" | grep -q '(0 likely)' \
+  || { printf '%s\n' "$DRY_OUT" >&2; fail "reprocess --dry-run did not report 0 likely after a reprocess"; }
+
+grep -E "^$MEETING: " "$RP_RUN_LOG" || true  # per-meeting summary (temp dir is deleted on PASS)
+echo "reprocess OK (cluster $CLUSTER kept 'Zaphod'; $(printf '%s\n' "$IDS_AFTER" | wc -l | tr -d ' ') item id(s) stable)"
 
 # ---------------------------------------------------------------------------
 # 13. Isolation proof: the user's REAL registry was never touched.

@@ -103,6 +103,32 @@ check(codes(sidecar(matches=[rm("SPEAKER_01", "Jessica", True, "registry"),
 check(codes(sidecar(matches=two_refs, ce={"k": 2, "brief_fold": {}})) == [],
       "v1.10 sidecar (brief_fold) -> no ref-order")
 
+# ---- singular "turn"
+one = sidecar(n=3, segments=[seg(0, 30, "SPEAKER_00"), seg(30, 60, "SPEAKER_01"),
+                             seg(60, 61, "SPEAKER_02")])
+r = reprocess.scan_sidecar(one)[0]["reason"]
+check("over 1 turn)" in r and "1 turns" not in r, f"singular turn: {r}")
+
+# ---- version stamp: >= 1.11.0 means current, whatever the shape
+def stamped(v, **kw):
+    d = sidecar(**kw)
+    d["whosaid_version"] = v
+    return d
+
+
+flagged = dict(n=3, segments=frag)
+check(codes(stamped("1.11.0", **flagged)) == [], "1.11.0 stamp -> no findings")
+check(codes(stamped("1.12.3", **flagged)) == [], "1.12.3 stamp -> no findings")
+check(codes(stamped("2.0.0", **flagged)) == [], "2.0.0 stamp -> no findings")
+check(codes(stamped("v1.11", **flagged)) == [], "v1.11 (no patch) -> no findings")
+check(codes(stamped("1.10.0", **flagged)) == ["brief-fragments"], "1.10.0 stamp still scanned")
+check(codes(stamped("1.9.9", **flagged)) == ["brief-fragments"], "1.9.9 stamp still scanned")
+check(codes(stamped("1.10.99", **flagged)) == ["brief-fragments"], "1.10.99 < 1.11.0")
+for junk in (None, "", "dev", 11, ["1.11.0"], {"v": "1.11.0"}):
+    check(codes(stamped(junk, **flagged)) == ["brief-fragments"], f"junk stamp {junk!r} ignored")
+check(codes(stamped("1.11.0", dur=300, ce=None)) == [], "stamped short-whole-file -> none")
+check(codes(stamped("1.11.0", matches=two_refs)) == [], "stamped ref-order -> none")
+
 # ---- malformed / odd shapes never crash
 for bad in (None, [], "x", 3, {}, {"detect_mode": 5}, {"source": "x", "segments": 7},
             {"detect_mode": "auto-detected", "count_estimate": {}, "segments": [None, 1, {}]},

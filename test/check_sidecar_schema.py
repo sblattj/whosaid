@@ -8,6 +8,7 @@ Usage: python3 test/check_sidecar_schema.py <sidecar.diarization.json>
 """
 
 import json
+import re
 import sys
 
 ENTRY_KEYS = {"cluster", "name", "similarity", "threshold", "matched", "pass"}
@@ -49,6 +50,10 @@ def main() -> None:
             fail(f"registry_matches 'similarity' must be numeric, got {entry}")
         if not isinstance(entry["matched"], bool):
             fail(f"registry_matches 'matched' must be a bool, got {entry}")
+
+    ver = data.get("whosaid_version")
+    if not isinstance(ver, str) or not re.fullmatch(r"\d+\.\d+\.\d+", ver):
+        fail(f"whosaid_version must be an x.y.z string (lib/__init__.py), got {ver!r}")
 
     source = data.get("source")
     if not isinstance(source, dict):
