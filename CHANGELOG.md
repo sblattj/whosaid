@@ -8,6 +8,14 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ### Fixed
 
+- **`--max-speakers` / `--min-speakers` now hold on calls under 15 minutes (#59).** Short audio
+  took the whole-file path, whose clustering only takes an exact count, so a range was ignored
+  with a warning (a 15 min call came back with 42 speakers under `--max-speakers 8`). A range
+  now takes the chunked path whenever the audio is long enough to split; it applies to
+  `[watch] max_speakers` too. Test: `test/chunk_path_test.py`.
+
+### Fixed
+
 - **A long single turn no longer kills diarization (#56).** The speaker-embedding model crashed
   (ONNX broadcast error) on a ~145 s monologue, and the worker exception dropped every speaker
   label for the meeting. Inputs longer than 30 s (`EMBED_MAX_SECONDS`) are now embedded in equal

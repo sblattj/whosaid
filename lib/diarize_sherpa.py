@@ -225,6 +225,21 @@ def source_metadata(path: str) -> dict:
     }
 
 
+def wants_chunked(args, total_dur: float, chunk_seconds: float, jobs: int) -> bool:
+    """Chunked (parallel windows) vs whole-file diarization.
+
+    Auto-chunk only long audio (>15 min), but honor an EXPLICIT --chunk-seconds at any
+    length. A speaker range (--min/--max-speakers without an exact count) also takes the
+    chunked path when the audio is long enough to split: whole-file FastClustering takes
+    only an exact count, so it would ignore the bound (#59: a 15 min call came back with
+    42 speakers under --max-speakers 8)."""
+    explicit_chunk = bool(args.chunk_seconds and args.chunk_seconds > 0)
+    bounded = (args.num_speakers < 0 and bool(args.min_speakers or args.max_speakers)
+               and not (args.min_speakers and args.min_speakers == args.max_speakers))
+    return ((not args.no_chunk) and jobs > 1 and 0 < chunk_seconds < total_dur
+            and (total_dur > 900.0 or explicit_chunk or bounded))
+
+
 def make_diar_config(num_speakers: int):
     """Build the sherpa diarization config. Imported lazily so worker processes can call it."""
     import sherpa_onnx
@@ -1512,10 +1527,7 @@ def main() -> None:
         chunk_seconds = args.chunk_seconds
     else:  # auto: ~`jobs` windows, but never shorter than 300s (keeps enough voice per chunk)
         chunk_seconds = max(300.0, float(math.ceil(total_dur / jobs))) if total_dur else 0.0
-    # Auto-chunk only long audio (>15 min), but honor an EXPLICIT --chunk-seconds at any length.
-    explicit_chunk = bool(args.chunk_seconds and args.chunk_seconds > 0)
-    use_chunk = ((not args.no_chunk) and jobs > 1 and 0 < chunk_seconds < total_dur
-                 and (total_dur > 900.0 or explicit_chunk))
+    use_chunk = wants_chunked(args, total_dur, chunk_seconds, jobs)
 
     # Lazy embedder for --ref clip matching (the chunked path builds no in-main extractor).
     _ref_ex = {}
