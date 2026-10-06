@@ -243,7 +243,7 @@ USAGE
                                         meeting folder (idempotent by content
                                         hash; skips anything already ingested).
   whosaid roll-up <dir> [--action-items] [--similarity-threshold F] [--rebuild]
-                        [--refold MEETING]... [--index] [--owner NAME|me] [--all-owners]
+                        [--refold MEETING[=OLD_MD]]... [--index] [--owner NAME|me] [--all-owners]
                                         Rebuild the workspace index, audit,
                                         action-item corpus, dev-commitments corpus,
                                         and the ranked _WORKLIST-<Owner>.md.
@@ -439,6 +439,13 @@ ROLL-UP FLAGS
                       Dedupe similarity threshold, 0.5–1.0 (default: 0.82).
                       Pairs within 0.10 below it are listed for review.
   --rebuild           Reset manifest + corpus, rebuild from folders on disk.
+  --refold MEETING[=OLD_MD]
+                      Re-read one already-folded meeting's regenerated
+                      action-items.md (repeatable; implies --action-items).
+                      Ids, hand-set status and titles survive; owners follow
+                      the new speaker labels. OLD_MD (the meeting's previous
+                      action-items.md) lets a hand-retitled item re-match.
+                      whosaid reprocess passes it from its backup.
   Roll-up also maintains the dev-commitments corpus — _COMMITMENTS.md +
   _commitments.json (CM-NNN ids) — automatically when per-meeting commitments
   (from ingest --commitments) exist, and regenerates _WORKLIST-<Owner>.md

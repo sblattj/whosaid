@@ -592,11 +592,14 @@ def cmd_run(args) -> int:
         results.append(r)
         print(_summary_line(r))
 
-    ai_done = [r["meeting"] for r in results if r["ai_regenerated"]]
+    ai_done = [r for r in results if r["ai_regenerated"]]
     changed = [r for r in results if r["speakers_changed"] and r["status"] == "ok"]
     rollup = None
     if ai_done and (ws / "_action-items.json").exists():
-        rollup = ["--action-items"] + [x for m in ai_done for x in ("--refold", m)]
+        rollup = ["--action-items"]
+        for r in ai_done:
+            prev = Path(r["backup"]) / "action-items.md"
+            rollup += ["--refold", f"{r['meeting']}={prev}" if prev.is_file() else r["meeting"]]
     elif changed and (ws / "_commitments.json").exists():
         # A plain roll-up keeps an existing _action-items.json/_ACTION-ITEMS.md
         # (lib/workspace.py cmd_rollup rewrites them from the corpus) and refreshes

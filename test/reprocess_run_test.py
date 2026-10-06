@@ -303,8 +303,13 @@ def main() -> None:
         cm = json.loads((e.ws / A / "commitments.json").read_text())
         check(any("budget proposal" in str(i) for i in cm["items"]), f"commitments regenerated: {cm}")
         check("regenerated action-items y, commitments y" in r.stdout, r.stdout)
-        check(e.of("roll-up") == [["roll-up", str(e.ws), "--action-items", "--refold", A]],
-              f"refold roll-up: {e.of('roll-up')}")
+        ru = e.of("roll-up")
+        check(len(ru) == 1 and ru[0][:4] == ["roll-up", str(e.ws), "--action-items", "--refold"],
+              f"refold roll-up: {ru}")
+        name, _, prev = ru[0][4].partition("=")
+        check(name == A and prev.endswith("/action-items.md") and "_reprocess-backups" in prev,
+              f"refold passes the backed-up action-items.md: {ru[0][4]}")
+        check(Path(prev).read_text() == OLD_AI, "backup holds the old action-items.md")
         check("roll-up ok" in r.stdout, r.stdout)
         # roll-up failure propagates
         e2 = standard(tmp, "regen2")
@@ -319,8 +324,10 @@ def main() -> None:
         (e.ws / B / "transcript.speakers.txt").write_text(OLD_SPEAKERS)
         (e.ws / "_action-items.json").write_text("{}")
         r = e.run(A, B, "--hook", e.hook, "--engine", "hook")
-        check(e.of("roll-up") == [["roll-up", str(e.ws), "--action-items", "--refold", A, "--refold", B]],
-              f"two refolds: {e.of('roll-up')}")
+        ru = e.of("roll-up")
+        check(len(ru) == 1 and ru[0][2:3] + ru[0][3::2] == ["--action-items", "--refold", "--refold"]
+              and [x.partition("=")[0] for x in ru[0][4::2]] == [A, B],
+              f"two refolds: {ru}")
 
         # --- skeleton guard: --engine none writes a skeleton; the old items come back.
         e = standard(tmp, "skeleton")

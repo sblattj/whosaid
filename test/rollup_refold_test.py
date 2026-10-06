@@ -130,6 +130,52 @@ def main() -> None:
         check(not any(o["meeting"] == M1 for i in corpus(ws)["items"] for o in i["occurrences"]),
               "missing md: M1 occurrences stripped")
 
+        # --- owner follows the re-diarized labels of the item's earliest meeting.
+        ws = fresh(tmp, "owner")
+        meeting(ws, M1, [f"**SPEAKER_02:** {X_TXT}", f"**SPEAKER_00:** {Y_TXT}"])
+        meeting(ws, M2, [f"**SPEAKER_01:** {X_TXT}"])
+        check(rollup(ws, "--action-items").returncode == 0, "owner: initial")
+        check(by_text(corpus(ws), X_TXT)["owner"] == "SPEAKER_02", "owner: initial from M1")
+        meeting(ws, M2, [f"**SPEAKER_04:** {X_TXT}"])
+        check(rollup(ws, "--refold", M2).returncode == 0, "owner: refold M2")
+        check(by_text(corpus(ws), X_TXT)["owner"] == "SPEAKER_02", "owner: later meeting does not steal it")
+        meeting(ws, M1, [f"**Zaphod:** {X_TXT}", f"**SPEAKER_03:** {X_TXT}",
+                         f"**SPEAKER_01:** {Y_TXT}"])
+        check(rollup(ws, "--refold", M1).returncode == 0, "owner: refold M1")
+        data = corpus(ws)
+        check(by_text(data, X_TXT)["owner"] == "Zaphod", "owner: earliest meeting's first bullet wins")
+        check(by_text(data, Y_TXT)["owner"] == "SPEAKER_01", "owner: single-meeting item relabeled")
+
+        # --- MEETING=OLD_MD: a hand-retitled item re-matches its regenerated bullet.
+        ws = fresh(tmp, "alias")
+        meeting(ws, M1, [f"**SPEAKER_02:** {X_TXT}", f"**SPEAKER_00:** {Y_TXT}"])
+        check(rollup(ws, "--action-items").returncode == 0, "alias: initial")
+        x_id = by_text(corpus(ws), X_TXT)["id"]
+        md = ws / "_ACTION-ITEMS.md"
+        md.write_text(md.read_text().replace(X_TXT, "Budget memo for finance"))
+        prev = Path(tmp) / "alias-prev.md"
+        prev.write_text((ws / M1 / "action-items.md").read_text())
+        meeting(ws, M1, [f"**SPEAKER_05:** {X_TXT}", f"**SPEAKER_01:** {Y_TXT}"])
+        r = rollup(ws, "--refold", f"{M1}={prev}")
+        check(r.returncode == 0, f"alias: refold rc={r.returncode}: {r.stderr[-300:]}")
+        data = corpus(ws)
+        x = by_text(data, "Budget memo")
+        check(x["id"] == x_id and [o["meeting"] for o in x["occurrences"]] == [M1],
+              "alias: retitled item keeps its occurrence")
+        check(x["owner"] == "SPEAKER_05", "alias: retitled item takes the new owner")
+        check(not any(i["text"] == X_TXT for i in data["items"]), "alias: no duplicate minted")
+        check(len(data["items"]) == 2, f"alias: still two items ({len(data['items'])})")
+        # Control: without OLD_MD the retitled item cannot re-match and is re-minted.
+        ws = fresh(tmp, "alias-control")
+        meeting(ws, M1, [f"**SPEAKER_02:** {X_TXT}"])
+        check(rollup(ws, "--action-items").returncode == 0, "alias control: initial")
+        md = ws / "_ACTION-ITEMS.md"
+        md.write_text(md.read_text().replace(X_TXT, "Budget memo for finance"))
+        check(rollup(ws, "--refold", M1).returncode == 0, "alias control: refold")
+        check(any(i["text"] == X_TXT for i in corpus(ws)["items"]), "alias control: re-minted")
+        r = rollup(ws, "--refold", f"{M1}={Path(tmp) / 'missing.md'}")
+        check(r.returncode == 2, f"missing OLD_MD exits 2 (got {r.returncode})")
+
         # --- error paths.
         r = rollup(ws, "--refold", "2020-01-01-0000")
         check(r.returncode == 2, f"unknown folder exits 2 (got {r.returncode})")
