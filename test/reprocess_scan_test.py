@@ -129,6 +129,25 @@ for junk in (None, "", "dev", 11, ["1.11.0"], {"v": "1.11.0"}):
 check(codes(stamped("1.11.0", dur=300, ce=None)) == [], "stamped short-whole-file -> none")
 check(codes(stamped("1.11.0", matches=two_refs)) == [], "stamped ref-order -> none")
 
+# ---- bound-pinned (#75): a --max-speakers bound set the count, not capped it
+pinned_ce = {"method": "agglomerative", "k": 8, "raw_k": 57, "saturated": True,
+             "fallback": None, "brief_fold": {"folded": []}}
+pinned = dict(mode="auto-detected, bounded 1-8", n=8, ce=pinned_ce)
+fs = reprocess.scan_sidecar(sidecar(**pinned))
+check([f["code"] for f in fs] == ["bound-pinned"] and fs[0]["confidence"] == "likely"
+      and "bound of 8" in fs[0]["reason"] and "57" in fs[0]["reason"], f"bound-pinned: {fs}")
+check(codes(stamped("1.11.1", **pinned)) == ["bound-pinned"], "1.11.1 stamp still scanned for #75")
+check(codes(stamped("1.11.0", **pinned)) == ["bound-pinned"], "1.11.0 stamp still scanned for #75")
+check(codes(stamped("1.11.2", **pinned)) == [], "1.11.2 stamp -> current")
+check(codes(sidecar(**dict(pinned, n=5))) == [], "count below the bound -> nothing")
+check(codes(sidecar(**dict(pinned, ce=dict(pinned_ce, saturated=False)))) == [],
+      "unsaturated -> nothing")
+check(codes(sidecar(**dict(pinned, ce=dict(pinned_ce, fallback={"method": "x", "k": 8})))) == [],
+      "a recovery fallback ran -> nothing")
+check(codes(sidecar(**dict(pinned, mode="auto-detected"))) == [], "no bound -> nothing")
+check(codes(stamped("1.11.0", **dict(pinned, n=3, segments=frag))) == [],
+      "1.11.0 stamp: only bound-pinned is checked, not brief-fragments")
+
 # ---- malformed / odd shapes never crash
 for bad in (None, [], "x", 3, {}, {"detect_mode": 5}, {"source": "x", "segments": 7},
             {"detect_mode": "auto-detected", "count_estimate": {}, "segments": [None, 1, {}]},
