@@ -33,6 +33,15 @@
  *                    older messages and evicts off-screen ones -> harvest EVERY frame
  *                    into a Map keyed by data-mid, never once at the end.
  *
+ *   filter pills   : button[aria-pressed="true"] whose innerText is one of
+ *                    "Unread" | "Channels" | "Chats" | "Meeting chats" (issue #57;
+ *                    observed by the issue author, not re-verified here). Pills are
+ *                    STICKY per client; a pressed one (e.g. "Chats") hides chats such
+ *                    as meeting chats from the rail. run() clicks them off, waits
+ *                    PILL_SETTLE_MS, records window.__ts.pills {cleared, countBefore,
+ *                    countAfter, warning, restored}, warns in __ts.progress.warning if
+ *                    the chat count changed, and re-presses them when the scrape ends.
+ *
  * SCOPE: left-rail 1:1 and group chats only. Teams CHANNEL posts are a different
  * surface and are not covered. Text bodies only (reactions/attachments/images and
  * quoted-reply bodies are captured as plain text or dropped).
@@ -45,12 +54,19 @@
   const STEP_FRAC   = 0.85;   // scroll up ~0.85 * clientHeight per frame
   const MAX_FRAMES  = 400;    // hard ceiling on scroll frames per chat
   const NOPROG_STOP = 6;      // stop a chat after this many no-new-message frames
+  const PILL_SETTLE_MS = Number(window.__TS_PILL_SETTLE_MS ?? 3500);  // rail re-render after clearing a pill
+  const PILL_NAMES  = ['Unread', 'Channels', 'Chats', 'Meeting chats'];
 
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const qsa = (sel, root = document) => Array.from(root.querySelectorAll(sel));
 
   function listChatRows() {
     return qsa('[role="treeitem"][data-item-type="chat"]');
+  }
+
+  // Sticky rail filter pills (issue #57). A pressed pill hides chats from the rail.
+  function pressedPills() {
+    return qsa('button[aria-pressed="true"]').filter((b) => PILL_NAMES.includes(b.innerText.trim()));
   }
 
   // Harvest every message currently in the DOM of the open thread into `store`
@@ -118,10 +134,12 @@
     ts.done = false;
     ts.error = null;
     ts.result = {};
-    try {
-      // Enumerate chats; scroll the (virtualized) tree so every row mounts once.
+    ts.pills = { cleared: [], restored: [], countBefore: null, countAfter: null, warning: null };
+    let tree = null;
+    // Enumerate chats; scroll the (virtualized) tree so every row mounts once.
+    async function enumerateChats() {
       const seen = new Set();
-      const tree = listChatRows()[0]?.closest('[role="tree"]') || null;
+      tree = listChatRows()[0]?.closest('[role="tree"]') || null;
       for (let pass = 0; pass < 40; pass++) {
         for (const row of listChatRows()) {
           const name = row.getAttribute('aria-label') || row.innerText.trim().split('\n')[0];
@@ -131,8 +149,33 @@
         else break;
         if (tree && tree.scrollTop + tree.clientHeight >= tree.scrollHeight) break;
       }
-      const chatNames = Array.from(seen);
+      return Array.from(seen);
+    }
+    try {
+      // Issue #57: a pressed filter pill (sticky per client) hides chats from the
+      // rail. Count with the pill on, clear it, let the rail settle, count again.
+      const pressed = pressedPills();
+      let warning = null;
+      if (pressed.length) {
+        const before = (await enumerateChats()).length;
+        ts.pills.cleared = pressed.map((b) => b.innerText.trim());
+        ts.pills.countBefore = before;
+        pressed.forEach((b) => b.click());
+        await sleep(PILL_SETTLE_MS);              // wait for the rail to re-render
+        if (tree) tree.scrollTop = 0;
+      }
+      const chatNames = await enumerateChats();
+      if (pressed.length) {
+        ts.pills.countAfter = chatNames.length;
+        if (ts.pills.countAfter !== ts.pills.countBefore) {
+          warning = 'filter pill(s) [' + ts.pills.cleared.join(', ') + '] were pressed and hid chats: ' +
+            ts.pills.countBefore + ' chats before clearing, ' + ts.pills.countAfter +
+            ' after; the pill(s) were cleared so the run covers the full rail';
+          ts.pills.warning = warning;
+        }
+      }
       ts.progress = { phase: 'chats-enumerated', total: chatNames.length, doneChats: 0 };
+      if (warning) ts.progress.warning = warning;
 
       for (const name of chatNames) {
         // Re-find the row each time (the tree re-virtualizes as it scrolls).
@@ -152,11 +195,22 @@
         ts.progress.doneChats++;
         ts.progress.lastChat = name;
       }
-      ts.done = true;
     } catch (e) {
       ts.error = String(e && e.stack || e);
-      ts.done = true;
     }
+    // Put the user's pill(s) back, also after an error.
+    try {
+      if (ts.pills.cleared.length) {
+        const buttons = qsa('button[aria-pressed]');
+        for (const name of ts.pills.cleared) {
+          const b = buttons.find((x) => x.innerText.trim() === name && x.getAttribute('aria-pressed') !== 'true');
+          if (b) { b.click(); ts.pills.restored.push(name); }
+        }
+      }
+    } catch (e) {
+      ts.error = ts.error || String(e && e.stack || e);
+    }
+    ts.done = true;
   }
 
   window.__ts = { done: false, error: null, result: {}, progress: {}, run };

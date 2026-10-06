@@ -67,6 +67,14 @@ re-running a scrape over an overlapping window is safe.
   `[data-tid="message-pane-list-viewport"]`. Scrolling up lazy-loads older
   messages and evicts off-screen ones, so harvest into a map keyed by
   `data-mid` on every scroll frame, not once at the end.
+- **Filter pills (issue #57):** the rail's `Unread`, `Channels`, `Chats` and
+  `Meeting chats` pills are `button[aria-pressed="true"]` when active. They are
+  **sticky per client**, and a pressed pill hides chats from the rail (for example,
+  `Chats` hides meeting chats). The scraper clears any pressed pill before it lists
+  chats, waits for the rail to settle, and records what it cleared in
+  `window.__ts.pills`. If the chat count changed after clearing it sets
+  `window.__ts.progress.warning`, so a run that would have skipped chats does not
+  look complete. It presses your pill(s) again when the scrape ends.
 
 Scrape loop per chat: click the chat row, then scroll the viewport up in steps
 of about 0.85 × `clientHeight` with a ~550 ms settle, re-harvesting each frame.

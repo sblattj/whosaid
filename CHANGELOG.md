@@ -6,7 +6,22 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ## [Unreleased]
 
+## [1.9.0] - 2026-10-06
+
 ### Added
+
+- **Saturated auto counts suggest `--max-speakers N` (#59).** When the automatic speaker count
+  hits its cap and the duration-filtered fallback abstains, the warning now ends with
+  "Try `--max-speakers N`", and the sidecar, the CLI JSON output and both MCP results
+  (`whosaid_transcribe`, `whosaid_relabel`) carry `suggested_max_speakers`. N counts voices with
+  at least 3 turns of 1 s or longer at the normal cut; no suggestion when the user set a max, the
+  fallback fired, or N would reach the cap. Reporting only: the count itself is unchanged.
+  Test: `test/max_speakers_hint_test.py`.
+
+- **Speaker-count eval harness (#59).** `WHOSAID_DUMP_EMBEDDINGS=<dir>` saves what the count
+  estimator saw (`<base>.npz`), and `test/count_eval/run_count_eval.py` replays the dumps
+  against labeled headcounts (error, saturation rate, `--threshold`). The data stays local
+  (`test/count_eval/data/` is gitignored). See `docs/count-eval.md`. Test: `test/count_eval_test.py`.
 
 - **Workspace-wide speaker hints: `[diarize]` in `whosaid.toml` (#59).** `[watch]`'s
   `speakers` / `min_speakers` / `max_speakers` / `expected_speakers` only reached watcher
@@ -18,6 +33,13 @@ All notable changes to whosaid are documented here. This project adheres to
   Tests: `test/workspace_speaker_args_test.py`, `test/mcp_workspace_tools_test.py`.
 
 ### Fixed
+
+- **Teams scraper no longer skips chats hidden by a filter pill (#57).** The left-rail pills
+  (Unread / Channels / Chats / Meeting chats) are sticky per client, and with "Chats" pressed
+  every meeting chat was silently missing from the run. The scraper now clears any pressed pill
+  before listing chats, records it on `__ts.pills`, warns in `__ts.progress.warning` when the
+  chat count changes, and presses the pill again when it ends. Test:
+  `test/teams_scraper_pills_test.js`.
 
 - **MCP `whosaid_transcribe` reports a diarization failure (#56).** A diarizer crash used to
   come back as `ok: true`, `num_speakers: null` and "All speakers named." It now returns
@@ -816,7 +838,8 @@ attributed to a person — who said what — with nothing ever leaving your Mac.
 - `ffmpeg` and `uv` (Homebrew). Python is used only through ephemeral `uv`
   environments — no persistent install is left behind.
 
-[Unreleased]: https://github.com/sblattj/whosaid/compare/v1.8.2...HEAD
+[Unreleased]: https://github.com/sblattj/whosaid/compare/v1.9.0...HEAD
+[1.9.0]: https://github.com/sblattj/whosaid/releases/tag/v1.9.0
 [1.8.2]: https://github.com/sblattj/whosaid/releases/tag/v1.8.2
 [1.8.1]: https://github.com/sblattj/whosaid/releases/tag/v1.8.1
 [1.8.0]: https://github.com/sblattj/whosaid/releases/tag/v1.8.0
