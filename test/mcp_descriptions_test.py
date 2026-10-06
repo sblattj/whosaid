@@ -83,6 +83,7 @@ def main() -> None:
         "whosaid_doctor",
         "whosaid_enroll_from_file",
         "whosaid_samples",
+        "whosaid_reprocess",
     } | workspace_tools
 
     # --- tool-name set + prefix ---
@@ -255,6 +256,22 @@ def main() -> None:
         check(set(dumps[name]["inputSchema"]["properties"]) == {"workspace"}, f"{name} takes only workspace")
     check(set(dumps["whosaid_meetings"]["inputSchema"]["properties"]) == {"workspace", "kind"}, "meetings takes workspace + kind")
     check("teams-chat" in dumps["whosaid_meetings"]["description"], "meetings description names the teams-chat kind")
+
+    # --- whosaid_reprocess: mutating, dry run by default ---
+    rp = dumps["whosaid_reprocess"]
+    rp_ann = rp.get("annotations") or {}
+    rp_props = rp["inputSchema"]["properties"]
+    d_rp = by_name["whosaid_reprocess"].description or ""
+    check(rp_ann.get("readOnlyHint") is False, f"reprocess must not be read-only: {rp_ann}")
+    check(not rp["inputSchema"].get("required"), "reprocess has no required params")
+    check(set(rp_props) == {"workspace", "meetings", "dry_run", "all_meetings", "no_items", "speakers",
+                            "min_speakers", "max_speakers", "engine", "hook"},
+          f"reprocess params: {sorted(rp_props)}")
+    check(rp_props["dry_run"].get("default") is True, f"reprocess dry_run must default true: {rp_props['dry_run']}")
+    check(rp_props["all_meetings"].get("default") is False, "reprocess all_meetings must default false")
+    check("DEFAULT IS A DRY RUN" in d_rp and "_reprocess-backups" in d_rp and "ASR is NOT re-run" in d_rp,
+          "reprocess desc must state dry-run default, backup location, and no ASR")
+    check("\u2014" not in d_rp and bool(mcp_server.whosaid_reprocess.__doc__), "reprocess desc/docstring hygiene")
 
     # --- server instructions gained the workspace paragraph ---
     instr = mcp_server.SERVER_INSTRUCTIONS

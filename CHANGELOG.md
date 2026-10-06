@@ -6,6 +6,35 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ## [Unreleased]
 
+### Added
+
+- **`whosaid reprocess <ws>` re-diarizes older meetings without re-running ASR.** Meetings
+  processed before v1.10 keep the old speaker split, and their action items and commitments
+  inherit it. `reprocess` reuses each meeting's `<base>.json` (via `transcribe --reuse-asr`),
+  carries `relabel --no-save` labels over to the new clusters by segment overlap, reuses the
+  speaker-count flags the meeting was first diarized with unless you pass one, never re-applies
+  a role for a name the registry already knows, regenerates the per-meeting action items and
+  commitments (`--no-items` skips that), then folds the corpora with `roll-up --refold`. Every
+  touched file is backed up to `<ws>/_reprocess-backups/<meeting>/<UTC timestamp>/` and restored
+  if a step fails. On 8 synthetic meetings first processed by v1.8.2, total absolute
+  speaker-count error went from 11 to 6, the two `--speakers N` meetings went from 2 found (of 5
+  and of 3) to exact, ASR was skipped in 8 of 8, and a `--no-save` label, a hand-set `done`, and
+  a hand retitle all survived with ids unchanged. See the README's "Upgrading to 1.11".
+- **`whosaid reprocess --dry-run` is a detector for meetings an older diarizer got wrong.** It
+  reads each meeting's `<base>.diarization.json` and reports `likely` (`brief-fragments`,
+  `short-hinted-undercount`) or `possible` (`short-whole-file`, `ref-order`) findings, and
+  changes nothing. With no `MEETING` and no `--all`, `reprocess` takes only the flagged meetings.
+- **`whosaid transcribe ... --reuse-asr`** skips Whisper when `<out>/<base>.json` exists and goes
+  straight to diarization. It errors if the json is missing and cannot combine with
+  `--no-diarize`.
+- **`whosaid roll-up --refold MEETING[=OLD_MD]`** (repeatable; implies `--action-items`, cannot
+  combine with `--rebuild`) re-reads one already-folded meeting's regenerated `action-items.md`.
+  Corpus ids, hand-set status, and hand titles survive while owners follow the new speaker
+  labels; `OLD_MD`, the meeting's previous file, lets a hand-retitled item re-match.
+- **MCP tool `whosaid_reprocess`** wraps `whosaid reprocess`; `dry_run` defaults to true.
+- **The sidecar `<base>.diarization.json` records `whosaid_version`.** Sidecars from v1.11.0 on
+  are current and are never flagged by the reprocess detector.
+
 ## [1.10.0] - 2026-10-06
 
 ### Added
