@@ -5,6 +5,8 @@ recordings/*
 .DS_Store
 *.log
 __pycache__/
+# speaker-count eval inputs are private voiceprints (docs/count-eval.md)
+test/count_eval/data/
 .codex/
 .claude/
 .opencode/

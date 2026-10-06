@@ -128,6 +128,19 @@ def _read_text_or_none(path: Path) -> Optional[str]:
         return None
 
 
+def _suggested_max_speakers(sidecar: dict) -> Optional[int]:
+    """The #59 `--max-speakers N` hint from a sidecar, or None.
+
+    The top-level key is authoritative; count_estimate.suggested_max is the same
+    number one level down. Anything that is not a positive int reads as None."""
+    value = sidecar.get("suggested_max_speakers")
+    if value is None:
+        value = (sidecar.get("count_estimate") or {}).get("suggested_max")
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        return None
+    return value
+
+
 def _probe_duration(path: str) -> Optional[float]:
     """Audio duration (s) via ffprobe; None if it can't be read."""
     try:
@@ -447,6 +460,7 @@ def whosaid_transcribe(
     source_meta: Optional[dict] = None
     count_warning: Optional[str] = None
     count_estimate: Optional[dict] = None
+    suggested_max_speakers: Optional[int] = None
     count_before_fold: Optional[int] = None
     count_after_fold: Optional[int] = None
     fold_note: Optional[str] = None
@@ -460,6 +474,7 @@ def whosaid_transcribe(
             num_speakers = data.get("num_speakers")
             count_warning = data.get("count_warning")
             count_estimate = data.get("count_estimate")
+            suggested_max_speakers = _suggested_max_speakers(data)
             count_before_fold = data.get("count_before_fold")
             count_after_fold = data.get("count_after_fold")
             fold_note = data.get("fold_note")
@@ -517,6 +532,7 @@ def whosaid_transcribe(
         "num_speakers": num_speakers,
         "count_warning": count_warning,
         "count_estimate": count_estimate,
+        "suggested_max_speakers": suggested_max_speakers,
         "count_before_fold": count_before_fold,
         "count_after_fold": count_after_fold,
         "fold_note": fold_note,
@@ -688,6 +704,7 @@ def whosaid_relabel(
     fold_note: Optional[str] = None
     count_warning: Optional[str] = None
     count_estimate: Optional[dict] = None
+    suggested_max_speakers: Optional[int] = None
     if sidecar and sidecar.exists():
         try:
             d = json.loads(sidecar.read_text())
@@ -700,6 +717,7 @@ def whosaid_relabel(
             fold_note = d.get("fold_note")
             count_warning = d.get("count_warning")
             count_estimate = d.get("count_estimate")
+            suggested_max_speakers = _suggested_max_speakers(d)
         except Exception:  # noqa: BLE001
             pass
         sp = sidecar.parent / f"{data_base}.speakers.txt"
@@ -717,6 +735,7 @@ def whosaid_relabel(
         "fold_note": fold_note,
         "count_warning": count_warning,
         "count_estimate": count_estimate,
+        "suggested_max_speakers": suggested_max_speakers,
         "registry_path": str(_speaker_db()),
         "summary": (
             (f"Re-applied registry + absorb naming from the sidecar"

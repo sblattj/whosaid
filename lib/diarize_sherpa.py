@@ -487,6 +487,69 @@ def agglomerative_labels(X: np.ndarray, thresh: float = AGGLOM_THRESHOLD) -> np.
     return _cut_merges(n, _average_linkage_merges(D), 1.0 - thresh)
 
 
+SUGGEST_MIN_MEMBERS = 3   # the fallback's own "supported cluster" size
+
+
+def suggest_max_speakers(R: np.ndarray, merges: list, thresh: float, cap: int,
+                         min_speakers: int = 0):
+    """A `--max-speakers N` hint for a saturated estimate whose recovery abstained (#59).
+
+    N = the number of clusters with >= SUGGEST_MIN_MEMBERS substantive turns
+    (>= 1.0 s, the rows of `R`) at the calibrated cut `thresh` (the ladder's top
+    rung), raised to max(2, min_speakers). None when N would be >= `cap`.
+
+    Why this definition:
+    - Substantive turns only: the saturation in #59 (raw_k 44-356) comes from
+      short noisy turns that each open a singleton cluster; the recovery ladder
+      already restricts itself to the same >= 1.0 s pool.
+    - >= 3 members: the fallback's own support test (`sizes >= 3`) for a cluster
+      being a voice rather than an isolated long noisy turn.
+    - The calibrated cut, NOT the lowest ladder rung (thresh - 0.18): measured on
+      the synthetic 6-voice fixture in the calibrated regime (intra ~0.90, inter
+      ~0.25; test/estimate_k_test.py turns(6, 30, seed=9)), the 0.40 rung merges
+      two distinct voices into one, so it would hint 5 for 6 people. The ladder
+      only trusts a lower rung when two rungs agree (a plateau); a lone rung has
+      no such check. The hint is a --max-speakers BOUND, and the two errors are
+      not symmetric: a hint that is too high leaves extra anonymous clusters,
+      which the fold pass repairs, while a hint that is too low merges real people
+      and cannot be undone. So it errs high.
+    - It is NOT applied: recovery abstained because a brief distinct voice may
+      exist (#59 proposal 3 keeps that guard), so the human decides.
+    - No clamp down to cap - 1: when the substantive voices alone reach the cap,
+      nothing says the meeting has fewer people, and a hint of cap - 1 would ask
+      the user to merge real voices (25 distinct voices would get "19"; 6 voices
+      against a cap of 6 would get "5"). Saying nothing is the honest answer.
+    - Raised to 2 (fewer is not a conversation) and to an explicit
+      --min-speakers, because main() rejects --max-speakers below --min-speakers.
+    Deterministic: average linkage + a fixed cut, no randomness."""
+    lab = _cut_merges(len(R), merges, 1.0 - thresh)
+    sizes = np.bincount(lab)
+    count = max(int((sizes >= SUGGEST_MIN_MEMBERS).sum()), 2, int(min_speakers or 0))
+    return count if count < int(cap) else None
+
+
+def dump_estimate_inputs(base: str | None, X: np.ndarray, durations, est: dict,
+                         suffix: str = "") -> None:
+    """Save what estimate_speakers saw to $WHOSAID_DUMP_EMBEDDINGS/<base><suffix>.npz.
+
+    Opt-in and off by default: the count-eval harness (test/count_eval/) re-runs
+    the estimator on these offline against labeled headcounts. Voiceprints are
+    private, so the files stay wherever the user points the variable. Read at
+    call time, like default_anchor_threshold, so tests can flip it."""
+    out_dir = os.environ.get("WHOSAID_DUMP_EMBEDDINGS", "").strip()
+    if not out_dir or not base:
+        return
+    path = Path(out_dir).expanduser()
+    path.mkdir(parents=True, exist_ok=True)
+    target = path / f"{base}{suffix}.npz"
+    np.savez(target, X=np.asarray(X, dtype=np.float32),
+             durations=np.asarray(durations, dtype=np.float64),
+             raw_k=np.int64(est["raw_k"]), threshold=np.float64(est["threshold"]),
+             cap=np.int64(est["cap"]), min_speakers=np.int64(est.get("min") or 0),
+             max_speakers=np.int64(est.get("max") or 0))
+    log(f"count eval: dumped {len(X)} turn embeddings -> {target}")
+
+
 def estimate_speakers(X: np.ndarray, thresh: float = AGGLOM_THRESHOLD,
                       cap: int = SPEAKER_CAP, min_speakers: int = 0,
                       max_speakers: int = 0, durations=None) -> dict:
@@ -505,8 +568,12 @@ def estimate_speakers(X: np.ndarray, thresh: float = AGGLOM_THRESHOLD,
     succeeds. Recovery fits substantive turns and requires excluded short turns
     to resemble them; a distinct brief voice makes it abstain.
 
+    When the result is saturated, recovery abstains and the caller set no
+    `max_speakers`, `suggested_max` carries a `--max-speakers N` hint (#59; see
+    suggest_max_speakers). It is reporting only: `k` and `labels` ignore it.
+
     Returns {"method", "threshold", "k", "raw_k", "cap", "min", "max",
-             "saturated", "labels"}.
+             "saturated", "labels", "fallback", "suggested_max"}.
     """
     labels = agglomerative_labels(X, thresh)
     raw_k = int(labels.max()) + 1 if len(labels) else 0
@@ -520,6 +587,7 @@ def estimate_speakers(X: np.ndarray, thresh: float = AGGLOM_THRESHOLD,
                 f"substantive voices ({raw_k} -> {int(labels.max()) + 1})")
     k = min(int(labels.max()) + 1 if len(labels) else 0, eff_cap)
     fallback = None
+    suggested = None   # reporting only (#59); never feeds back into k or the labels
     # Duration filtering is only a recovery path, never the normal estimator.
     # A stable cut on substantive turns is evidence for a count; a smaller cap
     # alone is not. Keep the primary result and saturation for auditability.
@@ -529,15 +597,16 @@ def estimate_speakers(X: np.ndarray, thresh: float = AGGLOM_THRESHOLD,
     if durations is not None and (saturated or k > max(3, len(X) // 4)):
         duration = np.asarray(durations, dtype=float)
         reliable = np.flatnonzero(duration >= 1.0)
-        # If the filter excluded nothing, the ladder below merely re-cuts the
-        # same turns at looser thresholds: that is not recovery, and on a
-        # 15-turn 6-voice meeting it merged six voices into two.
-        if len(X) > len(reliable) >= 10:
+        if len(reliable) >= 10:
             R = X[reliable]
             merges = _average_linkage_merges(1.0 - R @ R.T)
             ladder = []
             chosen = None
-            for cut in (thresh, thresh - 0.06, thresh - 0.12, thresh - 0.18):
+            # If the filter excluded nothing, the ladder merely re-cuts the same
+            # turns at looser thresholds: that is not recovery, and on a 15-turn
+            # 6-voice meeting it merged six voices into two.
+            cuts = (thresh, thresh - 0.06, thresh - 0.12, thresh - 0.18) if len(reliable) < len(X) else ()
+            for cut in cuts:
                 lab = _cut_merges(len(R), merges, 1.0 - cut)
                 count = int(lab.max()) + 1
                 ladder.append(count)
@@ -563,6 +632,8 @@ def estimate_speakers(X: np.ndarray, thresh: float = AGGLOM_THRESHOLD,
                             "reliable_turns": int(len(reliable)),
                             "excluded_short_turns": int(len(X) - len(reliable)),
                             "counts": ladder, "threshold": round(float(cut), 4)}
+            elif saturated and k >= eff_cap and not (max_speakers and max_speakers > 0):
+                suggested = suggest_max_speakers(R, merges, thresh, cap, min_speakers)
     if min_speakers and min_speakers > 0:
         k = max(k, min_speakers)
     k = max(1, min(k, len(X)))
@@ -570,7 +641,8 @@ def estimate_speakers(X: np.ndarray, thresh: float = AGGLOM_THRESHOLD,
         log(f"speaker-count recovery: primary {raw_k} -> stable substantive count {k}")
     elif saturated and k >= eff_cap:
         log(f"WARN speaker-count estimate hit the bound of {eff_cap} "
-            f"(agglomerative at cosine {thresh:.2f} found {raw_k}); the count is NOT trustworthy")
+            f"(agglomerative at cosine {thresh:.2f} found {raw_k}); the count is NOT trustworthy"
+            + (f"; try --max-speakers {suggested}" if suggested else ""))
     return {
         "method": "agglomerative",
         "threshold": round(float(thresh), 4),
@@ -582,6 +654,7 @@ def estimate_speakers(X: np.ndarray, thresh: float = AGGLOM_THRESHOLD,
         "saturated": bool(saturated),
         "labels": labels,
         "fallback": fallback,
+        "suggested_max": suggested,
         "brief_fold": brief,
     }
 
@@ -680,7 +753,8 @@ def default_anchor_threshold() -> float:
 
 def cluster_segments(all_segments: list, num_speakers: int, min_speakers: int = 0,
                      max_speakers: int = 0, anchors: list | None = None,
-                     anchor_threshold: float | None = None) -> tuple:
+                     anchor_threshold: float | None = None,
+                     dump_base: str | None = None) -> tuple:
     """Assign every segment a global speaker by clustering ALL per-turn voiceprints at
     once — a global view that matches whole-file quality even though the segmentation
     ran chunk-by-chunk.
@@ -699,7 +773,10 @@ def cluster_segments(all_segments: list, num_speakers: int, min_speakers: int = 
     exact --num-speakers has on a varying-attendance roster.
 
     `anchor_info` is None on the unanchored path; otherwise
-    {"threshold", "anchored": {SPEAKER_NN: name}, "names": {name: {turns, mean_cosine}}}."""
+    {"threshold", "anchored": {SPEAKER_NN: name}, "names": {name: {turns, mean_cosine}}}.
+
+    `dump_base` names the opt-in WHOSAID_DUMP_EMBEDDINGS file (dump_estimate_inputs);
+    it has no effect on the result."""
     embedded = [s for s in all_segments if s.get("emb")]
     if not embedded:
         return [], {}, [], None, None
@@ -742,6 +819,7 @@ def cluster_segments(all_segments: list, num_speakers: int, min_speakers: int = 
             else:
                 est = estimate_speakers(Xr, min_speakers=min_speakers,
                                         max_speakers=max_speakers, durations=durations[residual])
+                dump_estimate_inputs(dump_base, Xr, durations[residual], est, suffix="-residual")
                 k_res = est["k"]
                 estimate = {p: est[p] for p in est if p != "labels"}
                 estimate["anchored"] = True
@@ -775,6 +853,7 @@ def cluster_segments(all_segments: list, num_speakers: int, min_speakers: int = 
         else:
             est = estimate_speakers(X, min_speakers=min_speakers, max_speakers=max_speakers,
                                     durations=durations)
+            dump_estimate_inputs(dump_base, X, durations, est)
             k = est["k"]
             estimate = {p: est[p] for p in est if p != "labels"}
         k = max(1, min(k, len(embedded)))
@@ -829,7 +908,8 @@ def cluster_segments(all_segments: list, num_speakers: int, min_speakers: int = 
 def diarize_parallel(audio: str, total_dur: float, num_speakers: int, jobs: int,
                      chunk_seconds: float, min_speakers: int = 0,
                      max_speakers: int = 0, anchors: list | None = None,
-                     anchor_threshold: float | None = None) -> tuple:
+                     anchor_threshold: float | None = None,
+                     dump_base: str | None = None) -> tuple:
     """Split the audio into windows, segment+embed them concurrently, then cluster
     globally. Returns (segments, {SPEAKER_NN: embedding}, speakers, estimate, anchor_info).
 
@@ -852,7 +932,8 @@ def diarize_parallel(audio: str, total_dur: float, num_speakers: int, jobs: int,
                 f"({sum(1 for s in segs if s.get('emb'))} embedded)")
     all_segments = [s for chunk in per_chunk if chunk for s in chunk]
     return cluster_segments(all_segments, num_speakers, min_speakers, max_speakers,
-                            anchors=anchors, anchor_threshold=anchor_threshold)
+                            anchors=anchors, anchor_threshold=anchor_threshold,
+                            dump_base=dump_base)
 
 
 def build_turns(segs: list, whisper_json: str | None) -> list:
@@ -1251,6 +1332,14 @@ def remap_fold_matches(matches, original_segments, folded_segments):
             match["cluster"] = mapping[old]
 
 
+def max_speakers_hint(estimate) -> str:
+    """' Try `--max-speakers N`.' for an estimate carrying a #59 suggestion, else ''.
+
+    .get() because sidecars written before #59 carry no suggested_max key."""
+    n = (estimate or {}).get("suggested_max")
+    return f" Try `--max-speakers {n}`." if n else ""
+
+
 def count_recovery_warning(estimate, before, after, fold_note=None):
     """Describe recovery without pretending that a saturated primary was reliable."""
     parts = []
@@ -1265,7 +1354,8 @@ def count_recovery_warning(estimate, before, after, fold_note=None):
                      + "Short-only voices remain uncertain.")
     elif estimate and estimate.get("saturated"):
         parts.append(f"Auto count remains UNRELIABLE: primary found {estimate['raw_k']} clusters "
-                     f"at its bound; {after} is not a verified speaker count.")
+                     f"at its bound; {after} is not a verified speaker count."
+                     + max_speakers_hint(estimate))
     if fold_note:
         parts.append(fold_note)
     if estimate and estimate.get("min") and estimate.get("fallback"):
@@ -1443,6 +1533,7 @@ def do_relabel(args) -> None:
     print(json.dumps({"num_speakers": len(speakers), "clusters": names, "relabeled": True,
                       "count_estimate": data.get("count_estimate"),
                       "count_warning": data.get("count_warning"),
+                      "suggested_max_speakers": data.get("suggested_max_speakers"),
                       "count_before_fold": data.get("count_before_fold", before_fold),
                       "count_after_fold": data.get("count_after_fold", len(speakers)),
                       "fold_note": data.get("fold_note")}))
@@ -1669,7 +1760,8 @@ def main() -> None:
         segs, cluster_emb, speakers, count_estimate, anchor_info = diarize_parallel(
             args.audio, total_dur, args.num_speakers, jobs, chunk_seconds,
             args.min_speakers, args.max_speakers,
-            anchors=anchors or None, anchor_threshold=args.anchor_threshold)
+            anchors=anchors or None, anchor_threshold=args.anchor_threshold,
+            dump_base=base)
     else:
         samples = load_audio(args.audio)
         log(f"audio loaded: {len(samples) / SAMPLE_RATE:.0f}s (whole-file diarization)")
@@ -1730,7 +1822,8 @@ def main() -> None:
                 f"{eff_cap} (agglomerative at cosine {count_estimate['threshold']:.2f} "
                 f"found {count_estimate['raw_k']} clusters), so {len(speakers)} is a "
                 f"bound, not a measurement. Re-run with a known count "
-                f"(--speakers N) or a range (--min-speakers/--max-speakers).")
+                f"(--speakers N) or a range (--min-speakers/--max-speakers)."
+                + max_speakers_hint(count_estimate))
         elif (len(speakers) > 12
                 or (len(speakers) >= 6 and len(tiny) >= len(speakers) / 2)):
             count_warning = (
@@ -1832,6 +1925,8 @@ def main() -> None:
 
     # ---- sidecar: segments + voiceprints so `whosaid relabel` is instant later ----
     sidecar = outdir / f"{base}.diarization.json"
+    # #59: a structured copy of the "Try --max-speakers N" hint for MCP callers.
+    suggested_max_speakers = (count_estimate or {}).get("suggested_max")
     sidecar_data = {
         "base": base,
         "emb_model": EMB_NAME,
@@ -1844,6 +1939,7 @@ def main() -> None:
         "detect_mode": detect_mode,
         "count_warning": count_warning,
         "count_estimate": count_estimate,
+        "suggested_max_speakers": suggested_max_speakers,
         "count_before_fold": count_before_fold,
         "count_after_fold": count_after_fold,
         "fold_note": fold_note,
@@ -1861,6 +1957,7 @@ def main() -> None:
         "detect_mode": detect_mode,
         "count_warning": count_warning,
         "count_estimate": count_estimate,
+        "suggested_max_speakers": suggested_max_speakers,
         "count_before_fold": count_before_fold,
         "count_after_fold": count_after_fold,
         "fold_note": fold_note,
