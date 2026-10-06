@@ -921,8 +921,9 @@ def name_clusters(cluster_emb: dict, ref_threshold: float, absorb_threshold: flo
     `relabel --auto` so both name clusters identically.
 
     Passes (each only touches STILL-UNNAMED clusters, so earlier/explicit names win):
-      1. registry one-best — each known voiceprint claims its single best cluster
-         when cosine >= ref_threshold (default 0.50).
+      1. registry one-best — each known voiceprint claims at most one cluster at
+         cosine >= ref_threshold (default 0.50), assigned best-pair-first across
+         all voices so registry order never decides a contested cluster.
       2. --ref clips — each reference voice claims its best cluster (>= ref_threshold),
          but a ref whose name the registry already assigned is skipped, so one
          person never lands on two cards.
@@ -970,7 +971,10 @@ def name_clusters(cluster_emb: dict, ref_threshold: float, absorb_threshold: flo
 
     known = [(e["name"], unit(e["embedding"])) for e in registry_entries]
 
-    # Pass 1: registry one-best (each voiceprint -> its single closest free cluster).
+    # Pass 1: registry one-best, assigned globally best-first. Every (voiceprint,
+    # free cluster) pair is ranked by cosine and claimed highest-first, so a voice
+    # can't grab a cluster that is a far better match for another voice just
+    # because it sits earlier in the registry (#60: a 0.55 match beat a 0.85 one).
     # A voice that ALREADY owns a cluster (an explicit relabel spec, or a name kept
     # from a prior run in relabel --auto) is skipped here: extending one person onto
     # extra clusters is the absorb pass's job, gated at the far stricter
@@ -978,24 +982,29 @@ def name_clusters(cluster_emb: dict, ref_threshold: float, absorb_threshold: flo
     # cluster to someone who is already placed.
     assigned = {names[sp] for sp in names if names.get(sp, sp) != sp}
     registry_named = set()
-    for entry_name, kemb in known:
+    free = [sp for sp in cluster_emb if names.get(sp, sp) == sp]
+    pending = [(n, k) for n, k in known if n not in assigned]
+    sims = {(n, sp): float(np.dot(k, unit(cluster_emb[sp]))) for n, k in pending for sp in free}
+    for (entry_name, best), sim in sorted(sims.items(), key=lambda kv: -kv[1]):
+        if sim < ref_threshold:
+            break
+        if entry_name in assigned or names.get(best, best) != best:
+            continue
+        record(best, entry_name, sim, ref_threshold, True, "registry")
+        names[best] = entry_name
+        assigned.add(entry_name)
+        registry_named.add(entry_name)
+        log(f"  registry: {best} -> {entry_name} (sim {sim:.3f})")
+    for entry_name, _ in pending:
         if entry_name in assigned:
             continue
-        sims = {sp: float(np.dot(kemb, unit(e))) for sp, e in cluster_emb.items()
-                if names.get(sp, sp) == sp}
-        if not sims:
+        left = {sp: v for (n, sp), v in sims.items() if n == entry_name and names.get(sp, sp) == sp}
+        if not left:
             continue
-        best = max(sims, key=sims.get)
-        matched = sims[best] >= ref_threshold
-        record(best, entry_name, sims[best], ref_threshold, matched, "registry")
-        if matched:
-            names[best] = entry_name
-            assigned.add(entry_name)
-            registry_named.add(entry_name)
-            log(f"  registry: {best} -> {entry_name} (sim {sims[best]:.3f})")
-        else:
-            log(f"  registry: {entry_name} best {best} sim {sims[best]:.3f} "
-                f"< {ref_threshold}, left unnamed")
+        best = max(left, key=left.get)
+        record(best, entry_name, left[best], ref_threshold, False, "registry")
+        log(f"  registry: {entry_name} best {best} sim {left[best]:.3f} "
+            f"< {ref_threshold}, left unnamed")
 
     # Pass 2: --ref clips (still-unnamed only; skip a name the registry already used).
     for ref_name, remb in ref_voices:

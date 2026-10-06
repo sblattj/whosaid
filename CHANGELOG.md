@@ -15,6 +15,15 @@ All notable changes to whosaid are documented here. This project adheres to
   similarity guard are kept. Also on `transcribe --save-speaker` and as `blend` on the
   `whosaid_relabel` MCP tool. Tests: `test/local_labels_test.py`, `test/relabel_no_save_test.sh`.
 
+### Fixed
+
+- **Registry naming no longer depends on registry order (#60).** The first naming pass let each
+  saved voice take its best free cluster in file order, so a voice listed earlier could claim a
+  cluster that matched a later voice far better (0.55 vs 0.85 on a real meeting), pushing the true
+  owner onto a weak leftover. Pairs are now ranked by cosine across all voices and assigned
+  highest-first (same 0.50 gate, still one cluster per voice; `relabel --auto` included).
+  Test: `test/registry_matches_test.py`.
+
 ## [1.8.2] - 2026-09-30
 
 ### Fixed

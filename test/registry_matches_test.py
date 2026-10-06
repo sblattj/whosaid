@@ -155,11 +155,43 @@ def test_env_sets_default_threshold():
             os.environ["WHOSAID_MATCH_THRESHOLD"] = prev
 
 
+
+def test_registry_order_does_not_decide_contested_cluster():
+    """A voice listed earlier must not take a cluster that is a much better match
+    for a later voice (real case: 0.55 for the earlier voice vs 0.85 for the true
+    owner, who then landed on a 0.51 leftover)."""
+    q, _ = np.linalg.qr(np.random.default_rng(60).standard_normal((192, 5)))
+    a, b, e3, e4, e5 = (q[:, i].astype(np.float32) for i in range(5))
+
+    def mix(ca, cb, other):
+        return unit(ca * a + cb * b + np.sqrt(1 - ca * ca - cb * cb) * other)
+
+    cluster_emb = {"SPEAKER_00": mix(0.52, 0.84, e3),   # Alpha 0.52, Beta 0.84
+                   "SPEAKER_01": mix(0.51, 0.10, e4),   # Alpha's next best
+                   "SPEAKER_02": mix(0.00, 0.51, e5)}   # weak Beta leftover
+    registry = [{"name": "Alpha", "embedding": a.tolist()}, {"name": "Beta", "embedding": b.tolist()}]
+    sa = {sp: float(unit(e) @ a) for sp, e in cluster_emb.items()}
+    sb = {sp: float(unit(e) @ b) for sp, e in cluster_emb.items()}
+    # Precondition: Alpha's single best cluster is SPEAKER_00, which Beta owns far more.
+    check(max(sa, key=sa.get) == "SPEAKER_00", f"setup: Alpha best should be SPEAKER_00 {sa}")
+    check(sb["SPEAKER_00"] > sa["SPEAKER_00"] + 0.1, f"setup: Beta should own SPEAKER_00 {sa} {sb}")
+    names = {sp: sp for sp in cluster_emb}
+    report = []
+    d.name_clusters(cluster_emb, 0.50, 0.99, registry, [], names, report=report)
+    check(names["SPEAKER_00"] == "Beta", f"SPEAKER_00 should be Beta, got {names}")
+    check(names["SPEAKER_01"] == "Alpha", f"Alpha should take its next-best cluster, got {names}")
+    check(names["SPEAKER_02"] == "SPEAKER_02", f"leftover stays anonymous, got {names}")
+    # Same result regardless of registry order.
+    names2 = {sp: sp for sp in cluster_emb}
+    d.name_clusters(cluster_emb, 0.50, 0.99, list(reversed(registry)), [], names2)
+    check(names2 == names, f"order-independent: {names} vs {names2}")
+
 def main() -> None:
     test_matched_entry_recorded()
     test_near_miss_recorded_and_cluster_stays_anonymous()
     test_report_is_optional_for_positional_callers()
     test_env_sets_default_threshold()
+    test_registry_order_does_not_decide_contested_cluster()
     print(f"\nPASS: {CHECKS} assertions")
 
 
