@@ -239,16 +239,26 @@ def test_orphan_registry_name_dropped_local_kept():
         check(names_of(sc4)["SPEAKER_00"] == "Old_Name", "no provenance: keep the name")
 
 
-def test_orphan_ref_name_dropped_when_clip_gone():
+def test_ref_name_kept_when_clip_not_in_voices():
+    # A transcribe --ref NAME=/any/path clip need not live in voices/, so its
+    # absence there is not evidence the voiceprint was deleted: keep the name.
     with tempfile.TemporaryDirectory() as td:
         tmp = Path(td)
         reg = tmp / "speakers.json"
         seed_registry(reg, [])
-        sc = write_sidecar(tmp, names={"SPEAKER_00": "Clip_Person", "SPEAKER_01": "SPEAKER_01"},
-                           matches=[reg_match("SPEAKER_00", "Clip_Person", "ref")])
-        auto(sc, reg)  # no --ref passed: the clip is gone
+        prov = [reg_match("SPEAKER_00", "Clip_Person", "ref"),
+                reg_match("SPEAKER_01", "Clip_Person", "absorb")]
+        sc = write_sidecar(tmp, names={"SPEAKER_00": "Clip_Person", "SPEAKER_01": "Clip_Person"},
+                           matches=list(prov))
+        auto(sc, reg)  # no --ref passed
+        check(names_of(sc)["SPEAKER_00"] == "Clip_Person"
+              and names_of(sc)["SPEAKER_01"] == "Clip_Person",
+              f"a ref-derived name (and its absorbed split) must be kept, got {names_of(sc)}")
+        sc = write_sidecar(tmp, names={"SPEAKER_00": "Clip_Person", "SPEAKER_01": "Clip_Person"},
+                           matches=list(prov))
+        auto(sc, reg, "--forget", "Clip_Person")
         check(names_of(sc)["SPEAKER_00"] == "SPEAKER_00",
-              f"a ref-derived name whose clip is gone must be dropped, got {names_of(sc)}")
+              f"--forget clears a ref-derived name, got {names_of(sc)}")
 
 
 def test_forget():
@@ -296,7 +306,7 @@ def main() -> None:
     failed = []
     for fn in (test_auto_uses_voices_refs, test_launcher_passes_refs_and_forget,
                test_orphan_registry_name_dropped_local_kept,
-               test_orphan_ref_name_dropped_when_clip_gone, test_forget):
+               test_ref_name_kept_when_clip_not_in_voices, test_forget):
         try:
             fn()
         except Exception as e:  # noqa: BLE001

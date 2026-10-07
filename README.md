@@ -1237,10 +1237,11 @@ deliberately if a real speaker is being missed.
 - **`relabel --auto` ignored a clip I enrolled, or keeps a name whose voiceprint I deleted.**
   `--auto` now matches the `voices/` enrollment clips (what `whosaid enroll NAME --from FILE`
   saves) the same way `transcribe` does, not just the registry. It also drops a name that an
-  automatic pass (registry, ref, or absorb) gave a cluster once that name has neither a registry
+  automatic pass (registry or absorb) gave a cluster once that name has neither a registry
   entry nor a `voices/` clip, and the freed cluster is re-named to a better match if one exists.
   Names you set yourself (`SPEAKER_NN=Name`, `--no-save` labels) are never auto-dropped; neither
-  is a name from a sidecar that predates `registry_matches`, since its source is unknown.
+  is a name from a sidecar that predates `registry_matches`, since its source is unknown, nor a
+  name a `--ref` clip matched (that clip may live outside `voices/`; use `--forget`).
   `whosaid relabel <base> --auto --forget NAME` (repeatable) clears NAME from this meeting's
   clusters first, even a transcript-only label, then re-runs naming. The registry is untouched, so
   a NAME that is still enrolled and still matches can legitimately come back; delete the voiceprint

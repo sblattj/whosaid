@@ -1497,15 +1497,21 @@ def orphaned_auto_names(names: dict, prior_matches: list, local_labels: dict,
     DERIVED_PASSES pass for that exact cluster+name). A name with no such record
     (an explicit relabel spec, a local label, an anchor, or a sidecar written
     before registry_matches existed) is never dropped: its provenance is not
-    recoverable, so it is kept.
+    recoverable, so it is kept. Neither is a name any `ref` pass matched in this
+    sidecar: a `transcribe --ref NAME=/any/path` clip need not live in voices/,
+    so its absence there proves nothing (`--forget NAME` clears it on request).
     """
     derived = {(m.get("cluster"), m.get("name")) for m in prior_matches
                if m.get("matched") and m.get("pass") in DERIVED_PASSES}
     anchored = {(m.get("cluster"), m.get("name")) for m in prior_matches
                 if m.get("matched") and m.get("pass") == "anchor"}
+    ref_matched = {m.get("name") for m in prior_matches
+                   if m.get("matched") and m.get("pass") == "ref"}
     out = {}
     for cluster, name in names.items():
         if name == cluster or cluster in local_labels or cluster in protected:
+            continue
+        if name in ref_matched:
             continue
         if (cluster, name) not in derived or (cluster, name) in anchored:
             continue
