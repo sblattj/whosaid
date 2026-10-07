@@ -6,6 +6,38 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ## [Unreleased]
 
+## [1.12.0] - 2026-10-07
+
+### Added
+
+- **`whosaid relabel <base> --auto --forget NAME`** (repeatable) clears a name from the
+  meeting first, then re-runs naming, so a voice wrongly named can be dropped without
+  re-transcribing. The MCP `whosaid_relabel` tool takes the same `forget` list (#77).
+- **`--placed-absorb-threshold`** (env `WHOSAID_PLACED_ABSORB_THRESHOLD`, default 0.70): a
+  still-unnamed cluster folds into a voice that already has a cluster in this meeting at this
+  lower bar, but only when more than half of its turns individually agree (the purity gate,
+  recorded as `purity` in `registry_matches`). Voices not in the meeting keep
+  `--absorb-threshold` (0.85). It needs per-turn voiceprints, so it applies on the chunked
+  transcribe path; `relabel --auto` and `--no-chunk` fall back to 0.85 (#77).
+
+### Fixed
+
+- **An enrolled voice that is not in the meeting can no longer take a cluster that belongs to
+  someone already named (#77).** In the registry and `--ref` passes, a claim is refused when
+  the cluster scores at least as high against a voice already placed in the meeting; the
+  refusal is recorded with `blocked_by` in `registry_matches`.
+- **`relabel --auto` now matches against the `voices/` clips** (`enroll --from FILE`), as
+  transcribe does, and drops a name it had assigned from the registry or the absorb pass
+  when that voiceprint no longer exists. Names you set by hand, and names a `--ref` clip
+  matched, are kept (#77).
+
+### Upgrading
+
+Meetings named before 1.12.0 keep their current names. To re-evaluate one with the new rules,
+run `whosaid relabel <base> --auto` (add `--forget NAME` for a name you know is wrong), or
+re-diarize it with `whosaid reprocess <ws> MEETING` (or `--all`) to get the purity-gated
+absorb as well; `reprocess` without names or `--all` only touches meetings its detectors flag.
+
 ## [1.11.2] - 2026-10-06
 
 ### Fixed
