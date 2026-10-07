@@ -1952,7 +1952,11 @@ times faster with the same result. Tuning (CLI flags):
   `~/.config/whosaid/speakers.json`).
 - `WHOSAID_MATCH_THRESHOLD` — registry/reference match cosine threshold (default
   `0.50`); clusters below it stay `SPEAKER_NN`.
-- `WHOSAID_ABSORB_THRESHOLD` — absorb-pass cosine threshold (default `0.85`).
+- `WHOSAID_ABSORB_THRESHOLD` — absorb-pass cosine threshold (default `0.85`), for voices
+  not placed in the meeting.
+- `WHOSAID_PLACED_ABSORB_THRESHOLD` — lower absorb threshold (default `0.70`) for a voice
+  already placed in the meeting; applies only when most of the cluster's turns agree
+  (purity gate, transcribe only; `relabel --auto` keeps the `0.85` bar).
 - `WHOSAID_COMMITMENTS_HOOK` — external commitments extractor hook (replaces
   the stdlib heuristic; receives WHOSAID_ROLES JSON).
 - `DIARIZE_EMB_NAME` — speaker-embedding model (default NeMo TitaNet-small,

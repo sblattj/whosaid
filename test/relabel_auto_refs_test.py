@@ -133,7 +133,7 @@ def test_auto_uses_voices_refs():
         args = argparse.Namespace(
             relabel=str(sidecar), outdir=str(tmp / "out"), save_speaker=[], save_role=[],
             no_save=False, note=None, force=False, blend=False, auto=True,
-            fold_unknown=False, no_registry=False, ref_threshold=0.5, absorb_threshold=0.85,
+            fold_unknown=False, no_registry=False, ref_threshold=0.5, absorb_threshold=0.85, placed_absorb_threshold=0.70,
             snippets=3, forget=[],
             ref=[f"Alice_Example={tmp / 'Alice_Example.wav'}", f"Ghost={tmp / 'Ghost.wav'}"])
         d.do_relabel(args)

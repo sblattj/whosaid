@@ -956,7 +956,8 @@ the absolute path to the `whosaid` script for `command` if it is not on the clie
 | `--chunk-seconds S` | Window length for parallel diarization (default: auto — about `--jobs` windows, min 300s). |
 | `--no-chunk` | Diarize the whole file with sherpa's own clustering (no parallel chunking, no count estimator). |
 | `--match-threshold F` | Cosine similarity a known voice must reach before it may claim a cluster (alias `--ref-threshold`). Default `0.50`; a cluster whose best candidate scores below `F` keeps its anonymous `SPEAKER_NN` label rather than taking a low-confidence name. Raise it (e.g. `0.6`) if you see wrong names, lower it to catch more. |
-| `--absorb-threshold F` | Cosine similarity at which a *still-unnamed* cluster is folded into a known voice, merging phantom splits of one person. Default `0.85`. |
+| `--absorb-threshold F` | Cosine similarity at which a *still-unnamed* cluster is folded into a known voice, merging phantom splits of one person. Default `0.85`. Applies to voices *not placed* in this meeting (see `--placed-absorb-threshold`). |
+| `--placed-absorb-threshold F` | Lower absorb bar for a voice *already placed* in this meeting (it owns a cluster): a still-unnamed cluster folds into it at cosine `F` when most of its turns individually agree on that voice (purity gate, [#77](https://github.com/sblattj/whosaid/issues/77)). Needs per-turn voiceprints, so `relabel --auto` and `--no-chunk` fall back to `--absorb-threshold`. Default `0.70`. |
 | `--no-diarize` | Skip diarization; write the plain transcript only. |
 
 ### Environment variables
@@ -970,6 +971,7 @@ the absolute path to the `whosaid` script for `command` if it is not on the clie
 | `WHOSAID_SPEAKER_DB` | Local speaker registry of named voiceprints (default: `~/.config/whosaid/speakers.json`). Private, never pushed. |
 | `WHOSAID_MATCH_THRESHOLD` | Default registry/reference match threshold, overridden by `--match-threshold` (default: `0.50`). |
 | `WHOSAID_ABSORB_THRESHOLD` | Default absorb-pass threshold, overridden by `--absorb-threshold` (default: `0.85`). |
+| `WHOSAID_PLACED_ABSORB_THRESHOLD` | Default absorb threshold for a voice already placed in the meeting, overridden by `--placed-absorb-threshold` (default: `0.70`; purity-gated). |
 | `WHOSAID_ANCHOR_THRESHOLD` | Default per-turn anchoring threshold for `--expected-speakers`, overridden by `--anchor-threshold` (default: `0.70`). |
 | `DIARIZE_EMB_NAME` | Speaker-embedding model. Default is NeMo `nemo_en_titanet_small.onnx` (English-native, ~2.5× faster than ERes2Net in sherpa's benchmark). Alternatives from the same release: `3dspeaker_speech_eres2net_sv_en_voxceleb_16k.onnx` (English ERes2Net) or `…_zh-cn_…` for Mandarin. Registry voiceprints are keyed by model, so switching re-enrolls speakers. |
 | `WHOSAID_REC_DEVICE` | avfoundation input device used by `record` and `enroll`. |
@@ -1052,7 +1054,12 @@ passes in order, and a later pass only touches a cluster the earlier ones left u
 registry one-best, (2) `--ref` enrollment clips, (3) absorb (folds a still-unnamed cluster into
 a known voice — registry or clip — above `--absorb-threshold`). Passes 1 and 2 both gate on
 `--match-threshold` (default `0.50`, env `WHOSAID_MATCH_THRESHOLD`): below it a cluster keeps
-its anonymous label rather than take a low-confidence name.
+its anonymous label rather than take a low-confidence name. Two gates (#77) keep absent voices
+out: a registry/ref voice cannot claim a cluster that scores at least as high against a voice
+already placed in the meeting (the report records `matched: false` with `blocked_by`), and the
+absorb pass may use the lower `--placed-absorb-threshold` (`0.70`) only for an already-placed
+voice and only when most of the cluster's turns individually agree (a `purity` field is
+recorded); every other voice still needs `--absorb-threshold` (`0.85`).
 
 **Inspecting each.** `ls voices/` lists enrollment clips; `whosaid doctor` prints the registry's
 voiceprint count and path; the MCP `whosaid_list_speakers` tool lists both at once.
@@ -1173,7 +1180,7 @@ The sidecar's machine-readable extras, so a consumer never has to scrape stderr 
 
 | Sidecar key | Contents |
 |---|---|
-| `registry_matches` | One record per naming decision, **including near-misses**: `{"cluster": "SPEAKER_03", "name": "Alice", "similarity": 0.919, "threshold": 0.5, "matched": true, "pass": "registry"}`. `pass` is `registry`, `ref`, `absorb`, or `anchor`; `matched: false` means that decision did not identify the voice. After an anonymous fold, `cluster` points to the retained cluster and optional `original_cluster` records which original cluster supplied the similarity evidence. Refreshed by `whosaid relabel --auto`, and also printed in the transcribe JSON line. |
+| `registry_matches` | One record per naming decision, **including near-misses**: `{"cluster": "SPEAKER_03", "name": "Alice", "similarity": 0.919, "threshold": 0.5, "matched": true, "pass": "registry"}`. `pass` is `registry`, `ref`, `absorb`, or `anchor`; `matched: false` means that decision did not identify the voice; a registry/ref record refused by the margin gate also carries `blocked_by` (the placed name), and an `absorb` record into an already-placed voice carries `purity` (fraction of the cluster's turns that agree). After an anonymous fold, `cluster` points to the retained cluster and optional `original_cluster` records which original cluster supplied the similarity evidence. Refreshed by `whosaid relabel --auto`, and also printed in the transcribe JSON line. |
 | `source` | Recording provenance: `{"path": "/abs/path.m4a", "duration_seconds": 1834.2, "creation_time": "2026-09-14T18:02:11.000000Z"}`. `creation_time` is the container tag, or `null` when the file carries none. |
 | `roles` | Optional — present only when at least one speaker carries a registry role: `{"Karen": "boss"}`. Read by downstream consumers such as the commitments extractor. |
 | `count_before_fold`, `count_after_fold`, `fold_note` | Physical speaker-cluster counts before and after the anonymous-phantom check, plus a note when it ran. Equal counts and `fold_note: null` mean no fold was applied. These counts do not claim that the remaining speakers were identified. Older sidecars are read as their observed `num_speakers` for both counts. |
