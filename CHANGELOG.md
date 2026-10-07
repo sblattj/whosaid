@@ -6,6 +6,15 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ## [Unreleased]
 
+### Added
+
+- **`registry_matches` absorb records now carry the per-turn inputs behind `purity` (#77).**
+  Each placed-voice absorb decision (matched or refused) gains `turns`: one entry per turn in
+  time order with `start`, `end`, `score` against the candidate, the turn's `best` known voice
+  and its `best_score`, so the purity gate can be tuned offline. No naming decision or
+  threshold changes. Records from `relabel --auto` have no per-turn prints and so no `turns`;
+  matched records carried forward by a relabel keep theirs.
+
 ## [1.12.1] - 2026-10-07
 
 ### Fixed
