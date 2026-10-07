@@ -30,7 +30,9 @@ def unit(v):
 
 def scene(turns):
     """P (e0) and Q (e1) placed via clusters 00/01; cluster 02 is the one under test."""
-    c1, c3 = unit(E[0] + 0.1 * E[5]), unit(E[1] + 0.1 * E[6])
+    # c1 shares the e9 component with cluster 02, so 02 sits close to P's own cluster
+    # (sibling 0.98) as a real split does; the sibling-margin gate passes.
+    c1, c3 = unit(E[0] + 0.1 * E[5] + 0.6 * E[9]), unit(E[1] + 0.1 * E[6])
     # fixed centroid in the placed-absorb band (0.75 to P, under the strict 0.85 bar),
     # independent of the turns: the gate under test reads the turns, not the centroid
     emb = {"SPEAKER_00": c1, "SPEAKER_01": c3, "SPEAKER_02": unit(0.75 * E[0] + 0.66 * E[9])}

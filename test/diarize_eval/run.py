@@ -67,14 +67,16 @@ def atomic_json(path, obj):
     os.replace(tmp, path)
 
 
-def pick_subset(truth):
+def pick_subset(truth, salt=""):
+    """Half the roster (at least one), picked by a stable hash. A non-empty salt picks a
+    different half, so the same meetings yield more unenrolled-lookalike cases."""
     names = [s["name"] for s in truth["speakers"]]
     k = max(1, len(names) // 2)
-    ranked = sorted(names, key=lambda n: hashlib.md5((truth["id"] + n).encode()).hexdigest())
+    ranked = sorted(names, key=lambda n: hashlib.md5((salt + truth["id"] + n).encode()).hexdigest())
     return sorted(ranked[:k])
 
 
-def run_one(whosaid, mdir, truth, mode, work, pool_root, extra=()):
+def run_one(whosaid, mdir, truth, mode, work, pool_root, extra=(), salt=""):
     mid = truth["id"]
     odir = os.path.join(work, mid, mode)
     os.makedirs(odir, exist_ok=True)
@@ -83,7 +85,7 @@ def run_one(whosaid, mdir, truth, mode, work, pool_root, extra=()):
     os.makedirs(refs)
     enrolled = []
     if mode in ("refs", "refs-subset"):
-        enrolled = [s["name"] for s in truth["speakers"]] if mode == "refs" else pick_subset(truth)
+        enrolled = [s["name"] for s in truth["speakers"]] if mode == "refs" else pick_subset(truth, salt)
         for s in truth["speakers"]:
             if s["name"] in enrolled:
                 shutil.copyfile(os.path.join(pool_root, s["enrolled_clip"]),
@@ -232,6 +234,8 @@ def main(argv=None):
     ap.add_argument("--pool", help="pool.json, to resolve enrolled clips (default: index.json pool_root)")
     ap.add_argument("--extra", default="",
                     help="extra whosaid flags for every call (space-separated), e.g. to A/B a threshold")
+    ap.add_argument("--subset-salt", default="",
+                    help="re-pick the refs-subset half with this salt (default: the original half)")
     ap.add_argument("--report", help="print the markdown table for an existing results file")
     args = ap.parse_args(argv)
     if args.report:
@@ -277,7 +281,8 @@ def main(argv=None):
                 print("[cached] %s %s" % (mid, mode), file=sys.stderr)
                 continue
             print("[run] %s %s" % (mid, mode), file=sys.stderr, flush=True)
-            row = run_one(whosaid, mdir, truth, mode, work, pool_root, args.extra.split())
+            row = run_one(whosaid, mdir, truth, mode, work, pool_root, args.extra.split(),
+                         args.subset_salt)
             row["max_voice_sim"] = closest
             atomic_json(cached, row)
             per[mid][mode] = row
