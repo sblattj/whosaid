@@ -328,3 +328,37 @@ margin refused one of the 2 real blends (+0.010). The other blend is partly the 
 voice, so it sits close to the candidate's own cluster (+0.107) and is still named. The margin
 also refused a 59 s true split (−0.057), so on real audio it costs more than the cameo
 fragments the synthetic sets showed.
+
+## Anonymous runner-up (v1.13.3)
+
+v1.13.3 adds `runner_up_any` / `runner_up_any_share` / `runner_up_any_sim` to the placed-voice
+absorb record. These fields cover the reporter's "placed or anonymous" suggestion. Each turn of
+the cluster competes against the known voices and against the meeting's other anonymous cluster
+centroids. `runner_up_any_sim` is the winning cluster's centroid similarity to the candidate.
+
+The 22 blend meetings and all 24 earlier split runs were re-run on this code (26 runs; real
+registry unchanged).
+
+| label | matched | rows | `runner_up_any_share` min / median / max |
+|---|---|---|---|
+| blend | refused | 9 | 0.00 / 0.12 / 0.71 |
+| blend | named | 4 | 0.11 / 0.47 / 0.71 |
+| true split | refused | 13 | 0.00 / 0.00 / 0.24 |
+| true split | named | 72 | 0.00 / 0.15 / 1.00 |
+
+The raw share does not separate blends from splits. In 58 rows the anonymous winner's best
+voice was the candidate, so its recorded similarity is its similarity to the candidate. In 50
+of those rows the winner was, by truth, another fragment of the candidate itself (similarity
+0.225 to 0.899). A split's turns land on a sibling fragment just as easily as a blend's land on
+the partner.
+
+The real partners in the blends sat far from the candidate: Liam/Echo 0.215 (share 0.71),
+Nova/Matilda 0.223 (0.45), and Laura/Sage 0.343 (0.12). A rule requiring similarity < 0.40
+and share >= 0.30 hits 1 of the 3 wrongly named blends (Liam, refs-subset) and no named split,
+for any cutoff from 0.35 to 0.45. That is one catch, from a rule chosen after looking at this
+data, so v1.13.3 records the fields and does not gate on them.
+
+The other two named blends cannot be reached this way. In Bella (16 s), the anonymous winner
+is another fragment of the Bella voice (0.877). In Sage (107 s, 51/49 with Coral), the
+runner-up is the known voice Coral, at a share of 0.17, or 0.11 when the anonymous clusters
+also compete.

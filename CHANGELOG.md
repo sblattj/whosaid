@@ -4,6 +4,24 @@ All notable changes to whosaid are documented here. This project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html) and the format of
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.13.3] - 2026-10-07
+
+### Added
+
+- **Anonymous-cluster runner-up on placed-voice absorb records (#77).** `runner_up_any` /
+  `runner_up_any_share` repeat `runner_up` with the meeting's other anonymous clusters also
+  competing for each turn, so an unenrolled blend partner can show; `runner_up_any_sim` is the
+  winning cluster's centroid similarity to the candidate. Recorded only: re-run on the 22 blend
+  meetings and the earlier split runs, true splits reached a share of 1.00, because the
+  anonymous winner was usually another fragment of the candidate (50 of 58 rows). Requiring the
+  winner to sit far from the candidate (similarity < 0.40, share >= 0.30) caught 1 of the 3
+  wrongly named blends and no split, but that rule was chosen after seeing this data.
+
+### Fixed
+
+- `realistic.py --blends`: the `blend<k>` tag counts the crosstalk episodes actually inserted,
+  not the number asked for (an episode that would overrun the meeting end is skipped).
+
 ## [1.13.2] - 2026-10-07
 
 ### Added
