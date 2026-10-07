@@ -1,0 +1,28 @@
+{
+  "source": "sblattj/whosaid#80 issue body",
+  "extra_source": "sblattj/whosaid#77 last comment (23 by-ear clusters); the purity ranges also appear in the #80 body",
+  "note": "Measured on the diarizer's output over 44 real recordings, not on hand-aligned truth. Ranges are across meetings; the turn table is pooled.",
+  "tolerance": 0.2,
+  "corpus": {"recordings": 44, "weeks": 5},
+  "meeting_minutes": {"min": 5, "max": 121, "median": 44},
+  "speakers_per_meeting": {"min": 6, "max": 10, "cap": 8},
+  "speakers_under_2min_per_hour": {"min": null, "max": null, "median": null, "note": "'several attendees', no number given"},
+  "top_speaker_share": {"min": 0.25, "max": 0.75, "median": 0.41},
+  "turn_table": {
+    "bins": ["<1 s", "1-2 s", "2-4 s", "4-8 s", ">8 s"],
+    "edges_s": [1, 2, 4, 8],
+    "share_of_turns": [0.26, 0.18, 0.21, 0.21, 0.14],
+    "share_of_talk": [0.04, 0.06, 0.14, 0.29, 0.47]
+  },
+  "switches_per_min": {"min": 2.2, "max": 8.4, "median": 5.7},
+  "gap": {"median_s": 0.74, "share_under_0.3s": 0.26, "threshold_s": 0.3},
+  "overlap_share": {"min": 0.01, "max": 0.08, "median": 0.04},
+  "embedding": {
+    "correct_pass1": {"min": 0.72, "max": 0.89},
+    "over_split": {"min": 0.70, "max": 0.83, "checked_by_ear": 23, "single_speaker_splits": 21},
+    "blend": {"min": 0.75, "max": 0.84, "values": [0.75, 0.84], "of_checked": 2},
+    "unenrolled": {"min": 0.17, "max": 0.45},
+    "purity_split": {"min": 0.03, "max": 0.35},
+    "purity_blend": {"min": 0.02, "max": 0.09}
+  }
+}
