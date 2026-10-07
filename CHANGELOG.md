@@ -6,6 +6,8 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ## [Unreleased]
 
+## [1.13.0] - 2026-10-07
+
 ### Fixed
 
 - **A known speaker's second cluster is no longer refused as a blend when its short turns score low (#77).**
@@ -25,6 +27,15 @@ All notable changes to whosaid are documented here. This project adheres to
   and its `best_score`, so the purity gate can be tuned offline. No naming decision or
   threshold changes. Records from `relabel --auto` have no per-turn prints and so no `turns`;
   matched records carried forward by a relabel keep theirs.
+- **A realistic-meeting profile for the synthetic diarization eval (#80).** `test/diarize_eval/`
+  gains a channel model (a near-mic local voice plus remote voices through a codec and playback
+  path, mixed to one AAC channel), a planner for 6-10 speaker, 30-120 minute meetings with real
+  turn-length, overlap and switch-rate statistics, within-speaker drift, a same-accent roster
+  voice pool, and `calibrate.py`, which checks a synthetic set against real-corpus statistics
+  (within 20%). It reproduced the #77 refusal on synthetic audio. See `docs/diarize-eval.md`.
+
+Meetings transcribed before this release keep their old naming; re-run
+`whosaid reprocess <ws> MEETING` (or `--all`) to apply the new absorb gate.
 
 ## [1.12.1] - 2026-10-07
 
