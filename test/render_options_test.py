@@ -158,6 +158,11 @@ try:
     finally:
         if saved is not None:
             os.environ["WHOSAID_DIARIZE_EVAL_CACHE"] = saved
+    # a --max-chars smaller than the enrollment passage is refused, not an empty voice
+    with contextlib.redirect_stderr(io.StringIO()) as err:
+        rc = render.main(["--voices-file", str(VOICES_FILE), "--lines-file", str(LINES_FILE),
+                          "--max-chars", "10", "--dry-run", "--out", tempfile.mkdtemp(prefix="render-mc-")])
+    assert rc == 2 and "no room" in err.getvalue(), (rc, err.getvalue())
     # ...nor the pool $WHOSAID_DIARIZE_EVAL_CACHE points at, passed explicitly
     envpool = tempfile.mkdtemp(prefix="render-envpool-")
     saved = os.environ.get("WHOSAID_DIARIZE_EVAL_CACHE")

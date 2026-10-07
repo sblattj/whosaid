@@ -194,6 +194,8 @@ def _choose_voices(rng, voices, eligible, n, roster):
         tags.append("capped-n")
     if roster is not None:
         chosen = sorted(v for v in sub if sub[v].get("roster") == roster)
+        if not chosen:  # a mistyped tag would otherwise build a plain meeting silently
+            raise ValueError("no voice in the pool has roster %r" % roster)
         rng.shuffle(chosen)
         chosen = chosen[:n]
         if chosen:

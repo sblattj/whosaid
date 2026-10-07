@@ -83,6 +83,9 @@ def pick_lines_budget(voice, lines, max_chars, enroll_chars):
     sha256(voice id, stratum); the subset is a prefix of it, trimmed from the most
     over-represented stratum until the total fits."""
     budget = max_chars - enroll_chars
+    if budget <= 0:
+        raise ValueError("--max-chars %d leaves no room for lines after %s's %d-char enrollment"
+                         % (max_chars, voice["id"], enroll_chars))
     strata = {}
     for l in sorted(lines, key=lambda l: l["id"]):
         strata.setdefault(stratum(l), []).append(l)
@@ -349,9 +352,13 @@ def main(argv=None):
         sel = vdata
     base = parse_counts(args.per_voice)
     el_counts = parse_counts(args.per_voice_elevenlabs) if args.per_voice_elevenlabs else base
-    jobs = build_jobs(sel, lines, enroll,
-                      lambda v: el_counts if v["vendor"] == "elevenlabs" else base,
-                      max_chars=args.max_chars)
+    try:
+        jobs = build_jobs(sel, lines, enroll,
+                          lambda v: el_counts if v["vendor"] == "elevenlabs" else base,
+                          max_chars=args.max_chars)
+    except ValueError as e:
+        print("refusing: %s" % e, file=sys.stderr)
+        return 2
     todo = [j for j in jobs if not os.path.exists(os.path.join(cache, j["rel"]))]
     if args.dry_run and (custom or args.max_chars):
         # per-voice plan (new-style invocations only; the default dry-run output is unchanged)

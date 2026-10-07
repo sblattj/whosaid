@@ -170,6 +170,12 @@ def check_voice_choice(voices, bank):
                         mid="m1-000")
     got = {s["voice"] for s in p["speakers"]}
     assert {"v00", "v01", "v02"} <= got and len(got) == 6, got
+    try:  # a roster tag no voice carries is an error, not a plain meeting
+        rp.plan_meeting(random.Random(1), v2, bank, minutes=(5, 5), speakers=(6, 6),
+                        roster="teamZ", mid="m1-002")
+        raise AssertionError("unknown roster was accepted")
+    except ValueError as e:
+        assert "teamZ" in str(e), e
     p = rp.plan_meeting(random.Random(1), voices, bank, minutes=(5, 5), speakers=(20, 20),
                         mid="m1-001")
     assert len(p["speakers"]) == 12 and "capped-n" in p["tags"] and "n12" in p["tags"], p["tags"]
