@@ -221,6 +221,9 @@ TURN_PAREN_RE = re.compile(r"^([A-Za-z][\w .'/-]*?)\s*\(\d{1,3}:\d{2}(?::\d{2})?
 SPEAKERS_HEADER_RE = re.compile(r"^#\s+Speakers?\s*\(\d+\)\s*:\s*(.+)$", re.IGNORECASE)
 # '# Role: NAME = ROLE' header lines (anywhere after the '# Speakers (N):'
 # line) tag speakers with roles: self, boss, peer, report, external.
+# '# Uncounted (...): SPEAKER_03, ...' (#69): anonymous clusters with under 1 s of
+# talk. Their turns keep the SPEAKER_NN label, but they are not attendees.
+UNCOUNTED_HEADER_RE = re.compile(r"^#\s+Uncounted\b[^:]*:\s*(.+)$", re.IGNORECASE)
 ROLE_HEADER_RE = re.compile(r"^#\s+Role:\s*(?P<name>.+?)\s*=\s*(?P<role>\S.*?)\s*$")
 # Commitment extraction walks the same "[HH:MM:SS] Name: text" turns; this
 # variant also captures the timestamp and the text after the speaker colon.
@@ -388,17 +391,21 @@ def parse_speakers(transcript_text: str) -> list[str]:
     transcript ([HH:MM:SS] Name: text turns, 'Name (MM:SS): text' variants, and
     the '# Speakers (N): ...' header the diarizer writes)."""
     seen: dict[str, None] = {}
+    uncounted: set[str] = set()
+    for line in transcript_text.splitlines():
+        if (u := UNCOUNTED_HEADER_RE.match(line)):
+            uncounted.update(n.strip() for n in u.group(1).split(",") if n.strip())
     for line in transcript_text.splitlines():
         if line.startswith("#"):
             m = SPEAKERS_HEADER_RE.match(line)
             if m:
                 for name in m.group(1).split(","):
                     name = name.strip()
-                    if name:
+                    if name and name not in uncounted:
                         seen.setdefault(name, None)
             continue
         m = TURN_BRACKET_RE.match(line) or TURN_PAREN_RE.match(line)
-        if m:
+        if m and m.group(1).strip() not in uncounted:
             seen.setdefault(m.group(1).strip(), None)
     return list(seen)
 

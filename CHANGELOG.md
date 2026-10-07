@@ -6,6 +6,27 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ## [Unreleased]
 
+## [1.12.1] - 2026-10-07
+
+### Fixed
+
+- **A nameless cluster with under 1 s of talk in total no longer counts as a speaker (#69).**
+  A named speaker's very short turns ("yeah", clipped one-second turns) used to survive as
+  extra `SPEAKER_NN` clusters and inflate the headcount. Their voiceprints are too noisy to
+  match anyone (0.09-0.47 against the true speaker), so instead of guessing a name, such a
+  cluster is now left out of `num_speakers`, the speaker cards, and the meeting's attendees.
+  Its turns keep the `SPEAKER_NN` label in the transcript and RTTM, so the words stay visible
+  and a hand `relabel SPEAKER_NN=Name` still works. The transcript header lists them under
+  `# Uncounted`, and the sidecar records them in `uncounted`. Named clusters are always
+  counted. On 32 synthetic test meetings the exact headcount went from 20 to 23 (refs) and
+  20 to 22 (refs-subset), with no change in wrong names. One real guest stopped being
+  counted: only 0.6 s of their 2.3 s ended up in a cluster of their own.
+
+### Upgrading
+
+Run `whosaid relabel <base> --auto` on an existing meeting to apply this without
+re-diarizing.
+
 ## [1.12.0] - 2026-10-07
 
 ### Added

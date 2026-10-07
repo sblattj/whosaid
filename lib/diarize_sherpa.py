@@ -380,12 +380,48 @@ AGGLOM_THRESHOLD = float(os.environ.get("WHOSAID_COUNT_THRESHOLD", "0.58"))
 # voices, 1-3 min): most extra clusters the 0.58 cut minted were made only of
 # turns under 2 s, and the estimate was right on 6/32. Such a cluster is folded
 # into the nearest substantive voice when its centroid reaches BRIEF_VOICE_GATE
-# against it, and is KEPT as a speaker when it is far from every one: a brief
-# guest with a distinct voice must not vanish for being brief. Same-voice
+# against it, and is KEPT as a cluster when it is far from every one, so a
+# brief guest with a distinct voice keeps their words (and a SPEAKER_NN label to
+# hand-relabel) instead of being merged into somebody else. Same-voice
 # fragments sat mostly at cosine 0.40-0.70 to their own voice, brief distinct
-# guests at 0.23-0.38. With the fold the estimate was right on 21/32.
+# guests at 0.23-0.38. With the fold the estimate was right on 21/32. Whether a
+# kept brief cluster also counts toward the headcount is a separate decision,
+# made by UNCOUNTED_MAX_TALK_SECONDS below: under 1 s of total talk it does not.
 SUBSTANTIVE_TURN_SECONDS = 2.0
 BRIEF_VOICE_GATE = 0.40
+
+# An ANONYMOUS cluster (still its SPEAKER_NN label: no registry/ref/absorb name,
+# no hand or local label) whose total talk time across all its turns is strictly
+# under this many seconds is UNCOUNTED: its turns, words and SPEAKER_NN label stay
+# in the segments, transcript and RTTM (so `relabel SPEAKER_NN=Name` still works
+# and nothing said is lost), but it is left out of the headcount (`num_speakers`),
+# the speaker cards, the transcript's "# Speakers (N)" header and the attendee
+# list, and it is listed in the sidecar's `uncounted`. A named cluster is never
+# uncounted, however short. Why a talk-time cut and not a similarity fold: the
+# stray fragments of a present speaker ("yeah", clipped 1 s turns) score only
+# 0.09-0.47 against that speaker, so no similarity threshold can fold them.
+# Measured on 32 synthetic meetings (refs and refs-subset modes, v1.12.0
+# outputs): hiding anonymous clusters under 1.0 s removes 5 (refs) / 4
+# (refs-subset) stray fragments of present speakers and hides 1 / 3 clusters
+# that were the only trace of a real one-line guest; exact headcount 20 -> 23 /
+# 20 -> 22 of 32. A 2.0 s cut hid 13 / 12 fragments but also 3 / 6 real guests
+# (20 -> 22 / 20 -> 21), so the cut stays at 1.0 s. If every cluster would be
+# uncounted (a clip that is all brief), none is, so the headcount is never 0.
+UNCOUNTED_MAX_TALK_SECONDS = 1.0
+
+
+def uncounted_clusters(segs: list, names: dict, speakers: list | None = None) -> list:
+    """Sorted anonymous SPEAKER_NN labels whose total talk is under
+    UNCOUNTED_MAX_TALK_SECONDS. Talk is rounded to the RTTM's millisecond so a
+    cluster of exactly 1.0 s (e.g. 5.3 - 4.3) is counted despite float error."""
+    if speakers is None:
+        speakers = sorted({s["speaker"] for s in segs})
+    talk = {sp: 0.0 for sp in speakers}
+    for s in segs:
+        talk[s["speaker"]] = talk.get(s["speaker"], 0.0) + (s["end"] - s["start"])
+    out = sorted(sp for sp in speakers
+                 if names.get(sp, sp) == sp and round(talk[sp], 3) < UNCOUNTED_MAX_TALK_SECONDS)
+    return [] if len(out) >= len(speakers) else out
 
 
 def fold_brief_clusters(X: np.ndarray, labels: np.ndarray, durations) -> tuple:
@@ -1010,13 +1046,18 @@ def build_turns(segs: list, whisper_json: str | None) -> list:
 def render_outputs(outdir: Path, base: str, segs: list, speakers: list, names: dict,
                    turns: list, snippets_n: int, detect_mode: str,
                    emb_name: str = EMB_NAME, count_warning: str | None = None,
-                   roles: dict | None = None, local_names: set | None = None) -> None:
+                   roles: dict | None = None, local_names: set | None = None,
+                   uncounted: list | None = None) -> None:
     """Write RTTM, the speaker-labeled transcript, and the human-facing speaker cards."""
     talk = {sp: 0.0 for sp in speakers}
     nturns = {sp: 0 for sp in speakers}
     for s in segs:
         talk[s["speaker"]] += s["end"] - s["start"]
         nturns[s["speaker"]] += 1
+    # Uncounted clusters keep their SPEAKER_NN label on every turn and in the RTTM
+    # but are not attendees: left out of the header count/list and the cards.
+    hidden = set(uncounted or [])
+    counted = [sp for sp in speakers if sp not in hidden]
 
     rttm_path = outdir / f"{base}.rttm"
     with open(rttm_path, "w") as f:
@@ -1031,7 +1072,11 @@ def render_outputs(outdir: Path, base: str, segs: list, speakers: list, names: d
             f.write(f"# Speaker-labeled transcript: {base}\n")
             f.write(f"# Diarization: sherpa-onnx (pyannote segmentation-3.0 + "
                     f"{emb_friendly(emb_name)}), local.\n")
-            f.write(f"# Speakers ({len(speakers)}): {', '.join(sorted(set(names.values())))}\n")
+            f.write(f"# Speakers ({len(counted)}): "
+                    f"{', '.join(sorted({names[sp] for sp in counted}))}\n")
+            if hidden:  # their turns below keep the SPEAKER_NN (= unknown speaker) label
+                f.write(f"# Uncounted (under {UNCOUNTED_MAX_TALK_SECONDS:g} s of talk, "
+                        f"not in the headcount): {', '.join(sorted(hidden))}\n")
             if roles:  # per-speaker role tags (registry "role"); one line each
                 for nm in sorted(roles):
                     f.write(f"# Role: {nm} = {roles[nm]}\n")
@@ -1050,7 +1095,7 @@ def render_outputs(outdir: Path, base: str, segs: list, speakers: list, names: d
 
     groups = []        # final names in talk-time order (speakers is biggest-talker first)
     members = {}       # final name -> [cluster ids]
-    for sp in speakers:
+    for sp in counted:
         fn = final_name(sp)
         if fn not in members:
             members[fn] = []
@@ -1059,7 +1104,7 @@ def render_outputs(outdir: Path, base: str, segs: list, speakers: list, names: d
     snippets = {fn: [] for fn in groups}
     for sp, start, texts in turns:
         joined = " ".join(texts).strip()
-        if len(joined.split()) >= 4:  # skip "yeah", "mm-hm" backchannel
+        if len(joined.split()) >= 4 and sp not in hidden:  # skip "yeah", "mm-hm" backchannel
             snippets[final_name(sp)].append((start, joined))
     cards_path = outdir / f"{base}.speaker-cards.txt"
     lines = [f"# Speaker cards: {base}",
@@ -1796,6 +1841,10 @@ def do_relabel(args) -> None:
         if entry:
             roles[nm] = entry["role"]
 
+    uncounted = uncounted_clusters(segs, names, speakers)
+    num_counted = len(speakers) - len(uncounted)
+    data["num_speakers"] = num_counted
+    data["uncounted"] = uncounted
     data["names"] = names
     if roles:
         data["roles"] = roles
@@ -1807,8 +1856,10 @@ def do_relabel(args) -> None:
     render_outputs(outdir, base, segs, speakers, names, turns, args.snippets,
                    detect_mode, emb_name=emb_model,
                    count_warning=data.get("count_warning"), roles=roles or None,
-                   local_names={v["name"] for v in local_labels.values()})
-    print(json.dumps({"num_speakers": len(speakers), "clusters": names, "relabeled": True,
+                   local_names={v["name"] for v in local_labels.values()},
+                   uncounted=uncounted)
+    print(json.dumps({"num_speakers": num_counted, "uncounted": uncounted,
+                      "clusters": names, "relabeled": True,
                       "count_estimate": data.get("count_estimate"),
                       "count_warning": data.get("count_warning"),
                       "suggested_max_speakers": data.get("suggested_max_speakers"),
@@ -2204,11 +2255,16 @@ def main() -> None:
             if entry:
                 roles[nm] = entry["role"]
 
+    # ---- nameless clusters with under UNCOUNTED_MAX_TALK_SECONDS of talk (#69) ----
+    uncounted = uncounted_clusters(segs, names, speakers)
+    num_counted = len(speakers) - len(uncounted)
+
     # ---- render RTTM + speaker-labeled transcript + snippet cards ----
     turns = build_turns(segs, args.whisper_json)
     render_outputs(outdir, base, segs, speakers, names, turns, args.snippets, detect_mode,
                    count_warning=count_warning, roles=roles or None,
-                   local_names={v["name"] for v in local_labels.values()})
+                   local_names={v["name"] for v in local_labels.values()},
+                   uncounted=uncounted)
 
     # ---- sidecar: segments + voiceprints so `whosaid relabel` is instant later ----
     sidecar = outdir / f"{base}.diarization.json"
@@ -2218,7 +2274,8 @@ def main() -> None:
         "base": base,
         "whosaid_version": whosaid_version(),
         "emb_model": EMB_NAME,
-        "num_speakers": len(speakers),
+        "num_speakers": num_counted,
+        "uncounted": uncounted,
         "names": names,
         "local_labels": local_labels,
         "fold_evidence": fold_evidence,
@@ -2241,7 +2298,8 @@ def main() -> None:
     sidecar.write_text(json.dumps(sidecar_data, indent=2))
 
     print(json.dumps({
-        "num_speakers": len(speakers),
+        "num_speakers": num_counted,
+        "uncounted": uncounted,
         "detect_mode": detect_mode,
         "count_warning": count_warning,
         "count_estimate": count_estimate,

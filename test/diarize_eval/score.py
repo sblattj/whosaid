@@ -9,7 +9,10 @@ boundaries with round(t * 100); the timeline is swept exactly over the
 elementary intervals between boundaries (no per-frame arrays).
 
 Speakers: n_true = distinct speaker names across truth turns. n_hyp = distinct
-hyp labels with >= 0.5 s total talk; n_hyp_raw = all distinct labels.
+hyp labels with >= 0.5 s total talk, minus any label the run's sidecar lists as
+`uncounted` (#69: a nameless cluster with under 1 s of talk; absent key = none,
+so older outputs score as before); n_hyp_raw = all distinct labels. DER keeps an
+uncounted label's time (it maps to no truth speaker).
 
 Mapping (hyp label -> truth name or None): an optimal 1:1 assignment that
 maximizes overlap seconds (Hungarian algorithm). blind: every hyp label is
@@ -195,7 +198,7 @@ def _assign(overlap, hyp_labels, truth_names, fixed):
     return mapping
 
 
-def score_meeting(truth, hyp_segments, mode, enrolled=None, hyp_text=None):
+def score_meeting(truth, hyp_segments, mode, enrolled=None, hyp_text=None, uncounted=None):
     if mode not in ("blind", "named"):
         raise ValueError("mode must be 'blind' or 'named', got %r" % (mode,))
     turns = sorted(truth.get("turns", []), key=lambda t: (t["start"], t["end"]))
@@ -210,7 +213,9 @@ def score_meeting(truth, hyp_segments, mode, enrolled=None, hyp_text=None):
     talk = {}
     for s, e, lab in hyp_iv:
         talk[lab] = talk.get(lab, 0) + (e - s)
-    n_hyp = sum(1 for lab in hyp_labels if talk.get(lab, 0) / float(FRAME) >= MIN_TALK)
+    skip = {str(x) for x in (uncounted or [])}
+    n_hyp = sum(1 for lab in hyp_labels
+                if lab not in skip and talk.get(lab, 0) / float(FRAME) >= MIN_TALK)
     n_true = len(truth_names)
 
     ivs = _intervals(truth_iv, hyp_iv)

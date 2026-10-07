@@ -483,14 +483,17 @@ def whosaid_transcribe(
             fold_note = data.get("fold_note")
             roles = data.get("roles")
             if num_speakers is None:
-                num_speakers = len({s["speaker"] for s in data.get("segments", [])}) or None
+                skip = set(data.get("uncounted") or [])
+                num_speakers = len({s["speaker"] for s in data.get("segments", [])} - skip) or None
         except Exception:  # noqa: BLE001
             names = {}
     if not names:
         clusters = sorted(set(re.findall(r"SPEAKER_\d+", speakers_text or "")))
         names = {c: c for c in clusters}
         if num_speakers is None:
-            num_speakers = len(clusters) or None
+            hidden = set(re.findall(r"SPEAKER_\d+", "\n".join(
+                ln for ln in (speakers_text or "").splitlines() if ln.startswith("# Uncounted"))))
+            num_speakers = len(set(clusters) - hidden) or None
 
     # Older sidecars predate the fold metadata. Their rendered count is the
     # only available observation, and so is both the before and after count.
@@ -738,7 +741,9 @@ def whosaid_relabel(
             data_base = d.get("base", data_base)
             num_speakers = d.get("num_speakers")
             if num_speakers is None:
-                num_speakers = len({s.get("speaker") for s in d.get("segments", []) if s.get("speaker")}) or None
+                skip = set(d.get("uncounted") or [])
+                num_speakers = len({s.get("speaker") for s in d.get("segments", [])
+                                    if s.get("speaker") and s.get("speaker") not in skip}) or None
             count_before_fold = d.get("count_before_fold", num_speakers)
             count_after_fold = d.get("count_after_fold", num_speakers)
             fold_note = d.get("fold_note")
