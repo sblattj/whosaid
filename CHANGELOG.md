@@ -6,6 +6,37 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ## [Unreleased]
 
+## [1.13.0] - 2026-10-07
+
+### Fixed
+
+- **A known speaker's second cluster is no longer refused as a blend when its short turns score low (#77).**
+  The placed-voice absorb gate counted turns scoring >= 0.70 individually, but per-turn TitaNet
+  scores on short turns have a median near 0.5, so on 20 synthetic meetings it refused all 12
+  true single-speaker splits (purity 0.00-0.30). The gate now asks whether most of the talk time
+  is closest to the candidate: the seconds-weighted share of turns whose best known voice is the
+  candidate and score >= 0.40 must be >= 0.60 (`talk_share`; 0.75-1.00 on those 12 splits, about
+  0.5 for a half-and-half blend). Short turns are discounted by weighting, not dropped, because
+  one true split (48 turns, 76 s) had no turn over 3 s. `purity` is still recorded for comparison.
+
+### Added
+
+- **`registry_matches` absorb records now carry the per-turn inputs behind `purity` (#77).**
+  Each placed-voice absorb decision (matched or refused) gains `turns`: one entry per turn in
+  time order with `start`, `end`, `score` against the candidate, the turn's `best` known voice
+  and its `best_score`, so the purity gate can be tuned offline. No naming decision or
+  threshold changes. Records from `relabel --auto` have no per-turn prints and so no `turns`;
+  matched records carried forward by a relabel keep theirs.
+- **A realistic-meeting profile for the synthetic diarization eval (#80).** `test/diarize_eval/`
+  gains a channel model (a near-mic local voice plus remote voices through a codec and playback
+  path, mixed to one AAC channel), a planner for 6-10 speaker, 30-120 minute meetings with real
+  turn-length, overlap and switch-rate statistics, within-speaker drift, a same-accent roster
+  voice pool, and `calibrate.py`, which checks a synthetic set against real-corpus statistics
+  (within 20%). It reproduced the #77 refusal on synthetic audio. See `docs/diarize-eval.md`.
+
+Meetings transcribed before this release keep their old naming; re-run
+`whosaid reprocess <ws> MEETING` (or `--all`) to apply the new absorb gate.
+
 ## [1.12.1] - 2026-10-07
 
 ### Fixed

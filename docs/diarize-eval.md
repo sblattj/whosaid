@@ -135,6 +135,38 @@ closest OpenAI pairs are nearer to each other than one person usually is to them
 report puts a meeting in the **similar** bucket when two of its voices score 0.60 or more,
 and in the **distinct** bucket otherwise. Read the distinct bucket for clustering quality.
 
+## Same-accent roster pool
+
+Real teams often share an accent, a gender and a pitch range, which is the hard case for a
+voiceprint. A second pool models that: 12 male, Indian-English-accented voices tagged
+`roster: "in-m"` (6 ElevenLabs shared-library voices, 6 OpenAI `gpt-4o-mini-tts` voices whose
+`instructions` ask for an Indian-English accent with a slightly different pace each). It has
+its own files and its own cache, so the default pool is never touched:
+
+- `voices_realistic.json`: the voices. A voice may carry `instructions` (replaces the generic
+  OpenAI style prompt) and `roster` (copied into `pool.json`).
+- `lines_realistic.json`: 300 generic meeting lines (stand-ups, planning, incident review,
+  vendor call, design review) and 4 enrollment passages of about 60 s. Lines keep the kinds
+  `short`/`medium`/`long`; a `sub` field splits `short` into `backchannel` (under 1 s) and
+  `phrase` (1 to 2 s). The full file is about 25,600 characters.
+
+```sh
+ELEVENLABS_API_KEY=... OPENAI_API_KEY=... python3 test/diarize_eval/render.py \
+    --voices-file test/diarize_eval/voices_realistic.json \
+    --lines-file test/diarize_eval/lines_realistic.json \
+    --max-chars 9000 --budget-chars 54000 \
+    --out ~/.cache/whosaid/diarize-eval-real [--dry-run]
+```
+
+`--max-chars` caps the characters sent per voice, enrollment passage included. Each voice gets
+a different subset, seeded by its id, that keeps the kind mix of the full file; the enrollment
+passage is always rendered. At 9,000 characters a voice renders about 96 lines, and the 6
+ElevenLabs voices spend about 53,400 characters in total, so raise `--budget-chars` (the
+default 45,000 refuses). `--dry-run` prints each voice's lines and character total and makes
+no network call. ElevenLabs shared-library voices are synthesized directly by `voice_id`, with no
+"add voice" step. A custom voices or lines file refuses to run against the default cache, so
+always pass `--out`. Then point `build.py --pool` at `<out>/pool.json`.
+
 ## Results (v1.10.0)
 
 Two sets of meetings were used. The 32 **tuning** meetings (`tune`, `tune-hard`, `tune-cameo` and

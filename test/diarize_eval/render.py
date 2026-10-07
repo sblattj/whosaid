@@ -10,7 +10,12 @@ Keys come from the environment only: ELEVENLABS_API_KEY, OPENAI_API_KEY.
 
   python3 test/diarize_eval/render.py [--voices id,id|all]
       [--per-voice short=3,medium=6,long=2] [--budget-chars 45000]
-      [--dry-run] [--cache DIR]
+      [--dry-run] [--cache DIR | --out DIR]
+      [--voices-file PATH] [--lines-file PATH] [--max-chars N]
+
+A voices file may give a voice an `instructions` string (OpenAI, replaces the generic
+choice) and a `roster` tag (copied into pool.json). ElevenLabs voices are synthesized
+directly by voice_id, so shared-library voices need not be added to the account.
 """
 import argparse
 import array
@@ -45,7 +50,9 @@ def default_cache():
 
 
 def load_json(name):
-    with open(os.path.join(HERE, name), encoding="utf-8") as f:
+    # a bare name lives next to this script; an existing path (abs or relative to cwd) wins
+    path = name if os.path.exists(name) else os.path.join(HERE, name)
+    with open(path, encoding="utf-8") as f:
         return json.load(f)
 
 
@@ -61,6 +68,49 @@ def pick_lines(voice, lines, counts):
         rng = random.Random(seed_int(voice["id"], kind))
         chosen.extend(rng.sample(pool, min(n, len(pool))))
     return chosen
+
+
+def stratum(line):
+    """Subset-selector stratum: kind, refined by the optional `sub` field."""
+    return (line["kind"], line.get("sub", ""))
+
+
+def pick_lines_budget(voice, lines, max_chars, enroll_chars):
+    """Deterministic per-voice subset of dialogue lines within max_chars (enrollment included).
+
+    Every (kind, sub) stratum keeps the same fraction of its lines, so the kind mix stays
+    proportional to the full file. Within a stratum the order is a shuffle seeded by
+    sha256(voice id, stratum); the subset is a prefix of it, trimmed from the most
+    over-represented stratum until the total fits."""
+    budget = max_chars - enroll_chars
+    if budget <= 0:
+        raise ValueError("--max-chars %d leaves no room for lines after %s's %d-char enrollment"
+                         % (max_chars, voice["id"], enroll_chars))
+    strata = {}
+    for l in sorted(lines, key=lambda l: l["id"]):
+        strata.setdefault(stratum(l), []).append(l)
+    total = sum(len(l["text"]) for l in lines)
+    frac = max(0.0, min(1.0, budget / float(total))) if total else 0.0
+    order = {}
+    take = {}
+    for key in sorted(strata):
+        pool = list(strata[key])
+        random.Random(seed_int(voice["id"], "budget", key[0], key[1])).shuffle(pool)
+        order[key] = pool
+        take[key] = int(frac * len(pool) + 0.5)
+
+    def chars():
+        return sum(len(l["text"]) for k in order for l in order[k][:take[k]])
+
+    while chars() > budget:
+        live = [k for k in take if take[k] > 0]
+        if not live:
+            break
+        # drop from the stratum with the largest kept share (ties: key order)
+        k = max(sorted(live), key=lambda k: take[k] / float(len(order[k])))
+        take[k] -= 1
+    chosen = [l for k in sorted(order) for l in order[k][:take[k]]]
+    return sorted(chosen, key=lambda l: l["id"])
 
 
 def pick_enroll(voice, enroll):
@@ -180,7 +230,8 @@ def synth_elevenlabs(voice, text, state):
 
 def synth_openai(voice, text, state):
     key = os.environ["OPENAI_API_KEY"]
-    instr = OA_INSTRUCTIONS[seed_int(voice["id"], "instr") % len(OA_INSTRUCTIONS)]
+    instr = voice.get("instructions") or OA_INSTRUCTIONS[
+        seed_int(voice["id"], "instr") % len(OA_INSTRUCTIONS)]
     data = http_post("https://api.openai.com/v1/audio/speech",
                      {"Authorization": "Bearer " + key},
                      {"model": "gpt-4o-mini-tts", "voice": voice["voice_id"], "input": text,
@@ -198,12 +249,18 @@ def el_subscription():
 
 # ---------- planning ----------
 
-def build_jobs(voices, lines, enroll, counts_for):
-    """Return list of jobs: dicts with voice, rel path, line_id, text, kind."""
+def build_jobs(voices, lines, enroll, counts_for, max_chars=None):
+    """Return list of jobs: dicts with voice, rel path, line_id, text, kind.
+
+    max_chars (per voice, enrollment included) replaces the per-kind counts."""
     jobs = []
     for v in voices:
-        counts = counts_for(v)
-        for l in pick_lines(v, lines, counts):
+        if max_chars:
+            e_chars = len(pick_enroll(v, enroll)["text"])
+            picked = pick_lines_budget(v, lines, max_chars, e_chars)
+        else:
+            picked = pick_lines(v, lines, counts_for(v))
+        for l in picked:
             jobs.append({"voice": v, "rel": "clips/%s/%s.wav" % (v["id"], l["id"]),
                          "line_id": l["id"], "text": l["text"], "kind": l["kind"]})
         e = pick_enroll(v, enroll)
@@ -229,13 +286,18 @@ def write_pool(cache, voices, lines, enroll):
                 if ext != ".wav" or lid not in by_id:
                     continue
                 p = os.path.join(cdir, fn)
-                clips.append({"line_id": lid, "kind": by_id[lid]["kind"], "text": by_id[lid]["text"],
-                              "path": "clips/%s/%s" % (v["id"], fn), "dur": round(wav_dur(p), 3)})
+                clip = {"line_id": lid, "kind": by_id[lid]["kind"], "text": by_id[lid]["text"],
+                        "path": "clips/%s/%s" % (v["id"], fn), "dur": round(wav_dur(p), 3)}
+                if "sub" in by_id[lid]:
+                    clip["sub"] = by_id[lid]["sub"]
+                clips.append(clip)
         ep = os.path.join(cache, "enroll", v["id"] + ".wav")
         if not clips and not os.path.exists(ep):
             continue
         ent = {"name": v["name"], "vendor": v["vendor"], "gender": v["gender"],
                "accent": v["accent"], "clips": clips}
+        if "roster" in v:
+            ent["roster"] = v["roster"]
         if os.path.exists(ep):
             e = pick_enroll(v, enroll)
             ent["enroll"] = {"id": e["id"], "path": "enroll/%s.wav" % v["id"],
@@ -256,12 +318,28 @@ def main(argv=None):
                     help="override --per-voice for ElevenLabs voices only (e.g. short=3,medium=6,long=1)")
     ap.add_argument("--budget-chars", type=int, default=45000)
     ap.add_argument("--dry-run", action="store_true")
-    ap.add_argument("--cache", default=None)
+    ap.add_argument("--cache", "--out", dest="cache", default=None,
+                    help="cache/pool directory (default: $WHOSAID_DIARIZE_EVAL_CACHE or "
+                         "~/.cache/whosaid/diarize-eval)")
+    ap.add_argument("--voices-file", default="voices.json",
+                    help="voices JSON (default voices.json next to this script)")
+    ap.add_argument("--lines-file", default="lines.json",
+                    help="lines JSON (default lines.json next to this script)")
+    ap.add_argument("--max-chars", type=int, default=None,
+                    help="per-voice character cap incl. the enrollment passage; picks a seeded "
+                         "kind-proportional subset of lines (replaces --per-voice)")
     args = ap.parse_args(argv)
 
     cache = args.cache or default_cache()
-    vdata = load_json("voices.json")["voices"]
-    ldata = load_json("lines.json")
+    custom = args.voices_file != "voices.json" or args.lines_file != "lines.json"
+    defaults = {os.path.realpath(default_cache()),
+                os.path.realpath(os.path.expanduser("~/.cache/whosaid/diarize-eval"))}
+    if custom and not args.dry_run and os.path.realpath(cache) in defaults:
+        print("refusing: a custom --voices-file/--lines-file would overwrite the default pool at %s; "
+              "pass --out DIR for a separate cache" % cache, file=sys.stderr)
+        return 2
+    vdata = load_json(args.voices_file)["voices"]
+    ldata = load_json(args.lines_file)
     lines, enroll = ldata["lines"], ldata["enroll"]
     if args.voices != "all":
         want = [x.strip() for x in args.voices.split(",") if x.strip()]
@@ -274,9 +352,29 @@ def main(argv=None):
         sel = vdata
     base = parse_counts(args.per_voice)
     el_counts = parse_counts(args.per_voice_elevenlabs) if args.per_voice_elevenlabs else base
-    jobs = build_jobs(sel, lines, enroll,
-                      lambda v: el_counts if v["vendor"] == "elevenlabs" else base)
+    try:
+        jobs = build_jobs(sel, lines, enroll,
+                          lambda v: el_counts if v["vendor"] == "elevenlabs" else base,
+                          max_chars=args.max_chars)
+    except ValueError as e:
+        print("refusing: %s" % e, file=sys.stderr)
+        return 2
     todo = [j for j in jobs if not os.path.exists(os.path.join(cache, j["rel"]))]
+    if args.dry_run and (custom or args.max_chars):
+        # per-voice plan (new-style invocations only; the default dry-run output is unchanged)
+        print("cache: %s" % cache)
+        for v in sel:
+            vj = [j for j in jobs if j["voice"] is v]
+            body = [j for j in vj if j["kind"] != "enroll"]
+            ech = sum(len(j["text"]) for j in vj if j["kind"] == "enroll")
+            kinds = {}
+            for j in body:
+                kinds[j["kind"]] = kinds.get(j["kind"], 0) + 1
+            print("%s (%s) lines=%d %s enroll=%s chars=%d (lines %d + enroll %d)" % (
+                v["id"], v["vendor"], len(body), ",".join("%s=%d" % kv for kv in sorted(kinds.items())),
+                [j["line_id"] for j in vj if j["kind"] == "enroll"][0],
+                sum(len(j["text"]) for j in vj), sum(len(j["text"]) for j in body), ech))
+            print("  " + " ".join(j["line_id"] for j in body))
 
     cost = {}
     for vendor in ("elevenlabs", "openai"):

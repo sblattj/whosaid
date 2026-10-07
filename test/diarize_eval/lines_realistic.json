@@ -1,0 +1,1823 @@
+{
+ "schema": 1,
+ "lines": [
+  {
+   "id": "R001",
+   "kind": "short",
+   "sub": "backchannel",
+   "text": "Right."
+  },
+  {
+   "id": "R002",
+   "kind": "short",
+   "sub": "backchannel",
+   "text": "Okay."
+  },
+  {
+   "id": "R003",
+   "kind": "short",
+   "sub": "backchannel",
+   "text": "Yeah."
+  },
+  {
+   "id": "R004",
+   "kind": "short",
+   "sub": "backchannel",
+   "text": "Okay, yeah."
+  },
+  {
+   "id": "R005",
+   "kind": "short",
+   "sub": "backchannel",
+   "text": "Mm-hm, got it."
+  },
+  {
+   "id": "R006",
+   "kind": "short",
+   "sub": "backchannel",
+   "text": "Sure."
+  },
+  {
+   "id": "R007",
+   "kind": "short",
+   "sub": "backchannel",
+   "text": "Got it."
+  },
+  {
+   "id": "R008",
+   "kind": "short",
+   "sub": "backchannel",
+   "text": "Understood."
+  },
+  {
+   "id": "R009",
+   "kind": "short",
+   "sub": "backchannel",
+   "text": "Fair enough."
+  },
+  {
+   "id": "R010",
+   "kind": "short",
+   "sub": "backchannel",
+   "text": "Exactly."
+  },
+  {
+   "id": "R011",
+   "kind": "short",
+   "sub": "backchannel",
+   "text": "Yes, please."
+  },
+  {
+   "id": "R012",
+   "kind": "short",
+   "sub": "backchannel",
+   "text": "Sounds good."
+  },
+  {
+   "id": "R013",
+   "kind": "short",
+   "sub": "backchannel",
+   "text": "Perfect."
+  },
+  {
+   "id": "R014",
+   "kind": "short",
+   "sub": "backchannel",
+   "text": "Okay, great."
+  },
+  {
+   "id": "R015",
+   "kind": "short",
+   "sub": "backchannel",
+   "text": "Alright."
+  },
+  {
+   "id": "R016",
+   "kind": "short",
+   "sub": "backchannel",
+   "text": "Right, right."
+  },
+  {
+   "id": "R017",
+   "kind": "short",
+   "sub": "backchannel",
+   "text": "Yeah, yeah."
+  },
+  {
+   "id": "R018",
+   "kind": "short",
+   "sub": "backchannel",
+   "text": "Uh-huh."
+  },
+  {
+   "id": "R019",
+   "kind": "short",
+   "sub": "backchannel",
+   "text": "I see."
+  },
+  {
+   "id": "R020",
+   "kind": "short",
+   "sub": "backchannel",
+   "text": "Correct."
+  },
+  {
+   "id": "R021",
+   "kind": "short",
+   "sub": "backchannel",
+   "text": "Agreed."
+  },
+  {
+   "id": "R022",
+   "kind": "short",
+   "sub": "backchannel",
+   "text": "Makes sense."
+  },
+  {
+   "id": "R023",
+   "kind": "short",
+   "sub": "backchannel",
+   "text": "Okay, noted."
+  },
+  {
+   "id": "R024",
+   "kind": "short",
+   "sub": "backchannel",
+   "text": "Thanks."
+  },
+  {
+   "id": "R025",
+   "kind": "short",
+   "sub": "backchannel",
+   "text": "Thank you."
+  },
+  {
+   "id": "R026",
+   "kind": "short",
+   "sub": "backchannel",
+   "text": "Right, okay."
+  },
+  {
+   "id": "R027",
+   "kind": "short",
+   "sub": "backchannel",
+   "text": "Yep."
+  },
+  {
+   "id": "R028",
+   "kind": "short",
+   "sub": "backchannel",
+   "text": "Sure, sure."
+  },
+  {
+   "id": "R029",
+   "kind": "short",
+   "sub": "backchannel",
+   "text": "Good."
+  },
+  {
+   "id": "R030",
+   "kind": "short",
+   "sub": "backchannel",
+   "text": "Okay, cool."
+  },
+  {
+   "id": "R031",
+   "kind": "short",
+   "sub": "backchannel",
+   "text": "Mm-hm."
+  },
+  {
+   "id": "R032",
+   "kind": "short",
+   "sub": "backchannel",
+   "text": "Oh, okay."
+  },
+  {
+   "id": "R033",
+   "kind": "short",
+   "sub": "backchannel",
+   "text": "Hmm, okay."
+  },
+  {
+   "id": "R034",
+   "kind": "short",
+   "sub": "backchannel",
+   "text": "No problem."
+  },
+  {
+   "id": "R035",
+   "kind": "short",
+   "sub": "backchannel",
+   "text": "That works."
+  },
+  {
+   "id": "R036",
+   "kind": "short",
+   "sub": "backchannel",
+   "text": "Fine by me."
+  },
+  {
+   "id": "R037",
+   "kind": "short",
+   "sub": "backchannel",
+   "text": "Yes."
+  },
+  {
+   "id": "R038",
+   "kind": "short",
+   "sub": "backchannel",
+   "text": "No."
+  },
+  {
+   "id": "R039",
+   "kind": "short",
+   "sub": "backchannel",
+   "text": "Not yet."
+  },
+  {
+   "id": "R040",
+   "kind": "short",
+   "sub": "backchannel",
+   "text": "Almost."
+  },
+  {
+   "id": "R041",
+   "kind": "short",
+   "sub": "backchannel",
+   "text": "Go ahead."
+  },
+  {
+   "id": "R042",
+   "kind": "short",
+   "sub": "backchannel",
+   "text": "Please continue."
+  },
+  {
+   "id": "R043",
+   "kind": "short",
+   "sub": "backchannel",
+   "text": "Done."
+  },
+  {
+   "id": "R044",
+   "kind": "short",
+   "sub": "backchannel",
+   "text": "Okay, done."
+  },
+  {
+   "id": "R045",
+   "kind": "short",
+   "sub": "backchannel",
+   "text": "Right, thanks."
+  },
+  {
+   "id": "R046",
+   "kind": "short",
+   "sub": "backchannel",
+   "text": "Absolutely."
+  },
+  {
+   "id": "R047",
+   "kind": "short",
+   "sub": "backchannel",
+   "text": "Of course."
+  },
+  {
+   "id": "R048",
+   "kind": "short",
+   "sub": "backchannel",
+   "text": "True."
+  },
+  {
+   "id": "R049",
+   "kind": "short",
+   "sub": "backchannel",
+   "text": "Indeed."
+  },
+  {
+   "id": "R050",
+   "kind": "short",
+   "sub": "backchannel",
+   "text": "Oh, I see."
+  },
+  {
+   "id": "R051",
+   "kind": "short",
+   "sub": "backchannel",
+   "text": "Ah, okay."
+  },
+  {
+   "id": "R052",
+   "kind": "short",
+   "sub": "backchannel",
+   "text": "Hm, right."
+  },
+  {
+   "id": "R053",
+   "kind": "short",
+   "sub": "backchannel",
+   "text": "Okay, understood."
+  },
+  {
+   "id": "R054",
+   "kind": "short",
+   "sub": "backchannel",
+   "text": "Yes, that's right."
+  },
+  {
+   "id": "R055",
+   "kind": "short",
+   "sub": "backchannel",
+   "text": "Yeah, I agree."
+  },
+  {
+   "id": "R056",
+   "kind": "short",
+   "sub": "backchannel",
+   "text": "Mm, got it."
+  },
+  {
+   "id": "R057",
+   "kind": "short",
+   "sub": "backchannel",
+   "text": "Let me check."
+  },
+  {
+   "id": "R058",
+   "kind": "short",
+   "sub": "backchannel",
+   "text": "One second."
+  },
+  {
+   "id": "R059",
+   "kind": "short",
+   "sub": "backchannel",
+   "text": "Hold on."
+  },
+  {
+   "id": "R060",
+   "kind": "short",
+   "sub": "backchannel",
+   "text": "Just a moment."
+  },
+  {
+   "id": "R061",
+   "kind": "short",
+   "sub": "backchannel",
+   "text": "Okay, sorry."
+  },
+  {
+   "id": "R062",
+   "kind": "short",
+   "sub": "backchannel",
+   "text": "Sorry, go on."
+  },
+  {
+   "id": "R063",
+   "kind": "short",
+   "sub": "backchannel",
+   "text": "After you."
+  },
+  {
+   "id": "R064",
+   "kind": "short",
+   "sub": "backchannel",
+   "text": "Same here."
+  },
+  {
+   "id": "R065",
+   "kind": "short",
+   "sub": "backchannel",
+   "text": "Likewise."
+  },
+  {
+   "id": "R066",
+   "kind": "short",
+   "sub": "backchannel",
+   "text": "Welcome."
+  },
+  {
+   "id": "R067",
+   "kind": "short",
+   "sub": "backchannel",
+   "text": "Right, so."
+  },
+  {
+   "id": "R068",
+   "kind": "short",
+   "sub": "backchannel",
+   "text": "Okay, so."
+  },
+  {
+   "id": "R069",
+   "kind": "short",
+   "sub": "backchannel",
+   "text": "Well, yes."
+  },
+  {
+   "id": "R070",
+   "kind": "short",
+   "sub": "backchannel",
+   "text": "Oh, nice."
+  },
+  {
+   "id": "R071",
+   "kind": "short",
+   "sub": "backchannel",
+   "text": "Great, thanks."
+  },
+  {
+   "id": "R072",
+   "kind": "short",
+   "sub": "backchannel",
+   "text": "Okay, sure."
+  },
+  {
+   "id": "R073",
+   "kind": "short",
+   "sub": "backchannel",
+   "text": "Looks good."
+  },
+  {
+   "id": "R074",
+   "kind": "short",
+   "sub": "backchannel",
+   "text": "All good."
+  },
+  {
+   "id": "R075",
+   "kind": "short",
+   "sub": "backchannel",
+   "text": "I'm here."
+  },
+  {
+   "id": "R076",
+   "kind": "short",
+   "sub": "backchannel",
+   "text": "Can you repeat that?"
+  },
+  {
+   "id": "R077",
+   "kind": "short",
+   "sub": "backchannel",
+   "text": "Say again?"
+  },
+  {
+   "id": "R078",
+   "kind": "short",
+   "sub": "backchannel",
+   "text": "Okay, thanks."
+  },
+  {
+   "id": "R079",
+   "kind": "short",
+   "sub": "backchannel",
+   "text": "Yes, sir."
+  },
+  {
+   "id": "R080",
+   "kind": "short",
+   "sub": "backchannel",
+   "text": "Right, got it."
+  },
+  {
+   "id": "R081",
+   "kind": "short",
+   "sub": "phrase",
+   "text": "Let's start with yesterday's updates."
+  },
+  {
+   "id": "R082",
+   "kind": "short",
+   "sub": "phrase",
+   "text": "I finished the login ticket yesterday."
+  },
+  {
+   "id": "R083",
+   "kind": "short",
+   "sub": "phrase",
+   "text": "Today I'm picking up the billing bug."
+  },
+  {
+   "id": "R084",
+   "kind": "short",
+   "sub": "phrase",
+   "text": "No blockers on my side."
+  },
+  {
+   "id": "R085",
+   "kind": "short",
+   "sub": "phrase",
+   "text": "I'm blocked on the staging access."
+  },
+  {
+   "id": "R086",
+   "kind": "short",
+   "sub": "phrase",
+   "text": "Can everyone see my screen?"
+  },
+  {
+   "id": "R087",
+   "kind": "short",
+   "sub": "phrase",
+   "text": "Let's move to the next item."
+  },
+  {
+   "id": "R088",
+   "kind": "short",
+   "sub": "phrase",
+   "text": "I'll take that action item."
+  },
+  {
+   "id": "R089",
+   "kind": "short",
+   "sub": "phrase",
+   "text": "We should write that down."
+  },
+  {
+   "id": "R090",
+   "kind": "short",
+   "sub": "phrase",
+   "text": "That is outside this sprint's scope."
+  },
+  {
+   "id": "R091",
+   "kind": "short",
+   "sub": "phrase",
+   "text": "Who owns the deployment script?"
+  },
+  {
+   "id": "R092",
+   "kind": "short",
+   "sub": "phrase",
+   "text": "The build is green again."
+  },
+  {
+   "id": "R093",
+   "kind": "short",
+   "sub": "phrase",
+   "text": "I'll update the ticket after this."
+  },
+  {
+   "id": "R094",
+   "kind": "short",
+   "sub": "phrase",
+   "text": "Let's timebox this to ten minutes."
+  },
+  {
+   "id": "R095",
+   "kind": "short",
+   "sub": "phrase",
+   "text": "We are two days behind schedule."
+  },
+  {
+   "id": "R096",
+   "kind": "short",
+   "sub": "phrase",
+   "text": "Can we get an estimate by Friday?"
+  },
+  {
+   "id": "R097",
+   "kind": "short",
+   "sub": "phrase",
+   "text": "That estimate feels a bit low."
+  },
+  {
+   "id": "R098",
+   "kind": "short",
+   "sub": "phrase",
+   "text": "I'd say about three points."
+  },
+  {
+   "id": "R099",
+   "kind": "short",
+   "sub": "phrase",
+   "text": "The tests are still failing locally."
+  },
+  {
+   "id": "R100",
+   "kind": "short",
+   "sub": "phrase",
+   "text": "I'll send the link in chat."
+  },
+  {
+   "id": "R101",
+   "kind": "short",
+   "sub": "phrase",
+   "text": "Could you mute when not speaking?"
+  },
+  {
+   "id": "R102",
+   "kind": "short",
+   "sub": "phrase",
+   "text": "Sorry, you were on mute."
+  },
+  {
+   "id": "R103",
+   "kind": "short",
+   "sub": "phrase",
+   "text": "We lost you for a second."
+  },
+  {
+   "id": "R104",
+   "kind": "short",
+   "sub": "phrase",
+   "text": "Your audio is breaking up."
+  },
+  {
+   "id": "R105",
+   "kind": "short",
+   "sub": "phrase",
+   "text": "Can you say that again?"
+  },
+  {
+   "id": "R106",
+   "kind": "short",
+   "sub": "phrase",
+   "text": "I didn't catch the last part."
+  },
+  {
+   "id": "R107",
+   "kind": "short",
+   "sub": "phrase",
+   "text": "Let me share my screen."
+  },
+  {
+   "id": "R108",
+   "kind": "short",
+   "sub": "phrase",
+   "text": "Can you zoom in a little?"
+  },
+  {
+   "id": "R109",
+   "kind": "short",
+   "sub": "phrase",
+   "text": "I'm looking at the dashboard now."
+  },
+  {
+   "id": "R110",
+   "kind": "short",
+   "sub": "phrase",
+   "text": "The error rate dropped after the fix."
+  },
+  {
+   "id": "R111",
+   "kind": "short",
+   "sub": "phrase",
+   "text": "Latency is back to normal."
+  },
+  {
+   "id": "R112",
+   "kind": "short",
+   "sub": "phrase",
+   "text": "The alert fired at two in the morning."
+  },
+  {
+   "id": "R113",
+   "kind": "short",
+   "sub": "phrase",
+   "text": "We rolled back the release."
+  },
+  {
+   "id": "R114",
+   "kind": "short",
+   "sub": "phrase",
+   "text": "The root cause was a bad config."
+  },
+  {
+   "id": "R115",
+   "kind": "short",
+   "sub": "phrase",
+   "text": "We need a better runbook for this."
+  },
+  {
+   "id": "R116",
+   "kind": "short",
+   "sub": "phrase",
+   "text": "I'll draft the incident summary."
+  },
+  {
+   "id": "R117",
+   "kind": "short",
+   "sub": "phrase",
+   "text": "Let's schedule a follow-up review."
+  },
+  {
+   "id": "R118",
+   "kind": "short",
+   "sub": "phrase",
+   "text": "Who is on call this weekend?"
+  },
+  {
+   "id": "R119",
+   "kind": "short",
+   "sub": "phrase",
+   "text": "I can cover Saturday if needed."
+  },
+  {
+   "id": "R120",
+   "kind": "short",
+   "sub": "phrase",
+   "text": "That vendor quote seems quite high."
+  },
+  {
+   "id": "R121",
+   "kind": "short",
+   "sub": "phrase",
+   "text": "Can they match the competitor's price?"
+  },
+  {
+   "id": "R122",
+   "kind": "short",
+   "sub": "phrase",
+   "text": "We need the contract by next week."
+  },
+  {
+   "id": "R123",
+   "kind": "short",
+   "sub": "phrase",
+   "text": "What is their support response time?"
+  },
+  {
+   "id": "R124",
+   "kind": "short",
+   "sub": "phrase",
+   "text": "I'll ask them about the service level."
+  },
+  {
+   "id": "R125",
+   "kind": "short",
+   "sub": "phrase",
+   "text": "The pilot starts on Monday."
+  },
+  {
+   "id": "R126",
+   "kind": "short",
+   "sub": "phrase",
+   "text": "Let's loop in the security team."
+  },
+  {
+   "id": "R127",
+   "kind": "short",
+   "sub": "phrase",
+   "text": "The design needs one more pass."
+  },
+  {
+   "id": "R128",
+   "kind": "short",
+   "sub": "phrase",
+   "text": "I like the second layout better."
+  },
+  {
+   "id": "R129",
+   "kind": "short",
+   "sub": "phrase",
+   "text": "The button is too close to the edge."
+  },
+  {
+   "id": "R130",
+   "kind": "short",
+   "sub": "phrase",
+   "text": "Can we simplify this screen?"
+  },
+  {
+   "id": "R131",
+   "kind": "short",
+   "sub": "phrase",
+   "text": "The colors are not accessible enough."
+  },
+  {
+   "id": "R132",
+   "kind": "short",
+   "sub": "phrase",
+   "text": "Let's test it with real users."
+  },
+  {
+   "id": "R133",
+   "kind": "short",
+   "sub": "phrase",
+   "text": "I'll update the mockups tonight."
+  },
+  {
+   "id": "R134",
+   "kind": "short",
+   "sub": "phrase",
+   "text": "The API change is backward compatible."
+  },
+  {
+   "id": "R135",
+   "kind": "short",
+   "sub": "phrase",
+   "text": "We should version that endpoint."
+  },
+  {
+   "id": "R136",
+   "kind": "short",
+   "sub": "phrase",
+   "text": "The migration will take two hours."
+  },
+  {
+   "id": "R137",
+   "kind": "short",
+   "sub": "phrase",
+   "text": "Let's run it in staging first."
+  },
+  {
+   "id": "R138",
+   "kind": "short",
+   "sub": "phrase",
+   "text": "I'll review your pull request today."
+  },
+  {
+   "id": "R139",
+   "kind": "short",
+   "sub": "phrase",
+   "text": "Please add a few more tests."
+  },
+  {
+   "id": "R140",
+   "kind": "short",
+   "sub": "phrase",
+   "text": "The coverage dropped slightly this week."
+  },
+  {
+   "id": "R141",
+   "kind": "short",
+   "sub": "phrase",
+   "text": "We can refactor that later."
+  },
+  {
+   "id": "R142",
+   "kind": "short",
+   "sub": "phrase",
+   "text": "That function is getting too long."
+  },
+  {
+   "id": "R143",
+   "kind": "short",
+   "sub": "phrase",
+   "text": "Let's not over-engineer this."
+  },
+  {
+   "id": "R144",
+   "kind": "short",
+   "sub": "phrase",
+   "text": "The cache is serving stale data."
+  },
+  {
+   "id": "R145",
+   "kind": "short",
+   "sub": "phrase",
+   "text": "We need to clear it manually."
+  },
+  {
+   "id": "R146",
+   "kind": "short",
+   "sub": "phrase",
+   "text": "The database is running out of space."
+  },
+  {
+   "id": "R147",
+   "kind": "short",
+   "sub": "phrase",
+   "text": "Backups completed successfully last night."
+  },
+  {
+   "id": "R148",
+   "kind": "short",
+   "sub": "phrase",
+   "text": "I'll raise it with the manager."
+  },
+  {
+   "id": "R149",
+   "kind": "short",
+   "sub": "phrase",
+   "text": "Let's confirm the date with everyone."
+  },
+  {
+   "id": "R150",
+   "kind": "short",
+   "sub": "phrase",
+   "text": "The release is planned for Thursday."
+  },
+  {
+   "id": "R151",
+   "kind": "short",
+   "sub": "phrase",
+   "text": "We'll freeze the code on Wednesday."
+  },
+  {
+   "id": "R152",
+   "kind": "short",
+   "sub": "phrase",
+   "text": "Let's keep the demo short."
+  },
+  {
+   "id": "R153",
+   "kind": "short",
+   "sub": "phrase",
+   "text": "I'll prepare the slides this afternoon."
+  },
+  {
+   "id": "R154",
+   "kind": "short",
+   "sub": "phrase",
+   "text": "Any questions before we wrap up?"
+  },
+  {
+   "id": "R155",
+   "kind": "short",
+   "sub": "phrase",
+   "text": "That's all from my side."
+  },
+  {
+   "id": "R156",
+   "kind": "short",
+   "sub": "phrase",
+   "text": "Thanks, everyone, for joining."
+  },
+  {
+   "id": "R157",
+   "kind": "short",
+   "sub": "phrase",
+   "text": "Let's reconvene tomorrow morning."
+  },
+  {
+   "id": "R158",
+   "kind": "short",
+   "sub": "phrase",
+   "text": "Please send the notes after the call."
+  },
+  {
+   "id": "R159",
+   "kind": "short",
+   "sub": "phrase",
+   "text": "I'll put it on the agenda."
+  },
+  {
+   "id": "R160",
+   "kind": "short",
+   "sub": "phrase",
+   "text": "Let's take that offline."
+  },
+  {
+   "id": "R161",
+   "kind": "short",
+   "sub": "phrase",
+   "text": "Can we park that for now?"
+  },
+  {
+   "id": "R162",
+   "kind": "medium",
+   "sub": "medium",
+   "text": "Yesterday I finished the migration script and today I will start on the reporting page."
+  },
+  {
+   "id": "R163",
+   "kind": "medium",
+   "sub": "medium",
+   "text": "I'm waiting on the access request, so I can't test the new service until that's approved."
+  },
+  {
+   "id": "R164",
+   "kind": "medium",
+   "sub": "medium",
+   "text": "We have eight stories in the sprint, but only five of them are really ready to start."
+  },
+  {
+   "id": "R165",
+   "kind": "medium",
+   "sub": "medium",
+   "text": "The team velocity has been steady, so I think we can commit to about thirty points."
+  },
+  {
+   "id": "R166",
+   "kind": "medium",
+   "sub": "medium",
+   "text": "Can we split that story into two smaller ones so that each fits inside a single sprint?"
+  },
+  {
+   "id": "R167",
+   "kind": "medium",
+   "sub": "medium",
+   "text": "I would rather carry that one over than rush it and ship something we have to fix next week."
+  },
+  {
+   "id": "R168",
+   "kind": "medium",
+   "sub": "medium",
+   "text": "The acceptance criteria are a bit vague here, so let's clarify them before anyone starts."
+  },
+  {
+   "id": "R169",
+   "kind": "medium",
+   "sub": "medium",
+   "text": "Please add the story to the board and tag me so I can pick it up after lunch."
+  },
+  {
+   "id": "R170",
+   "kind": "medium",
+   "sub": "medium",
+   "text": "I think the estimate is too optimistic, because we still have to update the documentation as well."
+  },
+  {
+   "id": "R171",
+   "kind": "medium",
+   "sub": "medium",
+   "text": "We agreed last time to keep the stand-up under fifteen minutes, so let's try to stay on track."
+  },
+  {
+   "id": "R172",
+   "kind": "medium",
+   "sub": "medium",
+   "text": "The monitoring showed a spike in errors right after the deployment, so we paused the rollout."
+  },
+  {
+   "id": "R173",
+   "kind": "medium",
+   "sub": "medium",
+   "text": "Customers started reporting timeouts around nine, and the first alert reached us a few minutes later."
+  },
+  {
+   "id": "R174",
+   "kind": "medium",
+   "sub": "medium",
+   "text": "We restarted the service, but the problem came back within an hour, which told us it was not a simple crash."
+  },
+  {
+   "id": "R175",
+   "kind": "medium",
+   "sub": "medium",
+   "text": "After looking through the logs, we found that a background job was holding connections open."
+  },
+  {
+   "id": "R176",
+   "kind": "medium",
+   "sub": "medium",
+   "text": "The fix was a one line change, but it took us a long time to be sure that it was the right one."
+  },
+  {
+   "id": "R177",
+   "kind": "medium",
+   "sub": "medium",
+   "text": "In hindsight, the alert threshold was too high, and we should have been paged much earlier."
+  },
+  {
+   "id": "R178",
+   "kind": "medium",
+   "sub": "medium",
+   "text": "I'd like to add a short checklist to the runbook so the next person does not have to guess."
+  },
+  {
+   "id": "R179",
+   "kind": "medium",
+   "sub": "medium",
+   "text": "Nobody is to blame here, because the process allowed this to happen and the process is what we change."
+  },
+  {
+   "id": "R180",
+   "kind": "medium",
+   "sub": "medium",
+   "text": "Let's assign an owner for each follow-up item and agree on a date before we leave this call."
+  },
+  {
+   "id": "R181",
+   "kind": "medium",
+   "sub": "medium",
+   "text": "We should also add a dashboard panel that shows the open connection count over time."
+  },
+  {
+   "id": "R182",
+   "kind": "medium",
+   "sub": "medium",
+   "text": "Thanks for joining the call, we wanted to understand how your support process works day to day."
+  },
+  {
+   "id": "R183",
+   "kind": "medium",
+   "sub": "medium",
+   "text": "Could you walk us through the onboarding steps and tell us how long they usually take?"
+  },
+  {
+   "id": "R184",
+   "kind": "medium",
+   "sub": "medium",
+   "text": "Your pricing is per seat, but we expect the number of users to change a lot during the year."
+  },
+  {
+   "id": "R185",
+   "kind": "medium",
+   "sub": "medium",
+   "text": "Is there a discount if we commit for two years instead of paying month to month?"
+  },
+  {
+   "id": "R186",
+   "kind": "medium",
+   "sub": "medium",
+   "text": "We need data stored in our own region, so please confirm that this is possible with your plan."
+  },
+  {
+   "id": "R187",
+   "kind": "medium",
+   "sub": "medium",
+   "text": "What happens to our data if we decide to end the contract after the first year?"
+  },
+  {
+   "id": "R188",
+   "kind": "medium",
+   "sub": "medium",
+   "text": "Can you send us the security documentation so our team can review it before we decide?"
+  },
+  {
+   "id": "R189",
+   "kind": "medium",
+   "sub": "medium",
+   "text": "We have a few more questions, so would it be possible to schedule a second call next week?"
+  },
+  {
+   "id": "R190",
+   "kind": "medium",
+   "sub": "medium",
+   "text": "The sandbox environment would be very helpful, because we want to test the integration first."
+  },
+  {
+   "id": "R191",
+   "kind": "medium",
+   "sub": "medium",
+   "text": "I appreciate the demo, and I think the reporting features are exactly what we have been missing."
+  },
+  {
+   "id": "R192",
+   "kind": "medium",
+   "sub": "medium",
+   "text": "Here is the new layout for the settings page, and I moved the account options to the top."
+  },
+  {
+   "id": "R193",
+   "kind": "medium",
+   "sub": "medium",
+   "text": "The previous version had too many tabs, so I grouped related controls into collapsible sections."
+  },
+  {
+   "id": "R194",
+   "kind": "medium",
+   "sub": "medium",
+   "text": "Have we checked how this looks on a smaller screen, like a tablet or a narrow laptop?"
+  },
+  {
+   "id": "R195",
+   "kind": "medium",
+   "sub": "medium",
+   "text": "The text contrast is low in the dark theme, and a few users have already mentioned it."
+  },
+  {
+   "id": "R196",
+   "kind": "medium",
+   "sub": "medium",
+   "text": "I'm not sure about the icon, because it looks a lot like the one for deleting something."
+  },
+  {
+   "id": "R197",
+   "kind": "medium",
+   "sub": "medium",
+   "text": "Let me show you the prototype, and please tell me where you get confused as you click around."
+  },
+  {
+   "id": "R198",
+   "kind": "medium",
+   "sub": "medium",
+   "text": "We can reuse the existing component for the table, which saves us at least a couple of days."
+  },
+  {
+   "id": "R199",
+   "kind": "medium",
+   "sub": "medium",
+   "text": "Engineering will need the final designs by Tuesday, otherwise we will miss the sprint."
+  },
+  {
+   "id": "R200",
+   "kind": "medium",
+   "sub": "medium",
+   "text": "The loading state is still missing, so right now the page just looks empty for a second."
+  },
+  {
+   "id": "R201",
+   "kind": "medium",
+   "sub": "medium",
+   "text": "I'll gather the feedback from this review and send a revised version by the end of the week."
+  },
+  {
+   "id": "R202",
+   "kind": "medium",
+   "sub": "medium",
+   "text": "The new endpoint returns the data in pages, so the client has to request the next page itself."
+  },
+  {
+   "id": "R203",
+   "kind": "medium",
+   "sub": "medium",
+   "text": "We decided to keep the old field for now and mark it as deprecated in the documentation."
+  },
+  {
+   "id": "R204",
+   "kind": "medium",
+   "sub": "medium",
+   "text": "Please don't merge that yet, because I want to run the performance tests against it first."
+  },
+  {
+   "id": "R205",
+   "kind": "medium",
+   "sub": "medium",
+   "text": "The unit tests pass, but the integration tests are flaky, and I don't trust them at the moment."
+  },
+  {
+   "id": "R206",
+   "kind": "medium",
+   "sub": "medium",
+   "text": "I rebased the branch this morning, and there were a few conflicts that I resolved by hand."
+  },
+  {
+   "id": "R207",
+   "kind": "medium",
+   "sub": "medium",
+   "text": "Could someone with admin rights approve the pipeline change, since I can't do it myself?"
+  },
+  {
+   "id": "R208",
+   "kind": "medium",
+   "sub": "medium",
+   "text": "We upgraded the library last week, and since then the build has been about a minute slower."
+  },
+  {
+   "id": "R209",
+   "kind": "medium",
+   "sub": "medium",
+   "text": "That query scans the whole table, so an index on the date column should help a lot."
+  },
+  {
+   "id": "R210",
+   "kind": "medium",
+   "sub": "medium",
+   "text": "I'll write a small script to check how many records are affected before we run the cleanup."
+  },
+  {
+   "id": "R211",
+   "kind": "medium",
+   "sub": "medium",
+   "text": "We are about a day behind, but I think we can catch up if nothing else comes up."
+  },
+  {
+   "id": "R212",
+   "kind": "medium",
+   "sub": "medium",
+   "text": "Let's decide now whether this goes in the next release, so that the planning stays honest."
+  },
+  {
+   "id": "R213",
+   "kind": "medium",
+   "sub": "medium",
+   "text": "The customer asked for a date, and I told them we would confirm by the end of the week."
+  },
+  {
+   "id": "R214",
+   "kind": "medium",
+   "sub": "medium",
+   "text": "I'd suggest we cut the export feature from this release and ship it in the one after."
+  },
+  {
+   "id": "R215",
+   "kind": "medium",
+   "sub": "medium",
+   "text": "If we add another person to the project now, it will probably slow us down first."
+  },
+  {
+   "id": "R216",
+   "kind": "medium",
+   "sub": "medium",
+   "text": "I think it's worth spending a day on this, because it will save us hours every week."
+  },
+  {
+   "id": "R217",
+   "kind": "medium",
+   "sub": "medium",
+   "text": "Does anyone have a concern about moving the meeting to the afternoon from next week?"
+  },
+  {
+   "id": "R218",
+   "kind": "medium",
+   "sub": "medium",
+   "text": "Quick reminder that the quarterly planning document is due on Friday, so please add your sections."
+  },
+  {
+   "id": "R219",
+   "kind": "medium",
+   "sub": "medium",
+   "text": "I will be out on Monday and Tuesday, so please send urgent questions to Priya or Daniel."
+  },
+  {
+   "id": "R220",
+   "kind": "medium",
+   "sub": "medium",
+   "text": "Just to confirm, we will meet at ten on Thursday and the invite will include a new link."
+  },
+  {
+   "id": "R221",
+   "kind": "medium",
+   "sub": "medium",
+   "text": "Can somebody take notes today, and I will share them with the wider team afterwards?"
+  },
+  {
+   "id": "R222",
+   "kind": "medium",
+   "sub": "medium",
+   "text": "Let's go around quickly and have each person say what they are working on this week."
+  },
+  {
+   "id": "R223",
+   "kind": "medium",
+   "sub": "medium",
+   "text": "I'm still waiting for feedback from the product team, so this item is on hold for now."
+  },
+  {
+   "id": "R224",
+   "kind": "medium",
+   "sub": "medium",
+   "text": "Before we dive in, let me quickly recap what we decided in the last meeting."
+  },
+  {
+   "id": "R225",
+   "kind": "medium",
+   "sub": "medium",
+   "text": "Is it okay if I go first, because I have to drop off in about ten minutes?"
+  },
+  {
+   "id": "R226",
+   "kind": "medium",
+   "sub": "medium",
+   "text": "My connection is not great, so please let me know if I start cutting out."
+  },
+  {
+   "id": "R227",
+   "kind": "medium",
+   "sub": "medium",
+   "text": "I added the numbers to the shared sheet, so you can have a look when you get a chance."
+  },
+  {
+   "id": "R228",
+   "kind": "medium",
+   "sub": "medium",
+   "text": "That is a good point, and I had not thought about how it affects the mobile app."
+  },
+  {
+   "id": "R229",
+   "kind": "medium",
+   "sub": "medium",
+   "text": "I don't think we have enough information to decide, so can we gather a bit more data first?"
+  },
+  {
+   "id": "R230",
+   "kind": "medium",
+   "sub": "medium",
+   "text": "Let's try the simplest option first, and then we can see whether we need anything more complex."
+  },
+  {
+   "id": "R231",
+   "kind": "medium",
+   "sub": "medium",
+   "text": "The risk is low, but the impact would be high, so I would like us to have a backup plan."
+  },
+  {
+   "id": "R232",
+   "kind": "medium",
+   "sub": "medium",
+   "text": "We can ship it behind a flag, and turn it on for a small group of customers first."
+  },
+  {
+   "id": "R233",
+   "kind": "medium",
+   "sub": "medium",
+   "text": "How long would it take to undo the change if something goes wrong after the release?"
+  },
+  {
+   "id": "R234",
+   "kind": "medium",
+   "sub": "medium",
+   "text": "I'd like to understand the reason behind this requirement before we start building anything."
+  },
+  {
+   "id": "R235",
+   "kind": "medium",
+   "sub": "medium",
+   "text": "We have been doing it this way for years, but I agree it is time to look at alternatives."
+  },
+  {
+   "id": "R236",
+   "kind": "medium",
+   "sub": "medium",
+   "text": "I tried the new tool for a week, and honestly it saved me a lot of time."
+  },
+  {
+   "id": "R237",
+   "kind": "medium",
+   "sub": "medium",
+   "text": "The cost is not a problem, but I'm worried about how much time the team will need to learn it."
+  },
+  {
+   "id": "R238",
+   "kind": "medium",
+   "sub": "medium",
+   "text": "Could you please write that down in the ticket, so we have a record of the decision?"
+  },
+  {
+   "id": "R239",
+   "kind": "medium",
+   "sub": "medium",
+   "text": "I think we are mostly aligned, and the remaining differences are small details we can sort out later."
+  },
+  {
+   "id": "R240",
+   "kind": "medium",
+   "sub": "medium",
+   "text": "So the plan is to finish the testing this week, release on Thursday, and review the results on Monday."
+  },
+  {
+   "id": "R241",
+   "kind": "medium",
+   "sub": "medium",
+   "text": "I will check with the infrastructure team and come back to you with an answer by tomorrow noon."
+  },
+  {
+   "id": "R242",
+   "kind": "medium",
+   "sub": "medium",
+   "text": "Thanks for the update, that really helps, and I'll pass it along to the rest of the group."
+  },
+  {
+   "id": "R243",
+   "kind": "medium",
+   "sub": "medium",
+   "text": "We're running a little over, so let me suggest that we continue the rest in the channel."
+  },
+  {
+   "id": "R244",
+   "kind": "medium",
+   "sub": "medium",
+   "text": "Everyone has been quiet on this topic, so please speak up now if you disagree."
+  },
+  {
+   "id": "R245",
+   "kind": "medium",
+   "sub": "medium",
+   "text": "The numbers from last month look good, but the trend over the last two weeks worries me."
+  },
+  {
+   "id": "R246",
+   "kind": "medium",
+   "sub": "medium",
+   "text": "The test environment has been down since this morning, and nobody seems to know why."
+  },
+  {
+   "id": "R247",
+   "kind": "medium",
+   "sub": "medium",
+   "text": "I opened a ticket with the platform team, and they said they would look at it today."
+  },
+  {
+   "id": "R248",
+   "kind": "medium",
+   "sub": "medium",
+   "text": "It would be great if we could get a short written summary of this call by tomorrow."
+  },
+  {
+   "id": "R249",
+   "kind": "medium",
+   "sub": "medium",
+   "text": "Let me know if the time works for you, and otherwise I can move it to the following day."
+  },
+  {
+   "id": "R250",
+   "kind": "medium",
+   "sub": "medium",
+   "text": "I'm happy to pair on it tomorrow if you want a second pair of eyes on the problem."
+  },
+  {
+   "id": "R251",
+   "kind": "medium",
+   "sub": "medium",
+   "text": "We could also ask the vendor to join the next call and answer these questions directly."
+  },
+  {
+   "id": "R252",
+   "kind": "medium",
+   "sub": "medium",
+   "text": "Honestly, I would not change anything until we have seen another week of data."
+  },
+  {
+   "id": "R253",
+   "kind": "long",
+   "sub": "long",
+   "text": "Last week we merged the new authentication flow, and since then the number of failed logins has dropped quite a bit. I still see a few reports from people using older browsers, so I plan to test those today and then decide whether we need a small patch before the end of the sprint."
+  },
+  {
+   "id": "R254",
+   "kind": "long",
+   "sub": "long",
+   "text": "For the rest of the sprint I want to focus on three things: finishing the billing page, fixing the two bugs that customers reported last week, and cleaning up the old feature flags. If there is time left, I will also start on the documentation, but I would not promise that yet."
+  },
+  {
+   "id": "R255",
+   "kind": "long",
+   "sub": "long",
+   "text": "I know we all want to take on more, but looking at the last four sprints we have never finished more than thirty points. If we plan for forty again, we will just carry stories over and everyone will feel behind. I'd rather commit to less and actually finish it."
+  },
+  {
+   "id": "R256",
+   "kind": "long",
+   "sub": "long",
+   "text": "The main risk in this sprint is the dependency on the platform team. We need their new queue service before we can finish the notification work, and they told us it might slip by a week. So I suggest we start the parts that do not depend on it and leave the integration for last."
+  },
+  {
+   "id": "R257",
+   "kind": "long",
+   "sub": "long",
+   "text": "Let me walk through the timeline of the incident. At eight forty, the deployment finished and everything looked healthy. At nine ten, the error rate began to climb slowly. At nine thirty-five, the first customer complaint arrived, and at nine fifty we decided to roll back. By ten fifteen, the service was stable again."
+  },
+  {
+   "id": "R258",
+   "kind": "long",
+   "sub": "long",
+   "text": "The reason we did not catch it earlier is that our alert only fires when the error rate stays above five percent for fifteen minutes. In this case it hovered around four percent for a long time, which was still ten times normal. I propose we change the alert to compare against the usual baseline instead of a fixed number."
+  },
+  {
+   "id": "R259",
+   "kind": "long",
+   "sub": "long",
+   "text": "There are really two separate problems here. The first is the bug itself, which is fixed and has a test now. The second is that our release process allowed a change to reach all customers at once. I'd like to spend the review time on the second one, because it is the one that will bite us again."
+  },
+  {
+   "id": "R260",
+   "kind": "long",
+   "sub": "long",
+   "text": "One thing that went well was the communication during the incident. Support kept customers informed, engineering posted short updates every fifteen minutes, and nobody had to ask what was going on. We should keep doing that, and maybe write it down so new people know what to expect."
+  },
+  {
+   "id": "R261",
+   "kind": "long",
+   "sub": "long",
+   "text": "Thank you again for taking the time to meet with us. To give you some background, we are a team of about forty people, and we currently handle all our scheduling manually. We want something that connects to our existing calendar tools, supports different time zones, and has a good reporting feature that managers can use."
+  },
+  {
+   "id": "R262",
+   "kind": "long",
+   "sub": "long",
+   "text": "We are comparing three options at the moment, and price is important, but it is not the only factor. The things we care about most are how quickly your team responds when something breaks, how easy it is to export our data if we leave, and whether you can support our security requirements without any extra cost."
+  },
+  {
+   "id": "R263",
+   "kind": "long",
+   "sub": "long",
+   "text": "Before we sign anything, I want to be clear about the timeline. We would like a small pilot with about ten users for one month. If that goes well, we would roll out to everyone over the following quarter. Can you tell us what you would need from us to set up the pilot, and how fast it could start?"
+  },
+  {
+   "id": "R264",
+   "kind": "long",
+   "sub": "long",
+   "text": "I looked at the proposal your team sent, and most of it looks fine. My main concern is the section about usage limits. It says the limits can be changed with thirty days notice, and I would like that to be a fixed number for at least the first year, because it affects how we plan our budget."
+  },
+  {
+   "id": "R265",
+   "kind": "long",
+   "sub": "long",
+   "text": "Okay, so this is the new design for the dashboard. The main change is that the most important numbers now sit at the top in larger text, and everything else moves below the fold. During testing, people found what they needed much faster, but a few of them missed the filter button, so I'm still not sure about its position."
+  },
+  {
+   "id": "R266",
+   "kind": "long",
+   "sub": "long",
+   "text": "I took the feedback from last week and tried to simplify the navigation. Instead of seven items in the side menu, there are now four, and the rest are inside a settings area. This should make the product feel lighter, but I'm worried that some power users will have a harder time finding their favorite tools."
+  },
+  {
+   "id": "R267",
+   "kind": "long",
+   "sub": "long",
+   "text": "My main worry with this design is accessibility. The gray text on the white background is hard to read even for me, and I have good eyesight. Before we hand this to engineering, I'd like us to run a contrast check on every screen and fix whatever fails, rather than finding out from customers later."
+  },
+  {
+   "id": "R268",
+   "kind": "long",
+   "sub": "long",
+   "text": "If we build this exactly as designed, it will take about three weeks of front-end work. If we use the existing components and accept a slightly different look for the tables, we can do it in one week. I would recommend the second option for now, and then polish the details in a later sprint once we see how people use it."
+  },
+  {
+   "id": "R269",
+   "kind": "long",
+   "sub": "long",
+   "text": "The change to the database schema is the part that worries me most. We have to add a column to a table with several hundred million rows, and doing it the simple way would lock the table for a long time. I'd suggest we add it in the background in small batches, and switch the code over only when it is finished."
+  },
+  {
+   "id": "R270",
+   "kind": "long",
+   "sub": "long",
+   "text": "I reviewed the pull request this morning, and overall the approach is good. I left a few comments about naming and about one function that does too many things. There is also a case where the code retries forever if the server returns an error, and I think that needs a limit before we can merge it."
+  },
+  {
+   "id": "R271",
+   "kind": "long",
+   "sub": "long",
+   "text": "We have a problem with flaky tests. About one in ten runs of the pipeline fails for no clear reason, and people have started to just click rerun without looking. That hides real failures. I'd like to spend a few hours this week finding the worst offenders and either fixing or disabling them."
+  },
+  {
+   "id": "R272",
+   "kind": "long",
+   "sub": "long",
+   "text": "The deployment pipeline currently takes around twenty-five minutes, and most of that time is spent building the same dependencies over and over. If we cache them properly, I believe we can cut it to under ten. That would help everybody, so I think it is worth doing before we add any new features."
+  },
+  {
+   "id": "R273",
+   "kind": "long",
+   "sub": "long",
+   "text": "I want to raise a concern about the on-call rotation. Right now only four people are on it, and the same two get paged most of the time. That is not sustainable. I suggest we train two more people this month, and write down the common problems so that they feel confident handling them."
+  },
+  {
+   "id": "R274",
+   "kind": "long",
+   "sub": "long",
+   "text": "Let me summarize where we are on the migration. About seventy percent of the data has been moved, and the checks show no differences so far. The remaining thirty percent includes the oldest records, which have an unusual format, so I expect that part to take longer than the rest, perhaps another week."
+  },
+  {
+   "id": "R275",
+   "kind": "long",
+   "sub": "long",
+   "text": "The customer is asking whether we can deliver the report by the end of the month. Technically I think we can, but only if we agree to leave out the custom charts. I'd prefer to be honest with them now rather than promise everything and then miss the date, so I will write up two options for them."
+  },
+  {
+   "id": "R276",
+   "kind": "long",
+   "sub": "long",
+   "text": "To be fair to the other team, they did warn us about this change a month ago, and we simply did not plan for it. I'm not saying that to blame anyone, but it shows that we need a better way to track what other teams are changing, because this is the third time it has surprised us."
+  },
+  {
+   "id": "R277",
+   "kind": "long",
+   "sub": "long",
+   "text": "Looking at the numbers for last quarter, support tickets are down about twelve percent, but the average time to resolve each ticket went up. My guess is that the easy questions are now answered by the help pages, and what remains is harder. If that is right, then the increase is actually a good sign."
+  },
+  {
+   "id": "R278",
+   "kind": "long",
+   "sub": "long",
+   "text": "As for the budget, we have enough for the licenses this year, but not for the extra training that the vendor suggested. I think we can handle the training ourselves with a few internal sessions. If anyone has experience with the tool, please let me know, and we can set up a small workshop."
+  },
+  {
+   "id": "R279",
+   "kind": "long",
+   "sub": "long",
+   "text": "I'll try to be brief, because I know we are over time. The proposal is to move the weekly planning meeting to Monday morning, keep it to thirty minutes, and send the agenda the Friday before. If that works for everyone, I'll update the calendar invite today and we can start next week."
+  },
+  {
+   "id": "R280",
+   "kind": "long",
+   "sub": "long",
+   "text": "Before we close, let me repeat the action items so that nothing gets lost. Maria will update the runbook by Wednesday. Daniel will talk to the vendor about the contract terms. I will write the incident summary and send it to everyone, and we will meet again on Friday to check on progress."
+  },
+  {
+   "id": "R281",
+   "kind": "long",
+   "sub": "long",
+   "text": "Something I noticed while testing is that the app behaves differently when the network is slow. The spinner shows up, but after about ten seconds the screen just goes blank without any message. We should show an error and a retry button, because users will think the app crashed."
+  },
+  {
+   "id": "R282",
+   "kind": "long",
+   "sub": "long",
+   "text": "There was a long discussion in the channel about whether to rewrite the module or just fix it. My view is that a rewrite is tempting, but it would take at least a month, and in the meantime we would not ship anything else from that area. A series of small fixes seems far less risky."
+  },
+  {
+   "id": "R283",
+   "kind": "long",
+   "sub": "long",
+   "text": "Regarding the security review, the team found no serious problems, but they did recommend a few changes. The most important ones are to rotate the old keys, to stop logging full request bodies, and to require a second approval for any change to the production settings. I think all three are reasonable and cheap."
+  },
+  {
+   "id": "R284",
+   "kind": "long",
+   "sub": "long",
+   "text": "I understand the concern about moving quickly, but I've seen what happens when we skip the testing step. Two releases ago, a small change broke the export feature and it took three days to notice. Spending an extra half day on testing now is a much better trade than another round of emergency fixes."
+  },
+  {
+   "id": "R285",
+   "kind": "long",
+   "sub": "long",
+   "text": "When I started on this project I assumed the data would be clean, and it wasn't. About five percent of the records have missing dates, and some have dates in the future. I wrote a script to flag them, but someone who knows the business needs to tell me what the correct values should be."
+  },
+  {
+   "id": "R286",
+   "kind": "long",
+   "sub": "long",
+   "text": "I'd like to propose a small experiment. For the next two sprints, we limit work in progress to two items per person. The idea is that we finish things before starting new ones. If it does not help, we can go back to the old way, and we will have lost nothing but a bit of time."
+  },
+  {
+   "id": "R287",
+   "kind": "long",
+   "sub": "long",
+   "text": "We had a great conversation with the customer yesterday. They like the direction of the product, but they asked for two things: single sign-on and a way to export reports as spreadsheets. Both of those are already on our list, so I'd like to move them up and give the customer a rough date."
+  },
+  {
+   "id": "R288",
+   "kind": "long",
+   "sub": "long",
+   "text": "The good news is that performance testing came back well. With a thousand simulated users, the average response time stayed under half a second. The bad news is that memory use grows steadily over several hours, so there may be a leak somewhere. I'll run a longer test overnight and look at the results tomorrow."
+  },
+  {
+   "id": "R289",
+   "kind": "long",
+   "sub": "long",
+   "text": "I talked to the team about the proposal, and people are generally in favor, but there are a few reservations. Some are concerned about the extra work during the transition, and others would like to see a clearer description of what success looks like. Could you write that up before the next meeting?"
+  },
+  {
+   "id": "R290",
+   "kind": "long",
+   "sub": "long",
+   "text": "Because the vendor is based in a different time zone, our calls are always early or late for someone. I suggest we agree on one fixed slot each week, and use email for everything else. That way we avoid last-minute scheduling, and nobody has to join a call at an unreasonable hour."
+  },
+  {
+   "id": "R291",
+   "kind": "long",
+   "sub": "long",
+   "text": "For anyone new on the team, here is how the release works. On Tuesday we cut a release branch, on Wednesday we run the full test suite and fix any problems, and on Thursday morning we deploy to a small group of users. If everything looks fine after a few hours, we roll it out to everyone."
+  },
+  {
+   "id": "R292",
+   "kind": "long",
+   "sub": "long",
+   "text": "My concern about promising that date is that we have not yet looked at the work from the other team. If their part is late, ours cannot finish either, no matter how hard we work. Can we first ask them for a realistic plan, and then agree on a date that we both believe in?"
+  },
+  {
+   "id": "R293",
+   "kind": "long",
+   "sub": "long",
+   "text": "It might be worth stepping back for a moment. We've talked about three different solutions, and each of them has real tradeoffs. Rather than pick one right now, could two of us spend a day building a quick prototype of the most promising option, so we can decide based on something concrete?"
+  },
+  {
+   "id": "R294",
+   "kind": "long",
+   "sub": "long",
+   "text": "The documentation is the one thing we keep putting off. New joiners spend their first week asking the same questions, and the answers are scattered across chat and old tickets. If each of us writes one page about the area we know best, we'd have a decent start by the end of the month."
+  },
+  {
+   "id": "R295",
+   "kind": "long",
+   "sub": "long",
+   "text": "Just to give everyone context on why this matters: last month a customer lost almost a day of work because our export failed silently. They were polite about it, but they were clearly frustrated. If we handle errors properly, we avoid that kind of experience, and it costs us very little compared with what it saves."
+  },
+  {
+   "id": "R296",
+   "kind": "long",
+   "sub": "long",
+   "text": "I think the confusion comes from the fact that two teams use the same word for different things. When the product team says an active user, they mean someone who logged in this month. When engineering says it, we mean someone who performed an action. Let's agree on one definition and put it in the glossary."
+  },
+  {
+   "id": "R297",
+   "kind": "long",
+   "sub": "long",
+   "text": "Thanks for sharing those results, they are really helpful. One question I have is whether the sample was representative. If most of the testers were existing customers, then they already know the product, and a new user might struggle with things that these people found easy. Can we repeat the test with some fresh faces?"
+  },
+  {
+   "id": "R298",
+   "kind": "long",
+   "sub": "long",
+   "text": "Let me close the loop on the open questions from last time. The vendor confirmed that the data will stay in our region. They also agreed to a ninety day exit period. The only thing still open is the price for additional storage, and they promised to send a proposal by the end of the week."
+  },
+  {
+   "id": "R299",
+   "kind": "long",
+   "sub": "long",
+   "text": "To wrap up, I think we made good progress today. We agreed on the scope for the release, we found an owner for each open item, and we have a clear date for the next checkpoint. If anything changes before then, please post it in the channel right away, so we don't discover surprises on the day."
+  },
+  {
+   "id": "R300",
+   "kind": "long",
+   "sub": "long",
+   "text": "The honest answer is that I don't know yet. I have a theory that the slowdown is caused by the new logging, but I haven't proven it. The next step is to switch it off on one server and compare the response times over a few hours. I should have a clear answer by the end of the day."
+  }
+ ],
+ "enroll": [
+  {
+   "id": "RE1",
+   "text": "Good morning, everyone, and thank you for making time for this review. Before we get into the details, let me remind you why we are here. Over the last few weeks, the team has been working on improving how reliably our service handles busy periods. We changed how requests are queued, we added more careful monitoring, and we rewrote the part of the system that was causing most of the slowdowns. Today I would like to walk through what we changed, what we learned, and what still needs attention. I will share some numbers first, then show a few examples from the logs, and after that we can open the floor for questions. If anything is unclear while I am talking, please just say so and I will slow down. Our goal is simple: fewer surprises for our customers, and a calmer week for everyone on the team."
+  },
+  {
+   "id": "RE2",
+   "text": "Let me give you a quick update on where the project stands this week. The main work is nearly complete, and the testing is going better than we expected. A few small problems came up on Tuesday, mostly around how the application handles unusual input, but those have been fixed and checked again. What remains is mainly cleaning up the documentation and preparing the final release notes. I have also asked two colleagues to try the new version on their own machines, because a fresh pair of eyes often finds things that we miss. If they report nothing serious, we can plan to release on Thursday afternoon. Of course, if anything unexpected appears, I will tell you immediately and we can adjust the schedule. Thank you all for the effort you have put in so far. It has been a steady few weeks, and the result is looking very solid."
+  },
+  {
+   "id": "RE3",
+   "text": "I would like to take a few minutes to explain how we plan the work for the next cycle. First, we collect requests from every group, including support, sales, and the engineering team itself. Then we sort them by how many customers are affected and how much effort each one needs. Some items are small and quick, and we try to include a handful of those every time, because they make a visible difference. Larger items are split into smaller steps so that progress is easy to see. Each step gets an owner and an estimate, and we review those estimates together before anything is committed. If we find that we have promised too much, we remove something instead of working late. This approach is not perfect, but it has kept us honest and it has helped us deliver what we said we would."
+  },
+  {
+   "id": "RE4",
+   "text": "Thanks, everybody, for joining on short notice. I wanted to talk through the plan for the upcoming migration, since several of you have asked about it. The idea is to move our services one at a time, starting with the least important one, so that we can learn from any mistakes without affecting many people. For each service, we will take a backup, copy the data, and run a set of checks before switching traffic over. If something looks wrong, we can go back to the old setup within minutes. We expect the whole process to take about six weeks, with a pause during the end of month reporting period. I will send a detailed schedule after this call. Please read it carefully, and tell me if any of the dates clash with your plans, because I would much rather fix that early than late."
+  }
+ ]
+}

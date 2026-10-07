@@ -8,7 +8,7 @@ Exercises, with synthetic embeddings (no models, no audio):
   * a genuine two-voice meeting is still named in full.
   * absorb split: a cluster absorbs into a voice ALREADY PLACED in this meeting at
     placed_absorb_threshold (0.70) only when most of its turns individually agree
-    (purity gate); a blend of two speakers is refused.
+    (talk-share gate); a blend of two speakers is refused.
   * absorb into a voice NOT placed in this meeting keeps the strict 0.85 bar.
   * without per-turn embeddings the low bar never applies (falls back to 0.85).
 
@@ -120,7 +120,7 @@ def test_absorb_placed_voice_with_purity():
     assert out["SPEAKER_02"] == "P", (out, sim)
     hit = [r for r in rep if r["pass"] == "absorb" and r["cluster"] == "SPEAKER_02"]
     assert len(hit) == 1 and hit[0]["matched"] and hit[0]["threshold"] == 0.70, hit
-    assert hit[0]["purity"] == 1.0, hit
+    assert hit[0]["purity"] == 1.0 and hit[0]["talk_share"] == 1.0, hit
 
     # Control: same centroid band, but half the turns are another voice (Q).
     A = [around(E[0], rng) for _ in range(3)]
@@ -133,6 +133,7 @@ def test_absorb_placed_voice_with_purity():
     hit = [r for r in rep if r["pass"] == "absorb" and r["cluster"] == "SPEAKER_02"]
     assert len(hit) == 1 and not hit[0]["matched"], hit
     assert hit[0].get("purity") is not None and hit[0]["purity"] <= 0.5, hit
+    assert hit[0]["talk_share"] < 0.6, hit
 
 
 def test_unplaced_voice_keeps_strict_absorb():

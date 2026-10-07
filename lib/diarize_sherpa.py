@@ -824,7 +824,8 @@ def cluster_segments(all_segments: list, num_speakers: int, min_speakers: int = 
                      max_speakers: int = 0, anchors: list | None = None,
                      anchor_threshold: float | None = None,
                      dump_base: str | None = None,
-                     turn_out: dict | None = None) -> tuple:
+                     turn_out: dict | None = None,
+                     span_out: dict | None = None) -> tuple:
     """Assign every segment a global speaker by clustering ALL per-turn voiceprints at
     once — a global view that matches whole-file quality even though the segmentation
     ran chunk-by-chunk.
@@ -849,7 +850,9 @@ def cluster_segments(all_segments: list, num_speakers: int, min_speakers: int = 
     it has no effect on the result.
 
     `turn_out`, when a dict, is filled with {SPEAKER_NN: [unit per-turn embedding]}
-    so name_clusters' purity gate can see the turns behind each centroid."""
+    so name_clusters' purity gate can see the turns behind each centroid.
+    `span_out`, when a dict, is filled with {SPEAKER_NN: [(start, end), ...]} parallel
+    to `turn_out` row for row, so the gate's per-turn inputs can be recorded."""
     embedded = [s for s in all_segments if s.get("emb")]
     if not embedded:
         return [], {}, [], None, None
@@ -957,11 +960,15 @@ def cluster_segments(all_segments: list, num_speakers: int, min_speakers: int = 
 
     cluster_emb = {}
     for c in order:
-        rows = X[[i for i, s in enumerate(embedded) if s["_c"] == c]]
+        idx = [i for i, s in enumerate(embedded) if s["_c"] == c]
+        rows = X[idx]
         v = rows.sum(axis=0)
         cluster_emb[relabel[c]] = v / (np.linalg.norm(v) + 1e-9)
         if turn_out is not None:
             turn_out[relabel[c]] = [r for r in rows]
+        if span_out is not None:
+            span_out[relabel[c]] = [(float(embedded[i]["start"]), float(embedded[i]["end"]))
+                                    for i in idx]
 
     segs = [{"start": s["start"], "end": s["end"], "speaker": relabel[s["_c"]]} for s in all_segments]
     segs.sort(key=lambda s: s["start"])
@@ -985,7 +992,8 @@ def diarize_parallel(audio: str, total_dur: float, num_speakers: int, jobs: int,
                      max_speakers: int = 0, anchors: list | None = None,
                      anchor_threshold: float | None = None,
                      dump_base: str | None = None,
-                     turn_out: dict | None = None) -> tuple:
+                     turn_out: dict | None = None,
+                     span_out: dict | None = None) -> tuple:
     """Split the audio into windows, segment+embed them concurrently, then cluster
     globally. Returns (segments, {SPEAKER_NN: embedding}, speakers, estimate, anchor_info).
 
@@ -1009,7 +1017,8 @@ def diarize_parallel(audio: str, total_dur: float, num_speakers: int, jobs: int,
     all_segments = [s for chunk in per_chunk if chunk for s in chunk]
     return cluster_segments(all_segments, num_speakers, min_speakers, max_speakers,
                             anchors=anchors, anchor_threshold=anchor_threshold,
-                            dump_base=dump_base, turn_out=turn_out)
+                            dump_base=dump_base, turn_out=turn_out,
+                            span_out=span_out)
 
 
 def build_turns(segs: list, whisper_json: str | None) -> list:
@@ -1162,13 +1171,18 @@ def default_ref_threshold() -> float:
 
 
 DEFAULT_PLACED_ABSORB_THRESHOLD = 0.70
+# Placed absorb (#77): share of talk time that must be closest to the candidate voice.
+PLACED_ABSORB_MIN_SHARE = 0.60
+# Placed absorb (#77): a turn only counts toward that share if it scores at least this vs the candidate.
+PLACED_ABSORB_TURN_FLOOR = 0.40
 
 
 def name_clusters(cluster_emb: dict, ref_threshold: float, absorb_threshold: float,
                   registry_entries: list, ref_voices: list | None = None,
                   names: dict | None = None, report: list | None = None,
                   placed_absorb_threshold: float = DEFAULT_PLACED_ABSORB_THRESHOLD,
-                  turn_emb: dict | None = None) -> dict:
+                  turn_emb: dict | None = None,
+                  turn_spans: dict | None = None) -> dict:
     """Assign real names to anonymous clusters in three passes and return the
     {SPEAKER_NN: name-or-self} map. Shared by the transcribe path and
     `relabel --auto` so both name clusters identically.
@@ -1214,11 +1228,22 @@ def name_clusters(cluster_emb: dict, ref_threshold: float, absorb_threshold: flo
     clusters whose best candidate scored 0.70-0.85 were single-speaker splits of
     that candidate (down to 0.701); the other 2 blended two speakers, and the top
     scorer (0.836) was one of them, so score alone cannot tell a split from a blend.
-    Hence the purity gate: more than half of the cluster's turns (`turn_emb`) must
-    each score >= placed_absorb_threshold against the candidate AND have it as their
-    best known voice; the decision records `purity`. With no `turn_emb` (the
-    `relabel --auto` sidecar keeps only centroids) the low bar does not apply and
-    absorb_threshold is used.
+    Hence the talk-share gate: at least PLACED_ABSORB_MIN_SHARE (0.60) of the cluster's
+    talk time must sit in turns (`turn_emb`) whose best known voice is the candidate
+    AND that score >= PLACED_ABSORB_TURN_FLOOR (0.40) against it. Turns are weighted
+    by seconds (end - start from `turn_spans`; count weighting when spans are absent),
+    so a few long, clear turns outvote many short noisy ones. The first gate (#77,
+    fraction of turns scoring >= 0.70 individually and best-matching the candidate)
+    refused all 12 true single-speaker splits in 20 synthetic meetings (purity
+    0.00-0.30) because per-turn TitaNet scores on short turns have a median near 0.5.
+    On those same 12 splits the talk share ranged 0.75-1.00, while a blend (half the
+    turns best-matching another voice) lands near 0.5. The issue also suggested
+    ignoring turns shorter than 3 s; that is deliberately NOT done, because one true
+    split (48 turns, 76 s) had no turn >= 3 s at all. Seconds-weighting already
+    discounts short turns without discarding a cluster made only of them. The
+    decision records `talk_share` (the decision field) and still records the old
+    `purity` for comparison. With no `turn_emb` (the `relabel --auto` sidecar keeps
+    only centroids) the low bar does not apply and absorb_threshold is used.
 
     Clusters whose best candidate stays BELOW the gate keep their anonymous
     SPEAKER_NN label (see the `>= ref_threshold` guards below) — a low-confidence
@@ -1234,6 +1259,11 @@ def name_clusters(cluster_emb: dict, ref_threshold: float, absorb_threshold: flo
     `turn_emb`         : optional {SPEAKER_NN: [per-turn embedding, ...]} for the
                          purity gate; absent => placed absorb falls back to
                          absorb_threshold.
+    `turn_spans`       : optional {SPEAKER_NN: [(start, end), ...]} parallel to
+                         `turn_emb`; when given, absorb records that computed a purity
+                         also carry `turns`, the per-turn inputs behind it (start, end,
+                         score vs the candidate, best known voice and its score), so the
+                         gate can be tuned offline. Never affects a decision.
     """
     ref_voices = ref_voices or []
     if report is None:
@@ -1382,6 +1412,50 @@ def name_clusters(cluster_emb: dict, ref_threshold: float, absorb_threshold: flo
                 ok += 1
         return ok / len(rows)
 
+    def talk_share(sp, cand):
+        """Seconds-weighted fraction of sp's talk time in turns whose best known voice
+        is `cand` and whose score vs `cand` is >= PLACED_ABSORB_TURN_FLOOR. Weights are
+        end - start from turn_spans when they match the turns one-to-one, else every
+        turn weighs 1. None when no turns are available (same as purity_of)."""
+        rows = (turn_emb or {}).get(sp)
+        if rows is None or len(rows) == 0:
+            return None
+        spans = (turn_spans or {}).get(sp)
+        weights = [1.0] * len(rows)
+        if spans is not None and len(spans) == len(rows):
+            w = [float(b) - float(a) for a, b in spans]
+            if sum(w) > 0:
+                weights = w
+        total = sum(weights)
+        got = 0.0
+        for t, w in zip(rows, weights):
+            t = unit(t)
+            per = {n: max(float(np.dot(t, v)) for v in vs) for n, vs in voice_vecs.items()}
+            if per[cand] >= PLACED_ABSORB_TURN_FLOOR and max(per, key=per.get) == cand:
+                got += w
+        return got / total
+
+    def turn_rows(sp, cand):
+        """Per-turn inputs behind purity_of(sp, cand), in time order; start/end are
+        None when no spans were handed in. Mirrors purity_of's scoring exactly."""
+        rows = (turn_emb or {}).get(sp) or []
+        spans = (turn_spans or {}).get(sp)
+        if spans is not None and len(spans) != len(rows):
+            spans = None  # misaligned spans would pin times on the wrong turns
+        out = []
+        for i, t in enumerate(rows):
+            t = unit(t)
+            per = {n: max(float(np.dot(t, v)) for v in vs) for n, vs in voice_vecs.items()}
+            best = max(per, key=per.get)
+            sp_i = spans[i] if spans is not None and i < len(spans) else (None, None)
+            out.append({"start": None if sp_i[0] is None else round(float(sp_i[0]), 3),
+                        "end": None if sp_i[1] is None else round(float(sp_i[1]), 3),
+                        "score": round(per[cand], 4),
+                        "best": best, "best_score": round(per[best], 4)})
+        if spans is not None:
+            out.sort(key=lambda r: (r["start"] is None, r["start"] or 0.0))
+        return out
+
     for sp, e in cluster_emb.items():
         if names.get(sp, sp) != sp:
             continue
@@ -1403,17 +1477,19 @@ def name_clusters(cluster_emb: dict, ref_threshold: float, absorb_threshold: flo
         pb = max(pc, key=pc.get) if pc else None
         if pb is not None and pc[pb] >= placed_absorb_threshold:
             purity = purity_of(sp, pb)
-            if purity is not None:
-                matched = purity > 0.5
+            share = talk_share(sp, pb)
+            if purity is not None and share is not None:
+                matched = share >= PLACED_ABSORB_MIN_SHARE
                 record(sp, pb, pc[pb], placed_absorb_threshold, matched, "absorb",
-                       purity=round(purity, 4))
+                       purity=round(purity, 4), talk_share=round(share, 4),
+                       turns=turn_rows(sp, pb))
                 if matched:
                     names[sp] = pb
                     log(f"  absorb: {sp} -> {pb} (sim {pc[pb]:.3f}, placed voice, "
-                        f"purity {purity:.2f})")
+                        f"talk share {share:.2f})")
                 else:
-                    log(f"  absorb: {sp} -/-> {pb} (sim {pc[pb]:.3f}) refused: purity "
-                        f"{purity:.2f} <= 0.50, looks like a blend")
+                    log(f"  absorb: {sp} -/-> {pb} (sim {pc[pb]:.3f}) refused: talk share "
+                        f"{share:.2f} < {PLACED_ABSORB_MIN_SHARE:.2f}, looks like a blend")
                 continue
         record(sp, bn, cands[bn], absorb_threshold, False, "absorb")
     return names
@@ -1914,7 +1990,7 @@ def main() -> None:
                                                  str(DEFAULT_PLACED_ABSORB_THRESHOLD))),
                     help="lower absorb bar for a voice ALREADY PLACED in this meeting (it owns "
                          "a cluster): a still-unnamed cluster folds into it at this cosine when "
-                         "most of its turns individually agree (purity gate, #77). Needs per-turn "
+                         "most of its talk time is closest to that voice (talk-share gate, #77). Needs per-turn "
                          "voiceprints (transcribe, chunked path); `relabel --auto` and --no-chunk "
                          "fall back to --absorb-threshold. Default 0.70; env "
                          "WHOSAID_PLACED_ABSORB_THRESHOLD.")
@@ -2091,13 +2167,14 @@ def main() -> None:
     count_estimate = None
     anchor_info = None
     turn_emb: dict = {}  # per-turn prints for the purity gate; chunked path only
+    turn_spans: dict = {}  # (start, end) per turn_emb row, recorded with the gate's inputs
     if use_chunk:
         log(f"audio {total_dur:.0f}s -> parallel diarization")
         segs, cluster_emb, speakers, count_estimate, anchor_info = diarize_parallel(
             args.audio, total_dur, args.num_speakers, jobs, chunk_seconds,
             args.min_speakers, args.max_speakers,
             anchors=anchors or None, anchor_threshold=args.anchor_threshold,
-            dump_base=base, turn_out=turn_emb)
+            dump_base=base, turn_out=turn_emb, span_out=turn_spans)
     else:
         samples = load_audio(args.audio)
         log(f"audio loaded: {len(samples) / SAMPLE_RATE:.0f}s (whole-file diarization)")
@@ -2196,7 +2273,7 @@ def main() -> None:
     name_clusters(cluster_emb, args.ref_threshold, args.absorb_threshold,
                   registry_entries, ref_voices, names, report=registry_matches,
                   placed_absorb_threshold=args.placed_absorb_threshold,
-                  turn_emb=turn_emb or None)
+                  turn_emb=turn_emb or None, turn_spans=turn_spans or None)
 
     # ---- persist identified speakers to the local registry (--save-speaker) ----
     local_labels: dict = {}
