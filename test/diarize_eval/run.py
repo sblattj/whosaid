@@ -136,13 +136,14 @@ def run_one(whosaid, mdir, truth, mode, work, pool_root, extra=()):
         names = sc.get("names") or {}
         segs = [dict(s, speaker=names.get(s["speaker"], s["speaker"])) for s in sc["segments"]]
         res = score_meeting(truth, segs, "blind" if mode in ("blind", "hint") else "named",
-                            enrolled=enrolled or None, hyp_text=hyp_text)
+                            enrolled=enrolled or None, hyp_text=hyp_text,
+                            uncounted=sc.get("uncounted"))
     except Exception as e:  # a scoring/parse bug must not kill the run
         row["failed"] = True
         row["error"] = "score: %r" % (e,)
         return row
     row.update(res)
-    for k in ("num_speakers", "detect_mode", "count_warning", "count_estimate"):
+    for k in ("num_speakers", "uncounted", "detect_mode", "count_warning", "count_estimate"):
         row[k] = sc.get(k)
     return row
 

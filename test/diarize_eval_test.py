@@ -131,6 +131,17 @@ class Blind(unittest.TestCase):
         self.assertEqual(r["der"], 0.0067)
         self.assertIsNone(r["mapping"]["SPEAKER_09"])
 
+    def test_uncounted_label_leaves_headcount_keeps_der(self):
+        # #69: a 0.8 s nameless cluster listed in the sidecar's `uncounted`
+        hyp = PERFECT3 + H(("SPEAKER_09", 31.0, 31.8))
+        r = sc.score_meeting(TRUTH3, hyp, "blind")
+        self.assertEqual((r["n_hyp"], r["count_ok"]), (4, False), "without the key: unchanged")
+        r2 = sc.score_meeting(TRUTH3, hyp, "blind", uncounted=["SPEAKER_09"])
+        self.assertEqual((r2["n_hyp"], r2["n_hyp_raw"], r2["count_ok"]), (3, 4, True))
+        self.assertEqual(r2["der"], r["der"], "DER keeps the uncounted label's time")
+        self.assertIsNone(r2["mapping"]["SPEAKER_09"])
+        self.assertEqual(sc.score_meeting(TRUTH3, hyp, "blind", uncounted=[])["n_hyp"], 4)
+
     def test_miss_when_hyp_silent(self):
         hyp = H(("SPEAKER_00", 0, 10), ("SPEAKER_01", 10, 20), ("SPEAKER_02", 20, 25))
         r = sc.score_meeting(TRUTH3, hyp, "blind")
