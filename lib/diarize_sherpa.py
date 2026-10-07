@@ -1422,6 +1422,7 @@ def name_clusters(cluster_emb: dict, ref_threshold: float, absorb_threshold: flo
     # Pass 3: absorb phantom splits into the nearest known voice. "Placed" is
     # snapshotted here so the result never depends on cluster iteration order.
     placed_now = {nm for sp, nm in names.items() if nm != sp}
+    anon_now = [sp for sp in cluster_emb if names.get(sp, sp) == sp]
     owner_clusters: dict = {}
     for sp, nm in names.items():
         if nm != sp and sp in cluster_emb:
@@ -1469,11 +1470,14 @@ def name_clusters(cluster_emb: dict, ref_threshold: float, absorb_threshold: flo
                 got += w
         return got / total
 
-    def runner_up(sp, cand):
+    def runner_up(sp, cand, extra=None):
         """(name, share) of the OTHER known voice holding the most of sp's talk time:
         seconds-weighted share of turns whose best known voice is that voice and score
         >= PLACED_ABSORB_TURN_FLOOR against it, weighted exactly like talk_share.
-        (None, 0.0) when no other voice wins any turn or no turns are available."""
+        `extra` ({label: [unit vectors]}) adds more contenders, e.g. the meeting's
+        anonymous cluster centroids. (None, 0.0) when no other voice wins any turn or
+        no turns are available."""
+        contenders = voice_vecs if not extra else {**voice_vecs, **extra}
         rows = (turn_emb or {}).get(sp)
         if rows is None or len(rows) == 0:
             return None, 0.0
@@ -1487,7 +1491,7 @@ def name_clusters(cluster_emb: dict, ref_threshold: float, absorb_threshold: flo
         by: dict = {}
         for t, w in zip(rows, weights):
             t = unit(t)
-            per = {n: max(float(np.dot(t, v)) for v in vs) for n, vs in voice_vecs.items()}
+            per = {n: max(float(np.dot(t, v)) for v in vs) for n, vs in contenders.items()}
             best = max(per, key=per.get)
             if best != cand and per[best] >= PLACED_ABSORB_TURN_FLOOR:
                 by[best] = by.get(best, 0.0) + w
@@ -1549,11 +1553,16 @@ def name_clusters(cluster_emb: dict, ref_threshold: float, absorb_threshold: flo
                 # neither field separated synthetic blends from real splits.
                 second = max((n for n in pc if n != pb), key=pc.get, default=None)
                 ru, ru_share = runner_up(sp, pb)
+                # Same, but the meeting's other anonymous clusters also compete, so an
+                # unenrolled partner in a blend can show up (#77, recorded only).
+                rua, rua_share = runner_up(sp, pb, {o: [unit(cluster_emb[o])]
+                                                    for o in anon_now if o != sp})
                 matched = share >= PLACED_ABSORB_MIN_SHARE and sib_ok
                 record(sp, pb, pc[pb], placed_absorb_threshold, matched, "absorb",
                        purity=round(purity, 4), talk_share=round(share, 4),
                        sibling_sim=None if sib is None else round(sib, 4),
                        runner_up=ru, runner_up_share=round(ru_share, 4),
+                       runner_up_any=rua, runner_up_any_share=round(rua_share, 4),
                        second_placed=second,
                        second_placed_sim=None if second is None else round(pc[second], 4),
                        turns=turn_rows(sp, pb))

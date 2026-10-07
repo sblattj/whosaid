@@ -448,6 +448,7 @@ def plan_meeting(rng, voices, bank, *, minutes=(30, 120), speakers=(6, 10), rost
     turns = []
     ov_secs = 0.0
     talk_total = 0.0
+    n_blends = 0  # episodes actually inserted (one that would overrun the end is skipped)
     prev = None  # (speaker, start, end) of the last floor turn
     last_spk = None  # speaker of the last turn of any kind, in time order
 
@@ -482,6 +483,7 @@ def plan_meeting(rng, voices, bank, *, minutes=(30, 120), speakers=(6, 10), rost
             length = brng.uniform(15.0, 40.0)
             if s0 + length < D - TRAIL - 1.0:
                 ct, cend = _crosstalk(brng, ctx, pair, s0, length)
+                n_blends += 1
                 for x in ct:
                     turns.append(x)
                     talk[x["speaker"]] += x["end"] - x["start"]
@@ -601,7 +603,7 @@ def plan_meeting(rng, voices, bank, *, minutes=(30, 120), speakers=(6, 10), rost
                       "share_target": round(share[v], 4)})
     return {"schema": 1, "id": "m%d-%03d" % (seed, idx), "seed": seed,
             "duration": round(duration, 3),
-            "tags": ["realistic", "n%d" % n] + tags + (["blend%d" % blends] if blends and n >= 2 else []),
+            "tags": ["realistic", "n%d" % n] + tags + (["blend%d" % n_blends] if n_blends else []),
             "speakers": names, "epochs": epochs, "turns": turns,
             "overlap_target": round(overlap_target, 4)}
 

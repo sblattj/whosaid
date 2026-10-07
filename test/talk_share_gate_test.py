@@ -61,9 +61,11 @@ def scene(c1=None, c2=None):
     return emb, ents
 
 
-def run(turns, durs=None, c1=None, c2=None):
-    """durs: per-turn seconds (spans laid end to end); None => no turn_spans."""
+def run(turns, durs=None, c1=None, c2=None, anon=None):
+    """durs: per-turn seconds (spans laid end to end); None => no turn_spans.
+    anon: extra {label: centroid} clusters that match no voice (stay anonymous)."""
     emb, ents = scene(c1, c2)
+    emb.update(anon or {})
     rep = []
     kw = {"turn_emb": {"SPEAKER_02": turns}}
     if durs is not None:
@@ -189,6 +191,19 @@ def test_record_carries_runner_up():
     _, rec = run([turn(0.6)] * 3, durs=[2.0] * 3)
     assert rec["runner_up"] is None and rec["runner_up_share"] == 0.0, rec
 
+
+def test_record_carries_anonymous_runner_up():
+    # v1.13.3, #77: the blend partner R (e2) is not enrolled, so runner_up cannot see
+    # it; runner_up_any also scores turns against the meeting's anonymous clusters and
+    # names R's cluster. Recorded only: the absorb still goes through.
+    rturn = unit(0.1 * E[0] + 0.99 * E[2])
+    out, rec = run([turn(0.6)] * 3 + [rturn], durs=[3.0] * 4, anon={"SPEAKER_03": E[2]})
+    assert rec["runner_up"] is None and rec["runner_up_share"] == 0.0, rec
+    assert rec["runner_up_any"] == "SPEAKER_03" and rec["runner_up_any_share"] == 0.25, rec
+    assert rec["matched"] and out["SPEAKER_02"] == "P", (rec, out)
+    # known voices still compete: Q's turn is Q's in both fields
+    _, rec = run([turn(0.6)] * 3 + [QTURN], durs=[3.0] * 4, anon={"SPEAKER_03": E[2]})
+    assert rec["runner_up_any"] == "Q" and rec["runner_up_any_share"] == 0.25, rec
 
 if __name__ == "__main__":
     for name, fn in list(globals().items()):

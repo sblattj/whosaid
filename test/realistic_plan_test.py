@@ -192,6 +192,18 @@ def check_blends(voices, bank):
     p = rp.plan_meeting(random.Random(5), voices, bank, blends=2, **kw)
     ct = [t for t in p["turns"] if t["kind"] == "crosstalk"]
     assert "blend2" in p["tags"], p["tags"]
+    # the tag counts episodes actually inserted: one that would overrun the end is
+    # skipped, so 6 blends asked of a 1-minute meeting must tag fewer. Each episode
+    # spans 15-40 s, which bounds the count from the crosstalk time covered.
+    q = rp.plan_meeting(random.Random(5), voices, bank, blends=6, minutes=(1, 1),
+                        speakers=(4, 4), mid="m5-001")
+    tag = [x for x in q["tags"] if x.startswith("blend")]
+    got = int(tag[0][5:]) if tag else 0
+    covered, edge = 0.0, 0.0
+    for t in sorted((t for t in q["turns"] if t["kind"] == "crosstalk"), key=lambda t: t["start"]):
+        covered += max(0.0, t["end"] - max(t["start"], edge))
+        edge = max(edge, t["end"])
+    assert got < 6 and 14.0 * got <= covered <= 41.0 * got, (q["tags"], covered)
     assert len({t["speaker"] for t in ct}) >= 2, ct[:3]
     assert len(ct) >= 10, len(ct)
     assert all(t["end"] - t["start"] <= 2.6 + 1e-6 for t in ct), max(t["end"] - t["start"] for t in ct)
