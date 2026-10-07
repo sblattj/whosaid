@@ -564,6 +564,19 @@ def test_relabel_flags() -> None:
         check(calls[-1] == ["relabel", "rec", "--auto", "--fold-unknown"],
               f"fold_unknown must follow --auto in CLI argv: {calls[-1]}")
 
+        out = mcp_server.whosaid_relabel("rec", {}, auto=True, forget=["Jane", "Bob_2"])
+        check(out["ok"] is True, f"forget with auto=true must be accepted: {out}")
+        check(calls[-1] == ["relabel", "rec", "--auto", "--forget", "Jane", "--forget", "Bob_2"],
+              f"each forget name must become its own --forget flag: {calls[-1]}")
+
+        before = len(calls)
+        out = mcp_server.whosaid_relabel("rec", {"SPEAKER_00": "Jane"}, forget=["Jane"])
+        check(out["ok"] is False and len(calls) == before and "requires auto=true" in out["error"],
+              f"forget without auto must be rejected before shelling: {out}")
+        out = mcp_server.whosaid_relabel("rec", {}, auto=True, forget=["bad name; rm"])
+        check(out["ok"] is False and len(calls) == before and "forget" in out["error"],
+              f"a malformed forget name must be rejected before shelling: {out}")
+
         before = len(calls)
         out = mcp_server.whosaid_relabel("rec", {"SPEAKER_00": "Jane"}, fold_unknown=True)
         check(out["ok"] is False and len(calls) == before and "requires auto=true" in out["error"],

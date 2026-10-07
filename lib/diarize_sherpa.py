@@ -787,7 +787,8 @@ def default_anchor_threshold() -> float:
 def cluster_segments(all_segments: list, num_speakers: int, min_speakers: int = 0,
                      max_speakers: int = 0, anchors: list | None = None,
                      anchor_threshold: float | None = None,
-                     dump_base: str | None = None) -> tuple:
+                     dump_base: str | None = None,
+                     turn_out: dict | None = None) -> tuple:
     """Assign every segment a global speaker by clustering ALL per-turn voiceprints at
     once — a global view that matches whole-file quality even though the segmentation
     ran chunk-by-chunk.
@@ -809,7 +810,10 @@ def cluster_segments(all_segments: list, num_speakers: int, min_speakers: int = 
     {"threshold", "anchored": {SPEAKER_NN: name}, "names": {name: {turns, mean_cosine}}}.
 
     `dump_base` names the opt-in WHOSAID_DUMP_EMBEDDINGS file (dump_estimate_inputs);
-    it has no effect on the result."""
+    it has no effect on the result.
+
+    `turn_out`, when a dict, is filled with {SPEAKER_NN: [unit per-turn embedding]}
+    so name_clusters' purity gate can see the turns behind each centroid."""
     embedded = [s for s in all_segments if s.get("emb")]
     if not embedded:
         return [], {}, [], None, None
@@ -920,6 +924,8 @@ def cluster_segments(all_segments: list, num_speakers: int, min_speakers: int = 
         rows = X[[i for i, s in enumerate(embedded) if s["_c"] == c]]
         v = rows.sum(axis=0)
         cluster_emb[relabel[c]] = v / (np.linalg.norm(v) + 1e-9)
+        if turn_out is not None:
+            turn_out[relabel[c]] = [r for r in rows]
 
     segs = [{"start": s["start"], "end": s["end"], "speaker": relabel[s["_c"]]} for s in all_segments]
     segs.sort(key=lambda s: s["start"])
@@ -942,7 +948,8 @@ def diarize_parallel(audio: str, total_dur: float, num_speakers: int, jobs: int,
                      chunk_seconds: float, min_speakers: int = 0,
                      max_speakers: int = 0, anchors: list | None = None,
                      anchor_threshold: float | None = None,
-                     dump_base: str | None = None) -> tuple:
+                     dump_base: str | None = None,
+                     turn_out: dict | None = None) -> tuple:
     """Split the audio into windows, segment+embed them concurrently, then cluster
     globally. Returns (segments, {SPEAKER_NN: embedding}, speakers, estimate, anchor_info).
 
@@ -966,7 +973,7 @@ def diarize_parallel(audio: str, total_dur: float, num_speakers: int, jobs: int,
     all_segments = [s for chunk in per_chunk if chunk for s in chunk]
     return cluster_segments(all_segments, num_speakers, min_speakers, max_speakers,
                             anchors=anchors, anchor_threshold=anchor_threshold,
-                            dump_base=dump_base)
+                            dump_base=dump_base, turn_out=turn_out)
 
 
 def build_turns(segs: list, whisper_json: str | None) -> list:
@@ -1109,9 +1116,14 @@ def default_ref_threshold() -> float:
         return DEFAULT_REF_THRESHOLD
 
 
+DEFAULT_PLACED_ABSORB_THRESHOLD = 0.70
+
+
 def name_clusters(cluster_emb: dict, ref_threshold: float, absorb_threshold: float,
                   registry_entries: list, ref_voices: list | None = None,
-                  names: dict | None = None, report: list | None = None) -> dict:
+                  names: dict | None = None, report: list | None = None,
+                  placed_absorb_threshold: float = DEFAULT_PLACED_ABSORB_THRESHOLD,
+                  turn_emb: dict | None = None) -> dict:
     """Assign real names to anonymous clusters in three passes and return the
     {SPEAKER_NN: name-or-self} map. Shared by the transcribe path and
     `relabel --auto` so both name clusters identically.
@@ -1119,14 +1131,19 @@ def name_clusters(cluster_emb: dict, ref_threshold: float, absorb_threshold: flo
     Passes (each only touches STILL-UNNAMED clusters, so earlier/explicit names win):
       1. registry one-best — each known voiceprint claims at most one cluster at
          cosine >= ref_threshold (default 0.50), assigned best-pair-first across
-         all voices so registry order never decides a contested cluster.
+         all voices so registry order never decides a contested cluster. A claim is
+         refused when the cluster scores at least as high against a voice ALREADY
+         PLACED in this meeting (margin gate, #77).
       2. --ref clips — each reference voice claims at most one cluster (>= ref_threshold),
          assigned best-pair-first across all refs so argument order never decides a
          contested cluster; a ref whose name the registry already assigned is skipped,
-         so one person never lands on two cards.
+         so one person never lands on two cards. Same margin gate as pass 1.
       3. absorb — every cluster still unnamed whose centroid cosine to ANY known
          voice (registry entries AND --ref voices) is >= absorb_threshold takes
          that name. Multiple clusters may share a name; the cards merge them.
+         Into a voice ALREADY PLACED in this meeting the bar drops to
+         placed_absorb_threshold, but only when `turn_emb` is given and the purity
+         gate passes (see below).
 
     Ref-threshold rationale (0.50 default, raised from 0.40 for GitHub issue #1):
     on real meeting audio TitaNet-small asserted wrong names in the 0.40-0.53 band,
@@ -1134,9 +1151,29 @@ def name_clusters(cluster_emb: dict, ref_threshold: float, absorb_threshold: flo
     enrolled reference matches its cluster at 0.986, against 0.194 for the nearest
     stranger, so 0.50 sits in a wide empty gap rather than near a real match.
 
+    Margin gate (#77): an enrolled voice that is NOT in the meeting used to grab a
+    leftover cluster that really belonged to a speaker already placed. On 43 real
+    recordings those false matches scored 0.52-0.66 against the absent voice, while
+    the best OTHER registry voice scored up to 0.86 (often 0.70+); genuine matches
+    scored 0.89-1.00 with the best other at 0.45-0.50. So (voice V, cluster C) at
+    similarity s is rejected when C scores >= s against a placed voice, and the
+    report records it (matched False, `blocked_by` = the placed name).
+
     Absorb-threshold rationale (0.85 default): same-speaker TitaNet-small centroids
     measured 0.90-0.95 across window splits, while distinct speakers stayed <= 0.73,
     so 0.85 folds phantom splits back together without swallowing real strangers.
+    That bar is kept for any voice NOT placed in this meeting: lowering it there
+    would recreate the sink-voice bug through this pass.
+
+    Placed-absorb threshold (0.70 default, #77): checked by ear, 21 of the 23 unnamed
+    clusters whose best candidate scored 0.70-0.85 were single-speaker splits of
+    that candidate (down to 0.701); the other 2 blended two speakers, and the top
+    scorer (0.836) was one of them, so score alone cannot tell a split from a blend.
+    Hence the purity gate: more than half of the cluster's turns (`turn_emb`) must
+    each score >= placed_absorb_threshold against the candidate AND have it as their
+    best known voice; the decision records `purity`. With no `turn_emb` (the
+    `relabel --auto` sidecar keeps only centroids) the low bar does not apply and
+    absorb_threshold is used.
 
     Clusters whose best candidate stays BELOW the gate keep their anonymous
     SPEAKER_NN label (see the `>= ref_threshold` guards below) — a low-confidence
@@ -1149,16 +1186,19 @@ def name_clusters(cluster_emb: dict, ref_threshold: float, absorb_threshold: flo
                          cluster/name/similarity/threshold/matched/pass, so the
                          caller can persist machine-readable match confidence.
                          Passing it is optional, keeping positional callers working.
+    `turn_emb`         : optional {SPEAKER_NN: [per-turn embedding, ...]} for the
+                         purity gate; absent => placed absorb falls back to
+                         absorb_threshold.
     """
     ref_voices = ref_voices or []
     if report is None:
         report = []
 
-    def record(cluster, name, similarity, threshold, matched, which):
+    def record(cluster, name, similarity, threshold, matched, which, **extra):
         report.append({"cluster": cluster, "name": name,
                        "similarity": round(float(similarity), 6),
                        "threshold": float(threshold),
-                       "matched": bool(matched), "pass": which})
+                       "matched": bool(matched), "pass": which, **extra})
     if names is None:
         names = {sp: sp for sp in cluster_emb}
 
@@ -1167,6 +1207,24 @@ def name_clusters(cluster_emb: dict, ref_threshold: float, absorb_threshold: flo
         return v / (np.linalg.norm(v) + 1e-9)
 
     known = [(e["name"], unit(e["embedding"])) for e in registry_entries]
+
+    def blocker(cluster, voice, sim):
+        """Margin gate: the placed voice (other than `voice`) this cluster scores at
+        least `sim` against, or None. A placed voice is represented by every print we
+        hold for it (registry, --ref) and the centroid of each cluster it owns."""
+        ce = unit(cluster_emb[cluster])
+        best, best_sim = None, None
+        placed_names = {nm for sp, nm in names.items() if nm != sp and nm != voice}
+        for nm in sorted(placed_names):
+            vecs = [k for n, k in known if n == nm]
+            vecs += [unit(k) for n, k in ref_voices if n == nm]
+            vecs += [unit(cluster_emb[sp]) for sp, v in names.items()
+                     if v == nm and sp != cluster and sp in cluster_emb]
+            for v in vecs:
+                sc = float(np.dot(ce, v))
+                if sc >= sim and (best_sim is None or sc > best_sim):
+                    best, best_sim = nm, sc
+        return best
 
     # Pass 1: registry one-best, assigned globally best-first. Every (voiceprint,
     # free cluster) pair is ranked by cosine and claimed highest-first, so a voice
@@ -1182,10 +1240,18 @@ def name_clusters(cluster_emb: dict, ref_threshold: float, absorb_threshold: flo
     free = [sp for sp in cluster_emb if names.get(sp, sp) == sp]
     pending = [(n, k) for n, k in known if n not in assigned]
     sims = {(n, sp): float(np.dot(k, unit(cluster_emb[sp]))) for n, k in pending for sp in free}
+    blocked_pairs = set()
     for (entry_name, best), sim in sorted(sims.items(), key=lambda kv: -kv[1]):
         if sim < ref_threshold:
             break
         if entry_name in assigned or names.get(best, best) != best:
+            continue
+        by = blocker(best, entry_name, sim)
+        if by is not None:
+            blocked_pairs.add((entry_name, best))
+            record(best, entry_name, sim, ref_threshold, False, "registry", blocked_by=by)
+            log(f"  registry: {best} -/-> {entry_name} (sim {sim:.3f}) blocked: "
+                f"scores at least as high against {by}, already placed")
             continue
         record(best, entry_name, sim, ref_threshold, True, "registry")
         names[best] = entry_name
@@ -1195,7 +1261,8 @@ def name_clusters(cluster_emb: dict, ref_threshold: float, absorb_threshold: flo
     for entry_name, _ in pending:
         if entry_name in assigned:
             continue
-        left = {sp: v for (n, sp), v in sims.items() if n == entry_name and names.get(sp, sp) == sp}
+        left = {sp: v for (n, sp), v in sims.items() if n == entry_name
+                and names.get(sp, sp) == sp and (n, sp) not in blocked_pairs}
         if not left:
             continue
         best = max(left, key=left.get)
@@ -1219,10 +1286,18 @@ def name_clusters(cluster_emb: dict, ref_threshold: float, absorb_threshold: flo
         for sp, v in allsims.items():
             ref_sims[(ref_name, sp)] = max(v, ref_sims.get((ref_name, sp), -1.0))
     placed = set()
+    ref_blocked = set()
     for (ref_name, best), sim in sorted(ref_sims.items(), key=lambda kv: -kv[1]):
         if sim < ref_threshold:
             break
         if ref_name in placed or names.get(best, best) != best:
+            continue
+        by = blocker(best, ref_name, sim)
+        if by is not None:
+            ref_blocked.add((ref_name, best))
+            record(best, ref_name, sim, ref_threshold, False, "ref", blocked_by=by)
+            log(f"  ref: {best} -/-> {ref_name} (sim {sim:.3f}) blocked: "
+                f"scores at least as high against {by}, already placed")
             continue
         record(best, ref_name, sim, ref_threshold, True, "ref")
         names[best] = ref_name
@@ -1231,14 +1306,37 @@ def name_clusters(cluster_emb: dict, ref_threshold: float, absorb_threshold: flo
     for ref_name in dict.fromkeys(n for n, _ in ref_voices):
         if ref_name in placed or ref_name in registry_named:
             continue
-        left = {sp: v for (n, sp), v in ref_sims.items() if n == ref_name and names.get(sp, sp) == sp}
+        left = {sp: v for (n, sp), v in ref_sims.items() if n == ref_name
+                and names.get(sp, sp) == sp and (n, sp) not in ref_blocked}
         if not left:
             continue
         best = max(left, key=left.get)
         record(best, ref_name, left[best], ref_threshold, False, "ref")
         log(f"WARN ref {ref_name}: best similarity {left[best]:.3f} < {ref_threshold}, cluster left unnamed")
 
-    # Pass 3: absorb phantom splits into the nearest known voice.
+    # Pass 3: absorb phantom splits into the nearest known voice. "Placed" is
+    # snapshotted here so the result never depends on cluster iteration order.
+    placed_now = {nm for sp, nm in names.items() if nm != sp}
+    voice_vecs: dict = {}
+    for n, k in known:
+        voice_vecs.setdefault(n, []).append(k)
+    for n, k in ref_voices:
+        voice_vecs.setdefault(n, []).append(unit(k))
+
+    def purity_of(sp, cand):
+        """Fraction of sp's turns that score >= placed_absorb_threshold against `cand`
+        AND have `cand` as their best known voice; None when no turns are available."""
+        rows = (turn_emb or {}).get(sp)
+        if rows is None or len(rows) == 0:
+            return None
+        ok = 0
+        for t in rows:
+            t = unit(t)
+            per = {n: max(float(np.dot(t, v)) for v in vs) for n, vs in voice_vecs.items()}
+            if per[cand] >= placed_absorb_threshold and max(per, key=per.get) == cand:
+                ok += 1
+        return ok / len(rows)
+
     for sp, e in cluster_emb.items():
         if names.get(sp, sp) != sp:
             continue
@@ -1249,11 +1347,30 @@ def name_clusters(cluster_emb: dict, ref_threshold: float, absorb_threshold: flo
         if not cands:
             continue
         bn = max(cands, key=cands.get)
-        matched = cands[bn] >= absorb_threshold
-        record(sp, bn, cands[bn], absorb_threshold, matched, "absorb")
-        if matched:
+        if cands[bn] >= absorb_threshold:
+            record(sp, bn, cands[bn], absorb_threshold, True, "absorb")
             names[sp] = bn
             log(f"  absorb: {sp} -> {bn} (sim {cands[bn]:.3f})")
+            continue
+        # Below the strict bar: only a voice already placed in this meeting may take
+        # the cluster at the lower bar, and only if most of its turns agree.
+        pc = {n: v for n, v in cands.items() if n in placed_now}
+        pb = max(pc, key=pc.get) if pc else None
+        if pb is not None and pc[pb] >= placed_absorb_threshold:
+            purity = purity_of(sp, pb)
+            if purity is not None:
+                matched = purity > 0.5
+                record(sp, pb, pc[pb], placed_absorb_threshold, matched, "absorb",
+                       purity=round(purity, 4))
+                if matched:
+                    names[sp] = pb
+                    log(f"  absorb: {sp} -> {pb} (sim {pc[pb]:.3f}, placed voice, "
+                        f"purity {purity:.2f})")
+                else:
+                    log(f"  absorb: {sp} -/-> {pb} (sim {pc[pb]:.3f}) refused: purity "
+                        f"{purity:.2f} <= 0.50, looks like a blend")
+                continue
+        record(sp, bn, cands[bn], absorb_threshold, False, "absorb")
     return names
 
 
@@ -1454,6 +1571,73 @@ def save_print_guarded(reg: dict, cluster: str, person: str, emb_vec, emb_model:
     log(f"registry: {verb} {cluster} as '{person}' -> {SPEAKER_DB}")
 
 
+def make_ref_embedder():
+    """Lazy embed(wave)->unit-vector over the active embedding model, for --ref
+    clips. The extractor is built on first use, so a run with no refs never loads
+    the model. Shared by the transcribe path and `relabel --auto`."""
+    state: dict = {}
+
+    def embed(wave: np.ndarray) -> np.ndarray:
+        if "fn" not in state:
+            import sherpa_onnx  # deferred: uv provides it
+            ex = sherpa_onnx.SpeakerEmbeddingExtractor(
+                sherpa_onnx.SpeakerEmbeddingExtractorConfig(model=str(EMB_MODEL)))
+            state["fn"] = make_embed(ex)
+        return state["fn"](wave)
+    return embed
+
+
+def load_ref_voices(specs: list, embed) -> list:
+    """Embed `NAME=CLIP` --ref specs into the [(name, embedding)] list that
+    name_clusters takes. Shared by transcribe and `relabel --auto`."""
+    voices = []
+    for spec in specs:
+        if "=" not in spec:
+            sys.exit(f"diarize: FATAL bad --ref (want NAME=CLIP): {spec}")
+        ref_name, ref_path = spec.split("=", 1)
+        voices.append((ref_name, embed(load_audio(ref_path))))
+    return voices
+
+
+# Naming passes whose result is derived from enrollment state (the registry or a
+# voices/ clip), so it can go stale when that state is deleted. `anchor` is not
+# here: an anchored name came from an explicit --expected-speakers request.
+DERIVED_PASSES = ("registry", "ref", "absorb")
+
+
+def orphaned_auto_names(names: dict, prior_matches: list, local_labels: dict,
+                        protected: set, registry_names: set, ref_names: set) -> dict:
+    """{cluster: name} for names an automatic pass gave a cluster whose enrollment
+    has since vanished (no registry entry for the model AND no voices/ ref).
+
+    Provenance comes from the sidecar's `registry_matches` (a matched record of a
+    DERIVED_PASSES pass for that exact cluster+name). A name with no such record
+    (an explicit relabel spec, a local label, an anchor, or a sidecar written
+    before registry_matches existed) is never dropped: its provenance is not
+    recoverable, so it is kept. Neither is a name any `ref` pass matched in this
+    sidecar: a `transcribe --ref NAME=/any/path` clip need not live in voices/,
+    so its absence there proves nothing (`--forget NAME` clears it on request).
+    """
+    derived = {(m.get("cluster"), m.get("name")) for m in prior_matches
+               if m.get("matched") and m.get("pass") in DERIVED_PASSES}
+    anchored = {(m.get("cluster"), m.get("name")) for m in prior_matches
+                if m.get("matched") and m.get("pass") == "anchor"}
+    ref_matched = {m.get("name") for m in prior_matches
+                   if m.get("matched") and m.get("pass") == "ref"}
+    out = {}
+    for cluster, name in names.items():
+        if name == cluster or cluster in local_labels or cluster in protected:
+            continue
+        if name in ref_matched:
+            continue
+        if (cluster, name) not in derived or (cluster, name) in anchored:
+            continue
+        if name in registry_names or name in ref_names:
+            continue
+        out[cluster] = name
+    return out
+
+
 def do_relabel(args) -> None:
     """Apply new cluster->name assignments from a cached sidecar, persist voiceprints
     to the registry, and re-render the transcript + cards. No re-diarization."""
@@ -1472,6 +1656,23 @@ def do_relabel(args) -> None:
     explicit_roles: dict[str, str] = {}  # --save-role targets (sidecar even w/o entry)
     local_labels = dict(data.get("local_labels", {}))
     wrote_registry = False
+
+    # --forget NAME (with --auto): clear NAME from every cluster of THIS meeting before
+    # naming, even a transcript-only label. Runs before the explicit specs below, so a
+    # CLUSTER=NAME in the same command still wins. It never edits the registry, and
+    # the --auto pass then re-evaluates the freed clusters normally: a NAME that still
+    # matches an enrolled voice can legitimately come back.
+    forgotten: set = set()
+    for forget_name in (getattr(args, "forget", None) or []):
+        hit = [sp for sp, nm in names.items() if nm == forget_name and nm != sp]
+        if not hit:
+            log(f"WARN relabel: --forget {forget_name}: no cluster carries that name")
+        for sp in hit:
+            names[sp] = sp
+            local_labels.pop(sp, None)
+            forgotten.add(sp)
+            log(f"relabel: forgot '{forget_name}' on {sp}")
+    explicit_clusters = {spec.split("=", 1)[0].strip() for spec in args.save_speaker if "=" in spec}
     for spec in args.save_speaker:
         if "=" not in spec:
             sys.exit(f"diarize: FATAL bad relabel spec (want CLUSTER=NAME): {spec}")
@@ -1535,9 +1736,34 @@ def do_relabel(args) -> None:
             if s.get("model") == emb_model and s.get("embedding")]
         if registry_entries:
             log(f"registry: matching against {len(registry_entries)} known voice(s) [{emb_model}]")
+        # voices/ clips (`enroll --from FILE`) are refs, not registry entries; the
+        # launcher passes them as --ref exactly like transcribe does.
+        ref_voices = load_ref_voices(args.ref, make_ref_embedder()) if args.ref else []
+        if ref_voices:
+            log(f"refs: matching against {len(ref_voices)} voices/ clip(s)")
+        prior = [m for m in (data.get("registry_matches") or [])
+                 if m.get("cluster") not in forgotten]
+        if not args.no_registry:  # without the registry we cannot tell what is gone
+            gone = orphaned_auto_names(
+                names, prior, local_labels, explicit_clusters,
+                {e["name"] for e in registry_entries}, {n for n, _ in ref_voices})
+            for sp, nm in gone.items():
+                names[sp] = sp
+                log(f"relabel: dropped '{nm}' on {sp} (no registry entry or voices/ clip "
+                    f"for it any more)")
         registry_matches: list = []
+        # No turn_emb here: the sidecar keeps only centroids, so the purity gate
+        # cannot run and placed absorb falls back to --absorb-threshold (#77).
         name_clusters(cluster_emb, args.ref_threshold, args.absorb_threshold,
-                      registry_entries, [], names, report=registry_matches)
+                      registry_entries, ref_voices, names, report=registry_matches,
+                      placed_absorb_threshold=args.placed_absorb_threshold)
+        # name_clusters only reports THIS run's decisions; keep the earlier matched
+        # records for names that survived untouched, so the next --auto still knows
+        # which names came from which pass (the provenance the drop rule reads).
+        fresh = {m["cluster"] for m in registry_matches if m.get("matched")}
+        registry_matches += [m for m in prior
+                             if m.get("matched") and m.get("cluster") not in fresh
+                             and names.get(m.get("cluster")) == m.get("name")]
         data["registry_matches"] = registry_matches
 
     before_fold = len(speakers)
@@ -1630,10 +1856,24 @@ def main() -> None:
                     default=float(os.environ.get("WHOSAID_ABSORB_THRESHOLD", "0.85")),
                     help="min cosine similarity for a still-unnamed cluster to be absorbed "
                          "into a known voice (registry or --ref), so phantom splits of one "
-                         "person merge into that person. Default 0.85; env WHOSAID_ABSORB_THRESHOLD.")
+                         "person merge into that person. Default 0.85; env WHOSAID_ABSORB_THRESHOLD. "
+                         "Applies to voices NOT placed in this meeting; see --placed-absorb-threshold.")
+    ap.add_argument("--placed-absorb-threshold", type=float,
+                    default=float(os.environ.get("WHOSAID_PLACED_ABSORB_THRESHOLD",
+                                                 str(DEFAULT_PLACED_ABSORB_THRESHOLD))),
+                    help="lower absorb bar for a voice ALREADY PLACED in this meeting (it owns "
+                         "a cluster): a still-unnamed cluster folds into it at this cosine when "
+                         "most of its turns individually agree (purity gate, #77). Needs per-turn "
+                         "voiceprints (transcribe, chunked path); `relabel --auto` and --no-chunk "
+                         "fall back to --absorb-threshold. Default 0.70; env "
+                         "WHOSAID_PLACED_ABSORB_THRESHOLD.")
     ap.add_argument("--auto", action="store_true",
                     help="with --relabel: re-run registry matching + the absorb pass over the "
                          "sidecar's cached voiceprints (no CLUSTER=NAME needed, no re-diarization)")
+    ap.add_argument("--forget", action="append", default=[], metavar="NAME",
+                    help="with --relabel --auto (repeatable): clear NAME from this meeting's "
+                         "clusters before re-naming. The registry is untouched, so a NAME that "
+                         "is still enrolled and still matches can come back.")
     ap.add_argument("--fold-unknown", action="store_true",
                     help="with --relabel --auto: conservatively merge similar anonymous cached clusters")
     ap.add_argument("--save-speaker", action="append", default=[], metavar="CLUSTER=NAME",
@@ -1675,6 +1915,9 @@ def main() -> None:
     args = ap.parse_args()
     if args.fold_unknown and not (args.relabel and args.auto):
         ap.error("--fold-unknown requires --relabel --auto")
+
+    if args.forget and not (args.relabel and args.auto):
+        ap.error("--forget requires --relabel --auto")
 
     for spec in args.save_role:
         if "=" not in spec:
@@ -1738,14 +1981,7 @@ def main() -> None:
         chunk_seconds = max(total_dur, 1.0)
 
     # Lazy embedder for --ref clip matching (the chunked path builds no in-main extractor).
-    _ref_ex = {}
-
-    def ref_embed(wave: np.ndarray) -> np.ndarray:
-        if "fn" not in _ref_ex:
-            ex = sherpa_onnx.SpeakerEmbeddingExtractor(
-                sherpa_onnx.SpeakerEmbeddingExtractorConfig(model=str(EMB_MODEL)))
-            _ref_ex["fn"] = make_embed(ex)
-        return _ref_ex["fn"](wave)
+    ref_embed = make_ref_embedder()
 
     # ---- known voices, loaded BEFORE clustering so --expected-speakers can anchor it.
     # (Naming used to embed --ref clips only afterwards; anchoring needs the
@@ -1754,12 +1990,7 @@ def main() -> None:
     if registry_entries:
         log(f"registry: matching against {len(registry_entries)} known voice(s) [{EMB_NAME}]")
 
-    ref_voices = []
-    for spec in args.ref:
-        if "=" not in spec:
-            sys.exit(f"diarize: FATAL bad --ref (want NAME=CLIP): {spec}")
-        ref_name, ref_path = spec.split("=", 1)
-        ref_voices.append((ref_name, ref_embed(load_audio(ref_path))))
+    ref_voices = load_ref_voices(args.ref, ref_embed)
 
     # ---- --expected-speakers: resolve each name to a known voiceprint (issue #1 part 4).
     expected = [n.strip() for spec in args.expected_speakers
@@ -1808,13 +2039,14 @@ def main() -> None:
 
     count_estimate = None
     anchor_info = None
+    turn_emb: dict = {}  # per-turn prints for the purity gate; chunked path only
     if use_chunk:
         log(f"audio {total_dur:.0f}s -> parallel diarization")
         segs, cluster_emb, speakers, count_estimate, anchor_info = diarize_parallel(
             args.audio, total_dur, args.num_speakers, jobs, chunk_seconds,
             args.min_speakers, args.max_speakers,
             anchors=anchors or None, anchor_threshold=args.anchor_threshold,
-            dump_base=base)
+            dump_base=base, turn_out=turn_emb)
     else:
         samples = load_audio(args.audio)
         log(f"audio loaded: {len(samples) / SAMPLE_RATE:.0f}s (whole-file diarization)")
@@ -1911,7 +2143,9 @@ def main() -> None:
                 })
 
     name_clusters(cluster_emb, args.ref_threshold, args.absorb_threshold,
-                  registry_entries, ref_voices, names, report=registry_matches)
+                  registry_entries, ref_voices, names, report=registry_matches,
+                  placed_absorb_threshold=args.placed_absorb_threshold,
+                  turn_emb=turn_emb or None)
 
     # ---- persist identified speakers to the local registry (--save-speaker) ----
     local_labels: dict = {}

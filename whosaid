@@ -95,7 +95,7 @@ REPO_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
 
 # Single source of truth for the released version. Bump this alongside the
 # CHANGELOG.md entry and git tag at release time.
-WHOSAID_VERSION="1.11.2"
+WHOSAID_VERSION="1.12.0"
 
 HELPER="$REPO_DIR/lib/transcribe_mlx.py"
 DIARIZER="$REPO_DIR/lib/diarize_sherpa.py"
@@ -194,13 +194,17 @@ USAGE
                                         the whosaid_transcribe MCP tool) and
                                         changes nothing.
   whosaid relabel <base> SPEAKER_02=Jane [SPEAKER_03=Bob ...] [--role NAME=ROLE] [-o DIR]
-  whosaid relabel <base> --auto [--fold-unknown] [--absorb-threshold F] [-o DIR]
+  whosaid relabel <base> --auto [--forget NAME ...] [--fold-unknown] [--absorb-threshold F] [-o DIR]
                                         Name clusters from the speaker cards and
                                         remember them for future transcripts; --auto
                                         re-applies registry + absorb naming over the
-                                        cached sidecar with no re-transcription. Use
-                                        --fold-unknown to repair anonymous phantom
-                                        clusters in a cached sidecar.
+                                        cached sidecar with no re-transcription, also
+                                        matching voices/ enrollment clips and dropping
+                                        auto-assigned names whose voiceprint is gone.
+                                        --forget NAME clears NAME first (repeatable;
+                                        it can come back if still enrolled and
+                                        matching). Use --fold-unknown to repair
+                                        anonymous phantom clusters in a cached sidecar.
   whosaid relabel <base> SPEAKER_NN=Name --no-save [--note TEXT]
                                         Transcript-only label: rename in the sidecar
                                         and outputs, never touch the registry; the
@@ -318,6 +322,12 @@ TRANSCRIBE FLAGS
       --absorb-threshold F  Cosine ≥ F folds a still-unnamed cluster into a known
                        voice (registry/enrolled), so a person split across clusters
                        merges into one speaker. Default 0.85 (WHOSAID_ABSORB_THRESHOLD).
+                       Applies to voices not placed in this meeting.
+      --placed-absorb-threshold F  Lower absorb bar for a voice already placed in this
+                       meeting: a still-unnamed cluster folds into it at cosine ≥ F when
+                       most of its turns agree on that voice (purity gate). Needs per-turn
+                       voiceprints, so --no-chunk falls back to --absorb-threshold.
+                       Default 0.70 (WHOSAID_PLACED_ABSORB_THRESHOLD).
       --match-threshold F  Cosine ≥ F is required before a registry/enrolled voice
                        may claim a cluster (alias --ref-threshold). A cluster whose
                        best candidate scores below F keeps its anonymous SPEAKER_NN
@@ -349,6 +359,9 @@ RELABEL FLAGS
                       sidecar. Requires --auto; fresh problematic auto diarization
                       applies this repair automatically.
   --absorb-threshold F  Absorb-pass cosine threshold for --auto (default 0.85).
+  --placed-absorb-threshold F  Accepted, but --auto has no per-turn voiceprints (the
+                      sidecar keeps centroids only), so the purity gate cannot run and
+                      the absorb bar stays --absorb-threshold. Default 0.70.
   --match-threshold F  Registry/ref match cosine threshold for --auto (alias
                        --ref-threshold; default 0.50). Clusters under it stay SPEAKER_NN.
   --role NAME=ROLE     Tag a named speaker with a role, repeatable (e.g.
@@ -563,6 +576,8 @@ ENV OVERRIDES
   WHOSAID_SPEAKER_DB   Local speaker registry (default: ~/.config/whosaid/speakers.json).
   WHOSAID_ABSORB_THRESHOLD  Absorb-pass cosine threshold (default: 0.85); a still-
                       unnamed cluster this close to a known voice is folded into it.
+  WHOSAID_PLACED_ABSORB_THRESHOLD  Lower absorb bar (default: 0.70) for a voice already
+                      placed in the meeting, gated on per-turn purity (transcribe only).
   WHOSAID_MATCH_THRESHOLD  Registry/reference match cosine threshold (default: 0.50);
                       a cluster whose best candidate scores below it stays SPEAKER_NN.
   DIARIZE_EMB_NAME     Speaker-embedding model (default: NeMo TitaNet-small,
@@ -1288,6 +1303,7 @@ cmd_transcribe() {
   local CHUNK_SECONDS=""
   local NO_CHUNK=0
   local ABSORB=""
+  local PLACED_ABSORB=""
   local MATCH_THRESHOLD=""
   local MIN_SPEAKERS=""
   local MAX_SPEAKERS=""
@@ -1314,6 +1330,7 @@ cmd_transcribe() {
       -j|--jobs)    JOBS="$2"; shift 2 ;;
       --chunk-seconds) CHUNK_SECONDS="$2"; shift 2 ;;
       --absorb-threshold) ABSORB="$2"; shift 2 ;;
+      --placed-absorb-threshold) PLACED_ABSORB="$2"; shift 2 ;;
       --match-threshold|--ref-threshold) MATCH_THRESHOLD="$2"; shift 2 ;;
       --no-chunk)   NO_CHUNK=1; shift ;;
       -h|--help)    cmd_help; exit 0 ;;
@@ -1413,6 +1430,7 @@ cmd_transcribe() {
         [[ -n "$CHUNK_SECONDS" ]] && dargs+=(--chunk-seconds "$CHUNK_SECONDS")
         [[ "$NO_CHUNK" == "1" ]] && dargs+=(--no-chunk)
         [[ -n "$ABSORB" ]] && dargs+=(--absorb-threshold "$ABSORB")
+        [[ -n "$PLACED_ABSORB" ]] && dargs+=(--placed-absorb-threshold "$PLACED_ABSORB")
         [[ -n "$MATCH_THRESHOLD" ]] && dargs+=(--ref-threshold "$MATCH_THRESHOLD")
         if [[ -d "$VOICE_REFS" ]]; then
           for ref in "$VOICE_REFS"/*.wav "$VOICE_REFS"/*.m4a; do
@@ -1487,13 +1505,16 @@ resolve_sidecar() {
 # the sidecar + outputs without touching the registry, survive `--auto`, and are
 # marked on the speaker cards.
 cmd_relabel() {
-  local target="" outdir="" auto=0 fold_unknown=0 specs=() extra=() roles=()
+  local target="" outdir="" auto=0 fold_unknown=0 specs=() extra=() roles=() forgets=()
   while [[ $# -gt 0 ]]; do
     case "$1" in
       -o|--outdir) outdir="$2"; shift 2 ;;
       --auto)      auto=1; shift ;;
+      --forget)    [[ $# -ge 2 ]] || { log "relabel: --forget wants a NAME"; exit 1; }
+                   forgets+=(--forget "$2"); shift 2 ;;
       --fold-unknown) fold_unknown=1; shift ;;
       --absorb-threshold) extra+=(--absorb-threshold "$2"); shift 2 ;;
+      --placed-absorb-threshold) extra+=(--placed-absorb-threshold "$2"); shift 2 ;;
       --ref-threshold|--match-threshold) extra+=(--ref-threshold "$2"); shift 2 ;;
       --role)       [[ "$2" == *=* ]] || { log "relabel: --role wants NAME=ROLE (e.g. --role Karen=boss)"; exit 1; }
                     roles+=(--save-role "$2"); shift 2 ;;
@@ -1514,14 +1535,33 @@ cmd_relabel() {
     exit 1
   fi
 
+  if [[ ${#forgets[@]} -gt 0 && "$auto" -eq 0 ]]; then
+    log "relabel: --forget requires --auto (it clears a name, then re-runs naming)"
+    exit 1
+  fi
+
   resolve_sidecar "$target" "$outdir" relabel
   local sidecar="$RESOLVED_SIDECAR"
   local sdir; sdir="$(cd -P "$(dirname "$sidecar")" && pwd)"
   log "relabel: using sidecar $sidecar"
-  [[ "$auto" -eq 1 ]] && extra+=(--auto)
+  local refs=()
+  if [[ "$auto" -eq 1 ]]; then
+    extra+=(--auto)
+    # --auto matches enrollment clips (voices/, e.g. `enroll --from FILE`) the same
+    # way transcribe does: each clip is a NAME=CLIP --ref voice.
+    if [[ -d "$VOICE_REFS" ]]; then
+      local ref refname
+      for ref in "$VOICE_REFS"/*.wav "$VOICE_REFS"/*.m4a; do
+        [[ -f "$ref" ]] || continue
+        refname="$(basename "${ref%.*}")"
+        refs+=(--ref "$refname=$ref")
+      done
+    fi
+  fi
   [[ "$fold_unknown" -eq 1 ]] && extra+=(--fold-unknown)
   uv run --quiet --with sherpa-onnx --with numpy python "$DIARIZER" \
-    --relabel "$sidecar" --outdir "$sdir" ${specs[@]+"${specs[@]}"} ${extra[@]+"${extra[@]}"} ${roles[@]+"${roles[@]}"}
+    --relabel "$sidecar" --outdir "$sdir" ${specs[@]+"${specs[@]}"} ${extra[@]+"${extra[@]}"} ${roles[@]+"${roles[@]}"} \
+    ${forgets[@]+"${forgets[@]}"} ${refs[@]+"${refs[@]}"}
   log "relabel: refresh historical commitments and views with: whosaid backfill <workspace>"
 }
 
@@ -1621,7 +1661,7 @@ cmd_ingest() {
       -o|--outdir) log "ingest: -o/--outdir is not allowed — ingest places each meeting itself"; exit 1 ;;
       -n|--name)   log "ingest: -n/--name is not allowed — ingest names its outputs 'transcript'"; exit 1 ;;
       # transcribe flags that pass straight through
-      -m|--model|-l|--lang|-f|--format|--speakers|--min-speakers|--max-speakers|--expected-speakers|--anchor-threshold|-j|--jobs|--chunk-seconds|--absorb-threshold|--match-threshold|--ref-threshold)
+      -m|--model|-l|--lang|-f|--format|--speakers|--min-speakers|--max-speakers|--expected-speakers|--anchor-threshold|-j|--jobs|--chunk-seconds|--absorb-threshold|--placed-absorb-threshold|--match-threshold|--ref-threshold)
                       passthrough+=("$1" "$2"); shift 2 ;;
       --accurate|--diarize|--no-diarize|--no-chunk)
                       passthrough+=("$1"); shift ;;

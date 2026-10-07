@@ -165,6 +165,12 @@ def main() -> None:
         "relabel description must document cached anonymous-cluster repair",
     )
 
+    # --- relabel --forget (GitHub issue #77): optional list, not required ---
+    check("forget" in rprops and "forget" not in rreq,
+          f"relabel must expose an optional 'forget' param: {sorted(rprops)}")
+    check("forget=[" in d_relabel and "voices/" in d_relabel,
+          "relabel desc must document forget and the voices/ refs used by auto")
+
     # --- list_speakers stays parameter-free ---
     ls_schema = dumps["whosaid_list_speakers"]["inputSchema"]
     check(
