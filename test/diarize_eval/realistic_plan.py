@@ -381,7 +381,9 @@ def plan_meeting(rng, voices, bank, *, minutes=(30, 120), speakers=(6, 10), rost
     if minutes[0] <= 44 <= minutes[1] and rng.random() < 0.5:  # median ~44 min
         D = min(D, rng.uniform(minutes[0], max(minutes[0], 44)) * 60.0)
     overlap_target = min(0.08, max(0.012, math.exp(rng.gauss(math.log(0.04), 0.4))))
-    rate = min(0.6, max(0.45, rng.gauss(0.52, 0.04)))  # switches per turn
+    # switches per turn, backchannels included: the real 5.7/min is diarizer output,
+    # where every backchannel is a segment of its own
+    rate = min(0.44, max(0.32, rng.gauss(0.38, 0.03)))
 
     shares = _shares(rng, n)
     order = list(vids)
@@ -420,7 +422,8 @@ def plan_meeting(rng, voices, bank, *, minutes=(30, 120), speakers=(6, 10), rost
     turns = []
     ov_secs = 0.0
     talk_total = 0.0
-    prev = None  # (speaker, start, end)
+    prev = None  # (speaker, start, end) of the last floor turn
+    last_spk = None  # speaker of the last turn of any kind, in time order
 
     def weights(excl=None):
         out = []
@@ -461,11 +464,11 @@ def plan_meeting(rng, voices, bank, *, minutes=(30, 120), speakers=(6, 10), rost
                 spk = draw(weights())
             if spk != prev[0]:
                 want_ov = ov_secs < overlap_target * talk_total
-                if rng.random() < (0.2 if want_ov else 0.02):
-                    ov = min(rng.uniform(0.2, 1.2), 0.5 * (prev[2] - prev[1]))
+                if rng.random() < (0.22 if want_ov else 0.02):
+                    ov = min(rng.uniform(1.0, 4.0), 0.5 * (prev[2] - prev[1]))
                     start = prev[2] - ov
                 else:
-                    gap = min(6.0, max(0.05, math.exp(rng.gauss(math.log(0.95), 1.15))))
+                    gap = min(6.0, max(0.05, math.exp(rng.gauss(math.log(1.05), 1.0))))
                     start = prev[2] + gap
             else:
                 start = prev[2] + rng.uniform(0.3, 1.5)
@@ -490,8 +493,9 @@ def plan_meeting(rng, voices, bank, *, minutes=(30, 120), speakers=(6, 10), rost
         dur = end - start
         bin_cnt[bisect.bisect_right(edges, dur)] += 1
         n_main += 1
-        if prev is not None and prev[0] != spk:
+        if last_spk is not None and last_spk != spk:
             n_sw += 1
+        last_spk = spk
         turns.append({"speaker": spk, "start": start, "end": end, "kind": "turn", "pieces": pieces})
         talk[spk] += dur
         talk_total += dur
@@ -501,7 +505,7 @@ def plan_meeting(rng, voices, bank, *, minutes=(30, 120), speakers=(6, 10), rost
         # backchannel over a long turn
         if dur >= 5.0:
             want_ov = ov_secs < overlap_target * talk_total
-            if rng.random() < (0.5 if want_ov else 0.04):
+            if rng.random() < (0.5 if want_ov else 0.03):
                 others = [v for v in spk_order if v != spk]
                 ws = [0.0 if v == spk else w for v, w in zip(spk_order, weights(excl=spk))]
                 bv = draw(ws)
@@ -522,6 +526,9 @@ def plan_meeting(rng, voices, bank, *, minutes=(30, 120), speakers=(6, 10), rost
                             talk_total += bend - bs
                             ov_secs += bend - bs
                             last_end[bv] = bend
+                            n_main += 1
+                            n_sw += 1
+                            last_spk = bv
         prev = (spk, start, end)
 
     turns.sort(key=lambda x: (x["start"], x["end"], x["speaker"]))
@@ -559,9 +566,10 @@ def plan_meeting(rng, voices, bank, *, minutes=(30, 120), speakers=(6, 10), rost
 # ---------------------------------------------------------------------------
 
 def plan_stats(plan):
-    """Measure a plan. Switches/min and gaps use kind=="turn" turns only
-    (backchannels are overlay, not floor changes); the turn table and the
-    overlap fraction include everything."""
+    """Measure a plan. Switches/min counts every turn, backchannels included, in
+    start order (the real stat is diarizer output, where a backchannel is its own
+    segment). Gaps use kind=="turn" turns only (a backchannel sits inside a turn);
+    the turn table and the overlap fraction include everything."""
     turns = plan["turns"]
     dur = plan["duration"]
     lens = [t["end"] - t["start"] for t in turns]
@@ -577,12 +585,9 @@ def plan_stats(plan):
     table = {nm: {"turns": cnt[i] / max(1, len(lens)), "talk": tk[i] / total}
              for i, nm in enumerate(names)}
     main = [t for t in turns if t["kind"] == "turn"]
-    sw = 0
-    gaps = []
-    for a, b in zip(main, main[1:]):
-        if a["speaker"] != b["speaker"]:
-            sw += 1
-            gaps.append(b["start"] - a["end"])
+    seq = sorted(turns, key=lambda t: (t["start"], t["end"]))
+    sw = sum(1 for a, b in zip(seq, seq[1:]) if a["speaker"] != b["speaker"])
+    gaps = [b["start"] - a["end"] for a, b in zip(main, main[1:]) if a["speaker"] != b["speaker"]]
     ev = []
     for t in turns:
         ev.append((t["start"], 1))
