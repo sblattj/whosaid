@@ -6,6 +6,17 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ## [Unreleased]
 
+### Fixed
+
+- **A known speaker's second cluster is no longer refused as a blend when its short turns score low (#77).**
+  The placed-voice absorb gate counted turns scoring >= 0.70 individually, but per-turn TitaNet
+  scores on short turns have a median near 0.5, so on 20 synthetic meetings it refused all 12
+  true single-speaker splits (purity 0.00-0.30). The gate now asks whether most of the talk time
+  is closest to the candidate: the seconds-weighted share of turns whose best known voice is the
+  candidate and score >= 0.40 must be >= 0.60 (`talk_share`; 0.75-1.00 on those 12 splits, about
+  0.5 for a half-and-half blend). Short turns are discounted by weighting, not dropped, because
+  one true split (48 turns, 76 s) had no turn over 3 s. `purity` is still recorded for comparison.
+
 ### Added
 
 - **`registry_matches` absorb records now carry the per-turn inputs behind `purity` (#77).**

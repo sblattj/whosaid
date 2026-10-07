@@ -1171,6 +1171,10 @@ def default_ref_threshold() -> float:
 
 
 DEFAULT_PLACED_ABSORB_THRESHOLD = 0.70
+# Placed absorb (#77): share of talk time that must be closest to the candidate voice.
+PLACED_ABSORB_MIN_SHARE = 0.60
+# Placed absorb (#77): a turn only counts toward that share if it scores at least this vs the candidate.
+PLACED_ABSORB_TURN_FLOOR = 0.40
 
 
 def name_clusters(cluster_emb: dict, ref_threshold: float, absorb_threshold: float,
@@ -1224,11 +1228,22 @@ def name_clusters(cluster_emb: dict, ref_threshold: float, absorb_threshold: flo
     clusters whose best candidate scored 0.70-0.85 were single-speaker splits of
     that candidate (down to 0.701); the other 2 blended two speakers, and the top
     scorer (0.836) was one of them, so score alone cannot tell a split from a blend.
-    Hence the purity gate: more than half of the cluster's turns (`turn_emb`) must
-    each score >= placed_absorb_threshold against the candidate AND have it as their
-    best known voice; the decision records `purity`. With no `turn_emb` (the
-    `relabel --auto` sidecar keeps only centroids) the low bar does not apply and
-    absorb_threshold is used.
+    Hence the talk-share gate: at least PLACED_ABSORB_MIN_SHARE (0.60) of the cluster's
+    talk time must sit in turns (`turn_emb`) whose best known voice is the candidate
+    AND that score >= PLACED_ABSORB_TURN_FLOOR (0.40) against it. Turns are weighted
+    by seconds (end - start from `turn_spans`; count weighting when spans are absent),
+    so a few long, clear turns outvote many short noisy ones. The first gate (#77,
+    fraction of turns scoring >= 0.70 individually and best-matching the candidate)
+    refused all 12 true single-speaker splits in 20 synthetic meetings (purity
+    0.00-0.30) because per-turn TitaNet scores on short turns have a median near 0.5.
+    On those same 12 splits the talk share ranged 0.75-1.00, while a blend (half the
+    turns best-matching another voice) lands near 0.5. The issue also suggested
+    ignoring turns shorter than 3 s; that is deliberately NOT done, because one true
+    split (48 turns, 76 s) had no turn >= 3 s at all. Seconds-weighting already
+    discounts short turns without discarding a cluster made only of them. The
+    decision records `talk_share` (the decision field) and still records the old
+    `purity` for comparison. With no `turn_emb` (the `relabel --auto` sidecar keeps
+    only centroids) the low bar does not apply and absorb_threshold is used.
 
     Clusters whose best candidate stays BELOW the gate keep their anonymous
     SPEAKER_NN label (see the `>= ref_threshold` guards below) — a low-confidence
@@ -1397,6 +1412,29 @@ def name_clusters(cluster_emb: dict, ref_threshold: float, absorb_threshold: flo
                 ok += 1
         return ok / len(rows)
 
+    def talk_share(sp, cand):
+        """Seconds-weighted fraction of sp's talk time in turns whose best known voice
+        is `cand` and whose score vs `cand` is >= PLACED_ABSORB_TURN_FLOOR. Weights are
+        end - start from turn_spans when they match the turns one-to-one, else every
+        turn weighs 1. None when no turns are available (same as purity_of)."""
+        rows = (turn_emb or {}).get(sp)
+        if rows is None or len(rows) == 0:
+            return None
+        spans = (turn_spans or {}).get(sp)
+        weights = [1.0] * len(rows)
+        if spans is not None and len(spans) == len(rows):
+            w = [float(b) - float(a) for a, b in spans]
+            if sum(w) > 0:
+                weights = w
+        total = sum(weights)
+        got = 0.0
+        for t, w in zip(rows, weights):
+            t = unit(t)
+            per = {n: max(float(np.dot(t, v)) for v in vs) for n, vs in voice_vecs.items()}
+            if per[cand] >= PLACED_ABSORB_TURN_FLOOR and max(per, key=per.get) == cand:
+                got += w
+        return got / total
+
     def turn_rows(sp, cand):
         """Per-turn inputs behind purity_of(sp, cand), in time order; start/end are
         None when no spans were handed in. Mirrors purity_of's scoring exactly."""
@@ -1437,17 +1475,19 @@ def name_clusters(cluster_emb: dict, ref_threshold: float, absorb_threshold: flo
         pb = max(pc, key=pc.get) if pc else None
         if pb is not None and pc[pb] >= placed_absorb_threshold:
             purity = purity_of(sp, pb)
-            if purity is not None:
-                matched = purity > 0.5
+            share = talk_share(sp, pb)
+            if purity is not None and share is not None:
+                matched = share >= PLACED_ABSORB_MIN_SHARE
                 record(sp, pb, pc[pb], placed_absorb_threshold, matched, "absorb",
-                       purity=round(purity, 4), turns=turn_rows(sp, pb))
+                       purity=round(purity, 4), talk_share=round(share, 4),
+                       turns=turn_rows(sp, pb))
                 if matched:
                     names[sp] = pb
                     log(f"  absorb: {sp} -> {pb} (sim {pc[pb]:.3f}, placed voice, "
-                        f"purity {purity:.2f})")
+                        f"talk share {share:.2f})")
                 else:
-                    log(f"  absorb: {sp} -/-> {pb} (sim {pc[pb]:.3f}) refused: purity "
-                        f"{purity:.2f} <= 0.50, looks like a blend")
+                    log(f"  absorb: {sp} -/-> {pb} (sim {pc[pb]:.3f}) refused: talk share "
+                        f"{share:.2f} < {PLACED_ABSORB_MIN_SHARE:.2f}, looks like a blend")
                 continue
         record(sp, bn, cands[bn], absorb_threshold, False, "absorb")
     return names
@@ -1948,7 +1988,7 @@ def main() -> None:
                                                  str(DEFAULT_PLACED_ABSORB_THRESHOLD))),
                     help="lower absorb bar for a voice ALREADY PLACED in this meeting (it owns "
                          "a cluster): a still-unnamed cluster folds into it at this cosine when "
-                         "most of its turns individually agree (purity gate, #77). Needs per-turn "
+                         "most of its talk time is closest to that voice (talk-share gate, #77). Needs per-turn "
                          "voiceprints (transcribe, chunked path); `relabel --auto` and --no-chunk "
                          "fall back to --absorb-threshold. Default 0.70; env "
                          "WHOSAID_PLACED_ABSORB_THRESHOLD.")

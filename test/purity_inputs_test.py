@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Unit test for the per-turn purity inputs recorded by name_clusters (GitHub issue #77).
+Unit test for the per-turn inputs (and purity) recorded by name_clusters (GitHub issue #77).
 
 Every absorb record whose purity was computed also carries `turns`, the per-turn inputs
 behind it, so the gate can be tuned offline. Synthetic one-hot embeddings; no models.
@@ -62,7 +62,7 @@ def turn(p, q=0.0):
 
 
 def test_refused_records_turns():
-    turns = [turn(0.8), turn(0.6), turn(0.1, 0.99), turn(0.75), turn(0.05, 0.99)]
+    turns = [turn(0.8), turn(0.6, 0.7), turn(0.1, 0.99), turn(0.75), turn(0.05, 0.99)]
     out, rec = run(turns)
     assert out["SPEAKER_02"] == "SPEAKER_02" and not rec["matched"], (out, rec)
     t = rec["turns"]
@@ -73,7 +73,7 @@ def test_refused_records_turns():
         assert set(r) == {"start", "end", "score", "best", "best_score"}, r
         assert r["end"] == r["start"] + 2.5, r
         assert abs(r["score"] - round(float(np.dot(v, E[0])), 4)) < 1e-9, (r, v)
-    assert [r["best"] for r in t] == ["Q", "P", "Q", "P", "P"], t
+    assert [r["best"] for r in t] == ["Q", "P", "Q", "Q", "P"], t
     assert t[0]["best_score"] > 0.9 and t[1]["score"] == t[1]["best_score"], t
 
 
@@ -102,7 +102,7 @@ def test_without_turn_emb_no_turns_key():
 
 
 def test_purity_equals_recomputed_fraction():
-    for turns in ([turn(0.8), turn(0.6), turn(0.1, 0.99), turn(0.75), turn(0.05, 0.99)],
+    for turns in ([turn(0.8), turn(0.6, 0.7), turn(0.1, 0.99), turn(0.75), turn(0.05, 0.99)],
                   [turn(0.8), turn(0.75), turn(0.78), turn(0.1, 0.99)],
                   [turn(0.72), turn(0.68), turn(0.74), turn(0.9)]):
         _, rec = run(turns)
