@@ -2,7 +2,7 @@
 """Build `realistic` synthetic meetings (issue #80): CLI + renderer.
 
     uv run --with numpy python test/diarize_eval/realistic.py --pool POOL.json --out DIR \
-        --seed S --count N [--minutes 30-120] [--speakers 6-10] [--roster TAG]
+        --seed S --count N [--minutes 30-120] [--speakers 6-10] [--roster TAG] [--blends K]
 
 The planner (realistic_plan.py) decides who says what and when; the channel model
 (channel.py) makes the local speaker sound near-mic and every other speaker sound like
@@ -340,6 +340,9 @@ def main(argv=None):
     ap.add_argument("--minutes", default="30-120")
     ap.add_argument("--speakers", default="6-10")
     ap.add_argument("--roster", default=None)
+    ap.add_argument("--blends", type=int, default=0,
+                    help="crosstalk episodes per meeting: two speakers trading short overlapping "
+                         "turns, the shape that leaves a two-voice cluster (#77)")
     args = ap.parse_args(argv)
     minutes = parse_range(args.minutes, "--minutes")
     nsp = tuple(int(x) for x in parse_range(args.speakers, "--speakers"))
@@ -352,7 +355,8 @@ def main(argv=None):
     for i in range(args.count):
         rng = random.Random(args.seed * 100003 + i)
         plan = realistic_plan.plan_meeting(rng, voices, bank, minutes=minutes, speakers=nsp,
-                                           roster=args.roster, mid="m%d-%03d" % (args.seed, i))
+                                           roster=args.roster, mid="m%d-%03d" % (args.seed, i),
+                                           blends=args.blends)
         e = render_meeting(plan, voices, bank, pool_root, args.out, clips)
         entries.append(e)
         print("%s  %7.1fs  %2d speakers  %4d turns  %s" % (

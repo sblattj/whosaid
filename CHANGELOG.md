@@ -4,6 +4,25 @@ All notable changes to whosaid are documented here. This project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html) and the format of
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.13.2] - 2026-10-07
+
+### Added
+
+- **Runner-up evidence on placed-voice absorb records (#77).** Each `absorb` record into an
+  already-placed voice now carries `runner_up` / `runner_up_share` (the other known voice
+  winning the most of the cluster's talk time) and `second_placed` / `second_placed_sim` (the
+  next placed voice by centroid), so a blend guard can be tuned offline on real by-ear labels.
+  Recorded only: on 22 synthetic blend meetings neither separated blends from real splits.
+  A centroid-margin cutoff would have dropped correct names (true splits down to +0.110, one of
+  92 s) and caught none of the 3 blends the current gates miss. A runner-up cutoff would have
+  caught 1 of the 3, on a 0.03 gap. See docs/diarize-eval.md "Blends (v1.13.2)".
+  Known: on the reporter's real replay of v1.13.1, one of 2 blends is still named (it contains
+  the candidate's own voice, so the sibling margin passes it), and the sibling margin refuses a
+  59 s true split.
+- `test/diarize_eval/realistic.py --blends K` inserts K crosstalk episodes per meeting (two
+  speakers trading short, overlapping turns), the synthetic blend case #77 asked for.
+  `--blends 0` (the default) plans byte-identical meetings.
+
 ## [1.13.1] - 2026-10-07
 
 ### Fixed

@@ -1258,7 +1258,21 @@ def name_clusters(cluster_emb: dict, ref_threshold: float, absorb_threshold: flo
     the absorb also needs sibling >= similarity + PLACED_ABSORB_SIBLING_MARGIN
     (0.035); the record carries `sibling_sim`. The 3 true splits it gives up are
     short cameo fragments (4-21 s) that stay anonymous rather than risk a wrong
-    name. With no `turn_emb` (the `relabel --auto` sidecar keeps
+    name.
+
+    Runner-up fields (v1.13.2, #77 blends): the record also carries `runner_up` /
+    `runner_up_share` (the other known voice winning the most talk time, weighted
+    like talk_share) and `second_placed` / `second_placed_sim` (the next placed
+    voice by centroid). Both are recorded only, not gated. On 22 synthetic
+    meetings with crosstalk blends (`realistic.py --blends`), the share and
+    sibling gates already refused 9 of 13 blend decisions (refs and refs-subset
+    runs). The other 4 named 3 clusters wrongly; for them the
+    centroid margin sim - second_placed_sim was +0.314 and +0.400 (or absent: the
+    partner was unenrolled), while true splits named today went down to +0.110.
+    The runner-up share was 0.17, 0.00 and 0.00, against up to 0.14 on true
+    splits. Turns inside a blend are mixed too, so they rarely name the
+    partner. A gate on either would cost real names for little or no gain;
+    the fields are there to tune one on real data. With no `turn_emb` (the `relabel --auto` sidecar keeps
     only centroids) the low bar does not apply and absorb_threshold is used.
 
     Clusters whose best candidate stays BELOW the gate keep their anonymous
@@ -1455,6 +1469,33 @@ def name_clusters(cluster_emb: dict, ref_threshold: float, absorb_threshold: flo
                 got += w
         return got / total
 
+    def runner_up(sp, cand):
+        """(name, share) of the OTHER known voice holding the most of sp's talk time:
+        seconds-weighted share of turns whose best known voice is that voice and score
+        >= PLACED_ABSORB_TURN_FLOOR against it, weighted exactly like talk_share.
+        (None, 0.0) when no other voice wins any turn or no turns are available."""
+        rows = (turn_emb or {}).get(sp)
+        if rows is None or len(rows) == 0:
+            return None, 0.0
+        spans = (turn_spans or {}).get(sp)
+        weights = [1.0] * len(rows)
+        if spans is not None and len(spans) == len(rows):
+            w = [float(b) - float(a) for a, b in spans]
+            if sum(w) > 0:
+                weights = w
+        total = sum(weights)
+        by: dict = {}
+        for t, w in zip(rows, weights):
+            t = unit(t)
+            per = {n: max(float(np.dot(t, v)) for v in vs) for n, vs in voice_vecs.items()}
+            best = max(per, key=per.get)
+            if best != cand and per[best] >= PLACED_ABSORB_TURN_FLOOR:
+                by[best] = by.get(best, 0.0) + w
+        if not by:
+            return None, 0.0
+        ru = max(sorted(by), key=by.get)
+        return ru, by[ru] / total
+
     def turn_rows(sp, cand):
         """Per-turn inputs behind purity_of(sp, cand), in time order; start/end are
         None when no spans were handed in. Mirrors purity_of's scoring exactly."""
@@ -1504,10 +1545,17 @@ def name_clusters(cluster_emb: dict, ref_threshold: float, absorb_threshold: flo
                 sib = max((float(np.dot(ce, unit(cluster_emb[o])))
                            for o in owner_clusters.get(pb, ()) if o != sp), default=None)
                 sib_ok = sib is not None and sib >= pc[pb] + PLACED_ABSORB_SIBLING_MARGIN
+                # Runner-up evidence, recorded only (#77 blends; see the docstring):
+                # neither field separated synthetic blends from real splits.
+                second = max((n for n in pc if n != pb), key=pc.get, default=None)
+                ru, ru_share = runner_up(sp, pb)
                 matched = share >= PLACED_ABSORB_MIN_SHARE and sib_ok
                 record(sp, pb, pc[pb], placed_absorb_threshold, matched, "absorb",
                        purity=round(purity, 4), talk_share=round(share, 4),
                        sibling_sim=None if sib is None else round(sib, 4),
+                       runner_up=ru, runner_up_share=round(ru_share, 4),
+                       second_placed=second,
+                       second_placed_sim=None if second is None else round(pc[second], 4),
                        turns=turn_rows(sp, pb))
                 if matched:
                     names[sp] = pb

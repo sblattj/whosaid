@@ -182,6 +182,27 @@ def check_voice_choice(voices, bank):
     print("voice choice: ok")
 
 
+def check_blends(voices, bank):
+    """--blends: crosstalk episodes appear, overlap, are tagged, and blends=0 is unchanged."""
+    kw = dict(minutes=(10, 10), speakers=(4, 4), mid="m5-000")
+    base = rp.plan_meeting(random.Random(5), voices, bank, **kw)
+    zero = rp.plan_meeting(random.Random(5), voices, bank, blends=0, **kw)
+    assert json.dumps(base, sort_keys=True) == json.dumps(zero, sort_keys=True), "blends=0 changed the plan"
+    assert not any(t["kind"] == "crosstalk" for t in base["turns"])
+    p = rp.plan_meeting(random.Random(5), voices, bank, blends=2, **kw)
+    ct = [t for t in p["turns"] if t["kind"] == "crosstalk"]
+    assert "blend2" in p["tags"], p["tags"]
+    assert len({t["speaker"] for t in ct}) >= 2, ct[:3]
+    assert len(ct) >= 10, len(ct)
+    assert all(t["end"] - t["start"] <= 2.6 + 1e-6 for t in ct), max(t["end"] - t["start"] for t in ct)
+    ov = sum(1 for a, b in zip(ct, ct[1:]) if b["speaker"] != a["speaker"] and b["start"] < a["end"])
+    assert ov >= len(ct) // 2, (ov, len(ct))
+    for v in {t["speaker"] for t in p["turns"]}:  # a voice never overlaps itself
+        mine = sorted((t["start"], t["end"]) for t in p["turns"] if t["speaker"] == v)
+        assert all(b[0] >= a[1] for a, b in zip(mine, mine[1:])), v
+    print("  blends: %d crosstalk turns, %d overlapping hand-offs" % (len(ct), ov))
+
+
 def real_pool():
     pj = os.path.expanduser("~/.cache/whosaid/diarize-eval/pool.json")
     if not os.path.exists(pj):
@@ -212,6 +233,7 @@ def main():
         assert all(len(b) >= 20 for b in bank.values()), {k: len(v) for k, v in bank.items()}
         check_plan(voices, bank)
         check_voice_choice(voices, bank)
+        check_blends(voices, bank)
     real_pool()
     print("realistic_plan_test: ALL PASS")
 

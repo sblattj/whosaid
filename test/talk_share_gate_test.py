@@ -45,9 +45,10 @@ def sibling_at(target):
     return unit(E[0] + hi * E[9])
 
 
-def scene(c1=None):
+def scene(c1=None, c2=None):
     """P (e0) and Q (e1) placed via clusters 00/01; cluster 02 is the one under test.
-    c1 overrides P's own cluster centroid (to move the sibling away)."""
+    c1 overrides P's own cluster centroid (to move the sibling away); c2 overrides
+    cluster 02's centroid."""
     # c1 shares the e9 component with cluster 02, so 02 sits close to P's own cluster
     # (sibling 0.98) as a real split does; the sibling-margin gate passes.
     c1_override = c1
@@ -55,14 +56,14 @@ def scene(c1=None):
     # fixed centroid in the placed-absorb band (0.75 to P, under the strict 0.85 bar),
     # independent of the turns: the gate under test reads the turns, not the centroid
     emb = {"SPEAKER_00": c1 if c1_override is None else c1_override, "SPEAKER_01": c3,
-           "SPEAKER_02": C02}
+           "SPEAKER_02": C02 if c2 is None else c2}
     ents = [{"name": "P", "embedding": E[0].tolist()}, {"name": "Q", "embedding": E[1].tolist()}]
     return emb, ents
 
 
-def run(turns, durs=None, c1=None):
+def run(turns, durs=None, c1=None, c2=None):
     """durs: per-turn seconds (spans laid end to end); None => no turn_spans."""
-    emb, ents = scene(c1)
+    emb, ents = scene(c1, c2)
     rep = []
     kw = {"turn_emb": {"SPEAKER_02": turns}}
     if durs is not None:
@@ -164,6 +165,29 @@ def test_sibling_margin_boundary():
 def test_matched_record_carries_sibling_sim():
     _, rec = run([turn(0.6)] * 3, durs=[2.0] * 3)
     assert rec["matched"] and rec["sibling_sim"] > rec["similarity"] + 0.035, rec
+
+
+def test_record_carries_second_placed():
+    # v1.13.2, #77: cluster 02 sits 0.75 to P and 0.60 to Q; second_placed records Q
+    # and its centroid similarity. Recorded only: the absorb still goes through.
+    rest = np.sqrt(1 - 0.75 ** 2 - 0.60 ** 2)
+    c2 = unit(0.75 * E[0] + 0.60 * E[1] + rest * E[9])
+    out, rec = run([turn(0.6)] * 4, durs=[3.0] * 4, c1=unit(c2 + E[0]), c2=c2)
+    assert rec["second_placed"] == "Q" and abs(rec["second_placed_sim"] - 0.60) < 1e-3, rec
+    assert rec["matched"] and out["SPEAKER_02"] == "P", (rec, out)
+    _, rec = run([turn(0.6)] * 3, durs=[2.0] * 3)
+    assert rec["second_placed"] == "Q" and abs(rec["second_placed_sim"]) < 1e-3, rec
+
+
+def test_record_carries_runner_up():
+    # Q wins the one long QTURN: runner_up names it with its seconds share; it is
+    # recorded only and does not refuse a cluster the margin and share accept.
+    turns = [turn(0.6)] * 3 + [QTURN]
+    _, rec = run(turns, durs=[3.0, 3.0, 3.0, 3.0])
+    assert rec["runner_up"] == "Q" and rec["runner_up_share"] == 0.25, rec
+    assert rec["second_placed"] == "Q" and rec["matched"], rec
+    _, rec = run([turn(0.6)] * 3, durs=[2.0] * 3)
+    assert rec["runner_up"] is None and rec["runner_up_share"] == 0.0, rec
 
 
 if __name__ == "__main__":
