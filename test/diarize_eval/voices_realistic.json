@@ -1,0 +1,119 @@
+{
+  "schema": 1,
+  "voices": [
+    {
+      "id": "el-in-sanjay",
+      "name": "Sanjay",
+      "vendor": "elevenlabs",
+      "voice_id": "KaZlt7yMxQwped3MhCKb",
+      "gender": "male",
+      "accent": "indian",
+      "roster": "in-m"
+    },
+    {
+      "id": "el-in-chandu",
+      "name": "Chandu",
+      "vendor": "elevenlabs",
+      "voice_id": "4JIEG1ARQAwbiVJGDrKb",
+      "gender": "male",
+      "accent": "indian",
+      "roster": "in-m"
+    },
+    {
+      "id": "el-in-abhinav",
+      "name": "Abhinav",
+      "vendor": "elevenlabs",
+      "voice_id": "C3Bpz4XTJrSR4PjT2l2I",
+      "gender": "male",
+      "accent": "indian",
+      "roster": "in-m"
+    },
+    {
+      "id": "el-in-dharmin",
+      "name": "Dharmin",
+      "vendor": "elevenlabs",
+      "voice_id": "kXRfttyQVklKiD5nHT95",
+      "gender": "male",
+      "accent": "indian",
+      "roster": "in-m"
+    },
+    {
+      "id": "el-in-amay",
+      "name": "Amay",
+      "vendor": "elevenlabs",
+      "voice_id": "w2VczpnpJO48HDyBg1xV",
+      "gender": "male",
+      "accent": "indian",
+      "roster": "in-m"
+    },
+    {
+      "id": "el-in-kaustubh",
+      "name": "Kaustubh",
+      "vendor": "elevenlabs",
+      "voice_id": "wdJgf7VyQ9YzWyl0KXyk",
+      "gender": "male",
+      "accent": "indian",
+      "roster": "in-m"
+    },
+    {
+      "id": "oa-in-ash",
+      "name": "Ash",
+      "vendor": "openai",
+      "voice_id": "ash",
+      "gender": "male",
+      "accent": "indian",
+      "roster": "in-m",
+      "instructions": "Speak English with a natural Indian-English accent, as a South Asian software professional would in a working video call. Conversational meeting tone, not a presentation. Moderate pace, calm and even energy."
+    },
+    {
+      "id": "oa-in-ballad",
+      "name": "Ballad",
+      "vendor": "openai",
+      "voice_id": "ballad",
+      "gender": "male",
+      "accent": "indian",
+      "roster": "in-m",
+      "instructions": "Speak English with a natural Indian-English accent, as a South Asian software professional would in a working video call. Conversational meeting tone, not a presentation. A slightly slower, thoughtful pace with a warm, measured tone."
+    },
+    {
+      "id": "oa-in-echo",
+      "name": "Echo",
+      "vendor": "openai",
+      "voice_id": "echo",
+      "gender": "male",
+      "accent": "indian",
+      "roster": "in-m",
+      "instructions": "Speak English with a natural Indian-English accent, as a South Asian software professional would in a working video call. Conversational meeting tone, not a presentation. A brisk pace with a crisp, matter-of-fact delivery."
+    },
+    {
+      "id": "oa-in-onyx",
+      "name": "Onyx",
+      "vendor": "openai",
+      "voice_id": "onyx",
+      "gender": "male",
+      "accent": "indian",
+      "roster": "in-m",
+      "instructions": "Speak English with a natural Indian-English accent, as a South Asian software professional would in a working video call. Conversational meeting tone, not a presentation. A relaxed, low-key pace with a slightly lower, steady energy."
+    },
+    {
+      "id": "oa-in-verse",
+      "name": "Verse",
+      "vendor": "openai",
+      "voice_id": "verse",
+      "gender": "male",
+      "accent": "indian",
+      "roster": "in-m",
+      "instructions": "Speak English with a natural Indian-English accent, as a South Asian software professional would in a working video call. Conversational meeting tone, not a presentation. A lively, engaged pace with a little more energy and rises in intonation."
+    },
+    {
+      "id": "oa-in-cedar",
+      "name": "Cedar",
+      "vendor": "openai",
+      "voice_id": "cedar",
+      "gender": "male",
+      "accent": "indian",
+      "roster": "in-m",
+      "instructions": "Speak English with a natural Indian-English accent, as a South Asian software professional would in a working video call. Conversational meeting tone, not a presentation. A natural pace with a friendly, easygoing tone and occasional short pauses."
+    }
+  ]
+}
