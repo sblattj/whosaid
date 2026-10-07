@@ -1272,7 +1272,15 @@ def name_clusters(cluster_emb: dict, ref_threshold: float, absorb_threshold: flo
     The runner-up share was 0.17, 0.00 and 0.00, against up to 0.14 on true
     splits. Turns inside a blend are mixed too, so they rarely name the
     partner. A gate on either would cost real names for little or no gain;
-    the fields are there to tune one on real data. With no `turn_emb` (the `relabel --auto` sidecar keeps
+    the fields are there to tune one on real data.
+
+    `runner_up_any` / `runner_up_any_share` / `runner_up_any_sim` (v1.13.3, #77)
+    repeat runner_up with the meeting's other anonymous clusters competing too,
+    so an unenrolled blend partner can show; `_sim` is the winning cluster's
+    centroid similarity to the candidate (None when a known voice wins). Also
+    recorded only: on the same runs an anonymous winner was usually another
+    fragment of the candidate (50 of 58 rows where the winner's best voice was
+    the candidate), and true splits reached share 1.00. With no `turn_emb` (the `relabel --auto` sidecar keeps
     only centroids) the low bar does not apply and absorb_threshold is used.
 
     Clusters whose best candidate stays BELOW the gate keep their anonymous
@@ -1557,12 +1565,18 @@ def name_clusters(cluster_emb: dict, ref_threshold: float, absorb_threshold: flo
                 # unenrolled partner in a blend can show up (#77, recorded only).
                 rua, rua_share = runner_up(sp, pb, {o: [unit(cluster_emb[o])]
                                                     for o in anon_now if o != sp})
+                # An anonymous winner is usually another fragment of the candidate
+                # itself; its centroid similarity to the candidate tells them apart.
+                rua_sim = None
+                if rua in cluster_emb:
+                    rua_sim = max(float(np.dot(unit(cluster_emb[rua]), v)) for v in voice_vecs[pb])
                 matched = share >= PLACED_ABSORB_MIN_SHARE and sib_ok
                 record(sp, pb, pc[pb], placed_absorb_threshold, matched, "absorb",
                        purity=round(purity, 4), talk_share=round(share, 4),
                        sibling_sim=None if sib is None else round(sib, 4),
                        runner_up=ru, runner_up_share=round(ru_share, 4),
                        runner_up_any=rua, runner_up_any_share=round(rua_share, 4),
+                       runner_up_any_sim=None if rua_sim is None else round(rua_sim, 4),
                        second_placed=second,
                        second_placed_sim=None if second is None else round(pc[second], 4),
                        turns=turn_rows(sp, pb))
