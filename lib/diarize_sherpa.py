@@ -1440,6 +1440,8 @@ def name_clusters(cluster_emb: dict, ref_threshold: float, absorb_threshold: flo
         None when no spans were handed in. Mirrors purity_of's scoring exactly."""
         rows = (turn_emb or {}).get(sp) or []
         spans = (turn_spans or {}).get(sp)
+        if spans is not None and len(spans) != len(rows):
+            spans = None  # misaligned spans would pin times on the wrong turns
         out = []
         for i, t in enumerate(rows):
             t = unit(t)

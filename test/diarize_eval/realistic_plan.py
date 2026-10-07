@@ -491,7 +491,7 @@ def plan_meeting(rng, voices, bank, *, minutes=(30, 120), speakers=(6, 10), rost
         for pc in pieces:
             pc["at"] = round(pc["at"], 4)
         dur = end - start
-        bin_cnt[bisect.bisect_right(edges, dur)] += 1
+        bin_cnt[min(bisect.bisect_right(edges, dur), len(BINS) - 1)] += 1  # over 30 s counts in the last bin
         n_main += 1
         if last_spk is not None and last_spk != spk:
             n_sw += 1
@@ -521,7 +521,7 @@ def plan_meeting(rng, voices, bank, *, minutes=(30, 120), speakers=(6, 10), rost
                                 pc["at"] = round(pc["at"], 4)
                             turns.append({"speaker": bv, "start": bs, "end": bend,
                                           "kind": "backchannel", "pieces": bp})
-                            bin_cnt[bisect.bisect_right(edges, bend - bs)] += 1
+                            bin_cnt[min(bisect.bisect_right(edges, bend - bs), len(BINS) - 1)] += 1
                             talk[bv] += bend - bs
                             talk_total += bend - bs
                             ov_secs += bend - bs

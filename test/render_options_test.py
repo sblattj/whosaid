@@ -158,6 +158,21 @@ try:
     finally:
         if saved is not None:
             os.environ["WHOSAID_DIARIZE_EVAL_CACHE"] = saved
+    # ...nor the pool $WHOSAID_DIARIZE_EVAL_CACHE points at, passed explicitly
+    envpool = tempfile.mkdtemp(prefix="render-envpool-")
+    saved = os.environ.get("WHOSAID_DIARIZE_EVAL_CACHE")
+    os.environ["WHOSAID_DIARIZE_EVAL_CACHE"] = envpool
+    try:
+        with contextlib.redirect_stderr(io.StringIO()) as err:
+            rc = render.main(["--voices-file", str(VOICES_FILE), "--lines-file", str(LINES_FILE),
+                              "--out", envpool])
+        assert rc == 2 and "--out" in err.getvalue(), (rc, err.getvalue())
+        assert not os.listdir(envpool), "guard let a custom render into the env pool"
+    finally:
+        if saved is None:
+            os.environ.pop("WHOSAID_DIARIZE_EVAL_CACHE", None)
+        else:
+            os.environ["WHOSAID_DIARIZE_EVAL_CACHE"] = saved
 finally:
     urllib.request.urlopen = real_urlopen
     render.http_post = real_http_post

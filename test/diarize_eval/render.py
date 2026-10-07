@@ -329,9 +329,9 @@ def main(argv=None):
 
     cache = args.cache or default_cache()
     custom = args.voices_file != "voices.json" or args.lines_file != "lines.json"
-    if (custom and not args.dry_run
-            and os.path.realpath(cache) == os.path.realpath(os.path.expanduser(
-                "~/.cache/whosaid/diarize-eval"))):
+    defaults = {os.path.realpath(default_cache()),
+                os.path.realpath(os.path.expanduser("~/.cache/whosaid/diarize-eval"))}
+    if custom and not args.dry_run and os.path.realpath(cache) in defaults:
         print("refusing: a custom --voices-file/--lines-file would overwrite the default pool at %s; "
               "pass --out DIR for a separate cache" % cache, file=sys.stderr)
         return 2

@@ -112,6 +112,17 @@ def test_purity_equals_recomputed_fraction():
         assert rec["matched"] == (ok / len(t) > 0.5), rec
 
 
+def test_misaligned_spans_give_null_times():
+    turns = [turn(0.8), turn(0.75), turn(0.78)]
+    emb, ents = scene(turns)
+    rep = []
+    d.name_clusters(emb, 0.5, 0.85, ents, [], report=rep, placed_absorb_threshold=THRESH,
+                    turn_emb={"SPEAKER_02": turns}, turn_spans={"SPEAKER_02": [(1.0, 3.0)]})
+    rec = [r for r in rep if r["pass"] == "absorb" and r["cluster"] == "SPEAKER_02"][0]
+    assert len(rec["turns"]) == 3, rec
+    assert all(r["start"] is None and r["end"] is None for r in rec["turns"]), rec
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_") and callable(fn):
