@@ -1454,6 +1454,67 @@ def save_print_guarded(reg: dict, cluster: str, person: str, emb_vec, emb_model:
     log(f"registry: {verb} {cluster} as '{person}' -> {SPEAKER_DB}")
 
 
+def make_ref_embedder():
+    """Lazy embed(wave)->unit-vector over the active embedding model, for --ref
+    clips. The extractor is built on first use, so a run with no refs never loads
+    the model. Shared by the transcribe path and `relabel --auto`."""
+    state: dict = {}
+
+    def embed(wave: np.ndarray) -> np.ndarray:
+        if "fn" not in state:
+            import sherpa_onnx  # deferred: uv provides it
+            ex = sherpa_onnx.SpeakerEmbeddingExtractor(
+                sherpa_onnx.SpeakerEmbeddingExtractorConfig(model=str(EMB_MODEL)))
+            state["fn"] = make_embed(ex)
+        return state["fn"](wave)
+    return embed
+
+
+def load_ref_voices(specs: list, embed) -> list:
+    """Embed `NAME=CLIP` --ref specs into the [(name, embedding)] list that
+    name_clusters takes. Shared by transcribe and `relabel --auto`."""
+    voices = []
+    for spec in specs:
+        if "=" not in spec:
+            sys.exit(f"diarize: FATAL bad --ref (want NAME=CLIP): {spec}")
+        ref_name, ref_path = spec.split("=", 1)
+        voices.append((ref_name, embed(load_audio(ref_path))))
+    return voices
+
+
+# Naming passes whose result is derived from enrollment state (the registry or a
+# voices/ clip), so it can go stale when that state is deleted. `anchor` is not
+# here: an anchored name came from an explicit --expected-speakers request.
+DERIVED_PASSES = ("registry", "ref", "absorb")
+
+
+def orphaned_auto_names(names: dict, prior_matches: list, local_labels: dict,
+                        protected: set, registry_names: set, ref_names: set) -> dict:
+    """{cluster: name} for names an automatic pass gave a cluster whose enrollment
+    has since vanished (no registry entry for the model AND no voices/ ref).
+
+    Provenance comes from the sidecar's `registry_matches` (a matched record of a
+    DERIVED_PASSES pass for that exact cluster+name). A name with no such record
+    (an explicit relabel spec, a local label, an anchor, or a sidecar written
+    before registry_matches existed) is never dropped: its provenance is not
+    recoverable, so it is kept.
+    """
+    derived = {(m.get("cluster"), m.get("name")) for m in prior_matches
+               if m.get("matched") and m.get("pass") in DERIVED_PASSES}
+    anchored = {(m.get("cluster"), m.get("name")) for m in prior_matches
+                if m.get("matched") and m.get("pass") == "anchor"}
+    out = {}
+    for cluster, name in names.items():
+        if name == cluster or cluster in local_labels or cluster in protected:
+            continue
+        if (cluster, name) not in derived or (cluster, name) in anchored:
+            continue
+        if name in registry_names or name in ref_names:
+            continue
+        out[cluster] = name
+    return out
+
+
 def do_relabel(args) -> None:
     """Apply new cluster->name assignments from a cached sidecar, persist voiceprints
     to the registry, and re-render the transcript + cards. No re-diarization."""
@@ -1472,6 +1533,23 @@ def do_relabel(args) -> None:
     explicit_roles: dict[str, str] = {}  # --save-role targets (sidecar even w/o entry)
     local_labels = dict(data.get("local_labels", {}))
     wrote_registry = False
+
+    # --forget NAME (with --auto): clear NAME from every cluster of THIS meeting before
+    # naming, even a transcript-only label. Runs before the explicit specs below, so a
+    # CLUSTER=NAME in the same command still wins. It never edits the registry, and
+    # the --auto pass then re-evaluates the freed clusters normally: a NAME that still
+    # matches an enrolled voice can legitimately come back.
+    forgotten: set = set()
+    for forget_name in (getattr(args, "forget", None) or []):
+        hit = [sp for sp, nm in names.items() if nm == forget_name and nm != sp]
+        if not hit:
+            log(f"WARN relabel: --forget {forget_name}: no cluster carries that name")
+        for sp in hit:
+            names[sp] = sp
+            local_labels.pop(sp, None)
+            forgotten.add(sp)
+            log(f"relabel: forgot '{forget_name}' on {sp}")
+    explicit_clusters = {spec.split("=", 1)[0].strip() for spec in args.save_speaker if "=" in spec}
     for spec in args.save_speaker:
         if "=" not in spec:
             sys.exit(f"diarize: FATAL bad relabel spec (want CLUSTER=NAME): {spec}")
@@ -1535,9 +1613,31 @@ def do_relabel(args) -> None:
             if s.get("model") == emb_model and s.get("embedding")]
         if registry_entries:
             log(f"registry: matching against {len(registry_entries)} known voice(s) [{emb_model}]")
+        # voices/ clips (`enroll --from FILE`) are refs, not registry entries; the
+        # launcher passes them as --ref exactly like transcribe does.
+        ref_voices = load_ref_voices(args.ref, make_ref_embedder()) if args.ref else []
+        if ref_voices:
+            log(f"refs: matching against {len(ref_voices)} voices/ clip(s)")
+        prior = [m for m in (data.get("registry_matches") or [])
+                 if m.get("cluster") not in forgotten]
+        if not args.no_registry:  # without the registry we cannot tell what is gone
+            gone = orphaned_auto_names(
+                names, prior, local_labels, explicit_clusters,
+                {e["name"] for e in registry_entries}, {n for n, _ in ref_voices})
+            for sp, nm in gone.items():
+                names[sp] = sp
+                log(f"relabel: dropped '{nm}' on {sp} (no registry entry or voices/ clip "
+                    f"for it any more)")
         registry_matches: list = []
         name_clusters(cluster_emb, args.ref_threshold, args.absorb_threshold,
-                      registry_entries, [], names, report=registry_matches)
+                      registry_entries, ref_voices, names, report=registry_matches)
+        # name_clusters only reports THIS run's decisions; keep the earlier matched
+        # records for names that survived untouched, so the next --auto still knows
+        # which names came from which pass (the provenance the drop rule reads).
+        fresh = {m["cluster"] for m in registry_matches if m.get("matched")}
+        registry_matches += [m for m in prior
+                             if m.get("matched") and m.get("cluster") not in fresh
+                             and names.get(m.get("cluster")) == m.get("name")]
         data["registry_matches"] = registry_matches
 
     before_fold = len(speakers)
@@ -1634,6 +1734,10 @@ def main() -> None:
     ap.add_argument("--auto", action="store_true",
                     help="with --relabel: re-run registry matching + the absorb pass over the "
                          "sidecar's cached voiceprints (no CLUSTER=NAME needed, no re-diarization)")
+    ap.add_argument("--forget", action="append", default=[], metavar="NAME",
+                    help="with --relabel --auto (repeatable): clear NAME from this meeting's "
+                         "clusters before re-naming. The registry is untouched, so a NAME that "
+                         "is still enrolled and still matches can come back.")
     ap.add_argument("--fold-unknown", action="store_true",
                     help="with --relabel --auto: conservatively merge similar anonymous cached clusters")
     ap.add_argument("--save-speaker", action="append", default=[], metavar="CLUSTER=NAME",
@@ -1675,6 +1779,9 @@ def main() -> None:
     args = ap.parse_args()
     if args.fold_unknown and not (args.relabel and args.auto):
         ap.error("--fold-unknown requires --relabel --auto")
+
+    if args.forget and not (args.relabel and args.auto):
+        ap.error("--forget requires --relabel --auto")
 
     for spec in args.save_role:
         if "=" not in spec:
@@ -1738,14 +1845,7 @@ def main() -> None:
         chunk_seconds = max(total_dur, 1.0)
 
     # Lazy embedder for --ref clip matching (the chunked path builds no in-main extractor).
-    _ref_ex = {}
-
-    def ref_embed(wave: np.ndarray) -> np.ndarray:
-        if "fn" not in _ref_ex:
-            ex = sherpa_onnx.SpeakerEmbeddingExtractor(
-                sherpa_onnx.SpeakerEmbeddingExtractorConfig(model=str(EMB_MODEL)))
-            _ref_ex["fn"] = make_embed(ex)
-        return _ref_ex["fn"](wave)
+    ref_embed = make_ref_embedder()
 
     # ---- known voices, loaded BEFORE clustering so --expected-speakers can anchor it.
     # (Naming used to embed --ref clips only afterwards; anchoring needs the
@@ -1754,12 +1854,7 @@ def main() -> None:
     if registry_entries:
         log(f"registry: matching against {len(registry_entries)} known voice(s) [{EMB_NAME}]")
 
-    ref_voices = []
-    for spec in args.ref:
-        if "=" not in spec:
-            sys.exit(f"diarize: FATAL bad --ref (want NAME=CLIP): {spec}")
-        ref_name, ref_path = spec.split("=", 1)
-        ref_voices.append((ref_name, ref_embed(load_audio(ref_path))))
+    ref_voices = load_ref_voices(args.ref, ref_embed)
 
     # ---- --expected-speakers: resolve each name to a known voiceprint (issue #1 part 4).
     expected = [n.strip() for spec in args.expected_speakers

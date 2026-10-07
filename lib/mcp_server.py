@@ -243,7 +243,10 @@ _DESC_RELABEL = (
     "speaker cards to tell who is who, then map clusters to names. Pass auto=true (with an empty "
     "assignments map) to instead re-apply registry matching + the absorb pass over the cached "
     "sidecar, which folds phantom cluster splits into their real speaker. With auto=true, pass "
-    "fold_unknown=true to repair anonymous phantom clusters in a cached sidecar. Optionally pass "
+    "fold_unknown=true to repair anonymous phantom clusters in a cached sidecar. auto=true also "
+    "matches the enrollment clips in voices/ and drops auto-assigned names whose registry entry "
+    "and clip are gone; pass forget=['Name'] (with auto=true) to clear a name from this "
+    "meeting's clusters first (it can come back if still enrolled and matching). Optionally pass "
     "`roles` ({Name: role} — self/boss/peer/report/external) to role-tag speakers in the "
     "registry, cards, and transcripts. Pass no_save=true for a transcript-only label: sidecar "
     "+ outputs are renamed but the registry is untouched (composes with auto=true); note adds "
@@ -588,13 +591,19 @@ def whosaid_relabel(
     note: Optional[str] = None,
     fold_unknown: bool = False,
     blend: bool = False,
+    forget: Optional[list[str]] = None,
 ) -> dict:
     """Name SPEAKER_NN clusters and persist them, by shelling `whosaid relabel`.
 
     With auto=True the assignments map may be empty: whosaid re-applies registry
     matching + the absorb pass over the cached sidecar (no re-diarization),
-    merging phantom cluster splits into their real speaker. Set fold_unknown=True
-    only with auto=True to repair anonymous phantom clusters in a cached sidecar.
+    merging phantom cluster splits into their real speaker. auto=True also matches
+    the enrollment clips in voices/ and drops auto-assigned names whose registry
+    entry and clip are both gone. Set fold_unknown=True only with auto=True to
+    repair anonymous phantom clusters in a cached sidecar. `forget` (only with
+    auto=True) is a list of names to clear from this meeting's clusters before
+    re-naming; the registry is untouched, so a name that is still enrolled and
+    still matches can come back.
 
     `roles` optionally maps Name -> role (conventional: self, boss, peer,
     report, external; free-form allowed) and is passed through as repeatable
@@ -620,6 +629,22 @@ def whosaid_relabel(
             "error": "fold_unknown requires auto=true",
             "fix": "pass auto=true to repair anonymous phantom clusters in a cached sidecar",
         }
+    forget_names: list = []
+    if forget:
+        if not auto:
+            return {
+                "ok": False,
+                "error": "forget requires auto=true",
+                "fix": "pass auto=true: forget clears a name, then re-runs the automatic naming",
+            }
+        if not isinstance(forget, list) or not all(
+                isinstance(n, str) and re.fullmatch(r"[A-Za-z0-9_-]+", n) for n in forget):
+            return {
+                "ok": False,
+                "error": "forget must be a list of names matching [A-Za-z0-9_-]+",
+                "fix": "pass e.g. forget=['Jane'] with auto=true",
+            }
+        forget_names = list(forget)
     bad = []
     for k, v in assignments.items():
         if not re.fullmatch(r"SPEAKER_\d+", str(k)):
@@ -664,6 +689,8 @@ def whosaid_relabel(
         args.append("--auto")
     if fold_unknown:
         args.append("--fold-unknown")
+    for name in forget_names:
+        args += ["--forget", name]
     if match_threshold is not None:
         args += ["--match-threshold", str(match_threshold)]
     for name, role in role_specs:

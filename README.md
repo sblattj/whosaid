@@ -125,7 +125,7 @@ the models as usual.
 | `whosaid relabel <base> SPEAKER_02=Jane …` | Put real names on clusters after reading the speaker cards. Rewrites the transcript + cards and saves each named voiceprint to the local registry for future transcripts — refusing (unless `--force`) to overwrite an existing registry entry the new cluster doesn't match (similarity below the match threshold, default 0.50). No re-transcription. |
 | `whosaid relabel <base> SPEAKER_04=Alice --blend` | Average the cluster into Alice's saved print instead of replacing it, to strengthen the print from a new recording. Same similarity guard as a normal relabel. See [Speaker identity: enrollment clips vs. the registry](#speaker-identity-enrollment-clips-vs-the-registry). |
 | `whosaid relabel <base> SPEAKER_04=Alice --no-save [--note TEXT]` | Transcript-only label: renames the cluster in the transcript + cards and never writes to the registry. For a speaker the conversation makes obvious but whose cluster is a poor voiceprint — a long mixed cluster saved as that person would degrade their enrolled print. The label is kept in the sidecar (`local_labels`), survives `relabel --auto` and `whosaid samples`, and each card is marked `Alice_Example  (transcript-only label; registry untouched)`. See [Speaker identity: enrollment clips vs. the registry](#speaker-identity-enrollment-clips-vs-the-registry). |
-| `whosaid relabel <base> --auto [--fold-unknown]` | Re-apply naming to an existing transcript with no assignments: re-runs registry matching + the absorb pass over the cached sidecar and rewrites the transcript + cards. Picks up voices enrolled after the transcript was made. Add `--fold-unknown` to repair anonymous phantom clusters in cached auto-diarization; it requires `--auto` and does not assign an identity. No re-transcription, no re-diarization. In a meeting workspace the base is `transcript`. See [Speaker identity: enrollment clips vs. the registry](#speaker-identity-enrollment-clips-vs-the-registry). |
+| `whosaid relabel <base> --auto [--forget NAME ...] [--fold-unknown]` | Re-apply naming to an existing transcript with no assignments: re-runs registry matching + the absorb pass over the cached sidecar (and the `voices/` enrollment clips, as `transcribe` does) and rewrites the transcript + cards. Picks up voices enrolled after the transcript was made, and drops auto-assigned names whose registry entry and clip are gone. `--forget NAME` (repeatable) clears NAME from this meeting first; it can come back if NAME is still enrolled and matches. Add `--fold-unknown` to repair anonymous phantom clusters in cached auto-diarization; it requires `--auto` and does not assign an identity. No re-transcription, no re-diarization. In a meeting workspace the base is `transcript`. See [Speaker identity: enrollment clips vs. the registry](#speaker-identity-enrollment-clips-vs-the-registry). |
 | `whosaid backfill <ws> [--dry-run]` | Apply current registry names and roles to historical meetings, regenerate commitments, and refresh roll-up, worklists, search, graph, and wiki. Reports conflicts before changing meeting files. |
 | `whosaid speakers export --out FILE` | Export the private speaker registry to a new backup file, including voiceprints, roles, and metadata. |
 | `whosaid speakers import FILE [--merge\|--overwrite]` | Restore a registry backup. An existing destination requires an explicit conflict policy; `--overwrite` replaces the entire registry. |
@@ -1234,6 +1234,17 @@ deliberately if a real speaker is being missed.
   cards merge those clusters into one card. To apply this to a transcript you already have, run
   `whosaid relabel <base> --auto` — it re-names from the registry + absorb pass with no
   re-transcription.
+- **`relabel --auto` ignored a clip I enrolled, or keeps a name whose voiceprint I deleted.**
+  `--auto` now matches the `voices/` enrollment clips (what `whosaid enroll NAME --from FILE`
+  saves) the same way `transcribe` does, not just the registry. It also drops a name that an
+  automatic pass (registry, ref, or absorb) gave a cluster once that name has neither a registry
+  entry nor a `voices/` clip, and the freed cluster is re-named to a better match if one exists.
+  Names you set yourself (`SPEAKER_NN=Name`, `--no-save` labels) are never auto-dropped; neither
+  is a name from a sidecar that predates `registry_matches`, since its source is unknown.
+  `whosaid relabel <base> --auto --forget NAME` (repeatable) clears NAME from this meeting's
+  clusters first, even a transcript-only label, then re-runs naming. The registry is untouched, so
+  a NAME that is still enrolled and still matches can legitimately come back; delete the voiceprint
+  as well if it should stay gone.
 - **Distinct people get merged into one speaker (or the count is too low).** The speaker-embedding
   model must match the spoken language. whosaid defaults to an English-native model (NeMo
   TitaNet-small); on English audio the Mandarin-trained model cannot tell similar voices apart and
