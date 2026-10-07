@@ -370,8 +370,32 @@ def _parse_mid(mid):
     return int(m.group(1)), int(m.group(2))
 
 
+def _crosstalk(rng, ctx, pair, start, length):
+    """Two speakers trading short, overlapping turns for about `length` seconds (#77
+    blends): each turn 0.5-2.5 s, the next one starting 0.1-0.6 s before the previous
+    ends, so the diarizer sees windows holding both voices. Returns (turns, end)."""
+    out = []
+    t = start
+    who = 0
+    last_end = {pair[0]: -1e9, pair[1]: -1e9}
+    while t - start < length:
+        vid = pair[who]
+        s = max(t, last_end[vid] + 0.05)
+        pieces, end = _build_turn(rng, ctx, vid, s, rng.uniform(0.5, 2.5), 1, max_dur=2.6)
+        for pc in pieces:
+            pc["at"] = round(pc["at"], 4)
+        out.append({"speaker": vid, "start": s, "end": end, "kind": "crosstalk", "pieces": pieces})
+        last_end[vid] = end
+        t = max(s + 0.3, end - rng.uniform(0.1, 0.6))
+        who = 1 - who
+    return out, max(x["end"] for x in out)
+
+
 def plan_meeting(rng, voices, bank, *, minutes=(30, 120), speakers=(6, 10), roster=None,
-                 mid="m0-000"):
+                 mid="m0-000", blends=0):
+    """`blends` > 0 inserts that many crosstalk episodes (`_crosstalk`, 15-40 s each)
+    between two of the meeting's speakers, tagged "blend<k>". Drawn from a separate
+    stream, so blends=0 plans stay byte-identical to earlier builds."""
     seed, idx = _parse_mid(mid)
     eligible = sorted(v for v in voices if bank.get(v))
     if not eligible:
@@ -445,10 +469,29 @@ def plan_meeting(rng, voices, bank, *, minutes=(30, 120), speakers=(6, 10), rost
                 return v
         return spk_order[-1]
 
+    brng = random.Random((seed * 7919 + idx) * 31 + 17)
+    blend_at = sorted(brng.uniform(0.1, 0.9) * D for _ in range(blends)) if n >= 2 else []
     t = LEAD
     guard = 0
     while guard < 200000:
         guard += 1
+        if blend_at and prev is not None and prev[2] >= blend_at[0]:
+            blend_at.pop(0)
+            pair = brng.sample(spk_order, 2)
+            s0 = max(prev[2] + 0.5, last_end[pair[0]] + 0.2, last_end[pair[1]] + 0.2)
+            length = brng.uniform(15.0, 40.0)
+            if s0 + length < D - TRAIL - 1.0:
+                ct, cend = _crosstalk(brng, ctx, pair, s0, length)
+                for x in ct:
+                    turns.append(x)
+                    talk[x["speaker"]] += x["end"] - x["start"]
+                    talk_total += x["end"] - x["start"]
+                    last_end[x["speaker"]] = max(last_end[x["speaker"]], x["end"])
+                for a, b in zip(ct, ct[1:]):
+                    ov_secs += max(0.0, a["end"] - b["start"])
+                last_spk = ct[-1]["speaker"]
+                prev = (ct[-1]["speaker"], ct[-1]["start"], cend)
+                continue
         if prev is None:
             spk = draw(weights())
             start = t
@@ -558,7 +601,7 @@ def plan_meeting(rng, voices, bank, *, minutes=(30, 120), speakers=(6, 10), rost
                       "share_target": round(share[v], 4)})
     return {"schema": 1, "id": "m%d-%03d" % (seed, idx), "seed": seed,
             "duration": round(duration, 3),
-            "tags": ["realistic", "n%d" % n] + tags,
+            "tags": ["realistic", "n%d" % n] + tags + (["blend%d" % blends] if blends and n >= 2 else []),
             "speakers": names, "epochs": epochs, "turns": turns,
             "overlap_target": round(overlap_target, 4)}
 

@@ -281,3 +281,50 @@ an unenrolled speaker's best cosine to a known voice at 0.17–0.45 on real reco
 0.70 bar where the placed-voice absorb starts. The roster batch's calibration still misses 7 of
 21 metrics by more than ±20%, among them the correct-match cosine (0.89 synthetic against
 0.72–0.89 real) and the over-split second-cluster cosine (0.68 against 0.70–0.83).
+
+## Blends (v1.13.2)
+
+#77's real replay found 2 by-ear blends (two speakers inside one cluster) that v1.13.0 named
+after one of them, at talk shares of 0.77 and 0.88. That replay predates v1.13.1's sibling
+margin. To reproduce the case, `realistic.py --blends K` inserts K crosstalk episodes per
+meeting: two speakers trading 0.5–2.5 s turns for 15–40 s, each hand-off overlapping by
+0.1–0.6 s. These are the clusters that reach the placed-voice absorb. Planning uses its own
+random stream, so `--blends 0` (the default) plans byte-identical meetings.
+
+```sh
+uv run --with numpy python test/diarize_eval/realistic.py --pool POOL.json --out /tmp/b \
+    --seed 95 --count 10 --minutes 8-15 --speakers 3-6 --blends 3
+```
+
+Two batches (seeds 95 and 96, 22 meetings, `refs` and `refs-subset`) produced 13 placed-voice
+decisions on blend clusters (a cluster where no single speaker holds 60% of the talk). The
+talk-share and sibling gates refused 9 of them. The other 4 named 3 clusters wrongly:
+
+| cluster | talk | mix | sim − second placed | runner-up share |
+|---|---|---|---|---|
+| Sage | 107 s | 51% Sage, 49% Coral | +0.314 | 0.17 |
+| Bella | 16 s | 59% Bella, 41% Coral | +0.400 | 0.00 |
+| Liam (`refs-subset`) | 34 s | 44% Liam, rest unenrolled | none | 0.00 |
+
+Two blend guards were measured against these and against every true split the current gates
+name (72 decisions, from the two batches plus a re-run of every earlier meeting with a
+placed-voice decision):
+
+- **Centroid margin** (similarity minus the next placed voice's). True splits went as low as
+  +0.110 (15 s) and +0.204 (92 s). The two blends above sat higher. The refused blends that
+  had a second placed voice were at +0.071 to +0.222, all already caught by the other gates. Any cutoff gives up real names
+  and catches none of the 3.
+- **Runner-up share** (the other known voice winning the most talk time). Turns inside a blend
+  are themselves mixed, so they rarely name the partner. True splits reached 0.14. A 0.15 cutoff
+  would catch Sage alone, on a 0.03 gap from one example.
+
+Neither is gated. Both are recorded on every placed-voice `absorb` record (`runner_up`,
+`runner_up_share`, `second_placed`, `second_placed_sim`), so a guard can be tuned on real
+by-ear labels. The Liam case, where the partner is not enrolled, has no second voice to compare
+against.
+
+The #77 reporter's replay of 23 real by-ear clusters on v1.13.1 agrees on the limits. The sibling
+margin refused one of the 2 real blends (+0.010). The other blend is partly the candidate's own
+voice, so it sits close to the candidate's own cluster (+0.107) and is still named. The margin
+also refused a 59 s true split (−0.057), so on real audio it costs more than the cameo
+fragments the synthetic sets showed.

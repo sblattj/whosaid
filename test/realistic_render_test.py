@@ -54,7 +54,7 @@ def fake_phrase_bank(pool_root, voices, cache_path=None):
 
 
 def fake_plan_meeting(rng, voices, bank, *, minutes=(30, 120), speakers=(6, 10),
-                      roster=None, mid="m0-000"):
+                      roster=None, mid="m0-000", blends=0):
     """Toy planner: back-to-back 3 s turns, voices round-robin, one tempo change."""
     dur = minutes[0] * 60.0
     vids = sorted(voices)[:speakers[0]]
