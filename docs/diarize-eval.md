@@ -234,3 +234,50 @@ names came out wrong; the same 2 are wrong on v1.9.0, so they are not a regressi
 **Long meetings.** Fix 1's 2 s cutoff was set on 2-minute meetings. On the three 16–21-minute
 held-out meetings, blind DER went 35.8 → 7.7% and refs named-wrong 11.3 → 2.8%. The cutoff
 holds at that length too.
+
+## Results (v1.13.0 and v1.13.1, placed-voice absorb)
+
+v1.13.0 replaced the placed-voice absorb's per-turn purity gate with a seconds-weighted talk-share
+gate (#77), so a known speaker's second cluster is no longer refused when its short turns score
+low. Re-scoring the held-out sets showed that gain, and one regression: with half the roster
+enrolled, an **unenrolled** speaker who sounds like an enrolled one now took that person's name.
+Talk share cannot see this case. When the real speaker is not enrolled, every turn's best known
+voice is the lookalike, so the share reads near 1.0. v1.13.1 adds a sibling margin: the cluster
+must sit at least 0.035 closer to the candidate's own cluster in this recording than to the
+candidate's voiceprint.
+
+To find more lookalike cases than the original subsets held, val-mixed, val-hard, val-cameo
+and the two #77 repro batches were re-run with two more enrolled halves
+(`run.py --subset-salt a|b`). Over all those runs plus the tuning sets, the placed-voice absorb
+fired on 19 distinct clusters. In 5 of them a stranger took a lookalike's name (9–75 s of talk
+each), and they scored sibling − voiceprint between −0.017 and +0.028. The other 14 were true
+splits; 11 scored +0.042 to +0.114, and the 3 below the margin are cameo fragments of 4–21 s.
+The margin was picked on these same 19 clusters. The held-out same-accent roster batch (6
+meetings of 20–45 minutes) had no lookalike case. It had 3 true splits: 2 were absorbed, and
+Abhinav (86 s, +0.028) was refused, so on this data the two groups overlap and the margin trades
+a few unnamed fragments for no wrong names.
+
+Held-out, mean of per-meeting percentages (final = the v1.10.0-era results above; `refs` = all
+enrolled, `refs-subset` = half enrolled; blind and `--speakers N` are unaffected by this pass):
+
+| set | mode | DER final → 1.13.0 → 1.13.1 | named wrong final → 1.13.0 → 1.13.1 |
+|---|---|---|---|
+| val-mixed | refs | 13.4 → 10.3 → 10.3 | 7.6 → 4.3 → 4.3 |
+| val-mixed | refs-subset | 10.5 → 15.1 → 10.5 | 3.3 → 7.9 → 3.3 |
+| val-hard | refs | 26.0 → 13.1 → 13.1 | 21.0 → 9.0 → 9.0 |
+| val-hard | refs-subset | 24.0 → 19.5 → 19.5 | 17.2 → 13.7 → 13.7 |
+| val-cameo | refs | 24.8 → 12.7 → 14.1 | 17.0 → 6.2 → 6.1 |
+| val-cameo | refs-subset | 21.9 → 13.9 → 15.3 | 12.1 → 5.1 → 5.0 |
+| val-long | refs | 35.7 → 7.0 → 7.0 | 31.0 → 2.0 → 2.0 |
+| val-long | refs-subset | 7.6 → 7.0 → 7.0 | 1.4 → 1.4 → 1.4 |
+
+The v1.13.1 column comes from re-running every meeting and mode where the v1.13.0 gate made a
+placed-voice decision (40 runs); the gate cannot change any other run. Across those 40 runs the
+summed named-wrong fraction fell 4.18 → 1.60 and named-right fell 25.70 → 25.10. The cost is
+cameo fragments left anonymous (val-cameo DER +1.4 points).
+
+The synthetic voices are harder on this gate than real meetings. The #80 calibration puts
+an unenrolled speaker's best cosine to a known voice at 0.17–0.45 on real recordings, below the
+0.70 bar where the placed-voice absorb starts. The roster batch's calibration still misses 7 of
+21 metrics by more than ±20%, among them the correct-match cosine (0.89 synthetic against
+0.72–0.89 real) and the over-split second-cluster cosine (0.68 against 0.70–0.83).
