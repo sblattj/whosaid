@@ -29,19 +29,40 @@ def unit(v):
     return v / (np.linalg.norm(v) + 1e-9)
 
 
-def scene():
-    """P (e0) and Q (e1) placed via clusters 00/01; cluster 02 is the one under test."""
-    c1, c3 = unit(E[0] + 0.1 * E[5]), unit(E[1] + 0.1 * E[6])
+C02 = unit(0.75 * E[0] + 0.66 * E[9])
+
+
+def sibling_at(target):
+    """A centroid for P's own cluster (e0 + x*e9, still P's best registry match) whose
+    cosine to cluster 02 is `target`, found by bisection on x."""
+    lo, hi = 0.0, 0.85
+    for _ in range(60):
+        x = (lo + hi) / 2
+        if float(np.dot(unit(E[0] + x * E[9]), C02)) < target:
+            lo = x
+        else:
+            hi = x
+    return unit(E[0] + hi * E[9])
+
+
+def scene(c1=None):
+    """P (e0) and Q (e1) placed via clusters 00/01; cluster 02 is the one under test.
+    c1 overrides P's own cluster centroid (to move the sibling away)."""
+    # c1 shares the e9 component with cluster 02, so 02 sits close to P's own cluster
+    # (sibling 0.98) as a real split does; the sibling-margin gate passes.
+    c1_override = c1
+    c1, c3 = unit(E[0] + 0.1 * E[5] + 0.6 * E[9]), unit(E[1] + 0.1 * E[6])
     # fixed centroid in the placed-absorb band (0.75 to P, under the strict 0.85 bar),
     # independent of the turns: the gate under test reads the turns, not the centroid
-    emb = {"SPEAKER_00": c1, "SPEAKER_01": c3, "SPEAKER_02": unit(0.75 * E[0] + 0.66 * E[9])}
+    emb = {"SPEAKER_00": c1 if c1_override is None else c1_override, "SPEAKER_01": c3,
+           "SPEAKER_02": C02}
     ents = [{"name": "P", "embedding": E[0].tolist()}, {"name": "Q", "embedding": E[1].tolist()}]
     return emb, ents
 
 
-def run(turns, durs=None):
+def run(turns, durs=None, c1=None):
     """durs: per-turn seconds (spans laid end to end); None => no turn_spans."""
-    emb, ents = scene()
+    emb, ents = scene(c1)
     rep = []
     kw = {"turn_emb": {"SPEAKER_02": turns}}
     if durs is not None:
@@ -115,6 +136,34 @@ def test_record_carries_purity_and_talk_share():
     _, rec = run(turns, durs=[3.0, 3.0, 3.0, 3.0])
     assert rec["purity"] == 0.25 and rec["talk_share"] == 0.75, rec
     assert rec["matched"] and len(rec["turns"]) == 4, rec
+
+
+def test_unenrolled_lookalike_is_refused():
+    # v1.13.1: a stranger who sounds like P. Every turn's best known voice is P, so
+    # talk share is 1.0, but the cluster is no closer to P's own cluster here (0.747)
+    # than to P's voiceprint (0.751): no sibling margin, stays anonymous.
+    turns = [turn(0.72)] * 6
+    out, rec = run(turns, durs=[5.0] * 6, c1=unit(E[0] + 0.1 * E[5]))
+    assert rec["talk_share"] == 1.0, rec
+    assert out["SPEAKER_02"] == "SPEAKER_02", out
+    assert not rec["matched"], rec
+    assert abs(rec["sibling_sim"] - 0.747) < 1e-3, rec
+
+
+def test_sibling_margin_boundary():
+    sim = float(np.dot(C02, E[0]))
+    turns = [turn(0.6)] * 4
+    for gap, want in ((0.030, False), (0.040, True)):
+        out, rec = run(turns, durs=[3.0] * 4, c1=sibling_at(sim + gap))
+        assert rec["talk_share"] == 1.0, rec
+        assert (out["SPEAKER_02"] == "P") is want, (gap, out)
+        assert rec["matched"] is want, (gap, rec)
+        assert abs(rec["sibling_sim"] - (sim + gap)) < 1e-3, rec
+
+
+def test_matched_record_carries_sibling_sim():
+    _, rec = run([turn(0.6)] * 3, durs=[2.0] * 3)
+    assert rec["matched"] and rec["sibling_sim"] > rec["similarity"] + 0.035, rec
 
 
 if __name__ == "__main__":

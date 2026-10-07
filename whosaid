@@ -95,7 +95,7 @@ REPO_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
 
 # Single source of truth for the released version. Bump this alongside the
 # CHANGELOG.md entry and git tag at release time.
-WHOSAID_VERSION="1.13.0"
+WHOSAID_VERSION="1.13.1"
 
 HELPER="$REPO_DIR/lib/transcribe_mlx.py"
 DIARIZER="$REPO_DIR/lib/diarize_sherpa.py"
@@ -325,7 +325,9 @@ TRANSCRIBE FLAGS
                        Applies to voices not placed in this meeting.
       --placed-absorb-threshold F  Lower absorb bar for a voice already placed in this
                        meeting: a still-unnamed cluster folds into it at cosine ≥ F when
-                       most of its turns agree on that voice (purity gate). Needs per-turn
+                       most of its talk time is closest to that voice and it sits
+                       closer to that voice's own cluster than to its voiceprint
+                       (talk-share and sibling gates). Needs per-turn
                        voiceprints, so --no-chunk falls back to --absorb-threshold.
                        Default 0.70 (WHOSAID_PLACED_ABSORB_THRESHOLD).
       --match-threshold F  Cosine ≥ F is required before a registry/enrolled voice
@@ -577,7 +579,8 @@ ENV OVERRIDES
   WHOSAID_ABSORB_THRESHOLD  Absorb-pass cosine threshold (default: 0.85); a still-
                       unnamed cluster this close to a known voice is folded into it.
   WHOSAID_PLACED_ABSORB_THRESHOLD  Lower absorb bar (default: 0.70) for a voice already
-                      placed in the meeting, gated on per-turn purity (transcribe only).
+                      placed in the meeting, gated on talk share and sibling margin
+                      (transcribe only).
   WHOSAID_MATCH_THRESHOLD  Registry/reference match cosine threshold (default: 0.50);
                       a cluster whose best candidate scores below it stays SPEAKER_NN.
   DIARIZE_EMB_NAME     Speaker-embedding model (default: NeMo TitaNet-small,

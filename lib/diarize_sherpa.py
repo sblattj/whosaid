@@ -1175,6 +1175,9 @@ DEFAULT_PLACED_ABSORB_THRESHOLD = 0.70
 PLACED_ABSORB_MIN_SHARE = 0.60
 # Placed absorb (#77): a turn only counts toward that share if it scores at least this vs the candidate.
 PLACED_ABSORB_TURN_FLOOR = 0.40
+# Placed absorb: the cluster must sit at least this much closer to the candidate's own
+# cluster in this recording than to the candidate's voiceprint (sibling margin).
+PLACED_ABSORB_SIBLING_MARGIN = 0.035
 
 
 def name_clusters(cluster_emb: dict, ref_threshold: float, absorb_threshold: float,
@@ -1242,7 +1245,20 @@ def name_clusters(cluster_emb: dict, ref_threshold: float, absorb_threshold: flo
     split (48 turns, 76 s) had no turn >= 3 s at all. Seconds-weighting already
     discounts short turns without discarding a cluster made only of them. The
     decision records `talk_share` (the decision field) and still records the old
-    `purity` for comparison. With no `turn_emb` (the `relabel --auto` sidecar keeps
+    `purity` for comparison.
+
+    Sibling margin (v1.13.1): talk share cannot see an UNENROLLED speaker who
+    sounds like a placed one. Every turn's best known voice is then the placed
+    candidate, so the share reads near 1.0, and v1.13.0 named 5 such strangers
+    (9-75 s each) after the lookalike in 3 x 5 synthetic refs-subset runs. A real
+    split is a piece of the same person on the same channel, so its centroid sits
+    clearly closer to the candidate's own cluster(s) in this recording than to the
+    candidate's out-of-session voiceprint: sibling - similarity was +0.042 to
+    +0.114 on 11 of 14 true splits, and -0.017 to +0.028 on all 5 strangers. So
+    the absorb also needs sibling >= similarity + PLACED_ABSORB_SIBLING_MARGIN
+    (0.035); the record carries `sibling_sim`. The 3 true splits it gives up are
+    short cameo fragments (4-21 s) that stay anonymous rather than risk a wrong
+    name. With no `turn_emb` (the `relabel --auto` sidecar keeps
     only centroids) the low bar does not apply and absorb_threshold is used.
 
     Clusters whose best candidate stays BELOW the gate keep their anonymous
@@ -1392,6 +1408,10 @@ def name_clusters(cluster_emb: dict, ref_threshold: float, absorb_threshold: flo
     # Pass 3: absorb phantom splits into the nearest known voice. "Placed" is
     # snapshotted here so the result never depends on cluster iteration order.
     placed_now = {nm for sp, nm in names.items() if nm != sp}
+    owner_clusters: dict = {}
+    for sp, nm in names.items():
+        if nm != sp and sp in cluster_emb:
+            owner_clusters.setdefault(nm, []).append(sp)
     voice_vecs: dict = {}
     for n, k in known:
         voice_vecs.setdefault(n, []).append(k)
@@ -1479,17 +1499,28 @@ def name_clusters(cluster_emb: dict, ref_threshold: float, absorb_threshold: flo
             purity = purity_of(sp, pb)
             share = talk_share(sp, pb)
             if purity is not None and share is not None:
-                matched = share >= PLACED_ABSORB_MIN_SHARE
+                # Closest centroid of a cluster the candidate already owns here; None
+                # (refuse) when no owner centroid is available to compare against.
+                sib = max((float(np.dot(ce, unit(cluster_emb[o])))
+                           for o in owner_clusters.get(pb, ()) if o != sp), default=None)
+                sib_ok = sib is not None and sib >= pc[pb] + PLACED_ABSORB_SIBLING_MARGIN
+                matched = share >= PLACED_ABSORB_MIN_SHARE and sib_ok
                 record(sp, pb, pc[pb], placed_absorb_threshold, matched, "absorb",
                        purity=round(purity, 4), talk_share=round(share, 4),
+                       sibling_sim=None if sib is None else round(sib, 4),
                        turns=turn_rows(sp, pb))
                 if matched:
                     names[sp] = pb
                     log(f"  absorb: {sp} -> {pb} (sim {pc[pb]:.3f}, placed voice, "
-                        f"talk share {share:.2f})")
-                else:
+                        f"talk share {share:.2f}, sibling {sib:.3f})")
+                elif share < PLACED_ABSORB_MIN_SHARE:
                     log(f"  absorb: {sp} -/-> {pb} (sim {pc[pb]:.3f}) refused: talk share "
                         f"{share:.2f} < {PLACED_ABSORB_MIN_SHARE:.2f}, looks like a blend")
+                else:
+                    log(f"  absorb: {sp} -/-> {pb} (sim {pc[pb]:.3f}) refused: sibling "
+                        + ("n/a" if sib is None else f"{sib:.3f}")
+                        + f" < sim + {PLACED_ABSORB_SIBLING_MARGIN}, may be an unenrolled "
+                        f"lookalike")
                 continue
         record(sp, bn, cands[bn], absorb_threshold, False, "absorb")
     return names

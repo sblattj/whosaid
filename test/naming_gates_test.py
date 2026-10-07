@@ -74,7 +74,8 @@ def entries(**voices):
 def test_sink_voice_blocked():
     rng = np.random.default_rng(1)
     P, S = E[0], E[1]
-    c1 = unit(mix(e0=0.95, e2=np.sqrt(1 - 0.95 ** 2)))
+    # c1 leans a little toward c2's e1 so c2 sits close to P's own cluster (a real split)
+    c1 = unit(mix(e0=0.95, e1=0.25, e2=np.sqrt(1 - 0.95 ** 2 - 0.25 ** 2)))
     c2 = unit(mix(e0=0.80, e1=0.60))           # P-ish: 0.80 to P, 0.60 to the absent S
     emb = {"SPEAKER_00": c1, "SPEAKER_01": c2}
     turns = {"SPEAKER_01": [around(c2, rng) for _ in range(6)]}
@@ -103,7 +104,7 @@ def test_genuine_two_voice_meeting_named():
 def _placed_scene(c2_turns, rng):
     """P and Q both placed (clusters c1, c3); c2 is the cluster under test."""
     P, Q = E[0], E[1]
-    c1 = unit(mix(e0=0.99, e5=0.1))
+    c1 = unit(mix(e0=0.99, e5=0.1, e9=0.6))     # shares e9 with a true split of P
     c3 = unit(mix(e1=0.99, e6=0.1))
     c2 = unit(np.sum(c2_turns, axis=0))
     emb = {"SPEAKER_00": c1, "SPEAKER_01": c3, "SPEAKER_02": c2}

@@ -4,7 +4,25 @@ All notable changes to whosaid are documented here. This project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html) and the format of
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [Unreleased]
+## [1.13.1] - 2026-10-07
+
+### Fixed
+
+- **An unenrolled speaker no longer takes the name of an enrolled speaker who sounds like them.**
+  v1.13.0's talk-share gate (#77) cannot see this case: when the real speaker is not enrolled,
+  every turn's best known voice is the lookalike, so the share reads near 1.0. Across the
+  held-out val sets and alternate enrolled halves, v1.13.0 named 5 such strangers (9-75 s each)
+  after an enrolled lookalike, and val-mixed refs-subset named-wrong time rose from 2.6% to 7.6%.
+  The placed-voice absorb now also needs a sibling margin: the cluster must sit at least 0.035
+  closer to the candidate's own cluster in this recording than to the candidate's voiceprint
+  (`sibling_sim` on the record). A real split of one person on one channel cleared it by
+  +0.042 to +0.114 on 11 of 14 true splits; all 5 strangers sat at -0.017 to +0.028. The 3 true
+  splits it gives up are short cameo fragments (4-21 s), which now stay anonymous.
+
+### Added
+
+- `test/diarize_eval/run.py --subset-salt S` re-picks which half of each roster is enrolled in
+  `refs-subset`, to harvest more unenrolled-lookalike cases from the same meetings.
 
 ## [1.13.0] - 2026-10-07
 
