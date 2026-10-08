@@ -211,6 +211,28 @@ def test_record_carries_anonymous_runner_up():
     assert rec["runner_up_any"] == "Q" and rec["runner_up_any_share"] == 0.25, rec
     assert rec["runner_up_any_sim"] is None, rec  # a known voice, not a cluster
 
+
+def test_record_carries_placed_runner_up():
+    # v1.13.4, #77: the blend partner Q is enrolled and placed via SPEAKER_01, but the
+    # blend turn scores only 0.35 against Q's voiceprint (under the 0.40 floor), so
+    # runner_up misses it; runner_up_placed lets Q's in-meeting centroid (0.44) compete.
+    bturn = unit(0.1 * E[0] + 0.35 * E[1] + 0.93 * E[6])
+    out, rec = run([turn(0.6)] * 3 + [bturn], durs=[3.0] * 4)
+    assert rec["runner_up"] is None and rec["runner_up_any"] is None, rec
+    assert rec["runner_up_placed"] == "SPEAKER_01" and rec["runner_up_placed_name"] == "Q", rec
+    assert rec["runner_up_placed_share"] == 0.25 and abs(rec["runner_up_placed_sim"]) < 1e-3, rec
+    assert rec["matched"] and out["SPEAKER_02"] == "P", (rec, out)
+    # P's own cluster SPEAKER_00 scores the P turns at 0.92 but never competes
+    _, rec = run([turn(0.6)] * 3, durs=[2.0] * 3)
+    assert rec["runner_up_placed"] is None and rec["runner_up_placed_share"] == 0.0, rec
+    assert rec["runner_up_placed_name"] is None and rec["runner_up_placed_sim"] is None, rec
+    # a known voice winning outright is named as itself, with no cluster sim
+    _, rec = run([turn(0.6)] * 3 + [QTURN], durs=[3.0] * 4)
+    # (QTURN: 0.99 to Q's voiceprint, 0.985 to SPEAKER_01's centroid)
+    assert rec["runner_up_placed"] == "Q" and rec["runner_up_placed_name"] == "Q", rec
+    assert rec["runner_up_placed_share"] == 0.25 and rec["runner_up_placed_sim"] is None, rec
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_") and callable(fn):

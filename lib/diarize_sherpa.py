@@ -1280,7 +1280,17 @@ def name_clusters(cluster_emb: dict, ref_threshold: float, absorb_threshold: flo
     centroid similarity to the candidate (None when a known voice wins). Also
     recorded only: on the same runs an anonymous winner was usually another
     fragment of the candidate (50 of 58 rows where the winner's best voice was
-    the candidate), and true splits reached share 1.00. With no `turn_emb` (the `relabel --auto` sidecar keeps
+    the candidate), and true splits reached share 1.00.
+
+    `runner_up_placed` / `_name` / `_share` / `_sim` (v1.13.4, #77) do the same
+    with the clusters already named for OTHER voices competing by their
+    in-meeting centroids (the candidate's own clusters excluded), so an enrolled
+    blend partner whose voiceprint misses the blend turns can still show. `_name`
+    is the voice owning the winning cluster (or the known voice itself), `_sim`
+    the winning cluster's centroid similarity to the candidate (None when a known
+    voice wins). Also recorded only: on the same runs the winner was a true blend
+    partner in 9 of 13 blend rows, but named blends held shares of 0.00-0.17
+    while true splits reached 0.31. With no `turn_emb` (the `relabel --auto` sidecar keeps
     only centroids) the low bar does not apply and absorb_threshold is used.
 
     Clusters whose best candidate stays BELOW the gate keep their anonymous
@@ -1432,9 +1442,11 @@ def name_clusters(cluster_emb: dict, ref_threshold: float, absorb_threshold: flo
     placed_now = {nm for sp, nm in names.items() if nm != sp}
     anon_now = [sp for sp in cluster_emb if names.get(sp, sp) == sp]
     owner_clusters: dict = {}
+    placed_clusters: dict = {}
     for sp, nm in names.items():
         if nm != sp and sp in cluster_emb:
             owner_clusters.setdefault(nm, []).append(sp)
+            placed_clusters[sp] = nm
     voice_vecs: dict = {}
     for n, k in known:
         voice_vecs.setdefault(n, []).append(k)
@@ -1570,6 +1582,15 @@ def name_clusters(cluster_emb: dict, ref_threshold: float, absorb_threshold: flo
                 rua_sim = None
                 if rua in cluster_emb:
                     rua_sim = max(float(np.dot(unit(cluster_emb[rua]), v)) for v in voice_vecs[pb])
+                # Same again with the clusters already named for OTHER voices competing
+                # by their in-meeting centroids, so an enrolled partner whose voiceprint
+                # misses the blend turns can still show (#77, recorded only).
+                rup, rup_share = runner_up(sp, pb, {o: [unit(cluster_emb[o])]
+                                                    for o, nm in placed_clusters.items()
+                                                    if nm != pb and o != sp})
+                rup_sim = None
+                if rup in placed_clusters:
+                    rup_sim = max(float(np.dot(unit(cluster_emb[rup]), v)) for v in voice_vecs[pb])
                 matched = share >= PLACED_ABSORB_MIN_SHARE and sib_ok
                 record(sp, pb, pc[pb], placed_absorb_threshold, matched, "absorb",
                        purity=round(purity, 4), talk_share=round(share, 4),
@@ -1577,6 +1598,10 @@ def name_clusters(cluster_emb: dict, ref_threshold: float, absorb_threshold: flo
                        runner_up=ru, runner_up_share=round(ru_share, 4),
                        runner_up_any=rua, runner_up_any_share=round(rua_share, 4),
                        runner_up_any_sim=None if rua_sim is None else round(rua_sim, 4),
+                       runner_up_placed=rup,
+                       runner_up_placed_name=placed_clusters.get(rup, rup),
+                       runner_up_placed_share=round(rup_share, 4),
+                       runner_up_placed_sim=None if rup_sim is None else round(rup_sim, 4),
                        second_placed=second,
                        second_placed_sim=None if second is None else round(pc[second], 4),
                        turns=turn_rows(sp, pb))
