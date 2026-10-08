@@ -362,3 +362,41 @@ The other two named blends cannot be reached this way. In Bella (16 s), the anon
 is another fragment of the Bella voice (0.877). In Sage (107 s, 51/49 with Coral), the
 runner-up is the known voice Coral, at a share of 0.17, or 0.11 when the anonymous clusters
 also compete.
+
+## Placed runner-up (v1.13.4)
+
+v1.13.4 adds `runner_up_placed` / `runner_up_placed_name` / `runner_up_placed_share` /
+`runner_up_placed_sim`, following the reporter's next suggestion. Each turn of the cluster
+competes against the known voices and against the in-meeting centroids of the clusters already
+named for OTHER voices (the candidate's own clusters never compete). This targets an enrolled
+partner whose voiceprint misses the blend turns. `_name` is the voice owning the winning
+cluster, and `_sim` is that cluster's centroid similarity to the candidate (null when a known
+voice wins outright).
+
+Same 26 runs (real registry unchanged):
+
+| label | matched | rows | `runner_up_placed_share` min / median / max |
+|---|---|---|---|
+| blend | refused | 9 | 0.00 / 0.07 / 0.71 |
+| blend | named | 4 | 0.00 / 0.15 / 0.17 |
+| true split | refused | 13 | 0.00 / 0.00 / 0.24 |
+| true split | named | 72 | 0.00 / 0.00 / 0.31 |
+
+The field finds the right partner. In 9 of the 13 blend rows the winner is a true speaker of the
+blend other than the candidate, in 1 it is a third voice, and in 3 nothing wins a turn. But the
+share stays small on the blends that get named (0.00 to 0.17), while 8 of the 72 named true
+splits reach 0.10 or more and the highest reaches 0.31: Coral, 15 s, where Sage's cluster sits
+0.76 from Coral's voiceprint. So the share alone does not separate them.
+
+The four named blends:
+
+- Bella (16 s, 9/4 with Coral), refs: Coral's cluster wins 0.15 of the time, at centroid
+  similarity 0.19. This is the case the field was built for.
+- Bella, refs-subset: a Matilda cluster wins 0.09 instead.
+- Sage (107 s, 51/49 with Coral): the known voice Coral wins outright, at 0.17.
+- Liam (refs-subset): Echo has no placed cluster, so nothing wins. `runner_up_any` already
+  shows Echo's anonymous cluster at 0.71.
+
+A rule requiring `_sim < 0.30` and share >= 0.10 would catch 1 named blend and no named split.
+That is one catch, from a rule chosen after looking at this data, so v1.13.4 records the fields
+and does not gate on them.

@@ -4,6 +4,18 @@ All notable changes to whosaid are documented here. This project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html) and the format of
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Added
+
+- **Placed-cluster runner-up on placed-voice absorb records (#77).** `runner_up_placed` /
+  `runner_up_placed_name` / `runner_up_placed_share` / `runner_up_placed_sim` repeat
+  `runner_up` with the clusters already named for other voices competing by their in-meeting
+  centroids (the candidate's own clusters excluded), so an enrolled blend partner whose
+  voiceprint misses the blend turns can still show. Recorded only: on the 26 re-run synthetic
+  runs the winner was a true blend partner in 9 of 13 blend rows, but the 4 wrongly named
+  blends held shares of 0.00 to 0.17 while true splits reached 0.31.
+
 ## [1.13.3] - 2026-10-07
 
 ### Added

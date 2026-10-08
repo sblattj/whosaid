@@ -1288,7 +1288,9 @@ def name_clusters(cluster_emb: dict, ref_threshold: float, absorb_threshold: flo
     blend partner whose voiceprint misses the blend turns can still show. `_name`
     is the voice owning the winning cluster (or the known voice itself), `_sim`
     the winning cluster's centroid similarity to the candidate (None when a known
-    voice wins). Recorded only. With no `turn_emb` (the `relabel --auto` sidecar keeps
+    voice wins). Also recorded only: on the same runs the winner was a true blend
+    partner in 9 of 13 blend rows, but named blends held shares of 0.00-0.17
+    while true splits reached 0.31. With no `turn_emb` (the `relabel --auto` sidecar keeps
     only centroids) the low bar does not apply and absorb_threshold is used.
 
     Clusters whose best candidate stays BELOW the gate keep their anonymous
