@@ -117,6 +117,7 @@ class ClassificationTest(unittest.TestCase):
             "I will not review it.", "I won't review it.", "I could review it.",
             "Maybe I'll review it.", "I'll review it if there is time.",
             "I am not going to review it.", "I might review it.",
+            "I will definitely not review it.", "I'll surely never review it.",
         ):
             with self.subTest(text=text):
                 row = classify_item({"text": text, "speaker": "Speaker_A", "source": "transcript"})

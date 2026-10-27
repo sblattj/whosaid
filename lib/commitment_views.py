@@ -35,7 +35,10 @@ def identity_aliases(cfg: dict, raw: dict[str, dict]) -> dict[str, list[str]]:
     aliases = workspace.get("aliases", [])
     if isinstance(aliases, str):
         aliases = [a.strip() for a in aliases.split(",")]
-    result.setdefault(_name(workspace.get("owner", "")), []).extend(aliases)
+    owner = _name(workspace.get("owner", ""))
+    if owner:
+        # Without an owner the aliases belong to nobody, never to unowned items.
+        result.setdefault(owner, []).extend(aliases)
     return result
 
 

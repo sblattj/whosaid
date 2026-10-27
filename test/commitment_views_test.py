@@ -103,6 +103,12 @@ class CommitmentViewsTests(unittest.TestCase):
         self.assertFalse(row["actionable"])
         self.assertEqual([], commitment_views.filter_rows([row], accepted_only=True))
 
+    def test_workspace_aliases_need_a_workspace_owner(self):
+        cfg = {"workspace": {"aliases": ["Alpha"]}}
+        self.assertNotIn("", commitment_views.identity_aliases(cfg, {}))
+        cfg["workspace"]["owner"] = "Alpha_Example"
+        self.assertIn("Alpha", commitment_views.identity_aliases(cfg, {})["alpha example"])
+
     def test_occurrence_count_instead_of_list_does_not_crash_views(self):
         self.cm["occurrences"] = 3
         self.write_corpus()

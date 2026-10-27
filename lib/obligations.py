@@ -31,7 +31,9 @@ _ACCEPT = re.compile(
 )
 _UNCERTAIN = re.compile(
     r"\b(?:if|unless|might|maybe|perhaps|possibly|could|would|not\s+sure|"
-    r"i\s+(?:won't|will\s+not|cannot|can't)|i['’]m\s+not\s+going)\b", re.I,
+    r"i\s+(?:won't|will\s+not|cannot|can't)|i['’]m\s+not\s+going|"
+    # A refusal can put an adverb between will and not: "I will definitely not".
+    r"i(?:\s+will|['’]ll)\s+(?:\w+\s+){0,2}(?:not|never))\b", re.I,
 )
 _OPEN_REQUEST = re.compile(r"\b(?:can|could|would|will)\s+(?:someone|anyone|somebody|anybody)\b", re.I)
 _REQUEST = re.compile(r"\b(?:can|could|would|will)\s+(?:you|someone|anyone|somebody|anybody)\b|\bplease\b", re.I)
