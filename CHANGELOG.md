@@ -6,6 +6,8 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ## [Unreleased]
 
+## [1.17.0] - 2026-10-27
+
 ### Added
 
 - Evidence-backed status history, corrections, compound milestones, and temporal
@@ -33,6 +35,16 @@ All notable changes to whosaid are documented here. This project adheres to
 - Worklist views retain delivered/partial evidence, exclude standing directives
   and inferred tasks from overdue ranking, and include accepted handoff recipients
   in all-owner queries. Summary source pointers preserve obligation origin.
+- A sentence that mentions a date no longer loses its text as a quoted reply header
+  ("I will send the guide on 1/2/2030 9:30 AM"). The header needs a display name of
+  two or more words before the date (#110).
+- Refusals with a word between "will" and "not" ("I will definitely not send it",
+  "I'll surely never do that") are no longer counted as acceptance (#109).
+- `snapshot_token` is never null. A failed read returns a fresh token each time, so
+  pagers restart instead of mistaking it for a stable snapshot (#113).
+- Items views tolerate a corpus row whose `occurrences` is a count instead of a list,
+  and workspace aliases with no workspace owner no longer attach to unowned items
+  (#107).
 
 ## [1.16.0] - 2026-10-25
 
