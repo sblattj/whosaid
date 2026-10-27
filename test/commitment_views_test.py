@@ -103,6 +103,11 @@ class CommitmentViewsTests(unittest.TestCase):
         self.assertFalse(row["actionable"])
         self.assertEqual([], commitment_views.filter_rows([row], accepted_only=True))
 
+    def test_occurrence_count_instead_of_list_does_not_crash_views(self):
+        self.cm["occurrences"] = 3
+        self.write_corpus()
+        self.assertEqual("open", self.items()[0]["status"])
+
     def test_missing_completion_evidence_keeps_open_and_historical_unknown(self):
         row = self.items()[0]
         self.assertEqual("open", row["status"])

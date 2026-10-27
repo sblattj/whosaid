@@ -157,7 +157,10 @@ def enrich_rows(ws: Path, rows: list[dict], as_of: str | None = None, identities
         row = historical_row(row, as_of)
         evidence_row = {**original, **row}
         pointer_ai = raw.get(pointer_pairs.get(row.get("id"), ""), {})
-        source_occurrences = historical_row(original, as_of).get("occurrences", [])
+        source_occurrences = historical_row(original, as_of).get("occurrences")
+        # Rolled-up corpora may store a count here; only a list of sightings has sources.
+        source_occurrences = ([o for o in source_occurrences if isinstance(o, dict)]
+                              if isinstance(source_occurrences, list) else [])
         summary_only = bool(source_occurrences) and all(
             str(o.get("source", "")).replace("_", "-") == "action-items" for o in source_occurrences)
         if summary_only:
