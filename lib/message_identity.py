@@ -61,6 +61,11 @@ def source_message_id(source: dict, segment: dict) -> str | None:
                             normalized(segment.get("text", ""))])
 
 
+_REPLY_HEADER = re.compile(
+    r"^[A-Z][\w.'-]*(?:,?\s+(?:[A-Z][\w.'-]*|\([^()]{1,40}\))){0,4}"
+    r"\s+\d{1,2}/\d{1,2}/\d{4},?\s+\d{1,2}:\d{2}\s*(?i:AM|PM)\b")
+
+
 def assertion_parts(text: str, metadata: dict | None = None) -> dict:
     """Separate explicit quoted text; abstain on flattened reply headers.
 
@@ -83,8 +88,10 @@ def assertion_parts(text: str, metadata: dict | None = None) -> dict:
     if any(line.lstrip().startswith(">") for line in lines):
         return {"assertion_text": "\n".join(line for line in lines if not line.lstrip().startswith(">")),
                 "quoted": True, "attribution_uncertain": False}
-    # Common flattened reply-attribution header: display name, date, wall clock.
-    if re.match(r"^.{1,100}?\s+\d{1,2}/\d{1,2}/\d{4}\s+\d{1,2}:\d{2}\s*(?:AM|PM)\b", text, re.I):
+    # Common flattened reply-attribution header: display name, date, wall clock. The
+    # prefix must look like a display name (capitalized words, "Last, First", a
+    # parenthesized tag), so a sentence that merely mentions a date keeps its text.
+    if _REPLY_HEADER.match(text):
         return {"assertion_text": "", "quoted": True, "attribution_uncertain": True}
     return {"assertion_text": text, "quoted": False, "attribution_uncertain": False}
 

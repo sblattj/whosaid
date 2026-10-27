@@ -201,6 +201,12 @@ class MessageIdentityTests(unittest.TestCase):
         parts = identity.assertion_parts("Speaker B 1/1/2030 9:30 AM I will send a guide. Thanks!")
         self.assertTrue(parts["attribution_uncertain"])
         self.assertEqual(parts["assertion_text"], "")
+        for header in ("Blatt, Stephen 1/1/2030 9:30 am Sounds good.",
+                       "Speaker B (External) 12/31/2030, 11:05 PM Done."):
+            self.assertTrue(identity.assertion_parts(header)["attribution_uncertain"], header)
+        promise = "I will send the guide on 1/2/2030 9:30 AM"
+        parts = identity.assertion_parts(promise)
+        self.assertEqual(parts, {"assertion_text": promise, "quoted": False, "attribution_uncertain": False})
         parts = identity.assertion_parts("Their words. My reply.", {"quoted_text": "Their words."})
         self.assertEqual(parts["assertion_text"], "My reply.")
 
