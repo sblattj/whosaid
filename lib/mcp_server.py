@@ -23,6 +23,7 @@ import hashlib
 import json
 import os
 import re
+import secrets
 import shutil
 import subprocess
 import sys
@@ -1538,7 +1539,7 @@ def _item_counts(items: list[dict]) -> dict:
     }
 
 
-def _snapshot_token(ws: Path) -> Optional[str]:
+def _snapshot_token(ws: Path) -> str:
     """Identify the index and all inputs to the read-only tracking overlays."""
     import workspace as wsmod
     try:
@@ -1551,7 +1552,9 @@ def _snapshot_token(ws: Path) -> Optional[str]:
         return hashlib.sha256(json.dumps(inputs, sort_keys=True).encode()).hexdigest()
     except OSError:
         # A transient file replacement must not turn a successful query into a crash.
-        return None
+        # Never null: a fresh token on every failed read makes pagers restart, so the
+        # input change behind the failure is never mistaken for a stable snapshot.
+        return "unreadable:" + secrets.token_hex(8)
 
 
 @mcp.tool(name="whosaid_items", description=_DESC_WS_ITEMS, annotations=_read_only())

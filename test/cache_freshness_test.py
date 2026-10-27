@@ -158,6 +158,15 @@ class CacheFreshnessTests(unittest.TestCase):
         self.cache.write_text(json.dumps(old))
         self.assertTrue(self.read_cache()["stale"])
 
+    def test_unreadable_inputs_never_yield_a_stable_snapshot(self):
+        stable = mcp_server._snapshot_token(self.ws)
+        with patch.object(workspace, "corpora_digests", side_effect=OSError("file replaced mid-read")):
+            first, second = mcp_server._snapshot_token(self.ws), mcp_server._snapshot_token(self.ws)
+        for token in (first, second):
+            self.assertIsInstance(token, str)
+            self.assertNotEqual(token, stable)
+        self.assertNotEqual(first, second)
+
     def test_identical_bytes_do_not_invalidate_or_rewrite_cache(self):
         self.save_cache()
         cached_bytes, cached_mtime = self.cache.read_bytes(), self.cache.stat().st_mtime_ns
