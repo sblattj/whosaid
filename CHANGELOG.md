@@ -6,6 +6,16 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ## [Unreleased]
 
+## [1.17.1] - 2026-10-27
+
+### Fixed
+
+- Outlook scraper exports now keep their `msg_id`, so two messages with the same
+  author, clock and text but different source IDs are no longer merged into one
+  (#110, #117). Re-importing an export attaches the ID to an older ID-less row
+  when exactly one message matches; ambiguous rows are kept for review. Image
+  references and uncertain quote attribution survive the upgrade and later imports.
+
 ## [1.17.0] - 2026-10-27
 
 ### Added
