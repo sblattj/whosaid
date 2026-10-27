@@ -11,7 +11,8 @@ Input is a hand-off file: a list of message records, an object
 {"messages": [...], optional "chat_id", "url"}, the scraper's raw_by_chat map
 {"<chat>": {"messages": [...]}}, or NDJSON (one record per line). A record is
 {"chat", "author", "epoch_ms" | "epoch", "text"} with "timestamp_iso" | "ts"
-(ISO 8601) as the fallback clock, plus optional "chat_id", "url", "message_id".
+(ISO 8601) as the fallback clock, plus optional "chat_id", "url", "message_id"
+(or the Outlook scraper's "msg_id").
 epoch_ms wins over epoch. Records may be unsorted and duplicated.
 
 A record may carry "images": [{"alt", "src", "width", "height", "data" (data URL or
@@ -96,7 +97,8 @@ def _message_id(record: dict, epoch_ms: int) -> str:
     mid = record.get("mid")
     if not explicit and mid is not None and str(mid) != str(epoch_ms):
         explicit = mid
-    return str(explicit or "")
+    # Keep already recognized IDs stable when an export supplies several aliases.
+    return str(explicit or record.get("msg_id") or "")
 
 
 def _message_key(epoch_ms: int, message_id: str, speaker: str, text: str) -> MessageKey:
@@ -406,6 +408,48 @@ def existing_messages(sidecar: dict | None) -> dict[MessageKey, tuple[str, str]]
     return out
 
 
+def _preserve_uncertain_attribution(metadata: dict, key: MessageKey, previous: dict) -> None:
+    if previous.get("quoted") or previous.get("attribution_uncertain"):
+        combined = metadata.setdefault(key, {})
+        assertion = previous.get("assertion_text")
+        uncertain = (previous.get("attribution_uncertain") or combined.get("attribution_uncertain")
+                     or not isinstance(assertion, str))
+        if (previous.get("quoted") and combined.get("quoted")
+                and combined.get("assertion_text") != assertion):
+            uncertain = True  # disagreeing quote boundaries are not ownership evidence
+        combined.update(quoted=bool(previous.get("quoted") or combined.get("quoted")),
+                        attribution_uncertain=bool(uncertain), assertion_text="" if uncertain else assertion)
+
+
+def _promote_legacy_ids(merged: dict, incoming: dict, metadata: dict) -> None:
+    """Upgrade exact legacy matches only when one observed source ID fits.
+
+    Consider existing identified rows too: a partial export cannot disambiguate
+    a legacy row that already matches several IDs. This retains the legacy
+    clock/author/body identity assumption; it cannot rule out unseen messages.
+    """
+    candidates: dict[MessageKey, set[MessageKey]] = {}
+    for messages in (merged, incoming):
+        for key, (speaker, text) in messages.items():
+            if key[1]:
+                legacy = _message_key(key[0], "", speaker, text)
+                candidates.setdefault(legacy, set()).add(key)
+    for legacy, keys in candidates.items():
+        if legacy not in merged or len(keys) != 1:
+            continue
+        target = next(iter(keys))
+        if target not in incoming:
+            continue
+        if _message_key(target[0], "", *incoming[target]) != legacy:
+            continue  # the stored candidate's body changed in this export
+        old = merged.pop(legacy)
+        current = merged.get(target, old)
+        merged[target] = (current[0], keep_earlier_refs(old[1], current[1]))
+        previous = metadata.pop(legacy, {})
+        # An ID upgrade alone must not turn uncertain quoted text into a promise.
+        _preserve_uncertain_attribution(metadata, target, previous)
+
+
 # ---- inline images ----------------------------------------------------------------------
 
 def image_dir_name(src: Source = TEAMS) -> str:
@@ -455,7 +499,7 @@ def keep_earlier_refs(old: str | None, new: str) -> str:
     when the new text has no captured image refs but the old one does for the same body, keep the old."""
     if not old or IMAGE_REF_RE.search(new) or not IMAGE_REF_RE.search(old):
         return new
-    body = lambda t: IMAGE_REF_RE.sub("", t).replace(NOT_CAPTURED, "").strip()  # noqa: E731
+    body = lambda t: normalized(IMAGE_REF_RE.sub("", t).replace(NOT_CAPTURED, ""))  # noqa: E731
     return old if body(old) == body(new) else new
 
 
@@ -552,6 +596,15 @@ def ingest(export: str | os.PathLike, ws: str | os.PathLike, *, tz_flag: str | N
                 key = _message_key(segment["epoch_ms"], _message_id(segment, segment["epoch_ms"]),
                                    str(segment.get("speaker", "Unknown")), str(segment.get("text", "")))
                 g["metadata"].setdefault(key, segment)
+                if src == OUTLOOK and key in g["messages"]:
+                    speaker, text = g["messages"][key]
+                    # Keep the upgrade's conservative attribution on later
+                    # identical imports too. Changed words are new evidence.
+                    if _message_key(key[0], "", speaker, text) == _message_key(
+                            key[0], "", str(segment.get("speaker", "Unknown")), str(segment.get("text", ""))):
+                        _preserve_uncertain_attribution(g["metadata"], key, segment)
+        if src == OUTLOOK:
+            _promote_legacy_ids(merged, g["messages"], g["metadata"])
         known = set(merged)
         if folder is None:
             name = pick_folder_name(ws, g, tz, reserved)

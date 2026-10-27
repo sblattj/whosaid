@@ -11,6 +11,22 @@ Import records can supply `chat_id` and `message_id`; the importer preserves
 them in the `.diarization.json` sidecar. Different message IDs remain separate,
 including messages with identical text or the same timestamp.
 
+Outlook scraper records use `msg_id`, which is normalized to `message_id`.
+When several ID fields are supplied, an already recognized `message_id`,
+`source_message_id`, or non-timestamp `mid` takes precedence.
+
+Re-importing Outlook mail can upgrade an older ID-less row when its exact
+clock, speaker, and normalized body match only one ID across the existing and
+incoming messages, and that ID is present in the incoming export. Image
+references and precise quote boundaries survive. Uncertain attribution stays
+uncertain on later imports of the same body; conflicting quote boundaries also
+remain uncertain. Changed words are evaluated afresh.
+This follows the existing legacy identity assumption and cannot establish
+identity against messages absent from a partial export. When several IDs match,
+the legacy row is retained alongside the identified messages for review.
+Installing an update or rebuilding the search index alone cannot recover IDs
+that an older importer discarded; the original export is needed.
+
 Legacy sidecars often contain a `mid` synthesized from `epoch_ms`. That value
 is treated as a timestamp. Without a real message ID, identity uses the source
 kind, conversation context, exact clock, speaker, and complete message text.
