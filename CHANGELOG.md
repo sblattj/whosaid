@@ -6,6 +6,19 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ## [Unreleased]
 
+## [1.18.0] - 2026-10-28
+
+### Added
+
+- `whosaid record --browser` records a web meeting tab (Teams web, Google Meet,
+  Zoom web, or any page via `--leave-selector`) over the Chrome DevTools protocol
+  and stops on its own when the call ends (#118). It records inside the page, so
+  it needs no Screen Recording or audio-capture permission. The file is stereo
+  (left = your mic, right = the other participants) and tagged like
+  `record --app`; `--no-mic` records the tab audio alone. `--into DIR` drops the
+  file into a watched folder instead of transcribing. A closed tab keeps what was
+  recorded. The MCP server gains `whosaid_record_browser` (start / stop / status).
+
 ## [1.17.1] - 2026-10-27
 
 ### Fixed
