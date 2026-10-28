@@ -9,6 +9,7 @@
 #   whosaid speakers <sub>        Export or import the private speaker registry.
 #   whosaid record [--label L]    Record from the mic, then transcribe it.
 #   whosaid record --app A        Record one app's audio (+ mic), then transcribe it.
+#   whosaid record --browser      Record a browser meeting tab over CDP (no permissions needed).
 #   whosaid doctor                Read-only environment/model/device report.
 #   whosaid version | --version   Print the installed version.
 #   whosaid mcp                   Run the MCP server (stdio) for AI agents / Claude.
@@ -188,6 +189,10 @@ USAGE
   whosaid record --app A [--no-mic] [--label L] [flags]
                                         Record one app's audio (Zoom, a browser, ...) via
                                         ScreenCaptureKit, plus the mic, then transcribe it.
+  whosaid record --browser [--cdp-port P] [--target T] [--max-seconds N] [--into DIR] [flags]
+                                        Record a browser meeting tab (Teams web, Meet, Zoom web)
+                                        through the Chrome DevTools port. No Screen Recording
+                                        permission. Auto-stops when the call ends.
   whosaid record --list-apps           List apps --app accepts (bundle ID, name).
   whosaid doctor                       Read-only environment/model/device report.
   whosaid version | --version | -V     Print the installed version.
@@ -443,7 +448,21 @@ RECORD FLAGS
                       Needs macOS 15+, Xcode Command Line Tools (the helper is built
                       on first use) and Screen & System Audio Recording permission
                       for your terminal.
-  --no-mic            With --app: capture the app only (mono).
+  --no-mic            With --app or --browser: skip the mic (mono, remote only).
+  --browser           Capture one browser tab's meeting audio (+ mic) over the Chrome
+                      DevTools protocol instead. Start the browser with
+                      --remote-debugging-port=9222. No Screen Recording permission.
+                      Saved as stereo: left = mic, right = the tab. Auto-stops once the
+                      call's hang-up button has been seen and then vanishes (2 polls).
+  --cdp-port P        With --browser: DevTools port (default $WHOSAID_CDP_PORT or 9222).
+  --target T          With --browser: tab to record, a targetId or a URL substring.
+                      Needed when more than one tab matches.
+  --leave-selector C  With --browser: CSS selector of the in-call element. Overrides
+                      the built-in Teams / Meet / Zoom table.
+  --max-seconds N     With --browser: stop after N seconds (default 10800).
+  --leave             With --browser: click the in-call element at --max-seconds.
+  --into DIR          With --browser: save DIR/<timestamp>[-label].m4a, print the path
+                      and skip transcription (whosaid watch ingests it).
   --list-apps         Print running apps --app accepts, then exit.
   Any transcribe flag above is also accepted and passed through after recording.
 
@@ -1406,11 +1425,40 @@ record_app_audio() {
   rm -rf "$tmpdir"
 }
 
+# Record one browser tab's meeting audio over CDP into OUT, an .m4a.
+# lib/record_browser.py writes OUT atomically (temp name, then rename).
+# Args: out no_mic cdp_port target leave_selector max_seconds leave
+record_browser_audio() {
+  local out="$1" no_mic="$2" cdp_port="$3" target="$4" sel="$5" maxs="$6" leave="$7"
+  local rb=(--out "$out" --cdp-port "$cdp_port")
+  [[ -n "$target" ]] && rb+=(--target "$target")
+  [[ -n "$sel" ]] && rb+=(--leave-selector "$sel")
+  [[ -n "$maxs" ]] && rb+=(--max-seconds "$maxs")
+  [[ "$leave" == 1 ]] && rb+=(--leave)
+  [[ "$no_mic" == 1 ]] && rb+=(--no-mic)
+
+  log "recording browser tab (CDP port $cdp_port) to $out; press Ctrl-C to stop (auto-stops when the call ends)."
+  local rc
+  set +e
+  trap ':' INT
+  uv run --quiet --with websockets python "$REPO_DIR/lib/record_browser.py" "${rb[@]}" </dev/null
+  rc=$?
+  trap - INT
+  set -e
+  if [[ "$rc" -eq 3 ]]; then
+    log "warning: capture ended early (tab closed or connection lost); keeping the audio recorded so far."
+  elif [[ "$rc" -ne 0 ]]; then
+    log "browser capture failed (record_browser exit $rc)."
+    exit "$rc"
+  fi
+}
+
 cmd_record() {
   warn_if_not_arm64
   ensure_uv_and_ffmpeg
 
   local label="" app="" no_mic=0
+  local browser=0 cdp_port="" target="" leave_sel="" max_secs="" leave=0 into=""
   local extra_args=()
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -1419,6 +1467,18 @@ cmd_record() {
         [[ $# -ge 2 && -n "$2" ]] || { log "--app needs an app (bundle ID or name); see: whosaid record --list-apps"; exit 2; }
         app="$2"; shift 2 ;;
       --no-mic) no_mic=1; shift ;;
+      --browser) browser=1; shift ;;
+      --cdp-port|--target|--leave-selector|--max-seconds|--into)
+        [[ $# -ge 2 && -n "$2" ]] || { log "$1 needs a value."; exit 2; }
+        case "$1" in
+          --cdp-port) cdp_port="$2" ;;
+          --target) target="$2" ;;
+          --leave-selector) leave_sel="$2" ;;
+          --max-seconds) max_secs="$2" ;;
+          --into) into="$2" ;;
+        esac
+        shift 2 ;;
+      --leave) leave=1; shift ;;
       -h|--help) cmd_help; exit 0 ;;
       --list-apps)
         local bin
@@ -1427,24 +1487,51 @@ cmd_record() {
       *) extra_args+=("$1"); shift ;;
     esac
   done
-  if [[ "$no_mic" == 1 && -z "$app" ]]; then
-    log "--no-mic only applies with --app."
+  if [[ "$browser" == 1 && -n "$app" ]]; then
+    log "--browser and --app are mutually exclusive."
     exit 2
   fi
+  if [[ "$browser" != 1 ]]; then
+    if [[ -n "$cdp_port$target$leave_sel$max_secs$into" || "$leave" == 1 ]]; then
+      log "--cdp-port, --target, --leave-selector, --max-seconds, --leave and --into only apply with --browser."
+      exit 2
+    fi
+    if [[ "$no_mic" == 1 && -z "$app" ]]; then
+      log "--no-mic only applies with --app or --browser."
+      exit 2
+    fi
+  fi
+  cdp_port="${cdp_port:-${WHOSAID_CDP_PORT:-9222}}"
 
-  mkdir -p "$RECORDINGS_DIR"
+  local outdir="$RECORDINGS_DIR"
+  [[ -n "$into" ]] && outdir="$into"
+  mkdir -p "$outdir"
   local ts out
   ts="$(date -u +%Y%m%dT%H%M%SZ)"
   if [[ -n "$label" ]]; then
     local slug
     slug="$(printf '%s' "$label" | tr -c 'A-Za-z0-9_-' '-')"
-    out="$RECORDINGS_DIR/${ts}-${slug}.m4a"
+    out="$outdir/${ts}-${slug}.m4a"
   else
-    out="$RECORDINGS_DIR/${ts}.m4a"
+    out="$outdir/${ts}.m4a"
   fi
 
   rc=0
-  if [[ -n "$app" ]]; then
+  if [[ "$browser" == 1 ]]; then
+    record_browser_audio "$out" "$no_mic" "$cdp_port" "$target" "$leave_sel" "$max_secs" "$leave"
+    if [[ -n "$into" ]]; then
+      # Exit 3 can leave no file; any other failure already exited above.
+      if [[ ! -s "$out" ]]; then
+        log "recording failed: no audio was captured."
+        exit 1
+      fi
+      local idur
+      idur="$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$out" 2>/dev/null || echo "?")"
+      log "captured ${idur}s -> $out"
+      printf '%s\n' "$out"
+      return 0
+    fi
+  elif [[ -n "$app" ]]; then
     record_app_audio "$app" "$out" "$no_mic"
   else
     log "recording to $out — press Ctrl-C to stop (auto-stops after 3h)."

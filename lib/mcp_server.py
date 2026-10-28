@@ -25,6 +25,7 @@ import os
 import re
 import secrets
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -2720,6 +2721,194 @@ def meeting_action_items(folder: str) -> str:
             "`whosaid ingest --action-items` (or the summarizer over this folder)."
         )
     return text
+
+
+# ---------------------------------------------------------------------------
+# 18) whosaid_record_browser (start / stop / status; records one browser tab)
+# ---------------------------------------------------------------------------
+_DESC_RECORD_BROWSER = (
+    "Record a browser meeting tab (Teams web, Google Meet, Zoom web) to an .m4a, in the "
+    "background, through the Chrome DevTools protocol (wraps `whosaid record --browser`). "
+    "Needs a Chromium-family browser that was started with --remote-debugging-port (default "
+    "9222; set cdp_port to match). Records only that tab: the page's meeting audio on the right "
+    "channel and your mic on the left. No Screen & System Audio Recording permission is needed, "
+    "so it works from an agent or a headless session. "
+    "action=\"start\" launches the recorder and returns at once with {status:\"recording\", pid, "
+    "log}; it refuses while a recording is already running. If more than one tab is open, pass "
+    "target (a targetId or a URL substring). The recorder stops by itself when the call ends "
+    "(the hang-up control disappears; override with leave_selector) or after max_seconds "
+    "(default 10800); leave=true also clicks hang-up at max_seconds; no_mic=true records the "
+    "tab only. With into=<dir> the file is saved there and NOT transcribed, so `whosaid watch` "
+    "can ingest it; without into it is saved under recordings/ and transcribed. "
+    "action=\"stop\" sends Ctrl-C, waits up to 60 seconds for the file to be finalized, and "
+    "returns {status, output, log_tail}. action=\"status\" returns {running, pid, started, "
+    "log_tail}. Not read-only. Keywords: record meeting, browser, CDP, Teams, Meet, Zoom, "
+    "no permissions, auto-stop."
+)
+
+RECORD_BROWSER_STOP_WAIT = 60.0  # seconds to wait for the recorder to finalize after SIGINT
+_RB_CAPTURED_RE = re.compile(r"captured\s+\S+s\s+->\s+(.+?)\s*$")
+
+
+def _rb_state_path() -> Path:
+    base = os.environ.get("XDG_CACHE_HOME") or str(Path.home() / ".cache")
+    return Path(base) / "whosaid" / "record-browser.json"
+
+
+def _rb_pid_alive(pid: int) -> bool:
+    """True while pid is a running process. Reaps our own finished child and treats a
+    zombie as dead (os.kill(pid, 0) alone succeeds on a zombie)."""
+    try:
+        done, _ = os.waitpid(pid, os.WNOHANG)
+        if done == pid:
+            return False
+    except ChildProcessError:
+        pass  # not our child (server restarted since start): fall through to ps
+    except OSError:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    try:
+        stat = subprocess.run(["ps", "-o", "stat=", "-p", str(pid)], capture_output=True,
+                              text=True, timeout=5).stdout.strip()
+    except Exception:
+        return True
+    return bool(stat) and not stat.startswith("Z")
+
+
+def _rb_read_state(state_path: Path) -> Optional[dict]:
+    try:
+        data = json.loads(state_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) and isinstance(data.get("pid"), int) else None
+
+
+def _rb_log_tail(log: Optional[str], n: int = 20) -> list:
+    if not log:
+        return []
+    try:
+        return Path(log).read_text(encoding="utf-8", errors="replace").splitlines()[-n:]
+    except OSError:
+        return []
+
+
+def _rb_output_from_log(log: Optional[str]) -> Optional[str]:
+    """Output path from the CLI's `captured <dur>s -> PATH` log line (also logged with --into)."""
+    found = None
+    for line in _rb_log_tail(log, 400):
+        m = _RB_CAPTURED_RE.search(line)
+        if m:
+            found = m.group(1)
+    return found
+
+
+def _rb_start(argv: list, meta: dict, state_path: Path) -> dict:
+    """Spawn argv detached (own session, output to a log file) and record its state.
+    Refuses while the pid in state_path is still alive. argv is injectable for tests."""
+    prior = _rb_read_state(state_path)
+    if prior and _rb_pid_alive(prior["pid"]):
+        return {"ok": False, "status": "already_recording", "pid": prior["pid"],
+                "log": prior.get("log"),
+                "hint": "call action=\"stop\" first (or action=\"status\")"}
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    log_path = state_path.parent / f"record-browser-{stamp}.log"
+    with open(log_path, "ab") as logf:
+        proc = subprocess.Popen([str(a) for a in argv], cwd=str(REPO_DIR), stdin=subprocess.DEVNULL,
+                                stdout=logf, stderr=logf, start_new_session=True)
+    state = {"pid": proc.pid, "started": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+             "log": str(log_path), "args": meta}
+    tmp = state_path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(state), encoding="utf-8")
+    os.replace(tmp, state_path)
+    return {"ok": True, "status": "recording", "pid": proc.pid, "log": str(log_path)}
+
+
+def _rb_status(state_path: Path) -> dict:
+    st = _rb_read_state(state_path)
+    if not st:
+        return {"ok": True, "running": False, "pid": None, "started": None, "log_tail": []}
+    return {"ok": True, "running": _rb_pid_alive(st["pid"]), "pid": st["pid"],
+            "started": st.get("started"), "log": st.get("log"), "log_tail": _rb_log_tail(st.get("log"))}
+
+
+def _rb_stop(state_path: Path, wait: float = RECORD_BROWSER_STOP_WAIT) -> dict:
+    st = _rb_read_state(state_path)
+    if not st:
+        return {"ok": True, "status": "not_recording", "output": None, "log_tail": []}
+    pid, log = st["pid"], st.get("log")
+    if _rb_pid_alive(pid):
+        try:
+            os.killpg(pid, signal.SIGINT)  # start_new_session: the pid leads its own group
+        except ProcessLookupError:
+            pass
+        except PermissionError as exc:
+            return {"ok": False, "status": "error", "error": str(exc), "log_tail": _rb_log_tail(log)}
+        deadline = time.monotonic() + wait
+        while time.monotonic() < deadline and _rb_pid_alive(pid):
+            time.sleep(0.25)
+    if _rb_pid_alive(pid):
+        return {"ok": False, "status": "still_running", "pid": pid, "output": None,
+                "hint": f"the recorder did not finish within {int(wait)}s; call stop again or check the log",
+                "log_tail": _rb_log_tail(log)}
+    try:
+        state_path.unlink()
+    except OSError:
+        pass
+    output = _rb_output_from_log(log)
+    return {"ok": output is not None, "status": "stopped" if output else "stopped_no_output",
+            "output": output, "log": log, "log_tail": _rb_log_tail(log)}
+
+
+@mcp.tool(
+    name="whosaid_record_browser",
+    description=_DESC_RECORD_BROWSER,
+    annotations=ToolAnnotations(
+        read_only_hint=False,
+        destructive_hint=False,
+        idempotent_hint=False,
+        open_world_hint=False,
+    ),
+)
+def whosaid_record_browser(
+    action: Literal["start", "stop", "status"],
+    cdp_port: Optional[int] = None,
+    target: Optional[str] = None,
+    leave_selector: Optional[str] = None,
+    max_seconds: Optional[int] = None,
+    no_mic: bool = False,
+    leave: bool = False,
+    into: Optional[str] = None,
+    label: Optional[str] = None,
+) -> dict:
+    """start / stop / status for a background `whosaid record --browser` run.
+
+    start returns {"status": "recording", "pid", "log"}; stop returns {"status", "output",
+    "log_tail"}; status returns {"running", "pid", "started", "log_tail"}.
+    """
+    state_path = _rb_state_path()
+    if action == "status":
+        return _rb_status(state_path)
+    if action == "stop":
+        return _rb_stop(state_path)
+    for key, val in (("cdp_port", cdp_port), ("max_seconds", max_seconds)):
+        if val is not None and (isinstance(val, bool) or not isinstance(val, int) or val < 1):
+            return _ws_error(f"invalid {key} '{val}'", "pass a whole number >= 1")
+    argv = [str(WHOSAID), "record", "--browser"]
+    for flag, val in (("--cdp-port", cdp_port), ("--target", target), ("--leave-selector", leave_selector),
+                      ("--max-seconds", max_seconds), ("--into", into), ("--label", label)):
+        if val is not None and str(val) != "":
+            argv += [flag, str(val)]
+    if no_mic:
+        argv.append("--no-mic")
+    if leave:
+        argv.append("--leave")
+    return _rb_start(argv, {"argv": argv[1:]}, state_path)
 
 
 def main() -> None:

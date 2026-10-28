@@ -84,6 +84,7 @@ def main() -> None:
         "whosaid_enroll_from_file",
         "whosaid_samples",
         "whosaid_reprocess",
+        "whosaid_record_browser",
     } | workspace_tools
 
     # --- tool-name set + prefix ---
@@ -320,6 +321,66 @@ def main() -> None:
     check("DEFAULT IS A DRY RUN" in d_rp and "_reprocess-backups" in d_rp and "ASR is NOT re-run" in d_rp,
           "reprocess desc must state dry-run default, backup location, and no ASR")
     check("\u2014" not in d_rp and bool(mcp_server.whosaid_reprocess.__doc__), "reprocess desc/docstring hygiene")
+
+    # --- whosaid_record_browser: mutating start/stop/status, no permission needed ---
+    rb = dumps["whosaid_record_browser"]
+    rb_ann = rb.get("annotations") or {}
+    d_rb = by_name["whosaid_record_browser"].description or ""
+    check(rb_ann.get("readOnlyHint") is False and rb_ann.get("destructiveHint") is False
+          and rb_ann.get("openWorldHint") is False, f"record_browser annotations: {rb_ann}")
+    check(rb["inputSchema"].get("required") == ["action"], f"record_browser requires only action: {rb['inputSchema']}")
+    check(set(rb["inputSchema"]["properties"]) == {"action", "cdp_port", "target", "leave_selector",
+                                                   "max_seconds", "no_mic", "leave", "into", "label"},
+          f"record_browser params: {sorted(rb['inputSchema']['properties'])}")
+    check(set(rb["inputSchema"]["properties"]["action"].get("enum") or []) == {"start", "stop", "status"},
+          "record_browser action enum")
+    check("remote-debugging-port" in d_rb and "Chromium" in d_rb and "only that tab" in d_rb
+          and "Screen & System Audio Recording" in d_rb and "start" in d_rb and "stop" in d_rb
+          and "status" in d_rb, "record_browser desc must state CDP port, tab-only, no permission, actions")
+    check("\u2014" not in d_rb and bool(mcp_server.whosaid_record_browser.__doc__), "record_browser hygiene")
+
+    # --- record_browser process helpers: start refuses while a recorded pid is alive ---
+    import os
+    import signal
+    import subprocess
+    import tempfile
+    with tempfile.TemporaryDirectory(prefix="whosaid-rb-") as d:
+        saved_xdg = os.environ.get("XDG_CACHE_HOME")
+        os.environ["XDG_CACHE_HOME"] = d
+        try:
+            sp = mcp_server._rb_state_path()
+            check(sp == Path(d) / "whosaid" / "record-browser.json", f"state path honors XDG_CACHE_HOME: {sp}")
+            check(mcp_server._rb_status(sp)["running"] is False, "status with no state is not running")
+            first = mcp_server._rb_start(["sleep", "30"], {"argv": ["sleep", "30"]}, sp)
+            try:
+                check(first["status"] == "recording" and mcp_server._rb_pid_alive(first["pid"]), f"start: {first}")
+                second = mcp_server._rb_start(["sleep", "30"], {}, sp)
+                check(second["status"] == "already_recording" and second["pid"] == first["pid"],
+                      f"second start must refuse while the pid is alive: {second}")
+                check(mcp_server._rb_status(sp)["running"] is True, "status sees the live pid")
+                # stop: SIGINT kills sleep; no `captured` line in the log, so no output
+                stopped = mcp_server._rb_stop(sp, wait=10)
+                check(stopped["status"] == "stopped_no_output" and not mcp_server._rb_pid_alive(first["pid"]),
+                      f"stop ends the process: {stopped}")
+                check(not sp.exists(), "stop clears the state file")
+                # a log with a captured line yields the output path
+                lg = Path(d) / "x.log"
+                lg.write_text("whosaid: captured 12.3s -> /tmp/a b/out.m4a\n")
+                check(mcp_server._rb_output_from_log(str(lg)) == "/tmp/a b/out.m4a", "output parsed from captured line")
+                third = mcp_server._rb_start(["sleep", "30"], {}, sp)
+                check(third["status"] == "recording", f"start works again after stop: {third}")
+                mcp_server._rb_stop(sp, wait=10)
+            finally:
+                for pid in (first.get("pid"),):
+                    try:
+                        os.killpg(pid, signal.SIGKILL)
+                    except (OSError, TypeError):
+                        pass
+        finally:
+            if saved_xdg is None:
+                os.environ.pop("XDG_CACHE_HOME", None)
+            else:
+                os.environ["XDG_CACHE_HOME"] = saved_xdg
 
     # --- server instructions gained the workspace paragraph ---
     instr = mcp_server.SERVER_INSTRUCTIONS

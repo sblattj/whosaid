@@ -122,6 +122,7 @@ the models as usual.
 | `whosaid enroll <Name> --from FILE [--ss T] [--t D\|--to T] [--force]` | Extracts a clip from an existing recording instead of the mic (extract → verify → save, no interaction). `--ss`/`--t`/`--to` accept seconds or `M:SS`/`H:MM:SS`; same ≥15s/non-silent bar as mic enrollment. |
 | `whosaid record [--label L]` | Foreground mic capture to `recordings/<timestamp>[-label].m4a`, then transcribes automatically. |
 | `whosaid record --app A [--no-mic] [--label L]` | Capture one app's audio (Zoom, a browser, ...) through ScreenCaptureKit, plus the mic, to a stereo `recordings/<timestamp>[-label].m4a` (left = mic, right = the app), then transcribe it. `A` is a bundle ID, an app name, or a unique part of either; `whosaid record --list-apps` lists them. Needs macOS 15+, Xcode Command Line Tools (a small Swift helper, `lib/record_app.swift`, is built on first use into `~/.cache/whosaid`) and Screen & System Audio Recording permission for your terminal. No virtual audio device. `--no-mic` records the app alone. With `--me NAME` (or `$WHOSAID_OWNER`), the voice heard only on the mic is named NAME and app-side voices never are. If macOS kills the capture it restarts in place. |
+| `whosaid record --browser [--cdp-port P] [--target T] [--leave-selector CSS] [--max-seconds N] [--leave] [--no-mic] [--into DIR] [--label L]` | Record one browser meeting tab (Teams web, Meet, Zoom web) through the Chrome DevTools port to a stereo `.m4a` (left = mic, right = the tab). Needs no Screen Recording permission and stops by itself when the call ends. Without `--into` it saves under `recordings/` and transcribes; with `--into DIR` it only saves and prints the path. See [Record a browser meeting tab](#record-a-browser-meeting-tab-no-permissions). |
 | `whosaid <audio>… [flags]` | The default command: transcribe + diarize + label one or more audio files. `--reuse-asr` skips Whisper when `<out>/<base>.json` already exists and re-diarizes only (errors if the json is missing; not valid with `--no-diarize`). `whosaid transcribe <audio>…` is the same command written explicitly (matching the `whosaid_transcribe` MCP tool name). |
 | `whosaid relabel <base> SPEAKER_02=Jane …` | Put real names on clusters after reading the speaker cards. Rewrites the transcript + cards and saves each named voiceprint to the local registry for future transcripts — refusing (unless `--force`) to overwrite an existing registry entry the new cluster doesn't match (similarity below the match threshold, default 0.50). No re-transcription. |
 | `whosaid relabel <base> SPEAKER_04=Alice --blend` | Average the cluster into Alice's saved print instead of replacing it, to strengthen the print from a new recording. Same similarity guard as a normal relabel. See [Speaker identity: enrollment clips vs. the registry](#speaker-identity-enrollment-clips-vs-the-registry). |
@@ -144,6 +145,25 @@ the models as usual.
 | `whosaid memos list\|pull\|delete "<title>"\|shortcut-recipe` | Voice Memos helpers that never touch the app's files or database. See [Voice Memos helpers](#voice-memos-helpers-whosaid-memos). |
 | `whosaid doctor` | Read-only environment report, including Ollama reachability and the index status of `$WHOSAID_WORKSPACE`. |
 | `whosaid version` \| `whosaid --version` \| `whosaid -V` | Print the installed version (plus a `git describe` suffix when run from a git checkout). |
+
+### Record a browser meeting tab (no permissions)
+
+`whosaid record --app` needs Screen & System Audio Recording permission for your terminal. A browser meeting can skip that. Start a Chromium-family browser (Chrome, Vivaldi, Edge) with a debugging port, join the meeting in it, then record that one tab:
+
+```bash
+# once, when you launch the browser
+open -a "Google Chrome" --args --remote-debugging-port=9222
+
+whosaid record --browser                      # port 9222, or $WHOSAID_CDP_PORT
+whosaid record --browser --cdp-port 9333 --target teams.microsoft.com
+```
+
+- Only that tab is recorded. Left channel is your mic, right channel is the meeting audio. No system sounds, no notifications.
+- `--target` is a targetId or a piece of the tab's URL. You need it when more than one tab could match. The error lists the candidates.
+- It stops on its own when the call ends. It arms once the hang-up button has been seen, then stops after 2 missed polls. If the button is never seen, use Ctrl-C or `--max-seconds` (default 10800). `--leave-selector CSS` overrides the built-in Teams, Meet and Zoom web selectors. `--leave` clicks hang-up at `--max-seconds`.
+- If the tab is closed mid-call, whatever was already captured is kept.
+- `--into DIR` writes `DIR/<timestamp>[-label].m4a` and skips transcription. The file appears only when it is complete, so point it at a `whosaid watch` source folder and the watcher ingests it.
+- From an agent, use the `whosaid_record_browser` MCP tool with `action` set to `start`, `status` or `stop`. It runs in the background and needs no terminal.
 
 ### Enroll from an existing recording
 
@@ -967,8 +987,9 @@ Add it to your MCP client config:
 | `whosaid_enroll_from_file` | Enrolls a named voice from an existing audio clip, no mic needed. |
 | `whosaid_samples` | Exports one short representative WAV per speaker cluster (longest segment, clamped to `seconds`) so you can listen and confirm an identity before trusting a label. |
 | `whosaid_reprocess` | Re-diarizes older meetings in a workspace (wraps `whosaid reprocess`, reusing the existing ASR). Mutating, but `dry_run` defaults to true: it reports the plan and changes nothing until you pass `dry_run=false`. |
+| `whosaid_record_browser` | Records a browser meeting tab over the DevTools port. `action` is `start`, `stop` or `status`. Not read-only. Needs a browser started with `--remote-debugging-port`; no Screen Recording permission. Auto-stops when the call ends. |
 
-`enroll` and `record` (microphone capture) stay CLI-only — they need an interactive terminal and
+`enroll` and mic/app `record` stay CLI-only. They need an interactive terminal and
 Microphone permission. The first `whosaid_transcribe` call downloads ~1.5 GB of models; call
 `whosaid_doctor` first to check readiness.
 
