@@ -179,7 +179,9 @@ whosaid autorecord install --browser --label teams
 # transcribe each saved call
 whosaid watch install --into ~/meetings --source ~/Recordings --no-fda
 
-whosaid autorecord status        # installed? running? recent log lines
+whosaid autorecord status        # installed? running? recent log lines (--json for scripts)
+whosaid autorecord pause --minutes 60   # skip calls for an hour; `resume` undoes it
+whosaid autorecord stop-now      # end the call being recorded now and save it
 whosaid autorecord uninstall     # a call in progress is saved first
 ```
 
@@ -210,6 +212,15 @@ whosaid live show --minutes 5   # the last five minutes of the newest live trans
 - **Where it goes.** `~/Recordings/.live/<start>.md` and `.jsonl`, updated every ~20 s (`--chunk-seconds`). Silent stretches are skipped. Model: `whisper-large-v3-turbo` (or `WHOSAID_LIVE_MODEL`).
 - **Ask about the meeting.** The `whosaid_live` MCP tool returns the live transcript (or its last N minutes) and whether the call is still going, so an agent can answer "what did they just ask me?" mid-call. whosaid itself sends nothing anywhere; the agent you ask sends the text it reads to its own model.
 - It only reads the recording in progress. The full transcript with names and action items still comes from `whosaid watch` after the call.
+
+### One status feed for apps and scripts: `whosaid app-state`
+
+```bash
+whosaid app-state --json --workspace ~/meetings   # one snapshot
+whosaid app-state --watch 2 --workspace ~/meetings  # a JSON line now and on every change
+```
+
+It joins `autorecord status --json`, the watcher's state for the workspace (the same rules as the SwiftBar plugin), `live status --json`, the newest meeting and the count of unnamed voices from the last two weeks into one object, plus a single `menubar.state` (warn, agent-not-loaded, recording-live, recording, paused, ingesting, waiting, done, idle). It is read-only. `whosaid tracking set-status <ws> CM-012 done --note "..."` is the matching write path for marking an item done (see [docs/tracking.md](docs/tracking.md)).
 
 ### Enroll from an existing recording
 

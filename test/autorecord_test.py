@@ -10,6 +10,7 @@ Run: python3 test/autorecord_test.py
 import fcntl
 import os
 import plistlib
+import re
 import subprocess
 import sys
 import tempfile
@@ -88,15 +89,21 @@ esac
     check("no Screen & System Audio Recording permission" in logtxt, "exit 5 logs the permission fix")
     check(" peak " not in logtxt, "progress ticks stay out of the log")
     check(counter.read_text().strip() == "3", "three iterations ran")
-    # Lock: while another process holds it, run exits 0 at once without recording.
+    # Lock: while a live loop holds it, run exits 0 at once without recording.
     counter.write_text("0")
+    run2 = [sys.executable, str(ROOT / "lib" / "autorecord.py"), "run", "--app", "x",
+            "--into", str(d / "rec"), "--whosaid", str(fake)]
     with open(d / "rec" / ar.LOCK_NAME, "w") as fh:
         fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        r = subprocess.run([sys.executable, str(ROOT / "lib" / "autorecord.py"), "run", "--app", "x",
-                            "--into", str(d / "rec"), "--whosaid", str(fake)],
-                           capture_output=True, text=True, timeout=30, env=env)
-    check(r.returncode == 0 and "already running" in r.stderr and counter.read_text().strip() == "0",
-          f"second copy exits 0 without recording: {r.stderr}")
+        ar.write_json_atomic(d / "rec" / ar.STATE_NAME, {"pid": os.getpid(), "state": "waiting"})
+        r = subprocess.run(run2, capture_output=True, text=True, timeout=30, env=env)
+        check(r.returncode == 0 and "already running" in r.stderr and counter.read_text().strip() == "0",
+              f"second copy exits 0 without recording: {r.stderr}")
+        # Held, but no live loop on record (a status probe at the wrong instant): exit 1 so launchd retries.
+        ar.write_json_atomic(d / "rec" / ar.STATE_NAME, {"pid": os.getpid(), "state": "stopped"})
+        r = subprocess.run(run2, capture_output=True, text=True, timeout=30, env=env)
+        check(r.returncode == 1 and "retried" in r.stderr and counter.read_text().strip() == "0",
+              f"a lost lock with no live owner exits 1: {r.returncode} {r.stderr}")
     # install --dry-run writes nothing and prints the plist.
     r = subprocess.run([sys.executable, str(ROOT / "lib" / "autorecord.py"), "install", "--browser",
                         "--into", str(d / "rec"), "--whosaid", str(fake), "--dry-run"],
@@ -148,5 +155,184 @@ exit 0
     (d / "ws" / "whosaid.toml").write_text("# mine\n")
     ar.write_owner(d / "ws", "Bob_Example", False)
     check((d / "ws" / "whosaid.toml").read_text() == "# mine\n", "an existing whosaid.toml is never edited")
+
+# ---- state file, stop-now, pause/resume, status --json (macOS app, P1) ----
+import json  # noqa: E402
+import time  # noqa: E402
+
+check(ar.state_from_log([
+    "2026-10-29 10:00:00 autorecord: app x -> /r; Ctrl-C to quit",
+    "2026-10-29 10:00:01 record-app: X opened the mic; starting the capture.",
+])["state"] == "recording", "log fallback: an open capture is recording")
+sl = ar.state_from_log([
+    "2026-10-29 10:00:01 record-app: X opened the mic; starting the capture.",
+    "2026-10-29 10:30:00 autorecord: saved /r/a.m4a",
+    "2026-10-29 10:31:00 autorecord: record exited 1; retrying in 30s",
+])
+check(sl["state"] == "error" and sl["last_saved"]["path"] == "/r/a.m4a" and sl["last_error"]["rc"] == 1,
+      f"log fallback: saved then failed: {sl}")
+check(ar.state_from_log(["2026-10-29 10:31:00 autorecord: record exited 2 (app not running or no meeting tab); "
+                         "retrying in 30s"])["state"] == "waiting", "log fallback: exit 2 is waiting")
+
+
+def wait_for(pred, secs=15.0):
+    end = time.monotonic() + secs
+    while time.monotonic() < end:
+        v = pred()
+        if v:
+            return v
+        time.sleep(0.1)
+    return None
+
+
+with tempfile.TemporaryDirectory() as d:
+    d = Path(d)
+    rec, home = d / "rec", d / "home"
+    (home / "Library" / "LaunchAgents").mkdir(parents=True)
+    fake = d / "whosaid"
+    fake.write_text(f"""#!/bin/bash
+n=$(( $(cat {d}/n 2>/dev/null || echo 0) + 1 )); echo $n > {d}/n
+got=0; trap 'got=$((got+1)); echo "child $n SIGINT $got" >> {d}/sigs' INT
+echo $n > {d}/ready
+echo "record-app: waiting for Example to open the mic (a call to start); Ctrl-C to give up." >&2
+if [[ $(cat {d}/mode) == record ]]; then
+  sleep 0.3
+  echo "record-app: Example opened the mic; starting the capture." >&2
+  echo "record-app:    10s  app peak -5 dB" >&2
+  while [[ $got == 0 ]]; do sleep 0.1; done
+  echo "{rec}/20261029T150000Z-call-$n.m4a"; exit 0
+fi
+while [[ $got == 0 ]]; do sleep 0.1; done
+echo "record-app: stopped while waiting for a call; nothing recorded." >&2; exit 0
+""")
+    fake.chmod(0o755)
+    (d / "mode").write_text("record")
+    env = dict(os.environ, HOME=str(home), WHOSAID_AUTORECORD_MAX_LOOPS="3", WHOSAID_AUTORECORD_DELAY_SCALE="0.001")
+    py = [sys.executable, str(ROOT / "lib" / "autorecord.py")]
+
+    def cli(*args, timeout=30):
+        return subprocess.run(py + list(args), capture_output=True, text=True, timeout=timeout, env=env)
+
+    def st():
+        r = cli("status", "--json", "--into", str(rec))
+        return json.loads(r.stdout) if r.returncode == 0 else {}
+
+    s0 = st()
+    check(s0.get("installed") is False and s0.get("running") is False and s0.get("state") == "not-installed"
+          and s0.get("loaded") is None, f"status --json, nothing installed: {s0}")
+    r = cli("stop-now", "--into", str(rec))
+    check(r.returncode == 4 and "not running" in r.stderr, f"stop-now with no loop refuses: {r.stderr}")
+
+    loop = subprocess.Popen(py + ["run", "--app", "com.example.app", "--into", str(rec), "--whosaid", str(fake)],
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=env)
+    try:
+        s1 = wait_for(lambda: (x := st()).get("state") == "recording" and x)
+        check(bool(s1) and s1["running"] and s1["controls"] and s1["source"] == "state-file"
+              and isinstance(s1["elapsed"], int), f"state file: recording: {s1}")
+        (d / "mode").write_text("wait")  # child 1 is past its mode check; child 2 will wait
+        r = cli("stop-now", "--into", str(rec), "--wait", "10")
+        check(r.returncode == 0 and r.stdout.strip().endswith("call-1.m4a"), f"stop-now saves: {r.stdout} {r.stderr}")
+        check((d / "sigs").read_text() == "child 1 SIGINT 1\n", f"exactly one SIGINT: {(d / 'sigs').read_text()}")
+        check(not (rec / ar.STOP_NOW_NAME).exists(), "the stop-now request is consumed")
+        s2 = wait_for(lambda: (x := st()).get("state") == "waiting"
+                      and (d / "ready").read_text().strip() == "2" and x)
+        check(bool(s2) and s2["last_saved"]["path"].endswith("call-1.m4a"), f"loop goes on after stop-now: {s2}")
+        r = cli("stop-now", "--into", str(rec))
+        check(r.returncode == 1 and "nothing is being recorded" in r.stderr, "stop-now while waiting refuses")
+        r = cli("pause", "--minutes", "5", "--into", str(rec))
+        check(r.returncode == 0 and "paused until" in r.stderr, f"pause: {r.stderr}")
+        s3 = wait_for(lambda: (x := st()).get("state") == "paused" and x)
+        check(bool(s3) and s3["paused_until"], f"pause ends the wait; state paused with an end time: {s3}")
+        check(bool(wait_for(lambda: "child 2 SIGINT 1" in (d / "sigs").read_text(), 5)),
+              f"the waiting child got one SIGINT: {(d / 'sigs').read_text()!r} {(rec / ar.LOG_NAME).read_text()}")
+        time.sleep(1.0)
+        check((d / "n").read_text().strip() == "2", "no new record child while paused")
+        r = cli("resume", "--into", str(rec))
+        check(r.returncode == 0 and not (rec / ar.PAUSE_NAME).exists(), "resume removes the pause")
+        check(bool(wait_for(lambda: (d / "n").read_text().strip() == "3")), "resume starts the next wait")
+        loop.terminate()
+        loop.wait(timeout=15)
+    finally:
+        if loop.poll() is None:
+            loop.kill()
+    s4 = st()
+    check(s4["state"] == "stopped" and s4["running"] is False and s4["controls"] is False, f"stopped: {s4}")
+    check(not any(p.name.startswith(".autorecord.") and p.suffix != ".log" and p.name != ar.LOCK_NAME
+                  for p in rec.iterdir()), f"state and control files stay out of <into> itself: {list(rec.iterdir())}")
+    check(re.match(r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d[+-]\d\d:\d\d$", s4["since"] or ""),
+          f"RFC 3339 times with a colon offset: {s4['since']}")
+
+    # A long-quiet state file whose pid is alive but holds no lock (pid reuse after a crash).
+    ar.write_json_atomic(rec / ar.STATE_NAME, {"pid": os.getpid(), "state": "waiting", "updated": "2026-01-01T00:00:00"})
+    s4b = st()
+    check(s4b["running"] is False and s4b["controls"] is False, f"a stale state file is not a running loop: {s4b}")
+
+    # An older loop: the lock is held, but no state file. Read the log; refuse controls.
+    (rec / ar.STATE_NAME).unlink()
+    (rec / ar.LOG_NAME).write_text("2026-10-29 10:00:01 record-app: X opened the mic; starting the capture.\n")
+    with open(rec / ar.LOCK_NAME, "w") as fh:
+        fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        s5 = st()
+        r = cli("pause", "--into", str(rec))
+    check(s5["source"] == "log" and s5["state"] == "recording" and s5["running"] and not s5["controls"],
+          f"older loop read from the log: {s5}")
+    check(r.returncode == 4 and "reinstall" in r.stderr, f"pause refuses on an older loop: {r.stderr}")
+
+    # Installed + a fake launchctl that says loaded.
+    bindir = d / "bin"
+    bindir.mkdir()
+    (bindir / "launchctl").write_text(f"#!/bin/bash\necho \"$*\" >> {d}/launchctl.calls\nexit 0\n")
+    (bindir / "launchctl").chmod(0o755)
+    i = ar.parse_args(["install", "--app", "com.example.app", "--into", str(rec), "--whosaid", str(fake)])
+    with open(home / "Library" / "LaunchAgents" / f"{ar.LABEL}.plist", "wb") as fh:
+        plistlib.dump(ar.build_plist(i, Path("/Apps/X.app")), fh)
+    env["PATH"] = f"{bindir}:{env['PATH']}"
+    s6 = json.loads(cli("status", "--json").stdout)
+    check(s6["installed"] and s6["mode"] == "app" and s6["app"] == "com.example.app" and s6["into"] == str(rec),
+          f"installed config read from the plist: {s6}")
+    check(s6["loaded"] is (sys.platform == "darwin"), f"loaded via launchctl print: {s6['loaded']}")
+    if sys.platform == "darwin":
+        check((d / "launchctl.calls").read_text().startswith("print gui/"), "only launchctl print is called")
+
+# ---- the call ends by itself: while the file is being written, nothing signals it ----
+with tempfile.TemporaryDirectory() as d:
+    d = Path(d)
+    rec, home = d / "rec", d / "home"
+    (home / "Library" / "LaunchAgents").mkdir(parents=True)
+    fake = d / "whosaid"
+    fake.write_text(f"""#!/bin/bash
+trap 'echo "SIGINT" >> {d}/sigs' INT
+echo "record-app: Example opened the mic; starting the capture." >&2
+sleep 0.5
+echo "whosaid: capture ended; saving the recording." >&2
+for i in $(seq 40); do [[ -e {d}/go ]] && break; sleep 0.1; done
+echo "{rec}/20261029T160000Z-call.m4a"; exit 0
+""")
+    fake.chmod(0o755)
+    env = dict(os.environ, HOME=str(home), WHOSAID_AUTORECORD_MAX_LOOPS="1", WHOSAID_AUTORECORD_DELAY_SCALE="0.001")
+    py = [sys.executable, str(ROOT / "lib" / "autorecord.py")]
+    loop = subprocess.Popen(py + ["run", "--app", "com.example.app", "--into", str(rec), "--whosaid", str(fake)],
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=env)
+    try:
+        def sj():
+            r = subprocess.run(py + ["status", "--json", "--into", str(rec)], capture_output=True, text=True,
+                               timeout=30, env=env)
+            return json.loads(r.stdout)
+        s7 = wait_for(lambda: (x := sj())["state"] == "saving" and x)
+        check(bool(s7), "the capture-ended line moves the state to saving")
+        r = subprocess.run(py + ["stop-now", "--into", str(rec)], capture_output=True, text=True, timeout=30, env=env)
+        check(r.returncode == 1 and "saving" in r.stderr, f"stop-now while saving refuses: {r.stderr}")
+        r = subprocess.run(py + ["pause", "--minutes", "5", "--into", str(rec)], capture_output=True, text=True,
+                           timeout=30, env=env)
+        check(r.returncode == 0, f"pause while saving is accepted for later: {r.stderr}")
+        time.sleep(1.2)  # two control polls with the pause file in place
+        check(sj()["state"] == "saving", "a pause does not interrupt the save")
+        (d / "go").write_text("")
+        loop.wait(timeout=20)
+    finally:
+        if loop.poll() is None:
+            loop.kill()
+    check(not (d / "sigs").exists(), f"no SIGINT while saving: {(d / 'sigs').read_text() if (d / 'sigs').exists() else ''}")
+    check("autorecord: saved " in (rec / ar.LOG_NAME).read_text(), "the file is saved")
 
 print(f"PASS: autorecord_test ({CHECKS} checks)")

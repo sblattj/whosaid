@@ -211,7 +211,7 @@ Commitment tracking: kind distinguishes explicit promises, requests, standing di
 
 Not exposed here: `enroll` and `record` are interactive microphone operations that need a live terminal. Run them from the `whosaid` CLI. The first transcribe downloads ~1.5 GB of models; run whosaid_doctor to check readiness. Full flag/env/long-audio reference: read the whosaid://guide resource.
 
-Meeting workspace (search across many transcripts): point the server at a workspace directory by launching it with WHOSAID_WORKSPACE=<dir>, or pass `workspace` on each call; there is no cwd fallback. Flow: whosaid_search (turn-level hits with meeting folder + timestamp) -> whosaid_context (the verbatim minute around one hit; do not read whole transcripts) -> whosaid_items / whosaid_item / whosaid_person for action items and per-person commitments; whosaid_worklist for one person's ranked P1/P2/P3 worklist across both corpora. whosaid_meetings, whosaid_prs and whosaid_speakers list what the graph knows; whosaid_workspace_status says whether the index exists. The index (_search.db, _WIKI.md) is built by `whosaid index <ws>` from the CLI or the watcher, never from here: every workspace tool is read-only. Resources: whosaid://workspace/wiki, whosaid://workspace/action-items, whosaid://workspace/index, whosaid://workspace/meeting/{folder}/transcript and whosaid://workspace/meeting/{folder}/action-items. Everything stays local (SQLite FTS5 plus optional embeddings from a localhost Ollama)."""
+Meeting workspace (search across many transcripts): point the server at a workspace directory by launching it with WHOSAID_WORKSPACE=<dir>, or pass `workspace` on each call; there is no cwd fallback. Flow: whosaid_search (turn-level hits with meeting folder + timestamp) -> whosaid_context (the verbatim minute around one hit; do not read whole transcripts) -> whosaid_items / whosaid_item / whosaid_person for action items and per-person commitments; whosaid_worklist for one person's ranked P1/P2/P3 worklist across both corpora. whosaid_meetings, whosaid_prs and whosaid_speakers list what the graph knows; whosaid_workspace_status says whether the index exists. The index (_search.db, _WIKI.md) is built by `whosaid index <ws>` from the CLI or the watcher, never from here: every workspace tool is read-only except whosaid_set_status, which appends one status event to the tracking ledger (_tracking.json) when the user marks an item. Resources: whosaid://workspace/wiki, whosaid://workspace/action-items, whosaid://workspace/index, whosaid://workspace/meeting/{folder}/transcript and whosaid://workspace/meeting/{folder}/action-items. Everything stays local (SQLite FTS5 plus optional embeddings from a localhost Ollama)."""
 
 
 try:
@@ -1842,6 +1842,41 @@ def whosaid_live(minutes: Optional[float] = None, recordings: Optional[str] = No
     if minutes is not None and minutes <= 0:
         return {"ok": False, "error": "minutes must be > 0", "hint": "omit it for the whole call"}
     return live_mod.latest_session(into, minutes)
+
+
+_DESC_SET_STATUS = (
+    "Mark one action item or commitment (AI-NNN or CM-NNN) with a status, for example done when "
+    "the user says it is finished. Appends ONE curated status event to the workspace's tracking "
+    "ledger (_tracking.json, the same ledger `whosaid tracking import` writes); nothing else "
+    "changes and no corpus or index is rewritten. status: open, in_progress, delivered, accepted, "
+    "blocked, superseded, unknown, or done (= delivered). `note` is required manual evidence: who "
+    "marked it and why. Unknown ids are refused. Only call it when the user asked to change the "
+    "status; whosaid_tracking_suggestions only proposes. Local files only."
+)
+
+
+@mcp.tool(
+    name="whosaid_set_status",
+    description=_DESC_SET_STATUS,
+    annotations=ToolAnnotations(
+        read_only_hint=False,
+        destructive_hint=False,
+        idempotent_hint=False,
+        open_world_hint=False,
+    ),
+)
+def whosaid_set_status(item_id: str, status: str, note: str, workspace: Optional[str] = None) -> dict:
+    """Append one curated status event via tracking.set_status; ok=false with a hint on refusal."""
+    ws, err = _resolve_ws(workspace)
+    if err:
+        return err
+    import tracking
+    try:
+        event = tracking.set_status(ws, item_id, status, note)
+    except (tracking.TrackingError, OSError, ValueError) as exc:
+        return _ws_error(str(exc), "check the id with whosaid_item and the status list in this tool's description",
+                         category="tracking_error")
+    return {"ok": True, "workspace": str(ws), "event": event}
 
 
 @mcp.tool(name="whosaid_workspace_status", description=_DESC_WS_STATUS, annotations=_read_only())

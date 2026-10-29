@@ -86,6 +86,7 @@ def main() -> None:
         "whosaid_reprocess",
         "whosaid_record_browser",
         "whosaid_live",
+        "whosaid_set_status",
     } | workspace_tools
 
     # --- tool-name set + prefix ---
@@ -305,6 +306,19 @@ def main() -> None:
     check(set(dumps["whosaid_meetings"]["inputSchema"]["properties"])
           == {"workspace", "kind", "since", "until", "query", "limit", "offset", "compact"}, "meetings filters + paging")
     check("teams-chat" in dumps["whosaid_meetings"]["description"], "meetings description names the teams-chat kind")
+
+    # --- whosaid_set_status: one curated ledger event, the app's Mark done ---
+    ss = dumps["whosaid_set_status"]
+    ss_ann = ss.get("annotations") or {}
+    d_ss = by_name["whosaid_set_status"].description or ""
+    check(ss_ann.get("readOnlyHint") is False and ss_ann.get("destructiveHint") is False
+          and ss_ann.get("openWorldHint") is False, f"set_status annotations: {ss_ann}")
+    check(set(ss["inputSchema"]["properties"]) == {"item_id", "status", "note", "workspace"}
+          and set(ss["inputSchema"].get("required") or []) == {"item_id", "status", "note"},
+          f"set_status params: {ss['inputSchema']}")
+    check(all(t in d_ss for t in ("ONE curated status event", "done (= delivered)", "Unknown ids are refused")),
+          "set_status desc: one event, done alias, refusal")
+    check("whosaid_set_status" in mcp_server.SERVER_INSTRUCTIONS, "instructions name the one writing workspace tool")
 
     # --- whosaid_reprocess: mutating, dry run by default ---
     rp = dumps["whosaid_reprocess"]

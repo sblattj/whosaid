@@ -6,6 +6,28 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ## [Unreleased]
 
+### Added
+
+- `whosaid autorecord status --json` prints one object: installed, loaded,
+  running, state (waiting, recording, saving, paused, error, stopped, not-installed),
+  since, elapsed, paused_until, last_saved, last_error and whether the pause and
+  stop controls are available. The run loop now keeps
+  `<into>/.autorecord/state.json` current; an older loop is read from its log.
+- `whosaid autorecord pause [--minutes N]` / `resume` skip new calls for a while
+  (the call being recorded keeps going), and `whosaid autorecord stop-now` ends
+  the call being recorded and saves it while the loop keeps waiting for the
+  next one. The loop polls control files and sends the capture one SIGINT.
+- `whosaid record` keeps ignoring Ctrl-C after the capture ends until the
+  recording is written, so a late Ctrl-C (or a stop-now) no longer kills the
+  mux and leaves the audio in a temp folder.
+- `whosaid live status [--json]`: the newest live session without its text.
+- `whosaid tracking set-status <ws> <AI-NNN|CM-NNN> <status> --note TEXT`
+  appends one curated status event (`done` is stored as `delivered`; unknown ids
+  are refused), and the `whosaid_set_status` MCP tool does the same.
+- `whosaid app-state [--json | --watch SECONDS]`: one read-only snapshot of
+  autorecord, the watcher, the live session, the newest meeting and unnamed
+  voices, with a composed `menubar.state`, for the macOS app's menu bar.
+
 ## [1.22.0] - 2026-10-29
 
 ### Added

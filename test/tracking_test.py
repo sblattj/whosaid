@@ -351,6 +351,32 @@ class TrackingTests(unittest.TestCase):
         self.assertEqual(0, proc.returncode, proc.stderr)
         self.assertEqual(1, json.loads(proc.stdout)["count"])
 
+    def test_set_status_marks_done_as_delivered(self):
+        self.ws.joinpath("_action-items.json").write_text(json.dumps({"items": [self.item()]}))
+        event = tracking.set_status(self.ws, "AI-001", "done", "marked done in the whosaid app")
+        self.assertEqual(("status", "delivered", "curated"), (event["type"], event["status"], event["source"]))
+        self.assertEqual({"kind": "manual", "ref": "marked done in the whosaid app"}, event["evidence"])
+        self.assertEqual("delivered", self.view()["status"])
+        self.assertEqual(1, len(tracking.load_ledger(self.ws)["events"]))
+
+    def test_set_status_refuses_unknown_ids_and_statuses(self):
+        self.ws.joinpath("_commitments.json").write_text(json.dumps({"items": [{"id": "CM-001", "text": "x"}]}))
+        with self.assertRaisesRegex(tracking.TrackingError, "no item"):
+            tracking.set_status(self.ws, "AI-404", "done", "note")
+        with self.assertRaisesRegex(tracking.TrackingError, "status must be"):
+            tracking.set_status(self.ws, "CM-001", "finished", "note")
+        with self.assertRaises(tracking.TrackingError):
+            tracking.set_status(self.ws, "CM-001", "done", "  ")
+        self.assertFalse(self.ws.joinpath("_tracking.json").exists())
+
+    def test_cli_set_status(self):
+        self.ws.joinpath("_commitments.json").write_text(json.dumps({"items": [{"id": "CM-001", "text": "x"}]}))
+        script = Path(tracking.__file__)
+        proc = subprocess.run([sys.executable, str(script), "set-status", str(self.ws), "CM-001", "in_progress",
+                               "--note", "started"], capture_output=True, text=True, timeout=10)
+        self.assertEqual(0, proc.returncode, proc.stderr)
+        self.assertEqual("in_progress", json.loads(proc.stdout)["status"])
+
 
 if __name__ == "__main__":
     unittest.main()

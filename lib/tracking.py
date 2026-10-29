@@ -262,6 +262,30 @@ def record_event(ws: str | Path, event: dict) -> dict:
     return event
 
 
+# What the app's "Mark done" means: the owner says it is delivered.
+STATUS_ALIASES = {"done": "delivered"}
+
+
+def set_status(ws: str | Path, item_id: str, status: str, note: str,
+               occurred_at: str | None = None) -> dict:
+    """Append one curated status event for an existing AI-NNN / CM-NNN item.
+
+    `done` means `delivered`. The evidence is manual: `note` says who marked it
+    and why (for example "marked done in the whosaid app"). Unknown ids are
+    refused so a typo never starts a new item's history.
+    """
+    import commitment_views  # local: commitment_views imports this module
+    status = STATUS_ALIASES.get(status, status)
+    if status not in STATUSES:
+        raise TrackingError(f"status must be one of {sorted(STATUSES | set(STATUS_ALIASES))}")
+    item_id = (item_id or "").strip()
+    if item_id not in commitment_views.corpus_rows(Path(ws)):
+        raise TrackingError(f"no item {item_id!r} in _action-items.json or _commitments.json")
+    when = occurred_at or datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    return record_event(ws, {"type": "status", "item_id": item_id, "status": status, "occurred_at": when,
+                             "source": "curated", "evidence": {"kind": "manual", "ref": _required({"n": note}, "n")}})
+
+
 def add_milestones(ws: str | Path, item_id: str, milestones: list[dict], evidence: dict,
                    occurred_at: str) -> dict:
     return record_event(ws, {"type": "milestones", "item_id": item_id,
@@ -649,6 +673,12 @@ def main(argv: list[str] | None = None) -> int:
     priorities.add_argument("workspace")
     priorities.add_argument("--group")
     priorities.add_argument("--as-of")
+    setst = sub.add_parser("set-status", help="mark one AI-NNN / CM-NNN item (done = delivered)")
+    setst.add_argument("workspace")
+    setst.add_argument("item_id")
+    setst.add_argument("status", help=f"one of {', '.join(sorted(STATUSES | set(STATUS_ALIASES)))}")
+    setst.add_argument("--note", required=True, help="manual evidence: who marked it and why")
+    setst.add_argument("--at", help="when it happened (ISO date or timestamp; default now)")
     suggest = sub.add_parser("suggest", help="generate unapproved evidence candidates")
     suggest.add_argument("items")
     suggest.add_argument("turns")
@@ -666,6 +696,8 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "show":
             data = _read_json(args.items)
             result = reconcile_items(args.workspace, data.get("items", []) if isinstance(data, dict) else data, args.as_of)
+        elif args.command == "set-status":
+            result = set_status(args.workspace, args.item_id, args.status, args.note, args.at)
         elif args.command == "priorities":
             result = priority_view(args.workspace, args.group, args.as_of)
         else:

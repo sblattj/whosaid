@@ -319,12 +319,22 @@ def read_entries(jl: Path) -> tuple[dict, list[dict]]:
     return meta, entries
 
 
+def stamp(ts: object) -> str | None:
+    """RFC 3339 local time with its offset, or None when the meta has no time."""
+    try:
+        return datetime.fromtimestamp(float(ts)).astimezone().isoformat(timespec="seconds") if ts else None
+    except (TypeError, ValueError, OSError):
+        return None
+
+
 def latest_session(into: Path, minutes: float | None = None) -> dict:
     """The newest live transcript: started, active, path, and lines (last N minutes)."""
     found = sessions(into)
-    if not found:
+    if not found:  # the same keys as a found session, so readers need no special case
         return {"ok": False, "error": f"no live transcript under {into / LIVE_DIR}",
-                "hint": "start one with `whosaid live` while a call is being recorded"}
+                "hint": "start one with `whosaid live` while a call is being recorded",
+                "path": None, "started": None, "active": False, "ended": False, "lines": 0,
+                "updated": None, "jsonl": None}
     jl = found[-1]
     meta, entries = read_entries(jl)
     active = not meta.get("ended") and time.time() - float(meta.get("updated") or 0) < ACTIVE_WINDOW
@@ -334,10 +344,12 @@ def latest_session(into: Path, minutes: float | None = None) -> dict:
     return {
         "ok": True,
         "path": str(jl.with_suffix(".md")),
-        "started": datetime.fromtimestamp(float(meta.get("started") or 0)).isoformat(timespec="seconds"),
+        "started": stamp(meta.get("started")),
         "active": active,
         "ended": bool(meta.get("ended")),
         "lines": len(entries),
+        "updated": stamp(meta.get("updated")),
+        "jsonl": str(jl),
         "transcript": "\n".join(fmt_line(e) for e in entries),
     }
 
@@ -388,6 +400,20 @@ def cmd_show(a: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_status(a: argparse.Namespace) -> int:
+    """`live status --json`: the newest session without its text; always exit 0."""
+    r = latest_session(Path(a.into).expanduser())
+    r.pop("transcript", None)
+    if a.json:
+        print(json.dumps(r, indent=1))
+    elif r["ok"]:
+        print(f"live: {'live' if r['active'] else ('ended' if r['ended'] else 'stale')}, {r['lines']} line(s), "
+              f"started {r['started']}, updated {r['updated']}: {r['path']}")
+    else:
+        print(f"live: {r['error']}")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="whosaid live")
     sub = p.add_subparsers(dest="cmd")
@@ -402,12 +428,17 @@ def main(argv: list[str] | None = None) -> int:
     s = sub.add_parser("show")
     s.add_argument("--into", default=str(DEFAULT_INTO))
     s.add_argument("--minutes", type=float)
+    t = sub.add_parser("status")
+    t.add_argument("--into", default=str(DEFAULT_INTO))
+    t.add_argument("--json", action="store_true")
     argv = list(sys.argv[1:] if argv is None else argv)
-    if not argv or argv[0] not in ("run", "show", "-h", "--help"):
+    if not argv or argv[0] not in ("run", "show", "status", "-h", "--help"):
         argv.insert(0, "run")  # bare `whosaid live [flags]` means run
     a = p.parse_args(argv)
     if a.cmd == "show":
         return cmd_show(a)
+    if a.cmd == "status":
+        return cmd_status(a)
     if a.chunk_seconds < 5:
         p.error("--chunk-seconds must be >= 5")
     return cmd_run(a)

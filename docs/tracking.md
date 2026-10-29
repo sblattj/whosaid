@@ -57,6 +57,15 @@ IDs. Conflicting status events at the same time remain visible and yield
 `unknown` until corrected. Curated/imported status evidence takes precedence
 over automatic status extraction.
 
+To mark one item without writing an events file, `set-status` appends a single
+curated status event with manual evidence (`done` is stored as `delivered`). Ids
+missing from `_action-items.json` and `_commitments.json` are refused. The macOS
+app's Mark done and the `whosaid_set_status` MCP tool use the same call.
+
+```sh
+whosaid tracking set-status ./meetings CM-012 done --note "marked done in the whosaid app"
+```
+
 ## Split a compound promise
 
 Use a `milestones` event with the parent item ID and a nonempty milestones

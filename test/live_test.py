@@ -135,6 +135,26 @@ with tempfile.TemporaryDirectory() as d:
     check(r["active"] and r["lines"] == 2 and "at 0" not in r["transcript"], f"last N minutes, live: {r}")
     check(not live.latest_session(d / "none")["ok"], "no session: ok=false with a hint")
 
+# ---- live status --json (macOS app): newest session, no text, exit 0 ----
+import contextlib, io  # noqa: E402
+with tempfile.TemporaryDirectory() as d:
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        rc = live.main(["status", "--json", "--into", d])
+    r = json.loads(buf.getvalue())
+    check(rc == 0 and r["ok"] is False and "hint" in r, f"status --json with no session: {r}")
+    jl = Path(d) / live.LIVE_DIR / "20261029T150000.jsonl"
+    jl.parent.mkdir()
+    now = time.time()
+    jl.write_text(json.dumps({"meta": {"started": now - 60, "ended": False, "updated": now}}) + "\n"
+                  + json.dumps({"t": 1, "clock": "00:00:01", "who": "me", "text": "hello"}) + "\n")
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        rc = live.main(["status", "--json", "--into", d])
+    r = json.loads(buf.getvalue())
+    check(rc == 0 and r["ok"] and r["active"] and r["lines"] == 1 and "transcript" not in r
+          and r["jsonl"].endswith(".jsonl") and r["updated"], f"status --json, live session: {r}")
+
 # ---- CLI: bare `whosaid live --flags` means run; a missing --capture fails ----
 live.cmd_run = lambda a: ("run", a.once, a.capture)
 check(live.main(["--once", "--capture", "/x"]) == ("run", True, "/x"), "bare flags parse as run")

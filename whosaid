@@ -613,6 +613,9 @@ TRACKING
   tracking priorities <ws> [--group NAME] [--as-of DATE]
   tracking show <ws> <items.json> [--as-of DATE]
   tracking suggest <items.json> <turns.json> [--limit N]
+  tracking set-status <ws> <AI-NNN|CM-NNN> <status> --note TEXT [--at DATE]
+                                      One curated status event (done = delivered);
+                                      unknown ids are refused. The app's Mark done.
   The local _tracking.json ledger stores status history, milestone splits,
   priority assertions, and accepted handoffs separately from generated data.
   Suggestions require review before import. See docs/tracking.md.
@@ -682,7 +685,10 @@ AUTORECORD
                                [--cdp-port P] [--target T] [--label L] [--no-mic]
   whosaid autorecord install   (same flags) [--no-open] [--dry-run]
   whosaid autorecord uninstall [--purge]
-  whosaid autorecord status    [--lines N]
+  whosaid autorecord status    [--lines N] [--json] [--into DIR]
+  whosaid autorecord pause     [--minutes N] [--into DIR]
+  whosaid autorecord resume    [--into DIR]
+  whosaid autorecord stop-now  [--wait N] [--into DIR]
   whosaid autorecord setup     --app A | --browser --workspace WS [--owner NAME]
                                [--into DIR] [--label L] [--skip-deps] [--no-open] [--dry-run]
   run loops: wait for a call, record it into --into (default ~/Recordings), repeat.
@@ -701,10 +707,18 @@ AUTORECORD
   setup does a new Mac in one go: whosaid setup --yes (deps, models), install, then
   that watch install; --owner NAME starts <ws>/whosaid.toml (an existing one is left
   as is). It stops at the first failed step and lists what is left to do by hand.
+  status --json prints one object (installed, loaded, running, state = waiting |
+  recording | saving | paused | error | stopped | not-installed, since, elapsed, paused_until,
+  last_saved, last_error, controls) and exits 0 even when not installed.
+  pause records no new call for N minutes (default 60; the call being recorded keeps
+  going); resume undoes it. stop-now ends the call being recorded and saves it; the
+  loop keeps waiting for the next call. Both need a loop that writes
+  <into>/.autorecord/state.json (this version or later): reinstall an older one.
 
 LIVE
   whosaid live [run] [--into DIR] [--chunk-seconds N] [--once] [--capture DIR] [--model M]
   whosaid live show  [--into DIR] [--minutes N]
+  whosaid live status [--into DIR] [--json]
   run follows the call `record --app` / autorecord is capturing and transcribes it as
   it happens, locally (default model whisper-large-v3-turbo, or WHOSAID_LIVE_MODEL):
   every ~20 s it appends "me:" (your mic) and "them:" (the app) lines with times to
@@ -712,7 +726,18 @@ LIVE
   skipped. When the call ends it waits for the next (--once: exits). It only reads
   the recorder's files; the post-call transcript with names is unchanged.
   show prints the newest live transcript (or its last N minutes). Agents: the
-  whosaid_live MCP tool returns the same.
+  whosaid_live MCP tool returns the same. status (--json) describes the newest session
+  without its text: path, started, updated, active, ended, lines; exit 0.
+
+APP STATE
+  whosaid app-state [--json] [--workspace WS] [--into DIR]
+  whosaid app-state --watch SECONDS [--workspace WS] [--into DIR]
+  One JSON snapshot for the macOS app's menu bar: autorecord (status --json), the
+  watcher for WS and its log state (the SwiftBar plugin's rules), the newest live
+  session, the newest meeting, unnamed SPEAKER_NN voices from the last 14 days, and
+  menubar.state = warn | agent-not-loaded | recording-live | recording | paused |
+  ingesting | waiting | done | idle. --watch keeps running and prints one line at
+  start and on every change (at least once a minute). Read-only.
 
 ENV OVERRIDES
   WHOSAID_MODEL        Default Whisper model repo (default: large-v3; turbo repo = rollback).
@@ -1393,7 +1418,12 @@ run_recorder() {
     wait "$REC_PID"
     REC_RC=$?
   done
-  trap - INT TERM
+  # INT stays ignored until the caller has written the file: a Ctrl-C (or an
+  # autorecord stop-now) during the mux would kill this script and orphan the
+  # WAVs. The caller restores it with `trap - INT`. autorecord reads this line
+  # as "the capture is over" and stops forwarding SIGINT.
+  trap - TERM
+  log "capture ended; saving the recording."
 }
 
 # Build lib/record_app.swift (ScreenCaptureKit app-audio capture) on first use,
@@ -1670,6 +1700,7 @@ cmd_record() {
   rc=0
   if [[ "$browser" == 1 ]]; then
     record_browser_audio "$out" "$no_mic" "$cdp_port" "$target" "$leave_sel" "$max_secs" "$leave" "$wait_call"
+    trap - INT
     if [[ "$wait_call" == 1 && ! -e "$out" ]]; then
       # record_browser exits 0 with no file when the wait was interrupted.
       log "stopped while waiting for a call; nothing recorded."
@@ -1706,6 +1737,7 @@ cmd_record() {
     [[ -n "$idle_secs" ]] && call_args+=(--idle-seconds "$idle_secs")
     REC_APP_STARTED=""
     record_app_audio "$app" "$out" "$no_mic" ${call_args[@]+"${call_args[@]}"}
+    trap - INT
     # A --wait-for-call file is named for when the call started, not the wait.
     if [[ "$wait_call" == 1 && "$REC_APP_STARTED" =~ ^[0-9]+$ ]]; then
       local started_out="$outdir/$(date -u -r "$REC_APP_STARTED" +%Y%m%dT%H%M%SZ)${out#"$outdir/$ts"}"
@@ -1729,6 +1761,7 @@ cmd_record() {
     run_recorder ffmpeg -hide_banner -loglevel warning -f avfoundation -i ":$REC_DEVICE" \
       -ac 1 -c:a aac -b:a 96k -t 10800 -y "$out"
     rc=$REC_RC
+    trap - INT
     set -e
     if [[ "$rc" -ne 0 && "$rc" -ne 255 ]]; then
       log "ffmpeg exited with an unexpected error (code $rc)."
@@ -2614,10 +2647,10 @@ cmd_wiki() {
 # a launchd job started from an installed symlink still finds the checkout.
 cmd_autorecord() {
   if want_help "$@"; then help_section "AUTORECORD"; exit 0; fi
-  local usage="usage: whosaid autorecord run|install|setup|uninstall|status [flags]"
+  local usage="usage: whosaid autorecord run|install|setup|uninstall|status|pause|resume|stop-now [flags]"
   [[ $# -eq 0 ]] && { log "autorecord: need a subcommand. $usage"; exit 1; }
   case "$1" in
-    run|install|setup|uninstall|status) ;;
+    run|install|setup|uninstall|status|pause|resume|stop-now) ;;
     *) log "autorecord: unknown subcommand '$1'. $usage"; exit 1 ;;
   esac
   require_module "$REPO_DIR/lib/autorecord.py" autorecord
@@ -2625,10 +2658,16 @@ cmd_autorecord() {
   exec "$WHOSAID_PY" "$REPO_DIR/lib/autorecord.py" "$@"
 }
 
+cmd_app_state() {
+  if want_help "$@"; then help_section "APP STATE"; exit 0; fi
+  require_module "$REPO_DIR/lib/app_state.py" app-state
+  exec "$WHOSAID_PY" "$REPO_DIR/lib/app_state.py" "$@"
+}
+
 cmd_live() {
   if want_help "$@"; then help_section "LIVE"; exit 0; fi
   require_module "$REPO_DIR/lib/live.py" live
-  if [[ "${1:-}" == show ]]; then
+  if [[ "${1:-}" == show || "${1:-}" == status ]]; then
     exec "$WHOSAID_PY" "$REPO_DIR/lib/live.py" "$@"
   fi
   exec uv run --quiet --with mlx-whisper --with numpy python "$REPO_DIR/lib/live.py" "$@"
@@ -2733,6 +2772,9 @@ case "${1:-}" in
     ;;
   live)
     cmd_live "${@:2}"
+    ;;
+  app-state)
+    cmd_app_state "${@:2}"
     ;;
   memos)
     cmd_memos "${@:2}"
