@@ -98,7 +98,7 @@ REPO_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
 
 # Single source of truth for the released version. Bump this alongside the
 # CHANGELOG.md entry and git tag at release time.
-WHOSAID_VERSION="1.19.0"
+WHOSAID_VERSION="1.20.0"
 
 HELPER="$REPO_DIR/lib/transcribe_mlx.py"
 DIARIZER="$REPO_DIR/lib/diarize_sherpa.py"
@@ -195,6 +195,8 @@ USAGE
                                         through the Chrome DevTools port. No Screen Recording
                                         permission. Auto-stops when the call ends.
   whosaid record --list-apps           List apps --app accepts (bundle ID, name).
+  whosaid record --watch-call --app A [--interval S]
+                                        Stream A's mic/speaker state as JSON lines.
   whosaid doctor                       Read-only environment/model/device report.
   whosaid version | --version | -V     Print the installed version.
   whosaid mcp                          Run the MCP server (stdio) for AI agents / Claude.
@@ -472,7 +474,14 @@ RECORD FLAGS
                       A.* helpers) has used the mic for --idle-seconds (default 30).
   --idle-seconds N    With --until-call-ends: how long the mic must stay closed.
   --list-apps         Print running apps --app accepts, then exit.
+  --watch-call        With --app: print one JSON line per change of the app's mic or
+                      speaker state (first line is the current state), until stopped.
+                      Given a bundle ID it needs no Screen Recording and the app may
+                      be closed (running:false). Never records. Exits 0 on SIGINT/SIGTERM.
+  --interval S        With --watch-call: seconds between checks (default 1, > 0).
   Any transcribe flag above is also accepted and passed through after recording.
+  To stop a recording from another program, send SIGTERM to the whosaid process
+  (or SIGINT to its process group, as Ctrl-C does); the file is still saved.
 
 ENROLL FLAGS
   --from FILE         Extract the reference clip from an existing recording instead of
@@ -1318,6 +1327,33 @@ cmd_enroll() {
 }
 
 # ---- record --------------------------------------------------------------------
+# Run a recorder child (ffmpeg, the app-capture helper, record_browser.py) so
+# either way of stopping it finalizes the file and lets this script carry on
+# to verify, join and transcribe. Sets REC_RC to the child's exit status.
+# - Ctrl-C in a terminal signals the whole foreground group, so the child gets
+#   its own SIGINT; the no-op INT trap only keeps bash alive.
+# - A parent process (an app or supervisor) sends SIGTERM to this script's pid.
+#   Bash runs traps only after a foreground child returns, so the child runs in
+#   the background and the TERM trap forwards the signal to it at once. Before
+#   this, SIGTERM killed the script and orphaned the child, which kept
+#   recording until its 3h cap and never produced the output file.
+REC_PID=""
+REC_RC=0
+run_recorder() {
+  "$@" </dev/null &
+  REC_PID=$!
+  trap ':' INT
+  trap 'kill -TERM "$REC_PID" 2>/dev/null' TERM
+  wait "$REC_PID"
+  REC_RC=$?
+  # An interrupted wait returns >128 while the child is still finishing.
+  while kill -0 "$REC_PID" 2>/dev/null; do
+    wait "$REC_PID"
+    REC_RC=$?
+  done
+  trap - INT TERM
+}
+
 # Build lib/record_app.swift (ScreenCaptureKit app-audio capture) on first use,
 # cached by source hash so an edited helper is rebuilt and a stale one never
 # runs. Prints the binary path. The Screen Recording grant belongs to the
@@ -1379,13 +1415,11 @@ record_app_audio() {
   [[ $# -gt 0 ]] && helper_args+=("$@")
 
   log "recording $app to $out; press Ctrl-C to stop (auto-stops after 3h)."
-  # Same no-op INT trap as the mic path: Ctrl-C reaches the helper (which
-  # closes its WAVs and exits 0) without killing this script.
+  # Ctrl-C or SIGTERM reaches the helper (which closes its WAVs and exits 0)
+  # without killing this script; see run_recorder.
   set +e
-  trap ':' INT
-  "$bin" "${helper_args[@]}" --max-seconds 10800 </dev/null
-  rc=$?
-  trap - INT
+  run_recorder "$bin" "${helper_args[@]}" --max-seconds 10800
+  rc=$REC_RC
   set -e
   # 3 / 5: macOS ended the capture early (display change, sleep, revoked
   # grant). The helper closed both WAVs first, so keep what was recorded.
@@ -1470,10 +1504,8 @@ record_browser_audio() {
   log "recording browser tab (CDP port $cdp_port) to $out; press Ctrl-C to stop (auto-stops when the call ends)."
   local rc
   set +e
-  trap ':' INT
-  uv run --quiet --with websockets python "$REPO_DIR/lib/record_browser.py" "${rb[@]}" </dev/null
-  rc=$?
-  trap - INT
+  run_recorder uv run --quiet --with websockets python "$REPO_DIR/lib/record_browser.py" "${rb[@]}"
+  rc=$REC_RC
   set -e
   if [[ "$rc" -eq 3 ]]; then
     log "warning: capture ended early (tab closed or connection lost); keeping the audio recorded so far."
@@ -1488,6 +1520,7 @@ cmd_record() {
   ensure_uv_and_ffmpeg
 
   local label="" app="" no_mic=0 wait_call=0 until_end=0 idle_secs=""
+  local watch_call=0 interval=""
   local browser=0 cdp_port="" target="" leave_sel="" max_secs="" leave=0 into=""
   local extra_args=()
   while [[ $# -gt 0 ]]; do
@@ -1502,6 +1535,11 @@ cmd_record() {
       --idle-seconds)
         [[ $# -ge 2 && "$2" =~ ^[0-9]+$ && "$2" -gt 0 ]] || { log "--idle-seconds needs a whole number of seconds > 0."; exit 2; }
         idle_secs="$2"; shift 2 ;;
+      --watch-call) watch_call=1; shift ;;
+      --interval)
+        [[ $# -ge 2 && "$2" =~ ^([0-9]+\.?[0-9]*|\.[0-9]+)$ ]] && awk -v v="$2" 'BEGIN { exit !(v + 0 > 0) }' \
+          || { log "--interval needs a number of seconds > 0."; exit 2; }
+        interval="$2"; shift 2 ;;
       --browser) browser=1; shift ;;
       --cdp-port|--target|--leave-selector|--max-seconds|--into)
         [[ $# -ge 2 && -n "$2" ]] || { log "$1 needs a value."; exit 2; }
@@ -1522,6 +1560,26 @@ cmd_record() {
       *) extra_args+=("$1"); shift ;;
     esac
   done
+  if [[ "$watch_call" == 1 || -n "$interval" ]]; then
+    if [[ "$watch_call" != 1 ]]; then
+      log "--interval only applies with --watch-call."
+      exit 2
+    fi
+    if [[ -z "$app" ]]; then
+      log "--watch-call only applies with --app."
+      exit 2
+    fi
+    if [[ -n "$into" || "$wait_call" == 1 || "$until_end" == 1 || "$no_mic" == 1 || "$browser" == 1 || -n "$idle_secs" ]]; then
+      log "--watch-call only streams call state; it cannot be combined with --into, --wait-for-call, --until-call-ends, --idle-seconds, --no-mic or --browser."
+      exit 2
+    fi
+    local wbin
+    wbin="$(ensure_record_app_helper)" || exit 1
+    if [[ -n "$interval" ]]; then
+      exec "$wbin" --watch-call --app "$app" --interval "$interval"
+    fi
+    exec "$wbin" --watch-call --app "$app"
+  fi
   if [[ "$browser" == 1 && -n "$app" ]]; then
     log "--browser and --app are mutually exclusive."
     exit 2
@@ -1623,14 +1681,12 @@ cmd_record() {
     fi
   else
     log "recording to $out — press Ctrl-C to stop (auto-stops after 3h)."
-    # Ctrl-C must stop ffmpeg (which finalizes the m4a) WITHOUT killing this
-    # script — a no-op INT trap keeps bash alive so verify + transcribe still run.
+    # Ctrl-C or SIGTERM must stop ffmpeg (which finalizes the m4a) WITHOUT
+    # killing this script, so verify + transcribe still run; see run_recorder.
     set +e
-    trap ':' INT
-    ffmpeg -hide_banner -loglevel warning -f avfoundation -i ":$REC_DEVICE" \
-      -ac 1 -c:a aac -b:a 96k -t 10800 -y "$out" </dev/null
-    rc=$?
-    trap - INT
+    run_recorder ffmpeg -hide_banner -loglevel warning -f avfoundation -i ":$REC_DEVICE" \
+      -ac 1 -c:a aac -b:a 96k -t 10800 -y "$out"
+    rc=$REC_RC
     set -e
     if [[ "$rc" -ne 0 && "$rc" -ne 255 ]]; then
       log "ffmpeg exited with an unexpected error (code $rc)."
