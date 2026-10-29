@@ -195,6 +195,8 @@ USAGE
                                         through the Chrome DevTools port. No Screen Recording
                                         permission. Auto-stops when the call ends.
   whosaid record --list-apps           List apps --app accepts (bundle ID, name).
+  whosaid record --watch-call --app A [--interval S]
+                                        Stream A's mic/speaker state as JSON lines.
   whosaid doctor                       Read-only environment/model/device report.
   whosaid version | --version | -V     Print the installed version.
   whosaid mcp                          Run the MCP server (stdio) for AI agents / Claude.
@@ -470,6 +472,11 @@ RECORD FLAGS
                       A.* helpers) has used the mic for --idle-seconds (default 30).
   --idle-seconds N    With --until-call-ends: how long the mic must stay closed.
   --list-apps         Print running apps --app accepts, then exit.
+  --watch-call        With --app: print one JSON line per change of the app's mic or
+                      speaker state (first line is the current state), until stopped.
+                      Given a bundle ID it needs no Screen Recording and the app may
+                      be closed (running:false). Never records. Exits 0 on SIGINT/SIGTERM.
+  --interval S        With --watch-call: seconds between checks (default 1, > 0).
   Any transcribe flag above is also accepted and passed through after recording.
   To stop a recording from another program, send SIGTERM to the whosaid process
   (or SIGINT to its process group, as Ctrl-C does); the file is still saved.
@@ -1510,6 +1517,7 @@ cmd_record() {
   ensure_uv_and_ffmpeg
 
   local label="" app="" no_mic=0 wait_call=0 until_end=0 idle_secs=""
+  local watch_call=0 interval=""
   local browser=0 cdp_port="" target="" leave_sel="" max_secs="" leave=0 into=""
   local extra_args=()
   while [[ $# -gt 0 ]]; do
@@ -1524,6 +1532,11 @@ cmd_record() {
       --idle-seconds)
         [[ $# -ge 2 && "$2" =~ ^[0-9]+$ && "$2" -gt 0 ]] || { log "--idle-seconds needs a whole number of seconds > 0."; exit 2; }
         idle_secs="$2"; shift 2 ;;
+      --watch-call) watch_call=1; shift ;;
+      --interval)
+        [[ $# -ge 2 && "$2" =~ ^([0-9]+\.?[0-9]*|\.[0-9]+)$ ]] && awk -v v="$2" 'BEGIN { exit !(v + 0 > 0) }' \
+          || { log "--interval needs a number of seconds > 0."; exit 2; }
+        interval="$2"; shift 2 ;;
       --browser) browser=1; shift ;;
       --cdp-port|--target|--leave-selector|--max-seconds|--into)
         [[ $# -ge 2 && -n "$2" ]] || { log "$1 needs a value."; exit 2; }
@@ -1544,6 +1557,26 @@ cmd_record() {
       *) extra_args+=("$1"); shift ;;
     esac
   done
+  if [[ "$watch_call" == 1 || -n "$interval" ]]; then
+    if [[ "$watch_call" != 1 ]]; then
+      log "--interval only applies with --watch-call."
+      exit 2
+    fi
+    if [[ -z "$app" ]]; then
+      log "--watch-call only applies with --app."
+      exit 2
+    fi
+    if [[ -n "$into" || "$wait_call" == 1 || "$until_end" == 1 || "$no_mic" == 1 || "$browser" == 1 || -n "$idle_secs" ]]; then
+      log "--watch-call only streams call state; it cannot be combined with --into, --wait-for-call, --until-call-ends, --idle-seconds, --no-mic or --browser."
+      exit 2
+    fi
+    local wbin
+    wbin="$(ensure_record_app_helper)" || exit 1
+    if [[ -n "$interval" ]]; then
+      exec "$wbin" --watch-call --app "$app" --interval "$interval"
+    fi
+    exec "$wbin" --watch-call --app "$app"
+  fi
   if [[ "$browser" == 1 && -n "$app" ]]; then
     log "--browser and --app are mutually exclusive."
     exit 2

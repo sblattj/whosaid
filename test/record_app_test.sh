@@ -193,6 +193,64 @@ else
   echo "SKIP: needs ffmpeg and macOS 15+"
 fi
 
+echo "-- record --watch-call: flags and help --"
+run_w record --watch-call
+assert_eq "$RC" 2 "'--watch-call' without --app exits 2"
+assert_contains "$OUT" "--watch-call only applies with --app" "explains --watch-call without --app"
+run_w record --watch-call --app X --into "$TMP/in"
+assert_eq "$RC" 2 "'--watch-call --into' exits 2"
+assert_contains "$OUT" "cannot be combined" "explains the --watch-call conflict"
+run_w record --watch-call --app X --wait-for-call
+assert_eq "$RC" 2 "'--watch-call --wait-for-call' exits 2"
+run_w record --watch-call --app X --interval 0
+assert_eq "$RC" 2 "'--interval 0' exits 2"
+run_w record --watch-call --app X --interval abc
+assert_eq "$RC" 2 "'--interval abc' exits 2"
+run_w record --app X --interval 1
+assert_eq "$RC" 2 "'--interval' without --watch-call exits 2"
+run_w help
+assert_contains "$OUT" "--watch-call" "help lists --watch-call"
+assert_contains "$OUT" "--interval S" "help lists --interval"
+
+echo "-- record --watch-call: real helper, app not running --"
+if command -v swiftc >/dev/null 2>&1 && [ "$(sw_vers -productVersion | cut -d. -f1)" -ge 15 ]; then
+  cat > "$TMP/watch.py" <<'WATCH'
+import json, os, signal, subprocess, sys, time
+whosaid, tmp = sys.argv[1:3]
+out = os.path.join(tmp, "watch.out")
+p = subprocess.Popen([whosaid, "record", "--watch-call", "--app", "com.example.notrunning", "--interval", "0.2"],
+                     stdin=subprocess.DEVNULL, stdout=open(out, "w"), stderr=open(os.path.join(tmp, "watch.err"), "w"),
+                     start_new_session=True)
+# The first run builds the helper (about a minute); the first line marks it up.
+for _ in range(2400):
+    if os.path.getsize(out) > 0 or p.poll() is not None:
+        break
+    time.sleep(0.1)
+time.sleep(1.5)
+t0 = time.time()
+os.kill(p.pid, signal.SIGTERM)
+try:
+    rc = p.wait(timeout=2)
+except subprocess.TimeoutExpired:
+    os.killpg(p.pid, signal.SIGKILL)
+    rc = "timeout"
+took = time.time() - t0
+lines = open(out).read().splitlines()
+ok = len(lines) == 1
+rec = json.loads(lines[0]) if ok else {}
+left = subprocess.run(["pgrep", "-f", "record-app-.*--watch-call"], capture_output=True, text=True).stdout.strip()
+print(f"rc={rc}|fast={int(took < 2)}|lines={len(lines)}|running={rec.get('running')}|mic={rec.get('mic')}"
+      f"|keys={','.join(rec)}|left={left}|")
+WATCH
+  RES="$(python3 -I "$TMP/watch.py" "$WHOSAID" "$TMP")"
+  assert_contains "$RES" "rc=0|fast=1|lines=1|" "watch-call: exits 0 promptly with exactly one line"
+  assert_contains "$RES" "|running=False|mic=False|" "watch-call: an unlaunched app is running:false, mic:false"
+  assert_contains "$RES" "|keys=app,running,mic,speaker,at|" "watch-call: keys are in order"
+  assert_contains "$RES" "|left=|" "watch-call: no helper is left running"
+else
+  echo "SKIP: needs swiftc and macOS 15+"
+fi
+
 echo "-- helper source typechecks --"
 if command -v swiftc >/dev/null 2>&1; then
   swiftc -typecheck -swift-version 5 -target "$(uname -m)-apple-macos15.0" "$REPO/lib/record_app.swift"

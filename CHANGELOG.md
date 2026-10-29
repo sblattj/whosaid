@@ -6,6 +6,13 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ## [Unreleased]
 
+### Added
+
+- `whosaid record --watch-call --app A [--interval S]` streams the app's mic and speaker
+  state as JSON lines (one first, then one per change), so a recorder can offer to start
+  when a call begins. Given a bundle ID it needs no Screen Recording and works while the
+  app is closed. It never records audio.
+
 ## [1.19.1] - 2026-10-29
 
 ### Fixed
