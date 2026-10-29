@@ -31,6 +31,7 @@
 // has an input (mic) stream running. Native Teams plays and records through
 // com.microsoft.teams2.modulehost, which only the helper match finds.
 
+import AppKit
 import AVFoundation
 import CoreAudio
 import CoreMedia
@@ -428,10 +429,13 @@ var callStateOnly = false
 var waitForCall = false
 var untilCallEnds = false
 var idleSeconds = 30.0
+var watchCall = false
+var watchInterval = 1.0
 
 func usage() -> Never {
     log("usage: record-app --list | --call-state --app <bundle-id|name> | --app <bundle-id|name> --out-dir DIR"
-        + " [--no-mic] [--max-seconds N] [--wait-for-call] [--until-call-ends] [--idle-seconds N]")
+        + " [--no-mic] [--max-seconds N] [--wait-for-call] [--until-call-ends] [--idle-seconds N]"
+        + " | --watch-call --app <bundle-id|name> [--interval S]")
     terminate(2)
 }
 
@@ -451,6 +455,10 @@ while !args.isEmpty {
         guard !args.isEmpty, let v = Double(args.removeFirst()), v > 0 else { usage() }
         maxSeconds = v
     case "--call-state": callStateOnly = true
+    case "--watch-call": watchCall = true
+    case "--interval":
+        guard !args.isEmpty, let v = Double(args.removeFirst()), v > 0, v.isFinite else { usage() }
+        watchInterval = v
     case "--wait-for-call": waitForCall = true
     case "--until-call-ends": untilCallEnds = true
     case "--idle-seconds":
@@ -463,24 +471,70 @@ while !args.isEmpty {
 // Ignore default SIGINT/SIGTERM handling; these dispatch sources take over.
 // Before capture starts there is nothing to save, so a signal exits at once.
 // During capture the first one finishes cleanly; a second one exits hard, so
-// Ctrl-C twice (or timeout/pkill) always ends the process.
+// Ctrl-C twice (or timeout/pkill) always ends the process. A second signal
+// within 1 s of the first is the same stop arriving twice (a parent that
+// signals both the process group and the whosaid script, which forwards its
+// SIGTERM here), so it is ignored rather than turned into a hard exit.
 signal(SIGINT, SIG_IGN)
 signal(SIGTERM, SIG_IGN)
 var signalSources: [DispatchSourceSignal] = []
 var recorder: Recorder?
-var signalled = false
+var signalledAt: Date?
 for sig in [SIGINT, SIGTERM] {
     let src = DispatchSource.makeSignalSource(signal: sig, queue: .main)
     src.setEventHandler {
-        guard let rec = recorder, !signalled else { terminate(130) }
-        signalled = true
+        guard let rec = recorder else { terminate(watchCall ? 0 : 130) }
+        if let first = signalledAt {
+            if Date().timeIntervalSince(first) < 1 { return }
+            terminate(130)
+        }
+        signalledAt = Date()
         rec.finish(code: 0)
     }
     src.resume()
     signalSources.append(src)
 }
 
+/// Whether any process of `bundle` (or a `bundle.*` helper) is running.
+/// NSWorkspace, not Core Audio: Core Audio lists only processes that have
+/// touched audio, so an idle app would look absent. An open stream also
+/// proves the app is running.
+func isRunning(_ bundle: String, input: Bool, output: Bool) -> Bool {
+    if input || output { return true }
+    return NSWorkspace.shared.runningApplications.contains {
+        guard let b = $0.bundleIdentifier else { return false }
+        return b == bundle || b.hasPrefix(bundle + ".")
+    }
+}
+
+/// Streams one JSON line per mic/speaker change (plus the first state) until
+/// a signal ends the process with exit 0. Never captures audio.
+func watchCallState(_ bundle: String) async -> Never {
+    let stamp = ISO8601DateFormatter()
+    stamp.formatOptions = [.withInternetDateTime]
+    var last: (Bool, Bool)?
+    while true {
+        let st = callState(bundle)
+        if last == nil || last! != (st.input, st.output) {
+            last = (st.input, st.output)
+            let running = isRunning(bundle, input: st.input, output: st.output)
+            let data = try? JSONSerialization.data(withJSONObject: bundle, options: [.fragmentsAllowed])
+            let name = data.flatMap { String(data: $0, encoding: .utf8) } ?? "\"\""
+            let line = "{\"app\":\(name),\"running\":\(running),\"mic\":\(st.input),"
+                + "\"speaker\":\(st.output),\"at\":\"\(stamp.string(from: Date()))\"}\n"
+            FileHandle.standardOutput.write(line.data(using: .utf8)!)
+        }
+        try? await Task.sleep(nanoseconds: UInt64(watchInterval * 1_000_000_000))
+    }
+}
+
 Task {
+    if watchCall {
+        guard let query = appQuery, !list, !callStateOnly, outDir == nil else { usage() }
+        // A bundle ID is watched directly: no ScreenCaptureKit, no Screen
+        // Recording grant, and the app need not be running yet.
+        if query.contains(".") { await watchCallState(query) }
+    }
     let limit = Double(ProcessInfo.processInfo.environment["WHOSAID_RECORD_APP_STARTUP_TIMEOUT"] ?? "") ?? 20
     let startup = watchdog(limit, list ? "listing apps" : "starting the capture")
     let content = await shareableContent()
@@ -495,6 +549,10 @@ Task {
         terminate(2)
     }
     let bundle = target.bundleIdentifier
+    if watchCall {
+        startup.cancel()
+        await watchCallState(bundle)
+    }
     if callStateOnly {
         let st = callState(bundle)
         print("\(bundle)\tmic=\(st.input ? 1 : 0)\tspeaker=\(st.output ? 1 : 0)")

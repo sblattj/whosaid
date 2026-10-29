@@ -30,6 +30,26 @@ All notable changes to whosaid are documented here. This project adheres to
   call started. It needs no Screen Recording grant, so it suits Macs without
   admin rights.
 
+## [1.20.0] - 2026-10-29
+
+### Added
+
+- `whosaid record --watch-call --app A [--interval S]` streams the app's mic and speaker
+  state as JSON lines (one first, then one per change), so a recorder can offer to start
+  when a call begins. Given a bundle ID it needs no Screen Recording and works while the
+  app is closed. It never records audio.
+
+## [1.19.1] - 2026-10-29
+
+### Fixed
+
+- `whosaid record` (mic, `--app` and `--browser`) now stops cleanly on SIGTERM.
+  Before, SIGTERM from a parent process killed the script and left the capture
+  child running until its 3h cap, so no file was ever saved. The script now
+  forwards SIGTERM to the child and finishes as it does on Ctrl-C. The `--app`
+  helper also treats a second signal within 1 s as the same stop, so a parent
+  that signals both the script and its process group still gets the file.
+
 ## [1.19.0] - 2026-10-29
 
 ### Added
