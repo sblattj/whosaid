@@ -6,6 +6,8 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ## [Unreleased]
 
+## [1.19.1] - 2026-10-29
+
 ### Fixed
 
 - `whosaid record` (mic, `--app` and `--browser`) now stops cleanly on SIGTERM.
