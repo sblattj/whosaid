@@ -305,6 +305,8 @@ def cmd_run(a: argparse.Namespace) -> int:
                                  stderr=subprocess.PIPE, text=True, start_new_session=True)
         with sig_lock:
             state.update(child=child, phase="waiting", signalled=False)
+        if state["stop"]:  # a stop that landed before the child was known: it would wait on alone
+            interrupt_child()
         st.set(state="waiting", child_pid=child.pid, paused_until=None)
 
         def pump(stream=child.stderr, mine=child):

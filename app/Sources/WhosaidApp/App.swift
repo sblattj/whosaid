@@ -11,6 +11,7 @@ import WhosaidKit
       MainWindow().environment(model).task { model.start() }
     }
     .defaultLaunchBehavior(.presented)
+    .defaultSize(width: 1280, height: 800)
     MenuBarExtra {
       MenuContent().environment(model)
     } label: {

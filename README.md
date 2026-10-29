@@ -237,6 +237,8 @@ The app never records and never asks for Screen & System Audio Recording: `Whosa
 
 The menu bar item shows one glyph per state, from `whosaid app-state`: a waveform while idle, a red record dot with the elapsed time while a call is recorded (plus a pencil when `whosaid live` is transcribing it), gears while the last call is transcribed, a check just after, a pause sign while autorecord is paused and a warning triangle when something needs a look. Its panel has Stop and save now, Pause autorecord for 1 hour, the last three meetings, Name N unknown voices, search and Settings.
 
+The library window lists meetings and Teams chats newest first (a call is named by what recorded it, a chat by its chat name). A meeting opens on its transcript, colored per speaker under a talk-time bar, with Summary, Action items and Speakers tabs. ⌘K searches every meeting (`whosaid_search`) and shows the minute around a hit (`whosaid_context`). People lists every named voice with what they own and asked for (`whosaid_person`); Unnamed voices lists the ones still called SPEAKER_NN. If the workspace sits in ~/Desktop or ~/Documents, macOS asks once whether whosaid may read that folder.
+
 ### Enroll from an existing recording
 
 Already have a clip of the person speaking? Skip the mic and cut a reference straight from it:

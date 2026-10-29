@@ -255,6 +255,9 @@ echo "record-app: stopped while waiting for a call; nothing recorded." >&2; exit
     finally:
         if loop.poll() is None:
             loop.kill()
+    alive = wait_for(lambda: not subprocess.run(["pgrep", "-f", str(fake)], capture_output=True).stdout, 5)
+    check(bool(alive), "no record child outlives the loop")
+    subprocess.run(["pkill", "-f", str(fake)], capture_output=True)
     s4 = st()
     check(s4["state"] == "stopped" and s4["running"] is False and s4["controls"] is False, f"stopped: {s4}")
     check(not any(p.name.startswith(".autorecord.") and p.suffix != ".log" and p.name != ar.LOCK_NAME

@@ -23,12 +23,37 @@ import AppKit
       await menuShots(model: model, out: out, lines: &lines)
       finish(out, lines); return
     }
-    let wanted = ProcessInfo.processInfo.environment["WHOSAID_APP_SELFTEST_ITEMS"]?.split(separator: ",").map(String.init)
+    let env = ProcessInfo.processInfo.environment
+    let wanted = env["WHOSAID_APP_SELFTEST_ITEMS"]?.split(separator: ",").map(String.init)
     for item in SidebarItem.allCases where wanted == nil || wanted!.contains(item.rawValue) {
       model.selection = item
-      try? await Task.sleep(for: .milliseconds(600))
+      try? await Task.sleep(for: .milliseconds(item == .meetings || item == .people ? 1500 : 600))
       let ok = await snapshot(main, to: "\(out).\(item.rawValue).png")
       lines.append("shot \(item.rawValue) \(ok ? "ok" : "MISSING")")
+      if item == .meetings, let pick = env["WHOSAID_APP_SELFTEST_TABS"] {
+        // A value other than 1 picks the meeting whose folder contains it.
+        if pick != "1", let m = model.meetings.first(where: { $0.folder.contains(pick) }) {
+          model.selectedMeeting = m.folder
+          try? await Task.sleep(for: .milliseconds(700))
+        }
+        for tab in MeetingTab.allCases.dropFirst() {
+          model.meetingTab = tab
+          try? await Task.sleep(for: .milliseconds(700))
+          let name = "meetings-" + tab.rawValue.lowercased().replacingOccurrences(of: " ", with: "-")
+          lines.append("shot \(name) \(await snapshot(main, to: "\(out).\(name).png") ? "ok" : "MISSING")")
+        }
+        model.meetingTab = .transcript
+      }
+    }
+    if let q = env["WHOSAID_APP_SELFTEST_SEARCH"] {
+      model.selection = .meetings
+      model.searchOpen = true
+      model.searchQuery = q
+      await model.runSearch()
+      await model.loadContext()
+      try? await Task.sleep(for: .milliseconds(900))
+      lines.append("search \(model.searchHits.count) hit(s), context \(model.searchContext.count) turn(s)")
+      lines.append("shot search \(await snapshot(main, to: "\(out).search.png") ? "ok" : "MISSING")")
     }
     finish(out, lines)
   }

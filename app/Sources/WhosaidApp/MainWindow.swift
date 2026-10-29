@@ -17,7 +17,14 @@ struct MainWindow: View {
     } detail: {
       DetailView(item: model.selection ?? .meetings)
     }
-    .frame(minWidth: 900, minHeight: 560)
+    .frame(minWidth: 1040, minHeight: 600)
+    .toolbar {
+      Button { model.searchOpen.toggle() } label: { Label("Search", systemImage: "magnifyingglass") }
+        .keyboardShortcut("k").help("Search meetings (⌘K)")
+    }
+    .overlay(alignment: .top) {
+      if model.searchOpen, case .ready = model.health { SearchOverlay().padding(.top, 40) }
+    }
   }
 
   @ViewBuilder func row(_ item: SidebarItem) -> some View {
@@ -70,7 +77,13 @@ struct DetailView: View {
       case .error(let msg):
         EmptyState(symbol: "exclamationmark.triangle", title: "whosaid is not answering", message: msg, action: nil)
       case .ready:
-        placeholder
+        switch item {
+        case .meetings: MeetingsView(chats: false)
+        case .chats: MeetingsView(chats: true)
+        case .people: PeopleView(unnamedOnly: false)
+        case .unnamed: PeopleView(unnamedOnly: true)
+        default: placeholder
+        }
       }
     }
     .navigationTitle(item.title)

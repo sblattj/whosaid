@@ -8,6 +8,13 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ### Added
 
+- The macOS app's library: Meetings and Chats lists (speakers, unnamed voices
+  and action items per row), a meeting view with the transcript colored per
+  speaker, a talk-time bar and Summary / Action items / Speakers tabs, ⌘K search
+  across meetings with the surrounding minute, and People / Unnamed voices pages
+  with each person's owned and requested items. `app/fixture.sh` now builds a
+  workspace shaped like a real one (dated folders, `transcript.*` files, silent
+  audio, a scraped chat, a rolled-up action-item corpus).
 - The macOS app's menu bar item: one glyph per `app-state` state (idle,
   waiting, transcribing, done, warn, agent not loaded, recording with the
   elapsed time, recording with the live transcript, saving, paused) and a
@@ -63,6 +70,10 @@ All notable changes to whosaid are documented here. This project adheres to
   [--minutes N]` and the read-only `whosaid_live` MCP tool return the newest one.
 
 ### Fixed
+
+- `whosaid autorecord run`: a stop (SIGTERM from `launchctl`, or Ctrl-C) that
+  landed between starting a `record` child and registering it left that child
+  waiting for calls on its own after the loop exited. The loop now interrupts it.
 
 - `record --app --wait-for-call` retries a permission error at capture start up
   to 4 times, 2 s apart, instead of exiting at once (#129). macOS refused one

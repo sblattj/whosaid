@@ -70,6 +70,22 @@ final class AppModel {
   var actionNote: String?
   var menu: MenuPresentation { MenuPresentation(state, now: now) }
 
+  // Library (P4)
+  var meetings: [MeetingSummary] = []
+  var meetingsLoaded = false
+  var selectedMeeting: String?
+  var meetingTab: MeetingTab = .transcript
+  var folderInfo: [String: FolderInfo] = [:]
+  var people: [JSONValue] = []
+  var peopleLoaded = false
+  var searchOpen = false
+  var searchQuery = ""
+  var searching = false
+  var searchHits: [JSONValue] = []
+  var searchPick: Int?
+  var searchContext: [JSONValue] = []
+  var searchError: String?
+
   init(paths: WhosaidPaths = .resolve()) {
     self.paths = paths
     AppModelLocator.model = self
@@ -88,9 +104,18 @@ final class AppModel {
   }
 
   /// A new meeting folder or a fresh index shows up without a relaunch.
+  /// Opened off the main thread: the first open of a protected folder (~/Desktop) waits
+  /// on the macOS privacy prompt, and the window must stay responsive meanwhile.
   func watchWorkspace() {
     watcher?.cancel()
-    watcher = paths.workspace.flatMap { FolderWatcher(path: $0) { Task { @MainActor in await AppModelLocator.model?.refreshHealth() } } }
+    watcher = nil
+    guard let ws = paths.workspace else { return }
+    Task {
+      let w = await Task.detached {
+        FolderWatcher(path: ws) { Task { @MainActor in await AppModelLocator.model?.refreshHealth() } }
+      }.value
+      if paths.workspace == ws { watcher = w } else { w?.cancel() }
+    }
   }
 
   func restartStream() {
@@ -151,6 +176,70 @@ final class AppModel {
     recent = (r?["meetings"]?.array ?? []).compactMap { MeetingRow($0) }
   }
 
+  func loadMeetings(force: Bool = false) async {
+    guard let ws = paths.workspace, let mcp, force || !meetingsLoaded else { return }
+    let r = try? await mcp.call("whosaid_meetings", ["workspace": .string(ws), "limit": .number(500), "compact": .bool(false)],
+                                timeout: 60)
+    meetings = (r?["meetings"]?.array ?? []).compactMap(MeetingSummary.init)
+    meetingsLoaded = true
+  }
+
+  /// Speakers, unnamed voices and items per list row, read from the folder once.
+  func loadFolderInfo(_ folder: String) {
+    guard folderInfo[folder] == nil, let ws = paths.workspace else { return }
+    folderInfo[folder] = FolderInfo(speakers: 0, unnamed: 0, items: 0)
+    let mf = MeetingFolder(workspace: ws, folder: folder)
+    Task {
+      let info = await Task.detached { () -> FolderInfo in
+        let speakers = Transcript.speakers(mf.turns())
+        return FolderInfo(speakers: speakers.count, unnamed: speakers.filter(Transcript.isUnnamed).count,
+                          items: mf.items().count, chatName: mf.chatName())
+      }.value
+      folderInfo[folder] = info
+    }
+  }
+
+  /// A chat's own name once its folder is read, else the summary's title.
+  func title(_ m: MeetingSummary) -> String { folderInfo[m.folder]?.chatName ?? m.title }
+
+  func loadPeople() async {
+    guard let ws = paths.workspace, let mcp, !peopleLoaded else { return }
+    let r = try? await mcp.call("whosaid_person", ["workspace": .string(ws)], timeout: 60)
+    people = (r?["people"]?.array ?? []).sorted { ($0["turns"]?.int ?? 0) > ($1["turns"]?.int ?? 0) }
+    peopleLoaded = true
+  }
+
+  func person(_ name: String) async -> JSONValue? {
+    guard let ws = paths.workspace, let mcp else { return nil }
+    return try? await mcp.call("whosaid_person", ["workspace": .string(ws), "name": .string(name)], timeout: 60)
+  }
+
+  func runSearch() async {
+    let q = searchQuery.trimmingCharacters(in: .whitespaces)
+    guard !q.isEmpty, let ws = paths.workspace, let mcp else { return }
+    searching = true
+    defer { searching = false }
+    searchError = nil
+    do {
+      let r = try await mcp.call("whosaid_search", ["workspace": .string(ws), "query": .string(q), "k": .number(25)], timeout: 60)
+      searchHits = r["hits"]?.array ?? []
+      if r["ok"]?.bool == false { searchError = r["error"]?.string ?? "search failed" }
+      searchPick = searchHits.isEmpty ? nil : 0
+    } catch {
+      searchError = "search failed: \(error)"
+    }
+  }
+
+  func loadContext() async {
+    guard let i = searchPick, i < searchHits.count, let ws = paths.workspace, let mcp,
+          let meeting = searchHits[i]["meeting"]?.string, let at = searchHits[i]["t_str"]?.string else {
+      searchContext = []; return
+    }
+    let r = try? await mcp.call("whosaid_context", ["workspace": .string(ws), "meeting": .string(meeting), "at": .string(at)],
+                                timeout: 30)
+    searchContext = r?["turns"]?.array ?? []
+  }
+
   private var cli: CLIRunner { CLIRunner(whosaid: paths.whosaid) }
 
   func stopNow() async {
@@ -196,23 +285,19 @@ final class AppModel {
   }
 }
 
-/// One row of "Last meetings": the folder name split into a date and a title.
+/// One row of "Last meetings": a title (see MeetingSummary.title) and the folder's date.
 struct MeetingRow: Identifiable, Equatable {
-  let folder: String
+  let summary: MeetingSummary
+  var folder: String { summary.folder }
   var id: String { folder }
+  var title: String { summary.title }
 
   init?(_ v: JSONValue) {
-    guard let f = v["folder"]?.string else { return nil }
-    folder = f
+    guard let m = MeetingSummary(v) else { return nil }
+    summary = m
   }
 
-  /// 2026-10-28-1400-planning -> ("planning", "Oct 28 14:00")
-  var title: String {
-    let parts = folder.split(separator: "-", maxSplits: 4).map(String.init)
-    guard parts.count == 5, parts[0].count == 4 else { return folder }
-    return parts[4].replacingOccurrences(of: "-", with: " ").replacingOccurrences(of: "_", with: " ")
-  }
-
+  /// 2026-10-28-1400 -> "Oct 28 14:00"
   var when: String {
     let parts = folder.split(separator: "-", maxSplits: 4).map(String.init)
     guard parts.count >= 4, parts[3].count == 4 else { return "" }
@@ -220,4 +305,11 @@ struct MeetingRow: Identifiable, Equatable {
     let m = (Int(parts[1]) ?? 1) - 1
     return "\(months[max(0, min(11, m))]) \(Int(parts[2]) ?? 0) \(parts[3].prefix(2)):\(parts[3].suffix(2))"
   }
+}
+
+struct FolderInfo: Equatable {
+  let speakers: Int
+  let unnamed: Int
+  let items: Int
+  var chatName: String? = nil
 }
