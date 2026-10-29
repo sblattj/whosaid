@@ -8,6 +8,20 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ### Added
 
+- `whosaid autorecord run | install | uninstall | status` records every call
+  unattended (#122). `run` loops `record --app A --wait-for-call
+  --until-call-ends` or `record --browser --wait-for-call` into a folder
+  (default `~/Recordings`), one copy per folder, and never gives up: an app that
+  is not running or a browser that is not open yet is a waiting state, a missing
+  recording permission logs the fix, other failures back off to 5 minutes.
+  `install` starts it at login: `--app` builds a small generic launcher app
+  (`~/Applications/Whosaid Call Recorder.app`) that holds the Screen & System
+  Audio Recording grant and is rebuilt only when its source changes, so a
+  reconfigure keeps the grant; `--browser` needs no grant and runs from a plain
+  LaunchAgent. `uninstall` saves a call in progress first.
+- `record --app --wait-for-call` looks the app up again once the call starts, so
+  an app that restarted during the wait (an update) does not fail the capture.
+
 - `whosaid record --browser --wait-for-call` waits until a meeting tab (Teams
   web, Meet, Zoom web, or `--target` with `--leave-selector`) shows its in-call
   element, then records it and stops when the call ends (#121). A browser that

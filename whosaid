@@ -26,6 +26,7 @@
 #   whosaid wiki <ws>               Regenerate <ws>/_WIKI.md from the graph.
 #   whosaid watch <sub>             run | install | uninstall | status: hands-free ingest (launchd).
 #   whosaid memos <sub>             list | pull | delete | shortcut-recipe: Voice Memos helpers.
+#   whosaid autorecord <sub>        run | install | uninstall | status: record every call unattended.
 #   whosaid help                  This message.
 #
 # See `whosaid help` for the full flag reference.
@@ -328,6 +329,9 @@ USAGE
                                         menubar uninstall | status manage it.
   whosaid memos list|pull|delete|shortcut-recipe [flags]
                                         Voice Memos helpers (never touch the store).
+  whosaid autorecord install --app A | --browser [--into DIR] [flags]
+                                        Record every call unattended, from login on;
+                                        run | uninstall | status manage it.
   whosaid help | -h | --help           This message.
 
 TRANSCRIBE FLAGS
@@ -662,6 +666,26 @@ WATCH
                                                  intent (a one-action Shortcut),
                                                  never the files or database.
   whosaid memos shortcut-recipe                  How to build that Shortcut.
+
+AUTORECORD
+  whosaid autorecord run       --app A | --browser [--into DIR] [--idle-seconds N]
+                               [--cdp-port P] [--target T] [--label L] [--no-mic]
+  whosaid autorecord install   (same flags) [--no-open] [--dry-run]
+  whosaid autorecord uninstall [--purge]
+  whosaid autorecord status    [--lines N]
+  run loops: wait for a call, record it into --into (default ~/Recordings), repeat.
+  --app A uses `record --app A --wait-for-call --until-call-ends` (A is a bundle ID,
+  e.g. com.microsoft.teams2); --browser uses `record --browser --wait-for-call` on a
+  browser started with --remote-debugging-port. One copy per folder; it never gives
+  up (app not running and no browser are waiting states; failures back off to 5 min).
+  Log: <into>/.autorecord.log. Default --label: call.
+  install starts run at every login. --app needs Screen & System Audio Recording and
+  the microphone, which macOS grants to apps: install builds a small launcher,
+  ~/Applications/Whosaid Call Recorder.app, rebuilt only when its source changes so a
+  reconfigure keeps the grant, and opens the Settings pane to turn it on. --browser
+  needs no grant (no admin rights needed) and never launches or changes the browser.
+  uninstall stops it (a call in progress is saved); --purge also removes the app.
+  Pair it with: whosaid watch install --into <ws> --source <into> --no-fda
 
 ENV OVERRIDES
   WHOSAID_MODEL        Default Whisper model repo (default: large-v3; turbo repo = rollback).
@@ -2514,6 +2538,19 @@ cmd_wiki() {
 # whosaid watch run|install|uninstall|status|menubar [flags]  -> lib/watch.py <sub> ...
 # WHOSAID_BIN tells the watcher which whosaid to run; default to this script so
 # a launchd job started from an installed symlink still finds the checkout.
+cmd_autorecord() {
+  if want_help "$@"; then help_section "AUTORECORD"; exit 0; fi
+  local usage="usage: whosaid autorecord run|install|uninstall|status [flags]"
+  [[ $# -eq 0 ]] && { log "autorecord: need a subcommand. $usage"; exit 1; }
+  case "$1" in
+    run|install|uninstall|status) ;;
+    *) log "autorecord: unknown subcommand '$1'. $usage"; exit 1 ;;
+  esac
+  require_module "$REPO_DIR/lib/autorecord.py" autorecord
+  export WHOSAID_BIN="${WHOSAID_BIN:-$REPO_DIR/whosaid}"
+  exec "$WHOSAID_PY" "$REPO_DIR/lib/autorecord.py" "$@"
+}
+
 cmd_watch() {
   if want_help "$@"; then help_section "WATCH"; exit 0; fi
   local usage="usage: whosaid watch run|install|uninstall|status|menubar [--into <ws>] [flags]"
@@ -2607,6 +2644,9 @@ case "${1:-}" in
     ;;
   watch)
     cmd_watch "${@:2}"
+    ;;
+  autorecord)
+    cmd_autorecord "${@:2}"
     ;;
   memos)
     cmd_memos "${@:2}"

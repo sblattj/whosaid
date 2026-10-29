@@ -490,7 +490,7 @@ Task {
         terminate(0)
     }
     guard let query = appQuery, callStateOnly || outDir != nil else { usage() }
-    guard let target = resolveApp(query, in: apps) else {
+    guard var target = resolveApp(query, in: apps) else {
         log("no running app matches '\(query)'. Running apps: whosaid record --list-apps")
         terminate(2)
     }
@@ -501,6 +501,8 @@ Task {
         terminate(0)
     }
     let dir = outDir!
+    var displays = content.displays
+    var startupAfterWait = startup
     if waitForCall {
         startup.cancel()
         log("waiting for \(target.applicationName) to open the mic (a call to start); Ctrl-C to give up.")
@@ -508,9 +510,16 @@ Task {
             try? await Task.sleep(nanoseconds: 2_000_000_000)
         }
         log("\(target.applicationName) opened the mic; starting the capture.")
+        startupAfterWait = watchdog(limit, "starting the capture")
+        // The app may have restarted (an update) during a long wait; a stale
+        // SCRunningApplication would fail the capture, so look it up again (#122).
+        let fresh = await shareableContent()
+        if let again = fresh.applications.first(where: { $0.bundleIdentifier == bundle }) {
+            target = again
+        }
+        displays = fresh.displays
     }
-    let startupAfterWait = waitForCall ? watchdog(limit, "starting the capture") : startup
-    guard let display = content.displays.first else {
+    guard let display = displays.first else {
         log("no display available to attach the capture stream to.")
         terminate(1)
     }

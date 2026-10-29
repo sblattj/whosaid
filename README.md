@@ -165,6 +165,30 @@ whosaid record --browser --cdp-port 9333 --target teams.microsoft.com
 - `--into DIR` writes `DIR/<timestamp>[-label].m4a` and skips transcription. The file appears only when it is complete, so point it at a `whosaid watch` source folder and the watcher ingests it.
 - From an agent, use the `whosaid_record_browser` MCP tool with `action` set to `start`, `status` or `stop`. It runs in the background and needs no terminal.
 
+### Record every call, unattended: `whosaid autorecord`
+
+`whosaid autorecord` waits for a call, records it, saves it, and waits for the next one. Pair it with `whosaid watch` and every call ends up transcribed in your workspace with no clicks.
+
+```bash
+# desktop meeting app (here native Microsoft Teams); needs Screen & System Audio Recording
+whosaid autorecord install --app com.microsoft.teams2 --label teams
+
+# or meetings in the browser; needs no permission and no admin rights
+whosaid autorecord install --browser --label teams
+
+# transcribe each saved call
+whosaid watch install --into ~/meetings --source ~/Recordings --no-fda
+
+whosaid autorecord status        # installed? running? recent log lines
+whosaid autorecord uninstall     # a call in progress is saved first
+```
+
+- **When it records.** `--app` watches whether the app has the microphone open: it starts when the app opens the mic and stops 30 s (`--idle-seconds`) after it closes it. `--browser` watches meeting tabs (Teams web, Meet, Zoom web) for their hang-up button. Neither reads the screen.
+- **Login.** `install` starts it at every login. `--app` builds a small launcher, `~/Applications/Whosaid Call Recorder.app`, and opens System Settings so you can turn it on under Screen & System Audio Recording. That permission belongs to the launcher, which is only rebuilt when whosaid changes it, so re-running `install` with other flags keeps it.
+- **No admin rights?** If that toggle asks for an admin password, use `--browser` with the meeting on the web. Start the browser with `--remote-debugging-port=9222` (autorecord never launches or changes your browser). An organization policy can turn remote debugging off.
+- **Robust by default.** One copy per folder. An app that isn't running or a browser that isn't open yet is a waiting state; other failures back off to 5 minutes and keep trying. Log: `~/Recordings/.autorecord.log`.
+- `whosaid autorecord run` is the same loop in the foreground, for a terminal tab.
+
 ### Enroll from an existing recording
 
 Already have a clip of the person speaking? Skip the mic and cut a reference straight from it:
