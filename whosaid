@@ -27,6 +27,7 @@
 #   whosaid watch <sub>             run | install | uninstall | status: hands-free ingest (launchd).
 #   whosaid memos <sub>             list | pull | delete | shortcut-recipe: Voice Memos helpers.
 #   whosaid autorecord <sub>        run | install | uninstall | status: record every call unattended.
+#   whosaid live [show]             Live me/them transcript of the call being recorded.
 #   whosaid help                  This message.
 #
 # See `whosaid help` for the full flag reference.
@@ -700,6 +701,18 @@ AUTORECORD
   setup does a new Mac in one go: whosaid setup --yes (deps, models), install, then
   that watch install; --owner NAME starts <ws>/whosaid.toml (an existing one is left
   as is). It stops at the first failed step and lists what is left to do by hand.
+
+LIVE
+  whosaid live [run] [--into DIR] [--chunk-seconds N] [--once] [--capture DIR] [--model M]
+  whosaid live show  [--into DIR] [--minutes N]
+  run follows the call `record --app` / autorecord is capturing and transcribes it as
+  it happens, locally (default model whisper-large-v3-turbo, or WHOSAID_LIVE_MODEL):
+  every ~20 s it appends "me:" (your mic) and "them:" (the app) lines with times to
+  <into>/.live/<start>.md and .jsonl (default --into ~/Recordings). Silent chunks are
+  skipped. When the call ends it waits for the next (--once: exits). It only reads
+  the recorder's files; the post-call transcript with names is unchanged.
+  show prints the newest live transcript (or its last N minutes). Agents: the
+  whosaid_live MCP tool returns the same.
 
 ENV OVERRIDES
   WHOSAID_MODEL        Default Whisper model repo (default: large-v3; turbo repo = rollback).
@@ -2612,6 +2625,15 @@ cmd_autorecord() {
   exec "$WHOSAID_PY" "$REPO_DIR/lib/autorecord.py" "$@"
 }
 
+cmd_live() {
+  if want_help "$@"; then help_section "LIVE"; exit 0; fi
+  require_module "$REPO_DIR/lib/live.py" live
+  if [[ "${1:-}" == show ]]; then
+    exec "$WHOSAID_PY" "$REPO_DIR/lib/live.py" "$@"
+  fi
+  exec uv run --quiet --with mlx-whisper --with numpy python "$REPO_DIR/lib/live.py" "$@"
+}
+
 cmd_watch() {
   if want_help "$@"; then help_section "WATCH"; exit 0; fi
   local usage="usage: whosaid watch run|install|uninstall|status|menubar [--into <ws>] [flags]"
@@ -2708,6 +2730,9 @@ case "${1:-}" in
     ;;
   autorecord)
     cmd_autorecord "${@:2}"
+    ;;
+  live)
+    cmd_live "${@:2}"
     ;;
   memos)
     cmd_memos "${@:2}"

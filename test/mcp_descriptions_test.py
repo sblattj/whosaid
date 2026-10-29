@@ -85,6 +85,7 @@ def main() -> None:
         "whosaid_samples",
         "whosaid_reprocess",
         "whosaid_record_browser",
+        "whosaid_live",
     } | workspace_tools
 
     # --- tool-name set + prefix ---

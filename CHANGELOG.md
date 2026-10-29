@@ -16,6 +16,15 @@ All notable changes to whosaid are documented here. This project adheres to
   `WS/whosaid.toml` with `[workspace] owner` and never edits an existing one;
   `--dry-run` changes nothing.
 
+- `whosaid live` keeps a live transcript of the call being recorded (#131). It
+  follows the `record --app` / `autorecord` capture, transcribes new audio about
+  every 20 s with MLX Whisper (turbo, loaded once), and writes `me:` / `them:`
+  lines with times to `<into>/.live/<start>.md` and `.jsonl`. Both legs are cut
+  at one shared quiet point; mic frames not clearly louder than the app (speaker
+  bleed) are silenced with the post-call stereo rule; silent chunks and
+  no-speech segments are skipped. It only reads the capture. `whosaid live show
+  [--minutes N]` and the read-only `whosaid_live` MCP tool return the newest one.
+
 ### Fixed
 
 - `record --app --wait-for-call` retries a permission error at capture start up

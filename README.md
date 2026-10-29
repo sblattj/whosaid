@@ -197,6 +197,20 @@ git clone https://github.com/sblattj/whosaid ~/code/whosaid && cd ~/code/whosaid
 - **Robust by default.** One copy per folder. An app that isn't running or a browser that isn't open yet is a waiting state; other failures back off to 5 minutes and keep trying. Log: `~/Recordings/.autorecord.log`.
 - `whosaid autorecord run` is the same loop in the foreground, for a terminal tab.
 
+### Follow the call as it happens: `whosaid live`
+
+While `record --app` or `autorecord` is capturing a call, `whosaid live` transcribes it as it goes, on this Mac, and keeps a rough transcript you or an agent can read before the call ends.
+
+```bash
+whosaid live                 # follow each call being recorded; Ctrl-C to quit
+whosaid live show --minutes 5   # the last five minutes of the newest live transcript
+```
+
+- **Me vs them, no diarization.** The recording keeps your mic and the meeting app apart, so each line is `me:` or `them:` with the wall-clock time. Your mic also hears the other side through your speakers; mic audio that isn't clearly louder than the app is ignored, so their words aren't repeated as yours.
+- **Where it goes.** `~/Recordings/.live/<start>.md` and `.jsonl`, updated every ~20 s (`--chunk-seconds`). Silent stretches are skipped. Model: `whisper-large-v3-turbo` (or `WHOSAID_LIVE_MODEL`).
+- **Ask about the meeting.** The `whosaid_live` MCP tool returns the live transcript (or its last N minutes) and whether the call is still going, so an agent can answer "what did they just ask me?" mid-call. whosaid itself sends nothing anywhere; the agent you ask sends the text it reads to its own model.
+- It only reads the recording in progress. The full transcript with names and action items still comes from `whosaid watch` after the call.
+
 ### Enroll from an existing recording
 
 Already have a clip of the person speaking? Skip the mic and cut a reference straight from it:

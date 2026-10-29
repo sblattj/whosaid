@@ -58,6 +58,7 @@ _LIB_DIR = str(Path(__file__).resolve().parent)
 if _LIB_DIR not in sys.path:
     sys.path.insert(0, _LIB_DIR)
 import wsconfig  # noqa: E402
+import live as live_mod  # noqa: E402
 
 # Single source of truth: lib/__init__.py (pyproject.toml reads it too, via
 # hatch's dynamic version). Import both ways so the file works as a package
@@ -1823,6 +1824,26 @@ def whosaid_speakers(workspace: Optional[str] = None, limit: Optional[int] = Non
 # ---------------------------------------------------------------------------
 # 15) whosaid_workspace_status
 # ---------------------------------------------------------------------------
+_DESC_LIVE = (
+    "Read the live transcript of the call being recorded right now (`whosaid live`, #131). "
+    "Lines look like '[HH:MM:SS] me: ...' (the user's mic) or '[HH:MM:SS] them: ...' (everyone "
+    "on the meeting app's side), rough and without names. `active` is true while the call is "
+    "still going; `ended` once it is over. Pass `minutes` for only the last N minutes. Use it to "
+    "answer questions about the meeting in progress: what was just asked, a catch-up, a reply "
+    "draft. Reads local files only; returns ok=false with a hint when `whosaid live` has not "
+    "written anything. `recordings` defaults to ~/Recordings."
+)
+
+
+@mcp.tool(name="whosaid_live", description=_DESC_LIVE, annotations=_read_only())
+def whosaid_live(minutes: Optional[float] = None, recordings: Optional[str] = None) -> dict:
+    """The newest <recordings>/.live/*.jsonl as text, plus whether the call is live."""
+    into = Path(recordings).expanduser() if recordings else live_mod.DEFAULT_INTO
+    if minutes is not None and minutes <= 0:
+        return {"ok": False, "error": "minutes must be > 0", "hint": "omit it for the whole call"}
+    return live_mod.latest_session(into, minutes)
+
+
 @mcp.tool(name="whosaid_workspace_status", description=_DESC_WS_STATUS, annotations=_read_only())
 def whosaid_workspace_status(workspace: Optional[str] = None) -> dict:
     """`search.py status <ws> --json` plus local file checks and the whosaid.toml owner.
