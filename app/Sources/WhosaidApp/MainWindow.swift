@@ -82,6 +82,8 @@ struct DetailView: View {
         case .chats: MeetingsView(chats: true)
         case .people: PeopleView(unnamedOnly: false)
         case .unnamed: PeopleView(unnamedOnly: true)
+        case .commitments: CommitmentsView()
+        case .actionItems: ActionItemsView()
         default: placeholder
         }
       }

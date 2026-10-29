@@ -49,6 +49,9 @@ import WhosaidKit
     if let spec = env["WHOSAID_APP_SELFTEST_RELABEL"] {
       await relabelShots(spec, model: model, main: main, out: out, lines: &lines)
     }
+    if env["WHOSAID_APP_SELFTEST_MARKDONE"] != nil {
+      await markDoneShots(model: model, main: main, out: out, lines: &lines)
+    }
     if let q = env["WHOSAID_APP_SELFTEST_SEARCH"] {
       model.selection = .meetings
       model.searchOpen = true
@@ -96,6 +99,32 @@ import WhosaidKit
     try? await Task.sleep(for: .milliseconds(1500))
     lines.append("unnamed after \(model.people.filter { $0["named"]?.bool == false }.count)")
     lines.append("shot unnamed-after \(await snapshot(main, to: "\(out).unnamed-after.png") ? "ok" : "MISSING")")
+  }
+
+  /// WHOSAID_APP_SELFTEST_MARKDONE=1 accepts the first suggested completion through the
+  /// Mark done path (whosaid_set_status), opens its source, and shoots before and after.
+  /// It writes the workspace's tracking ledger, so it refuses outside an app fixture.
+  static func markDoneShots(model: AppModel, main: NSWindow, out: String, lines: inout [String]) async {
+    guard let ws = model.paths.workspace, ws.contains("whosaid-app-fixture") else {
+      lines.append("markdone REFUSED (only on an app/fixture.sh workspace)"); return
+    }
+    model.selection = .commitments
+    try? await Task.sleep(for: .milliseconds(2500))
+    lines.append("worklist \(model.worklist.count) item(s), \(model.worklist.filter(\.isDone).count) done, suggestions \(model.suggestions.count)")
+    lines.append("shot commitments-before \(await snapshot(main, to: "\(out).commitments-before.png") ? "ok" : "MISSING")")
+    guard let s = model.suggestions.first else { lines.append("markdone no suggestion"); return }
+    model.openSource(meeting: s.meeting ?? "", t: s.t)
+    try? await Task.sleep(for: .milliseconds(1500))
+    lines.append("shot source \(await snapshot(main, to: "\(out).source.png") ? "ok" : "MISSING")")
+    let err = await model.markDone(s.itemId, note: s.note)
+    lines.append("markdone \(s.itemId) \(err ?? "ok")")
+    model.selection = .commitments
+    try? await Task.sleep(for: .milliseconds(2000))
+    lines.append("worklist after \(model.worklist.filter(\.isDone).map(\.id)) done, suggestions \(model.suggestions.count)")
+    lines.append("shot commitments-after \(await snapshot(main, to: "\(out).commitments-after.png") ? "ok" : "MISSING")")
+    model.selection = .actionItems
+    try? await Task.sleep(for: .milliseconds(1500))
+    lines.append("items done \(model.items.filter(\.isDone).map(\.id))")
   }
 
   /// The menu panel (hosted in a plain window so it can be captured without a

@@ -80,6 +80,12 @@ final class AppModel {
   var revision = 0
   /// "folder|cluster" -> the generated clip, made on the first click of its play button.
   var clips: [String: URL] = [:]
+  var worklist: [TrackedItem] = []
+  var items: [TrackedItem] = []
+  var suggestions: [CompletionSuggestion] = []
+  var trackingError: String?
+  /// A source link opened a meeting at this second: the transcript scrolls to it.
+  var focus: (folder: String, t: Double)?
   var people: [JSONValue] = []
   var peopleLoaded = false
   var searchOpen = false
@@ -282,6 +288,49 @@ final class AppModel {
       if let c = s["cluster"]?.string, let path = s["path"]?.string { clips[folder + "|" + c] = URL(fileURLWithPath: path) }
     }
     return clips[key]
+  }
+
+  /// My commitments (the ranked worklist for the workspace owner) and its suggestions.
+  func loadWorklist() async {
+    guard let ws = paths.workspace, let mcp else { return }
+    trackingError = nil
+    do {
+      let r = try await mcp.call("whosaid_worklist", ["owner": .string("me"), "limit": .number(500), "workspace": .string(ws)], timeout: 90)
+      if r["ok"]?.bool == false { trackingError = r["error"]?.string ?? "worklist failed" }
+      worklist = (r["items"]?.array ?? []).compactMap(TrackedItem.init)
+      let s = try await mcp.call("whosaid_tracking_suggestions", ["owner": .string("me"), "workspace": .string(ws)], timeout: 90)
+      suggestions = (s["items"]?.array ?? []).compactMap(CompletionSuggestion.init)
+    } catch { trackingError = "whosaid is not answering: \(error)" }
+  }
+
+  func loadItems() async {
+    guard let ws = paths.workspace, let mcp else { return }
+    let r = try? await mcp.call("whosaid_items", ["limit": .number(500), "workspace": .string(ws)], timeout: 90)
+    items = (r?["items"]?.array ?? []).compactMap(TrackedItem.init)
+  }
+
+  /// The P1 write path: one curated status event in the tracking ledger. Only an explicit
+  /// Mark done button calls this; suggestions never change anything on their own.
+  func markDone(_ id: String, note: String) async -> String? {
+    guard let ws = paths.workspace, let mcp else { return "No workspace" }
+    let r: JSONValue
+    do {
+      r = try await mcp.call("whosaid_set_status", ["item_id": .string(id), "status": .string("done"),
+                                                     "note": .string(note), "workspace": .string(ws)], timeout: 60)
+    } catch { return "Mark done failed: \(error)" }
+    if r["ok"]?.bool == false { return r["error"]?.string ?? "Mark done failed" }
+    await loadWorklist()
+    await loadItems()
+    return nil
+  }
+
+  /// Opens the meeting an item came from, at the moment it was said.
+  func openSource(meeting: String, t: Double?) {
+    let chat = meetings.first { $0.folder == meeting }?.isChat ?? false
+    selection = chat ? .chats : .meetings
+    selectedMeeting = meeting
+    meetingTab = .transcript
+    focus = t.map { (meeting, $0) }
   }
 
   func stopNow() async {

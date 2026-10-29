@@ -241,6 +241,8 @@ The library window lists meetings and Teams chats newest first (a call is named 
 
 A meeting's Speakers tab has one card per voice: turns and talk time, a name field, role chips (self, boss, peer, report, external) and Save, which runs `whosaid relabel` and then `whosaid index` so the name shows up everywhere. An unnamed voice shows the closest enrolled voice that just missed the match ("Sounds like Carol (0.64)"), one click from the name field. Play clip cuts a few seconds of that voice with `whosaid samples` into ~/Library/Caches/whosaid/clips and plays it; the app plays nothing any other way.
 
+My commitments is the ranked worklist for the workspace owner (`whosaid_worklist`): P1 to P3 chips, why each ranks where it does, and a link that opens the meeting at the moment it was said. Above it, "Looks done?" lists later statements that may show an item is finished (`whosaid_tracking_suggestions`), with the quote and why it matched. Nothing changes until you click Mark done, which records one status event with that quote as evidence (`whosaid_set_status`). Action items lists every item from every meeting, with the same Open / Done / All filter.
+
 ### Enroll from an existing recording
 
 Already have a clip of the person speaking? Skip the mic and cut a reference straight from it:

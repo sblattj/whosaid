@@ -23,6 +23,7 @@ T
 cat > "$C/transcript.speakers.txt" <<'T'
 [00:00:00] Bob_Example: Pushed the parser fix, can you look?
 [00:01:30] Alice_Example: On it after standup.
+[00:02:10] Alice_Example: I sent the release notes this morning.
 T
 for f in "$W"/*/*.speakers.txt; do sed 's/^\[[^]]*\] [^:]*: //' "$f" > "${f%.speakers.txt}.txt"; done
 # Sidecars: the source block gives each folder a start time, a length and a kind.
@@ -80,6 +81,12 @@ cat > "$S/transcript.speaker-cards.txt" <<'T'
 SPEAKER_02 · 1 turn · 0m 05s
   "Is the demo still on Friday?"
 T
+# Commitments the way ingest makes them (heuristic, local), so the worklist and the
+# tracking suggestions have something to rank; the chat's "I sent the release notes"
+# is the later evidence for the standup promise.
+for m in "$S" "$P"; do
+  python3 "$REPO/lib/workspace.py" commitments --transcript "$m/transcript.speakers.txt" --json-out "$m/commitments.json" --ws "$W" >&2
+done
 "$REPO/whosaid" roll-up "$W" --action-items >&2
 "$REPO/whosaid" index "$W" --no-embed >&2
 echo "$F"

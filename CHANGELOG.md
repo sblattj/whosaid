@@ -8,6 +8,13 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ### Added
 
+- The macOS app's My commitments and Action items pages: the ranked worklist
+  with P1 to P3 chips and why strings, every action item with its owner, an
+  Open / Done / All filter, links that open the source meeting scrolled to the
+  line, and suggested completions with an explicit Mark done that records the
+  quote as evidence (`whosaid_set_status`). The app fixture now carries
+  commitments and a later "I sent ..." chat line, so the self-test runs the
+  Mark done round trip (fixture workspaces only).
 - The macOS app's speaker cards: name a voice with a role from a meeting's
   Speakers tab (`whosaid_relabel`, then `whosaid index`), see the closest
   near-miss registry voice for an unnamed one, and play a short clip of it

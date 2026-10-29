@@ -123,7 +123,7 @@ struct MeetingDetailView: View {
       .padding(16)
       Divider()
       switch model.meetingTab {
-      case .transcript: TranscriptList(turns: turns)
+      case .transcript: TranscriptList(turns: turns, focus: model.focus?.folder == meeting.folder ? model.focus?.t : nil)
       case .summary: SummaryPane(meeting: meeting, talk: talk, turns: turns, items: items)
       case .items: ItemsPane(items: items)
       case .speakers: SpeakersPane(folder: meeting.folder, clusters: clusters, cards: cards)
@@ -154,11 +154,18 @@ struct TalkTimeBar: View {
 
 struct TranscriptList: View {
   let turns: [Turn]
+  /// A second to scroll to and mark: the turn that was speaking then.
+  var focus: Double? = nil
+  var focused: Int? {
+    guard let f = focus else { return nil }
+    return turns.last { $0.t <= f + 0.5 }?.index ?? turns.first?.index
+  }
   var body: some View {
     if turns.isEmpty {
       Text("No speaker-labeled transcript in this folder").foregroundStyle(.secondary)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     } else {
+      ScrollViewReader { proxy in
       ScrollView {
         LazyVStack(alignment: .leading, spacing: 10) {
           ForEach(turns) { turn in
@@ -174,9 +181,15 @@ struct TranscriptList: View {
                 RoundedRectangle(cornerRadius: 2).fill(SpeakerColor.of(turn.speaker)).frame(width: 3)
               }
             }
+            .padding(4)
+            .background(turn.index == focused ? Color.accentColor.opacity(0.18) : .clear, in: RoundedRectangle(cornerRadius: 6))
+            .id(turn.index)
           }
         }
         .padding(16)
+      }
+      .onAppear { if let f = focused { proxy.scrollTo(f, anchor: .center) } }
+      .onChange(of: focused) { if let f = focused { withAnimation { proxy.scrollTo(f, anchor: .center) } } }
       }
     }
   }
