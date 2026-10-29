@@ -7,16 +7,16 @@
     "url": "https://github.com/sblattj/whosaid",
     "source": "github"
   },
-  "version": "1.20.0",
+  "version": "1.21.0",
   "packages": [
     {
       "registryType": "pypi",
       "registryBaseUrl": "https://pypi.org",
       "identifier": "whosaid",
-      "version": "1.20.0",
+      "version": "1.21.0",
       "runtimeHint": "uvx",
       "runtimeArguments": [
-        { "type": "named", "name": "--from", "value": "whosaid==1.20.0" },
+        { "type": "named", "name": "--from", "value": "whosaid==1.21.0" },
         { "type": "positional", "value": "whosaid-mcp" }
       ],
       "transport": { "type": "stdio" },

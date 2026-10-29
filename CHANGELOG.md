@@ -6,6 +6,8 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ## [Unreleased]
 
+## [1.21.0] - 2026-10-29
+
 ### Added
 
 - `whosaid autorecord run | install | uninstall | status` records every call
@@ -21,7 +23,6 @@ All notable changes to whosaid are documented here. This project adheres to
   LaunchAgent. `uninstall` saves a call in progress first.
 - `record --app --wait-for-call` looks the app up again once the call starts, so
   an app that restarted during the wait (an update) does not fail the capture.
-
 - `whosaid record --browser --wait-for-call` waits until a meeting tab (Teams
   web, Meet, Zoom web, or `--target` with `--leave-selector`) shows its in-call
   element, then records it and stops when the call ends (#121). A browser that
