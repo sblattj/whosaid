@@ -80,6 +80,36 @@ run_w record --app
 assert_eq "$RC" 2 "'record --app' with no value exits 2"
 assert_contains "$OUT" "--app needs an app" "explains the missing value"
 
+echo "-- call flags (#119) exit 2 without --app or --until-call-ends --"
+for flag in --wait-for-call --until-call-ends; do
+  run_w record $flag
+  assert_eq "$RC" 2 "'record $flag' without --app exits 2"
+  assert_contains "$OUT" "only apply with --app" "explains $flag"
+done
+run_w record --app X --idle-seconds 10
+assert_eq "$RC" 2 "'--idle-seconds' without --until-call-ends exits 2"
+assert_contains "$OUT" "only applies with --until-call-ends" "explains --idle-seconds"
+run_w record --app X --until-call-ends --idle-seconds 0
+assert_eq "$RC" 2 "'--idle-seconds 0' exits 2"
+run_w record --app X --until-call-ends --idle-seconds abc
+assert_eq "$RC" 2 "'--idle-seconds abc' exits 2"
+run_w record --into "$TMP/in"
+assert_eq "$RC" 2 "'record --into' without --app or --browser exits 2"
+assert_contains "$OUT" "--into only applies with --browser or --app" "explains --into"
+[ ! -e "$TMP/in" ] || fail "record --into without a source created $TMP/in"
+PASS=$((PASS + 1))
+run_w help
+assert_contains "$OUT" "--wait-for-call" "help lists --wait-for-call"
+assert_contains "$OUT" "--until-call-ends" "help lists --until-call-ends"
+
+echo "-- ingest defaults --me to the workspace owner (#119) --"
+mkdir -p "$TMP/ws"
+printf '[workspace]\nowner = "Pat_Example"\n' > "$TMP/ws/whosaid.toml"
+assert_eq "$(env -u WHOSAID_OWNER python3 "$REPO/lib/wsconfig.py" owner "$TMP/ws")" "Pat_Example" "wsconfig owner reads [workspace] owner"
+assert_eq "$(WHOSAID_OWNER=Env_Name python3 "$REPO/lib/wsconfig.py" owner "$TMP/ws")" "Env_Name" "WHOSAID_OWNER overrides the file"
+assert_eq "$(env -u WHOSAID_OWNER python3 "$REPO/lib/wsconfig.py" owner "$TMP")" "" "no owner prints empty"
+rm -rf "$TMP/ws" "$TMP/whosaid.toml"
+
 echo "-- helper source typechecks --"
 if command -v swiftc >/dev/null 2>&1; then
   swiftc -typecheck -swift-version 5 -target "$(uname -m)-apple-macos15.0" "$REPO/lib/record_app.swift"

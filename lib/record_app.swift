@@ -5,6 +5,8 @@
 //
 //   record-app --list
 //   record-app --app <bundle-id|name> --out-dir DIR [--no-mic] [--max-seconds N]
+//              [--wait-for-call] [--until-call-ends] [--idle-seconds N]
+//   record-app --call-state --app <bundle-id|name>
 //
 // Writes DIR/app.wav and, unless --no-mic, DIR/mic.wav: mono 16 kHz, both on
 // the same timeline (sample 0 = the first buffer either leg delivered), padded
@@ -22,8 +24,15 @@
 // ScreenCaptureKit does not answer within 20 s at startup
 // ($WHOSAID_RECORD_APP_STARTUP_TIMEOUT), the exit is 1: a hung helper would
 // otherwise hold its connection and break every later capture from this binary.
+//
+// Call detection (--wait-for-call, --until-call-ends, --call-state) reads Core
+// Audio's per-process objects (macOS 14+, no permission): an app is "in a call"
+// while any of its processes, the bundle ID itself or a `<bundle>.*` helper,
+// has an input (mic) stream running. Native Teams plays and records through
+// com.microsoft.teams2.modulehost, which only the helper match finds.
 
 import AVFoundation
+import CoreAudio
 import CoreMedia
 import Foundation
 @preconcurrency import ScreenCaptureKit
@@ -108,6 +117,41 @@ func resolveApp(_ query: String, in apps: [SCRunningApplication]) -> SCRunningAp
         log("'\(query)' matches several apps: " + partial.map { $0.bundleIdentifier }.joined(separator: ", "))
     }
     return nil
+}
+
+// ---- call detection (Core Audio process objects) -----------------------------
+
+func audioProperty<T>(_ obj: AudioObjectID, _ sel: AudioObjectPropertySelector, _ value: inout T) -> Bool {
+    var addr = AudioObjectPropertyAddress(mSelector: sel, mScope: kAudioObjectPropertyScopeGlobal,
+                                          mElement: kAudioObjectPropertyElementMain)
+    var size = UInt32(MemoryLayout<T>.size)
+    return withUnsafeMutablePointer(to: &value) {
+        AudioObjectGetPropertyData(obj, &addr, 0, nil, &size, $0) == noErr
+    }
+}
+
+/// (input, output): whether any process of `bundle` (or a `bundle.*` helper)
+/// has a mic / speaker stream running right now.
+func callState(_ bundle: String) -> (input: Bool, output: Bool) {
+    let system = AudioObjectID(kAudioObjectSystemObject)
+    var addr = AudioObjectPropertyAddress(mSelector: kAudioHardwarePropertyProcessObjectList,
+                                          mScope: kAudioObjectPropertyScopeGlobal,
+                                          mElement: kAudioObjectPropertyElementMain)
+    var size: UInt32 = 0
+    guard AudioObjectGetPropertyDataSize(system, &addr, 0, nil, &size) == noErr, size > 0 else { return (false, false) }
+    var ids = [AudioObjectID](repeating: 0, count: Int(size) / MemoryLayout<AudioObjectID>.size)
+    guard AudioObjectGetPropertyData(system, &addr, 0, nil, &size, &ids) == noErr else { return (false, false) }
+    var input = false, output = false
+    for id in ids {
+        var cf: Unmanaged<CFString>?
+        guard audioProperty(id, kAudioProcessPropertyBundleID, &cf), let b = cf?.takeRetainedValue() as String?,
+              b == bundle || b.hasPrefix(bundle + ".") else { continue }
+        var on: UInt32 = 0
+        if audioProperty(id, kAudioProcessPropertyIsRunningInput, &on), on != 0 { input = true }
+        on = 0
+        if audioProperty(id, kAudioProcessPropertyIsRunningOutput, &on), on != 0 { output = true }
+    }
+    return (input, output)
 }
 
 /// One output leg: converts to mono 16 kHz Float32 and writes at the sample
@@ -380,9 +424,14 @@ var appQuery: String?
 var outDir: String?
 var withMic = true
 var maxSeconds = 10_800.0
+var callStateOnly = false
+var waitForCall = false
+var untilCallEnds = false
+var idleSeconds = 30.0
 
 func usage() -> Never {
-    log("usage: record-app --list | --app <bundle-id|name> --out-dir DIR [--no-mic] [--max-seconds N]")
+    log("usage: record-app --list | --call-state --app <bundle-id|name> | --app <bundle-id|name> --out-dir DIR"
+        + " [--no-mic] [--max-seconds N] [--wait-for-call] [--until-call-ends] [--idle-seconds N]")
     terminate(2)
 }
 
@@ -401,6 +450,12 @@ while !args.isEmpty {
     case "--max-seconds":
         guard !args.isEmpty, let v = Double(args.removeFirst()), v > 0 else { usage() }
         maxSeconds = v
+    case "--call-state": callStateOnly = true
+    case "--wait-for-call": waitForCall = true
+    case "--until-call-ends": untilCallEnds = true
+    case "--idle-seconds":
+        guard !args.isEmpty, let v = Double(args.removeFirst()), v > 0 else { usage() }
+        idleSeconds = v
     default: usage()
     }
 }
@@ -434,11 +489,27 @@ Task {
         for a in apps { print("\(a.bundleIdentifier)\t\(a.applicationName)") }
         terminate(0)
     }
-    guard let query = appQuery, let dir = outDir else { usage() }
+    guard let query = appQuery, callStateOnly || outDir != nil else { usage() }
     guard let target = resolveApp(query, in: apps) else {
         log("no running app matches '\(query)'. Running apps: whosaid record --list-apps")
         terminate(2)
     }
+    let bundle = target.bundleIdentifier
+    if callStateOnly {
+        let st = callState(bundle)
+        print("\(bundle)\tmic=\(st.input ? 1 : 0)\tspeaker=\(st.output ? 1 : 0)")
+        terminate(0)
+    }
+    let dir = outDir!
+    if waitForCall {
+        startup.cancel()
+        log("waiting for \(target.applicationName) to open the mic (a call to start); Ctrl-C to give up.")
+        while !callState(bundle).input {
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+        }
+        log("\(target.applicationName) opened the mic; starting the capture.")
+    }
+    let startupAfterWait = waitForCall ? watchdog(limit, "starting the capture") : startup
     guard let display = content.displays.first else {
         log("no display available to attach the capture stream to.")
         terminate(1)
@@ -460,16 +531,35 @@ Task {
         log("could not start capture: \(error.localizedDescription)")
         terminate(1)
     }
-    startup.cancel()
+    startupAfterWait.cancel()
     log("capturing \(target.applicationName) (\(target.bundleIdentifier))\(withMic ? " + mic" : "") — Ctrl-C to stop.")
 
+    if untilCallEnds {
+        log("auto-stops once \(target.applicationName) has not used the mic for \(Int(idleSeconds))s (the call ended).")
+    }
+
     // Progress: one line every 10 s so a dead leg is visible while it runs.
+    // --until-call-ends polls the call state every 2 s in between.
     let started = Date()
+    var lastInCall = Date()
+    var lastProgress = Date()
     while true {
-        // Wake at --max-seconds too, not only on the 10 s progress tick.
+        // Wake at --max-seconds too, not only on the tick.
         let left = maxSeconds - Date().timeIntervalSince(started)
-        try? await Task.sleep(nanoseconds: UInt64(max(0.05, min(10, left)) * 1_000_000_000))
+        let tick = untilCallEnds ? 2.0 : 10.0
+        try? await Task.sleep(nanoseconds: UInt64(max(0.05, min(tick, left)) * 1_000_000_000))
         let elapsed = Date().timeIntervalSince(started)
+        if untilCallEnds {
+            if callState(bundle).input {
+                lastInCall = Date()
+            } else if Date().timeIntervalSince(lastInCall) >= idleSeconds {
+                log("\(target.applicationName) has not used the mic for \(Int(idleSeconds))s; the call ended, stopping.")
+                rec.finish(code: 0)
+                return
+            }
+        }
+        if elapsed < maxSeconds && Date().timeIntervalSince(lastProgress) < 9.5 { continue }
+        lastProgress = Date()
         var line = String(format: "%5.0fs  app peak %@ (%@)", elapsed, rec.queue.sync { rec.app.takePeakDB() },
                           rec.queue.sync { rec.app.driftSummary() })
         if let mic = rec.mic {

@@ -238,7 +238,8 @@ def workspace_speaker_args(ws: Path) -> tuple[list[str], str | None]:
 
 
 def _cli(argv: list[str]) -> int:
-    """`wsconfig.py speaker-args <ws>`: one arg per line, or exit 1 with the error."""
+    """`wsconfig.py speaker-args <ws>`: one arg per line, or exit 1 with the error.
+    `wsconfig.py owner <ws>`: the workspace owner label ("" when unset)."""
     if len(argv) == 2 and argv[0] == "speaker-args":
         args, err = workspace_speaker_args(Path(argv[1]))
         if err:
@@ -246,7 +247,11 @@ def _cli(argv: list[str]) -> int:
             return 1
         print("\n".join(args))
         return 0
-    log("usage: wsconfig.py speaker-args <workspace>")
+    if len(argv) == 2 and argv[0] == "owner":
+        # the owner label ingest passes as --me for stereo `record --app` files
+        print(str(load_config(Path(argv[1])).get("workspace", {}).get("owner") or ""))
+        return 0
+    log("usage: wsconfig.py speaker-args|owner <workspace>")
     return 2
 
 

@@ -6,6 +6,22 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ## [Unreleased]
 
+### Added
+
+- `whosaid record --app` can run unattended next to `whosaid watch` (#119).
+  `--wait-for-call` waits until the app opens the mic, `--until-call-ends` stops
+  once none of its processes (the bundle ID and its `<bundle>.*` helpers) has
+  used the mic for `--idle-seconds` (default 30), and `--into DIR` saves the file
+  for the watcher instead of transcribing. Detection reads Core Audio's
+  per-process objects, so it needs no extra permission. For the native Microsoft
+  Teams app, `--app com.microsoft.teams2` captures the call even though Teams
+  plays and records through a separate helper process.
+- `record --app` files carry a `creation_time` tag set to the capture start, so
+  the ingested meeting folder is dated when the call began, not when it ended.
+- `ingest` accepts `--me` and, when neither it nor `$WHOSAID_OWNER` is set,
+  uses the workspace's `[workspace] owner`, so a watched stereo recording names
+  the mic-only voice after the owner.
+
 ## [1.18.0] - 2026-10-28
 
 ### Added

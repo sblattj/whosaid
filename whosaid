@@ -186,7 +186,8 @@ USAGE
                                         Record (or extract from an existing FILE) a voice
                                         sample and name a speaker cluster.
   whosaid record [--label L] [flags]   Record from the mic, then transcribe it.
-  whosaid record --app A [--no-mic] [--label L] [flags]
+  whosaid record --app A [--no-mic] [--label L] [--wait-for-call] [--until-call-ends]
+                 [--idle-seconds N] [--into DIR] [flags]
                                         Record one app's audio (Zoom, a browser, ...) via
                                         ScreenCaptureKit, plus the mic, then transcribe it.
   whosaid record --browser [--cdp-port P] [--target T] [--max-seconds N] [--into DIR] [flags]
@@ -461,8 +462,13 @@ RECORD FLAGS
                       the built-in Teams / Meet / Zoom table.
   --max-seconds N     With --browser: stop after N seconds (default 10800).
   --leave             With --browser: click the in-call element at --max-seconds.
-  --into DIR          With --browser: save DIR/<timestamp>[-label].m4a, print the path
+  --into DIR          With --browser or --app: save DIR/<timestamp>[-label].m4a, print the path
                       and skip transcription (whosaid watch ingests it).
+  --wait-for-call     With --app: wait until the app opens the mic (a call starts),
+                      then record. Exit 0 with no file if the wait is interrupted.
+  --until-call-ends   With --app: stop once none of the app's processes (A and its
+                      A.* helpers) has used the mic for --idle-seconds (default 30).
+  --idle-seconds N    With --until-call-ends: how long the mic must stay closed.
   --list-apps         Print running apps --app accepts, then exit.
   Any transcribe flag above is also accepted and passed through after recording.
 
@@ -506,6 +512,8 @@ INGEST FLAGS
                       so the new meetings are searchable right away.
   Any transcribe flag above (except -o/--outdir and -n/--name, which ingest
   controls) is accepted and passed through to the transcriber.
+  --me defaults to $WHOSAID_OWNER, else the workspace's [workspace] owner, so a
+  stereo `record --app` file names the mic-only voice after the owner.
   Speaker hints default to the workspace's whosaid.toml [diarize] section
   (speakers / min_speakers / max_speakers / expected_speakers) when the command
   passes no speaker flag of its own.
@@ -1357,15 +1365,18 @@ mean_volume_db() {
 
 # Record APP's audio (+ the mic unless no_mic=1) into OUT, an .m4a.
 # Two mono legs on one timeline become one stereo file: left = mic, right = app.
+# Args after no_mic are passed to the helper (--wait-for-call, --until-call-ends, ...).
 record_app_audio() {
   local app="$1" out="$2" no_mic="$3"
+  shift 3
   local bin tmpdir rc
   bin="$(ensure_record_app_helper)" || exit 1
   tmpdir="$(mktemp -d -t whosaid-record-app)"
   local helper_args=(--app "$app" --out-dir "$tmpdir")
   [[ "$no_mic" == 1 ]] && helper_args+=(--no-mic)
+  [[ $# -gt 0 ]] && helper_args+=("$@")
 
-  log "recording $app to $out — press Ctrl-C to stop (auto-stops after 3h)."
+  log "recording $app to $out; press Ctrl-C to stop (auto-stops after 3h)."
   # Same no-op INT trap as the mic path: Ctrl-C reaches the helper (which
   # closes its WAVs and exits 0) without killing this script.
   set +e
@@ -1376,6 +1387,12 @@ record_app_audio() {
   set -e
   # 3 / 5: macOS ended the capture early (display change, sleep, revoked
   # grant). The helper closed both WAVs first, so keep what was recorded.
+  # Ctrl-C while --wait-for-call was still waiting: nothing was recorded, by choice.
+  if [[ "$rc" -eq 130 && ! -s "$tmpdir/app.wav" && " $* " == *" --wait-for-call "* ]]; then
+    rm -rf "$tmpdir"
+    log "stopped while waiting for a call; nothing recorded."
+    exit 0
+  fi
   if [[ "$rc" -eq 3 || "$rc" -eq 5 ]] && [[ -s "$tmpdir/app.wav" ]]; then
     log "warning: capture ended early (helper exit $rc); keeping the audio recorded so far."
   elif [[ "$rc" -ne 0 ]]; then
@@ -1385,8 +1402,18 @@ record_app_audio() {
   fi
   if [[ ! -s "$tmpdir/app.wav" ]]; then
     rm -rf "$tmpdir"
+    # Ctrl-C while --wait-for-call was still waiting: nothing was recorded, by choice.
     log "recording failed — no audio was captured."
     exit 1
+  fi
+
+  # The helper opens app.wav when capture starts (after any --wait-for-call), so
+  # its birth time is the call's start. The creation_time tag dates the meeting
+  # folder on ingest; without it ingest falls back to the mtime (the call's end).
+  REC_APP_STARTED="$(stat -f %B "$tmpdir/app.wav" 2>/dev/null || true)"
+  local ctime_meta=()
+  if [[ "$REC_APP_STARTED" =~ ^[0-9]+$ ]]; then
+    ctime_meta=(-metadata "creation_time=$(date -u -r "$REC_APP_STARTED" +%Y-%m-%dT%H:%M:%SZ)")
   fi
 
   # Silence in the app leg means the app played nothing or the wrong app was
@@ -1414,13 +1441,13 @@ record_app_audio() {
   fi
 
   if [[ "$no_mic" == 1 ]]; then
-    ffmpeg -hide_banner -loglevel warning -y -i "$tmpdir/app.wav" -ac 1 -c:a aac -b:a 96k "$out"
+    ffmpeg -hide_banner -loglevel warning -y -i "$tmpdir/app.wav" -ac 1 ${ctime_meta[@]+"${ctime_meta[@]}"} -c:a aac -b:a 96k "$out"
   else
     # error, not warning: join otherwise logs "Guessed Channel Layout" per mono input.
     # The comment tag tells the diarizer which channel is which (lib/stereo_channels.py).
     ffmpeg -hide_banner -loglevel error -y -i "$tmpdir/mic.wav" -i "$tmpdir/app.wav" \
       -filter_complex "[0:a][1:a]join=inputs=2:channel_layout=stereo[a]" -map "[a]" \
-      -metadata comment="whosaid:channels=mic,app" -c:a aac -b:a 128k "$out"
+      -metadata comment="whosaid:channels=mic,app" ${ctime_meta[@]+"${ctime_meta[@]}"} -c:a aac -b:a 128k "$out"
   fi
   rm -rf "$tmpdir"
 }
@@ -1457,7 +1484,7 @@ cmd_record() {
   warn_if_not_arm64
   ensure_uv_and_ffmpeg
 
-  local label="" app="" no_mic=0
+  local label="" app="" no_mic=0 wait_call=0 until_end=0 idle_secs=""
   local browser=0 cdp_port="" target="" leave_sel="" max_secs="" leave=0 into=""
   local extra_args=()
   while [[ $# -gt 0 ]]; do
@@ -1467,6 +1494,11 @@ cmd_record() {
         [[ $# -ge 2 && -n "$2" ]] || { log "--app needs an app (bundle ID or name); see: whosaid record --list-apps"; exit 2; }
         app="$2"; shift 2 ;;
       --no-mic) no_mic=1; shift ;;
+      --wait-for-call) wait_call=1; shift ;;
+      --until-call-ends) until_end=1; shift ;;
+      --idle-seconds)
+        [[ $# -ge 2 && "$2" =~ ^[0-9]+$ && "$2" -gt 0 ]] || { log "--idle-seconds needs a whole number of seconds > 0."; exit 2; }
+        idle_secs="$2"; shift 2 ;;
       --browser) browser=1; shift ;;
       --cdp-port|--target|--leave-selector|--max-seconds|--into)
         [[ $# -ge 2 && -n "$2" ]] || { log "$1 needs a value."; exit 2; }
@@ -1491,9 +1523,21 @@ cmd_record() {
     log "--browser and --app are mutually exclusive."
     exit 2
   fi
+  if [[ -z "$app" ]] && [[ "$wait_call" == 1 || "$until_end" == 1 || -n "$idle_secs" ]]; then
+    log "--wait-for-call, --until-call-ends and --idle-seconds only apply with --app."
+    exit 2
+  fi
+  if [[ -n "$idle_secs" && "$until_end" != 1 ]]; then
+    log "--idle-seconds only applies with --until-call-ends."
+    exit 2
+  fi
   if [[ "$browser" != 1 ]]; then
-    if [[ -n "$cdp_port$target$leave_sel$max_secs$into" || "$leave" == 1 ]]; then
-      log "--cdp-port, --target, --leave-selector, --max-seconds, --leave and --into only apply with --browser."
+    if [[ -n "$cdp_port$target$leave_sel$max_secs" || "$leave" == 1 ]]; then
+      log "--cdp-port, --target, --leave-selector, --max-seconds and --leave only apply with --browser."
+      exit 2
+    fi
+    if [[ -n "$into" && -z "$app" ]]; then
+      log "--into only applies with --browser or --app."
       exit 2
     fi
     if [[ "$no_mic" == 1 && -z "$app" ]]; then
@@ -1532,7 +1576,27 @@ cmd_record() {
       return 0
     fi
   elif [[ -n "$app" ]]; then
-    record_app_audio "$app" "$out" "$no_mic"
+    local call_args=()
+    [[ "$wait_call" == 1 ]] && call_args+=(--wait-for-call)
+    [[ "$until_end" == 1 ]] && call_args+=(--until-call-ends)
+    [[ -n "$idle_secs" ]] && call_args+=(--idle-seconds "$idle_secs")
+    REC_APP_STARTED=""
+    record_app_audio "$app" "$out" "$no_mic" ${call_args[@]+"${call_args[@]}"}
+    # A --wait-for-call file is named for when the call started, not the wait.
+    if [[ "$wait_call" == 1 && "$REC_APP_STARTED" =~ ^[0-9]+$ ]]; then
+      local started_out="$outdir/$(date -u -r "$REC_APP_STARTED" +%Y%m%dT%H%M%SZ)${out#"$outdir/$ts"}"
+      if [[ "$started_out" != "$out" && ! -e "$started_out" ]]; then
+        mv "$out" "$started_out"
+        out="$started_out"
+      fi
+    fi
+    if [[ -n "$into" ]]; then
+      local adur
+      adur="$(ffprobe -v error -show_entries format=duration -of csv=p=0 "$out" 2>/dev/null || echo "?")"
+      log "captured ${adur}s -> $out"
+      printf '%s\n' "$out"
+      return 0
+    fi
   else
     log "recording to $out — press Ctrl-C to stop (auto-stops after 3h)."
     # Ctrl-C must stop ffmpeg (which finalizes the m4a) WITHOUT killing this
@@ -1982,7 +2046,7 @@ cmd_ingest() {
       -o|--outdir) log "ingest: -o/--outdir is not allowed — ingest places each meeting itself"; exit 1 ;;
       -n|--name)   log "ingest: -n/--name is not allowed — ingest names its outputs 'transcript'"; exit 1 ;;
       # transcribe flags that pass straight through
-      -m|--model|-l|--lang|-f|--format|--speakers|--min-speakers|--max-speakers|--expected-speakers|--anchor-threshold|-j|--jobs|--chunk-seconds|--absorb-threshold|--placed-absorb-threshold|--match-threshold|--ref-threshold)
+      -m|--model|-l|--lang|-f|--format|--speakers|--min-speakers|--max-speakers|--expected-speakers|--anchor-threshold|-j|--jobs|--chunk-seconds|--absorb-threshold|--placed-absorb-threshold|--match-threshold|--ref-threshold|--me)
                       passthrough+=("$1" "$2"); shift 2 ;;
       --accurate|--fast|--diarize|--no-diarize|--no-chunk)
                       passthrough+=("$1"); shift ;;
@@ -2017,6 +2081,14 @@ cmd_ingest() {
       [[ -n "$line" ]] && passthrough+=("$line")
     done <<< "$ws_hints"
     [[ -n "$ws_hints" ]] && log "speaker hints from whosaid.toml [diarize]: $(tr '\n' ' ' <<< "$ws_hints")"
+  fi
+
+  # Stereo `record --app` files name the mic-only voice after the owner: an
+  # explicit --me or $WHOSAID_OWNER wins, else the workspace's [workspace] owner.
+  if [[ -z "${WHOSAID_OWNER:-}" && " ${passthrough[*]-} " != *" --me "* ]]; then
+    local ws_owner
+    ws_owner="$("$WHOSAID_PY" "$REPO_DIR/lib/wsconfig.py" owner "$into" 2>/dev/null || true)"
+    [[ -n "$ws_owner" ]] && passthrough+=(--me "$ws_owner")
   fi
 
   # Local zone for the dated folder name: explicit --tz wins, else the system's
