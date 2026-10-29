@@ -27,8 +27,35 @@ T
 for f in "$W"/*/*.speakers.txt; do sed 's/^\[[^]]*\] [^:]*: //' "$f" > "${f%.speakers.txt}.txt"; done
 # Sidecars: the source block gives each folder a start time, a length and a kind.
 side() { printf '{"source": {"creation_time": "%s", "duration_seconds": %s, "path": "%s", "kind": %s%s}}\n' "$2" "$3" "$4" "$5" "${6:-}" > "$1"; }
-side "$S/transcript.diarization.json" 2026-10-27T16:00:00Z 905 "20261027 090000.m4a" null
-side "$P/transcript.diarization.json" 2026-10-28T21:00:00Z 2710 20261028T210000Z-teams.m4a null
+side "$P/transcript.diarization.json" 2026-10-28T21:00:00Z 2710 "$P/20261028T210000Z-teams.m4a" null
+# The standup sidecar is a full one so relabel and samples work on it: segments, cluster
+# embeddings, names, a near-miss registry match for the unnamed voice, and the whisper
+# JSON relabel re-renders the transcript from. Paths are absolute, as in real sidecars.
+cat > "$S/transcript.json" <<'T'
+{"segments": [{"start": 1.0, "end": 5.5, "text": "Morning. I will send the release notes today."},
+              {"start": 6.0, "end": 11.0, "text": "I can review the parser change after lunch."},
+              {"start": 12.0, "end": 16.0, "text": "Is the demo still on Friday?"}]}
+T
+cat > "$S/transcript.diarization.json" <<T
+{"base": "transcript", "emb_model": "fixture-emb", "num_speakers": 3,
+ "whisper_json": "$S/transcript.json",
+ "names": {"SPEAKER_00": "Alice_Example", "SPEAKER_01": "Bob_Example", "SPEAKER_02": "SPEAKER_02"},
+ "segments": [{"start": 1.0, "end": 5.5, "speaker": "SPEAKER_00"}, {"start": 6.0, "end": 11.0, "speaker": "SPEAKER_01"},
+              {"start": 12.0, "end": 16.0, "speaker": "SPEAKER_02"}],
+ "cluster_emb": {"SPEAKER_00": [1.0, 0.0, 0.0], "SPEAKER_01": [0.0, 1.0, 0.0], "SPEAKER_02": [0.1, 0.0, 1.0]},
+ "registry_matches": [
+   {"cluster": "SPEAKER_00", "name": "Alice_Example", "matched": true, "pass": "registry", "similarity": 0.97, "threshold": 0.7},
+   {"cluster": "SPEAKER_01", "name": "Bob_Example", "matched": true, "pass": "registry", "similarity": 0.95, "threshold": 0.7},
+   {"cluster": "SPEAKER_02", "name": "Carol_Example", "matched": false, "pass": "registry", "similarity": 0.64, "threshold": 0.7}],
+ "roles": {"Alice_Example": "self"},
+ "source": {"creation_time": "2026-10-27T16:00:00Z", "duration_seconds": 905, "path": "$S/20261027 090000.m4a", "kind": null}}
+T
+# A throwaway speaker registry; the self-test points WHOSAID_SPEAKER_DB here.
+cat > "$F/speakers.json" <<'T'
+{"speakers": [{"name": "Alice_Example", "model": "fixture-emb", "embedding": [1.0, 0.0, 0.0], "added": "2026-10-01", "role": "self"},
+              {"name": "Bob_Example", "model": "fixture-emb", "embedding": [0.0, 1.0, 0.0], "added": "2026-10-01", "role": "peer"},
+              {"name": "Carol_Example", "model": "fixture-emb", "embedding": [0.0, 0.3, 1.0], "added": "2026-10-01"}]}
+T
 side "$C/transcript.diarization.json" 2026-10-29T15:00:00Z null "" '"teams-chat"' ', "chat_name": "Parser fix"'
 # Silent audio of the real length so the manifest carries duration and source the way
 # an ingested call does (written, never played).

@@ -77,7 +77,7 @@ struct MeetingListRow: View {
       .labelStyle(.titleAndIcon)
     }
     .padding(.vertical, 2)
-    .task { model.loadFolderInfo(meeting.folder) }
+    .task(id: model.revision) { model.loadFolderInfo(meeting.folder) }
   }
 }
 
@@ -100,6 +100,7 @@ struct MeetingDetailView: View {
   @State private var turns: [Turn] = []
   @State private var items: [FolderItem] = []
   @State private var cards: String?
+  @State private var clusters: [SpeakerCluster] = []
 
   var talk: [(speaker: String, seconds: Double)] { Transcript.talkTime(turns, end: meeting.duration) }
 
@@ -125,14 +126,14 @@ struct MeetingDetailView: View {
       case .transcript: TranscriptList(turns: turns)
       case .summary: SummaryPane(meeting: meeting, talk: talk, turns: turns, items: items)
       case .items: ItemsPane(items: items)
-      case .speakers: SpeakersPane(talk: talk, cards: cards)
+      case .speakers: SpeakersPane(folder: meeting.folder, clusters: clusters, cards: cards)
       }
     }
-    .task {
+    .task(id: "\(meeting.folder)#\(model.revision)") {
       guard let ws = model.paths.workspace else { return }
       let folder = MeetingFolder(workspace: ws, folder: meeting.folder)
-      let loaded = await Task.detached { (folder.turns(), folder.items(), folder.speakerCards()) }.value
-      (turns, items, cards) = loaded
+      let loaded = await Task.detached { (folder.turns(), folder.items(), folder.speakerCards(), folder.speakerClusters()) }.value
+      (turns, items, cards, clusters) = loaded
     }
   }
 }
@@ -234,24 +235,95 @@ struct ItemsPane: View {
 }
 
 struct SpeakersPane: View {
-  let talk: [(speaker: String, seconds: Double)]
+  let folder: String
+  let clusters: [SpeakerCluster]
   let cards: String?
   var body: some View {
-    List {
-      Section("Who spoke") {
-        ForEach(talk, id: \.speaker) { row in
-          HStack {
-            Circle().fill(SpeakerColor.of(row.speaker)).frame(width: 10, height: 10)
-            Text(row.speaker)
-            if Transcript.isUnnamed(row.speaker) { Text("unnamed").font(.caption).foregroundStyle(.orange) }
-            Spacer()
-            Text(Transcript.clock(row.seconds)).monospacedDigit().foregroundStyle(.secondary)
-          }
+    ScrollView {
+      VStack(alignment: .leading, spacing: 12) {
+        if clusters.isEmpty {
+          Text("No diarization sidecar in this folder, so voices cannot be named here.").foregroundStyle(.secondary)
+        }
+        ForEach(clusters) { c in SpeakerCard(folder: folder, cluster: c) }
+        if let cards {
+          Text("Speaker cards").font(.headline).padding(.top, 8)
+          Text(cards).font(.callout.monospaced()).textSelection(.enabled)
         }
       }
-      if let cards {
-        Section("Speaker cards") { Text(cards).font(.callout.monospaced()).textSelection(.enabled) }
+      .padding(16)
+    }
+  }
+}
+
+/// One voice: who it is, how much it said, a name field with role chips, Save, and a
+/// clip button. The clip is made and played only when that button is clicked (D6).
+struct SpeakerCard: View {
+  @Environment(AppModel.self) var model
+  let folder: String
+  let cluster: SpeakerCluster
+  @State private var name = ""
+  @State private var role: String?
+  @State private var saving = false
+  @State private var message: String?
+  @State private var needsForce = false
+
+  var changed: Bool { name != cluster.name || role != cluster.role }
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 8) {
+      HStack(spacing: 8) {
+        Circle().fill(SpeakerColor.of(cluster.name)).frame(width: 10, height: 10)
+        Text(cluster.name).font(.headline)
+        if cluster.unnamed { Text("unnamed").font(.caption).foregroundStyle(.orange) }
+        Text(cluster.cluster).font(.caption.monospaced()).foregroundStyle(.secondary)
+        Spacer()
+        Text("\(cluster.turns) turn\(cluster.turns == 1 ? "" : "s") · \(Transcript.clock(cluster.seconds))")
+          .font(.caption).monospacedDigit().foregroundStyle(.secondary)
+        Button {
+          Task {
+            if let url = await model.clip(folder: folder, cluster: cluster.cluster) { ClipPlayer.shared.play(url) }
+            else { message = "No clip: the recording is not where the sidecar says." }
+          }
+        } label: { Label("Play clip", systemImage: "play.circle") }
+          .buttonStyle(.borderless).help("Play a few seconds of this voice")
       }
+      if let h = cluster.hint {
+        HStack(spacing: 6) {
+          Image(systemName: "waveform.badge.magnifyingglass").foregroundStyle(.secondary)
+          Text("Sounds like \(h.name) (\(h.similarity, format: .number.precision(.fractionLength(2))))")
+            .foregroundStyle(.secondary)
+          Button("Use") { name = h.name }.buttonStyle(.link)
+        }
+        .font(.callout)
+      }
+      HStack(spacing: 8) {
+        TextField("Name", text: $name).textFieldStyle(.roundedBorder).frame(minWidth: 160, maxWidth: 240)
+        Button(needsForce ? "Save anyway" : "Save") { save(force: needsForce) }
+          .disabled(saving || !changed || !Speakers.validName(name) || Transcript.isUnnamed(name))
+        if saving { ProgressView().controlSize(.small) }
+        Spacer()
+      }
+      Picker("Role", selection: $role) {
+        Text("no role").tag(String?.none)
+        ForEach(Speakers.roles, id: \.self) { Text($0).tag(String?.some($0)) }
+      }
+      .pickerStyle(.segmented).labelsHidden().fixedSize()
+      if let message { Text(message).font(.caption).foregroundStyle(needsForce ? .orange : .secondary) }
+    }
+    .padding(12)
+    .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 8))
+    .onAppear { name = cluster.name; role = cluster.role }
+    .onChange(of: cluster) { name = cluster.name; role = cluster.role; needsForce = false }
+  }
+
+  func save(force: Bool) {
+    saving = true
+    message = nil
+    Task {
+      let err = await model.relabel(folder: folder, cluster: cluster.cluster, name: name, role: role, force: force)
+      saving = false
+      needsForce = err.map { $0.contains("force") || $0.contains("similarity") } ?? false
+      message = err ?? "Saved. Every later transcript names this voice \(name)."
     }
   }
 }
@@ -280,8 +352,8 @@ struct PeopleView: View {
         }
       }
       .frame(width: 280)
-      Divider()
       .overlay { if rows.isEmpty && model.peopleLoaded { Text(unnamedOnly ? "Every voice has a name" : "Nobody yet").foregroundStyle(.secondary) } }
+      Divider()
       PersonDetail(name: selected, row: rows.first { $0["name"]?.string == selected }, detail: detail)
         .frame(maxWidth: .infinity)
     }

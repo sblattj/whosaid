@@ -8,6 +8,13 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ### Added
 
+- The macOS app's speaker cards: name a voice with a role from a meeting's
+  Speakers tab (`whosaid_relabel`, then `whosaid index`), see the closest
+  near-miss registry voice for an unnamed one, and play a short clip of it
+  (`whosaid_samples`) on click only. `test/app_audio_gate_test.py` checks that
+  every audio API sits in one player that only a button calls. The self-test
+  names a fixture voice end to end and refuses to unless `WHOSAID_SPEAKER_DB`
+  names a throwaway registry.
 - The macOS app's library: Meetings and Chats lists (speakers, unnamed voices
   and action items per row), a meeting view with the transcript colored per
   speaker, a talk-time bar and Summary / Action items / Speakers tabs, ⌘K search
@@ -71,6 +78,9 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ### Fixed
 
+- The macOS app no longer passes a `WHOSAID_*` variable set to "" on to
+  whosaid (an empty `WHOSAID_SPEAKER_DB` would have made the current folder the
+  voice registry), and the Unnamed voices page says so when every voice has a name.
 - `whosaid autorecord run`: a stop (SIGTERM from `launchctl`, or Ctrl-C) that
   landed between starting a `record` child and registering it left that child
   waiting for calls on its own after the loop exited. The loop now interrupts it.

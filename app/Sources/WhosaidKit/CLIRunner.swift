@@ -16,7 +16,7 @@ public struct CLIRunner: Sendable {
     let p = Process()
     p.executableURL = URL(fileURLWithPath: whosaid)
     p.arguments = args
-    p.environment = ProcessInfo.processInfo.environment.merging(env) { $1 }
+    p.environment = WhosaidPaths.childEnvironment().merging(env) { $1 }
     let out = Pipe(), err = Pipe()
     p.standardOutput = out
     p.standardError = err

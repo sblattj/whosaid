@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import WhosaidKit
 
 /// D15: WHOSAID_APP_SELFTEST=<path> lists windows, snapshots the main window once
 /// per sidebar item (WHOSAID_APP_SELFTEST_ITEMS=meetings,live,... to limit), writes
@@ -45,6 +46,9 @@ import AppKit
         model.meetingTab = .transcript
       }
     }
+    if let spec = env["WHOSAID_APP_SELFTEST_RELABEL"] {
+      await relabelShots(spec, model: model, main: main, out: out, lines: &lines)
+    }
     if let q = env["WHOSAID_APP_SELFTEST_SEARCH"] {
       model.selection = .meetings
       model.searchOpen = true
@@ -55,7 +59,43 @@ import AppKit
       lines.append("search \(model.searchHits.count) hit(s), context \(model.searchContext.count) turn(s)")
       lines.append("shot search \(await snapshot(main, to: "\(out).search.png") ? "ok" : "MISSING")")
     }
+    // G3: browsing every page above must not have made a single audio player.
+    lines.append("audio players \(ClipPlayer.created)")
     finish(out, lines)
+  }
+
+  /// WHOSAID_APP_SELFTEST_RELABEL=<folder part>|SPEAKER_NN|Name|role names one voice
+  /// through the Save path and shoots the speakers tab before and after plus the
+  /// unnamed page. It refuses unless WHOSAID_SPEAKER_DB names a throwaway registry:
+  /// a fixture voiceprint must never land in the real one.
+  static func relabelShots(_ spec: String, model: AppModel, main: NSWindow, out: String, lines: inout [String]) async {
+    let parts = spec.split(separator: "|").map(String.init)
+    let db = ProcessInfo.processInfo.environment["WHOSAID_SPEAKER_DB"] ?? ""
+    let real = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".config/whosaid/speakers.json").path
+    guard parts.count >= 3, !db.isEmpty, URL(fileURLWithPath: db).standardized.path != real,
+          FileManager.default.fileExists(atPath: db) else {
+      lines.append("relabel REFUSED (needs folder|cluster|name and WHOSAID_SPEAKER_DB naming an existing non-default registry)")
+      return
+    }
+    guard let m = model.meetings.first(where: { $0.folder.contains(parts[0]) }) else {
+      lines.append("relabel no meeting matches \(parts[0])"); return
+    }
+    model.selection = .meetings
+    model.selectedMeeting = m.folder
+    model.meetingTab = .speakers
+    try? await Task.sleep(for: .milliseconds(1200))
+    lines.append("shot speakers-before \(await snapshot(main, to: "\(out).speakers-before.png") ? "ok" : "MISSING")")
+    let err = await model.relabel(folder: m.folder, cluster: parts[1], name: parts[2], role: parts.count > 3 ? parts[3] : nil)
+    lines.append("relabel \(parts[1])=\(parts[2]) \(err ?? "ok")")
+    try? await Task.sleep(for: .milliseconds(1200))
+    lines.append("shot speakers-after \(await snapshot(main, to: "\(out).speakers-after.png") ? "ok" : "MISSING")")
+    model.meetingTab = .transcript
+    try? await Task.sleep(for: .milliseconds(700))
+    lines.append("shot transcript-after \(await snapshot(main, to: "\(out).transcript-after.png") ? "ok" : "MISSING")")
+    model.selection = .unnamed
+    try? await Task.sleep(for: .milliseconds(1500))
+    lines.append("unnamed after \(model.people.filter { $0["named"]?.bool == false }.count)")
+    lines.append("shot unnamed-after \(await snapshot(main, to: "\(out).unnamed-after.png") ? "ok" : "MISSING")")
   }
 
   /// The menu panel (hosted in a plain window so it can be captured without a

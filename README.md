@@ -239,6 +239,8 @@ The menu bar item shows one glyph per state, from `whosaid app-state`: a wavefor
 
 The library window lists meetings and Teams chats newest first (a call is named by what recorded it, a chat by its chat name). A meeting opens on its transcript, colored per speaker under a talk-time bar, with Summary, Action items and Speakers tabs. ⌘K searches every meeting (`whosaid_search`) and shows the minute around a hit (`whosaid_context`). People lists every named voice with what they own and asked for (`whosaid_person`); Unnamed voices lists the ones still called SPEAKER_NN. If the workspace sits in ~/Desktop or ~/Documents, macOS asks once whether whosaid may read that folder.
 
+A meeting's Speakers tab has one card per voice: turns and talk time, a name field, role chips (self, boss, peer, report, external) and Save, which runs `whosaid relabel` and then `whosaid index` so the name shows up everywhere. An unnamed voice shows the closest enrolled voice that just missed the match ("Sounds like Carol (0.64)"), one click from the name field. Play clip cuts a few seconds of that voice with `whosaid samples` into ~/Library/Caches/whosaid/clips and plays it; the app plays nothing any other way.
+
 ### Enroll from an existing recording
 
 Already have a clip of the person speaking? Skip the mic and cut a reference straight from it:

@@ -17,7 +17,7 @@ public actor MCPClient {
 
   public init(whosaid: URL, workspace: String?) {
     executable = whosaid
-    var env = ProcessInfo.processInfo.environment
+    var env = WhosaidPaths.childEnvironment()
     if let workspace { env["WHOSAID_WORKSPACE"] = workspace }
     environment = env
   }

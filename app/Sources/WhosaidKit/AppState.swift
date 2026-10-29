@@ -42,6 +42,7 @@ public final class AppStateStream: @unchecked Sendable {
       var args = ["app-state", "--watch", String(interval), "--into", paths.recordings]
       if let ws = paths.workspace { args += ["--workspace", ws] }
       p.arguments = args
+      p.environment = WhosaidPaths.childEnvironment()
       let out = Pipe()
       p.standardOutput = out
       p.standardError = FileHandle.nullDevice

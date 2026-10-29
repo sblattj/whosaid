@@ -76,6 +76,10 @@ final class AppModel {
   var selectedMeeting: String?
   var meetingTab: MeetingTab = .transcript
   var folderInfo: [String: FolderInfo] = [:]
+  /// Bumped after a relabel: meeting views reload their files on it.
+  var revision = 0
+  /// "folder|cluster" -> the generated clip, made on the first click of its play button.
+  var clips: [String: URL] = [:]
   var people: [JSONValue] = []
   var peopleLoaded = false
   var searchOpen = false
@@ -241,6 +245,44 @@ final class AppModel {
   }
 
   private var cli: CLIRunner { CLIRunner(whosaid: paths.whosaid) }
+
+  /// Names one voice of a meeting: `whosaid_relabel` (registry + transcript), then
+  /// `whosaid index` so People, search and the unnamed count catch up. Returns the
+  /// error text, or nil on success. force saves past the low-similarity guard.
+  func relabel(folder: String, cluster: String, name: String, role: String?, force: Bool = false) async -> String? {
+    guard let ws = paths.workspace, let mcp,
+          let side = MeetingFolder(workspace: ws, folder: folder).sidecarURL() else { return "No sidecar for this meeting" }
+    var args: [String: JSONValue] = ["base": .string(side.path), "assignments": .object([cluster: .string(name)])]
+    if let role { args["roles"] = .object([name: .string(role)]) }
+    if force { args["force"] = .bool(true) }
+    let r: JSONValue
+    do { r = try await mcp.call("whosaid_relabel", args, timeout: 120) } catch { return "relabel failed: \(error)" }
+    if r["ok"]?.bool == false { return r["error"]?.string ?? "relabel failed" }
+    let extra = ProcessInfo.processInfo.environment["WHOSAID_APP_INDEX_ARGS"].map { $0.split(separator: " ").map(String.init) } ?? []
+    let ix = try? await cli.run(["index", ws] + extra, timeout: 900)
+    folderInfo[folder] = nil
+    peopleLoaded = false
+    revision += 1
+    await loadPeople()
+    await refreshHealth()
+    return ix?.status == 0 ? nil : "Saved; the search index did not refresh: " + (ix?.stderr.split(separator: "\n").last.map(String.init) ?? "no answer")
+  }
+
+  /// The clip for one voice, made with `whosaid_samples` into the clips folder (outside
+  /// the workspace). Only a clip button calls this, right before it plays.
+  func clip(folder: String, cluster: String) async -> URL? {
+    let key = folder + "|" + cluster
+    if let u = clips[key], FileManager.default.fileExists(atPath: u.path) { return u }
+    guard let ws = paths.workspace, let mcp,
+          let side = MeetingFolder(workspace: ws, folder: folder).sidecarURL() else { return nil }
+    let out = WhosaidPaths.clipsDir.appendingPathComponent(folder)
+    try? FileManager.default.createDirectory(at: out, withIntermediateDirectories: true)
+    let r = try? await mcp.call("whosaid_samples", ["base": .string(side.path), "outdir": .string(out.path)], timeout: 120)
+    for s in r?["samples"]?.array ?? [] {
+      if let c = s["cluster"]?.string, let path = s["path"]?.string { clips[folder + "|" + c] = URL(fileURLWithPath: path) }
+    }
+    return clips[key]
+  }
 
   func stopNow() async {
     actionNote = "Saving the call…"

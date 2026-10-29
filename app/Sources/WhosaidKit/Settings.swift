@@ -6,6 +6,19 @@ public struct WhosaidPaths: Sendable, Equatable {
   public var workspace: String?
   public var recordings: String
 
+  /// The env for whosaid child processes: the app's own, minus WHOSAID_* set to "".
+  /// The self-test blanks them (D21), and a blank WHOSAID_SPEAKER_DB would make the
+  /// diarizer use the current folder as the voice registry.
+  public static func childEnvironment(_ base: [String: String] = ProcessInfo.processInfo.environment) -> [String: String] {
+    base.filter { !($0.key.hasPrefix("WHOSAID_") && $0.value.isEmpty) }
+  }
+
+  /// Voice clips for the play buttons: WHOSAID_APP_CLIPS_DIR, else ~/Library/Caches/whosaid/clips.
+  public static var clipsDir: URL {
+    if let d = ProcessInfo.processInfo.environment["WHOSAID_APP_CLIPS_DIR"], !d.isEmpty { return URL(fileURLWithPath: d) }
+    return FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0].appendingPathComponent("whosaid/clips")
+  }
+
   public static let defaultsKeys = (whosaid: "whosaidPath", workspace: "workspacePath", recordings: "recordingsPath")
 
   public init(whosaid: String, workspace: String?, recordings: String) {
