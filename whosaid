@@ -202,6 +202,9 @@ USAGE
   whosaid doctor                       Read-only environment/model/device report.
   whosaid version | --version | -V     Print the installed version.
   whosaid mcp                          Run the MCP server (stdio) for AI agents / Claude.
+  whosaid app build|install|open|uninstall|test
+                                        The native macOS app (menu bar + library window),
+                                        built with the Command Line Tools; see APP.
   whosaid <audio> [<audio> ...] [flags]
   whosaid transcribe <audio> [<audio> ...] [flags]
                                         Transcribe (and by default diarize) file(s).
@@ -738,6 +741,17 @@ APP STATE
   menubar.state = warn | agent-not-loaded | recording-live | recording | paused |
   ingesting | waiting | done | idle. --watch keeps running and prints one line at
   start and on every change (at least once a minute). Read-only.
+
+APP
+  whosaid app build [--debug]          swift build in app/, then app/.build/whosaid.app (ad hoc signed)
+  whosaid app install [--dest DIR] [--no-build]
+                                        Build, then copy whosaid.app into ~/Applications
+                                        (or $WHOSAID_APP_DIR); remembers this checkout's whosaid.
+  whosaid app open [--built]           Open the installed (or just built) app.
+  whosaid app uninstall [--dest DIR]   Quit it and remove the installed copy.
+  whosaid app test                     swift test for WhosaidKit (Command Line Tools flags included).
+  The app reads `whosaid mcp` and `whosaid app-state --watch`; it never records and
+  never holds the Screen & System Audio Recording grant. Needs macOS 15 and Swift 6.
 
 ENV OVERRIDES
   WHOSAID_MODEL        Default Whisper model repo (default: large-v3; turbo repo = rollback).
@@ -2664,6 +2678,12 @@ cmd_app_state() {
   exec "$WHOSAID_PY" "$REPO_DIR/lib/app_state.py" "$@"
 }
 
+cmd_app() {
+  if want_help "$@" || [[ $# -eq 0 ]]; then help_section "APP"; exit 0; fi
+  require_module "$REPO_DIR/lib/app_cli.py" app
+  exec "$WHOSAID_PY" "$REPO_DIR/lib/app_cli.py" "$@"
+}
+
 cmd_live() {
   if want_help "$@"; then help_section "LIVE"; exit 0; fi
   require_module "$REPO_DIR/lib/live.py" live
@@ -2775,6 +2795,9 @@ case "${1:-}" in
     ;;
   app-state)
     cmd_app_state "${@:2}"
+    ;;
+  app)
+    cmd_app "${@:2}"
     ;;
   memos)
     cmd_memos "${@:2}"

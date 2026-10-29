@@ -15,3 +15,4 @@ test/diarize_eval/results/
 # generated codebase-memory atlas output (analysis artifact, not source)
 .cbm-atlas/
 dist/
+app/.build/

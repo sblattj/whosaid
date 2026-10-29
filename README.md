@@ -222,6 +222,19 @@ whosaid app-state --watch 2 --workspace ~/meetings  # a JSON line now and on eve
 
 It joins `autorecord status --json`, the watcher's state for the workspace (the same rules as the SwiftBar plugin), `live status --json`, the newest meeting and the count of unnamed voices from the last two weeks into one object, plus a single `menubar.state` (warn, agent-not-loaded, recording-live, recording, paused, ingesting, waiting, done, idle). It is read-only. `whosaid tracking set-status <ws> CM-012 done --note "..."` is the matching write path for marking an item done (see [docs/tracking.md](docs/tracking.md)).
 
+### A native macOS app: `whosaid app`
+
+A menu bar app plus a library window: meetings, live now, action items, your commitments, topics, chats, people, unnamed voices and the recorder, in one vertical sidebar. It is SwiftUI, built with the Command Line Tools only (no Xcode needed), and it reads whosaid the way an agent does: `whosaid mcp` for the library and one `whosaid app-state --watch` for the menu bar.
+
+```bash
+whosaid app install     # swift build -c release, then ~/Applications/whosaid.app
+whosaid app open
+whosaid app test        # swift test for WhosaidKit
+whosaid app uninstall
+```
+
+The app never records and never asks for Screen & System Audio Recording: `Whosaid Call Recorder.app` keeps that grant. Pick the workspace and the recordings folder in its Settings (or set `WHOSAID_WORKSPACE` / `WHOSAID_RECORDINGS`). With no workspace, or one that is not indexed yet, the window says what to do next. Settings also has "Open at login". Needs macOS 15 and Swift 6.
+
 ### Enroll from an existing recording
 
 Already have a clip of the person speaking? Skip the mic and cut a reference straight from it:

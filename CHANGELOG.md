@@ -8,6 +8,12 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ### Added
 
+- `whosaid app build|install|open|uninstall|test`: a native macOS app (SwiftUI,
+  Command Line Tools only) with a menu bar item and a library window whose
+  vertical sidebar holds Library, People and Recorder. It reads `whosaid mcp`
+  and `whosaid app-state --watch`, shows a clear empty state with no workspace,
+  an empty one or a missing one, and never records. `app/selftest.sh` and
+  `app/fixture.sh` take screenshots of its own window from a made-up workspace.
 - `whosaid autorecord status --json` prints one object: installed, loaded,
   running, state (waiting, recording, saving, paused, error, stopped, not-installed),
   since, elapsed, paused_until, last_saved, last_error and whether the pause and
