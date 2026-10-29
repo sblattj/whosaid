@@ -471,6 +471,8 @@ RECORD FLAGS
   --idle-seconds N    With --until-call-ends: how long the mic must stay closed.
   --list-apps         Print running apps --app accepts, then exit.
   Any transcribe flag above is also accepted and passed through after recording.
+  To stop a recording from another program, send SIGTERM to the whosaid process
+  (or SIGINT to its process group, as Ctrl-C does); the file is still saved.
 
 ENROLL FLAGS
   --from FILE         Extract the reference clip from an existing recording instead of
@@ -1316,6 +1318,33 @@ cmd_enroll() {
 }
 
 # ---- record --------------------------------------------------------------------
+# Run a recorder child (ffmpeg, the app-capture helper, record_browser.py) so
+# either way of stopping it finalizes the file and lets this script carry on
+# to verify, join and transcribe. Sets REC_RC to the child's exit status.
+# - Ctrl-C in a terminal signals the whole foreground group, so the child gets
+#   its own SIGINT; the no-op INT trap only keeps bash alive.
+# - A parent process (an app or supervisor) sends SIGTERM to this script's pid.
+#   Bash runs traps only after a foreground child returns, so the child runs in
+#   the background and the TERM trap forwards the signal to it at once. Before
+#   this, SIGTERM killed the script and orphaned the child, which kept
+#   recording until its 3h cap and never produced the output file.
+REC_PID=""
+REC_RC=0
+run_recorder() {
+  "$@" </dev/null &
+  REC_PID=$!
+  trap ':' INT
+  trap 'kill -TERM "$REC_PID" 2>/dev/null' TERM
+  wait "$REC_PID"
+  REC_RC=$?
+  # An interrupted wait returns >128 while the child is still finishing.
+  while kill -0 "$REC_PID" 2>/dev/null; do
+    wait "$REC_PID"
+    REC_RC=$?
+  done
+  trap - INT TERM
+}
+
 # Build lib/record_app.swift (ScreenCaptureKit app-audio capture) on first use,
 # cached by source hash so an edited helper is rebuilt and a stale one never
 # runs. Prints the binary path. The Screen Recording grant belongs to the
@@ -1377,13 +1406,11 @@ record_app_audio() {
   [[ $# -gt 0 ]] && helper_args+=("$@")
 
   log "recording $app to $out; press Ctrl-C to stop (auto-stops after 3h)."
-  # Same no-op INT trap as the mic path: Ctrl-C reaches the helper (which
-  # closes its WAVs and exits 0) without killing this script.
+  # Ctrl-C or SIGTERM reaches the helper (which closes its WAVs and exits 0)
+  # without killing this script; see run_recorder.
   set +e
-  trap ':' INT
-  "$bin" "${helper_args[@]}" --max-seconds 10800 </dev/null
-  rc=$?
-  trap - INT
+  run_recorder "$bin" "${helper_args[@]}" --max-seconds 10800
+  rc=$REC_RC
   set -e
   # 3 / 5: macOS ended the capture early (display change, sleep, revoked
   # grant). The helper closed both WAVs first, so keep what was recorded.
@@ -1467,10 +1494,8 @@ record_browser_audio() {
   log "recording browser tab (CDP port $cdp_port) to $out; press Ctrl-C to stop (auto-stops when the call ends)."
   local rc
   set +e
-  trap ':' INT
-  uv run --quiet --with websockets python "$REPO_DIR/lib/record_browser.py" "${rb[@]}" </dev/null
-  rc=$?
-  trap - INT
+  run_recorder uv run --quiet --with websockets python "$REPO_DIR/lib/record_browser.py" "${rb[@]}"
+  rc=$REC_RC
   set -e
   if [[ "$rc" -eq 3 ]]; then
     log "warning: capture ended early (tab closed or connection lost); keeping the audio recorded so far."
@@ -1599,14 +1624,12 @@ cmd_record() {
     fi
   else
     log "recording to $out — press Ctrl-C to stop (auto-stops after 3h)."
-    # Ctrl-C must stop ffmpeg (which finalizes the m4a) WITHOUT killing this
-    # script — a no-op INT trap keeps bash alive so verify + transcribe still run.
+    # Ctrl-C or SIGTERM must stop ffmpeg (which finalizes the m4a) WITHOUT
+    # killing this script, so verify + transcribe still run; see run_recorder.
     set +e
-    trap ':' INT
-    ffmpeg -hide_banner -loglevel warning -f avfoundation -i ":$REC_DEVICE" \
-      -ac 1 -c:a aac -b:a 96k -t 10800 -y "$out" </dev/null
-    rc=$?
-    trap - INT
+    run_recorder ffmpeg -hide_banner -loglevel warning -f avfoundation -i ":$REC_DEVICE" \
+      -ac 1 -c:a aac -b:a 96k -t 10800 -y "$out"
+    rc=$REC_RC
     set -e
     if [[ "$rc" -ne 0 && "$rc" -ne 255 ]]; then
       log "ffmpeg exited with an unexpected error (code $rc)."

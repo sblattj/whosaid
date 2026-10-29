@@ -110,6 +110,89 @@ assert_eq "$(WHOSAID_OWNER=Env_Name python3 "$REPO/lib/wsconfig.py" owner "$TMP/
 assert_eq "$(env -u WHOSAID_OWNER python3 "$REPO/lib/wsconfig.py" owner "$TMP")" "" "no owner prints empty"
 rm -rf "$TMP/ws" "$TMP/whosaid.toml"
 
+echo "-- a parent can stop record --app with SIGTERM (stub helper) --"
+# A stub stands in for the ScreenCaptureKit helper at its cached path: it
+# writes two 1 s legs, then waits for a signal like the real one. The driver
+# runs the wrapper in its own process group, as an app would, and stops it
+# either by SIGTERM to the wrapper pid (a parent) or SIGINT to the group
+# (Ctrl-C). Before the fix SIGTERM killed the wrapper and orphaned the helper.
+if command -v ffmpeg >/dev/null 2>&1 && [ "$(sw_vers -productVersion | cut -d. -f1)" -ge 15 ]; then
+  STUB_CACHE="$TMP/cache"
+  mkdir -p "$STUB_CACHE/whosaid"
+  STUB_BIN="$STUB_CACHE/whosaid/record-app-$(shasum -a 256 "$REPO/lib/record_app.swift" | cut -c1-12)"
+  cat > "$STUB_BIN" <<'STUB'
+#!/usr/bin/env python3
+import os, signal, subprocess, sys, time
+args = sys.argv[1:]
+out = args[args.index("--out-dir") + 1]
+state = os.environ["STUB_STATE"]
+for leg, freq in (("mic", 300), ("app", 500)):
+    subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi",
+                    "-i", f"sine=f={freq}:d=1", "-ar", "16000", "-ac", "1",
+                    os.path.join(out, f"{leg}.wav")], check=True)
+got = []
+def on_signal(signum, _frame):
+    got.append(signal.Signals(signum).name)
+signal.signal(signal.SIGINT, on_signal)
+signal.signal(signal.SIGTERM, on_signal)
+open(state + ".ready", "w").write(str(os.getpid()))
+deadline = time.time() + 30
+while not got and time.time() < deadline:
+    time.sleep(0.05)
+time.sleep(0.3)  # finishing; a duplicate signal would land here
+open(state + ".signals", "w").write(" ".join(got))
+sys.exit(0 if got else 9)
+STUB
+  chmod +x "$STUB_BIN"
+  cat > "$TMP/drive.py" <<'DRIVE'
+import os, signal, subprocess, sys, time
+whosaid, mode, tmp = sys.argv[1:4]
+state = os.path.join(tmp, f"stub-{mode}")
+env = dict(os.environ, XDG_CACHE_HOME=os.path.join(tmp, "cache"), STUB_STATE=state)
+log = open(os.path.join(tmp, f"{mode}.log"), "w")
+p = subprocess.Popen([whosaid, "record", "--app", "StubApp", "--into", os.path.join(tmp, f"out-{mode}")],
+                     stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=log,
+                     env=env, start_new_session=True, text=True)
+for _ in range(300):
+    if os.path.exists(state + ".ready"):
+        break
+    time.sleep(0.05)
+if mode == "term":
+    os.kill(p.pid, signal.SIGTERM)
+else:
+    os.killpg(p.pid, signal.SIGINT)
+try:
+    printed, _ = p.communicate(timeout=30)
+    rc = p.returncode
+except subprocess.TimeoutExpired:
+    os.killpg(p.pid, signal.SIGKILL)
+    printed, rc = "", "timeout"
+time.sleep(0.2)
+stub_pid = open(state + ".ready").read().strip() if os.path.exists(state + ".ready") else ""
+alive = bool(stub_pid) and subprocess.run(["kill", "-0", stub_pid], capture_output=True).returncode == 0
+if alive:
+    os.kill(int(stub_pid), signal.SIGKILL)
+sigs = open(state + ".signals").read() if os.path.exists(state + ".signals") else ""
+print(f"rc={rc}|alive={int(alive)}|signals={sigs}|out={printed.strip()}")
+DRIVE
+  for mode in term int; do
+    RES="$(python3 -I "$TMP/drive.py" "$WHOSAID" "$mode" "$TMP")"
+    assert_contains "$RES" "rc=0|" "$mode: the wrapper exits 0"
+    assert_contains "$RES" "|alive=0|" "$mode: no helper is left running"
+    case "$mode" in
+      term) assert_contains "$RES" "|signals=SIGTERM|" "term: the helper gets exactly one SIGTERM" ;;
+      int)  assert_contains "$RES" "|signals=SIGINT|" "int: the helper gets exactly one SIGINT" ;;
+    esac
+    M4A="${RES##*|out=}"
+    [ -s "$M4A" ] || fail "$mode: no output file ($RES)"
+    PASS=$((PASS + 1))
+    assert_eq "$(ffprobe -v error -show_entries stream=channels -of csv=p=0 "$M4A")" "2" "$mode: output is stereo"
+    assert_eq "$(ffprobe -v error -show_entries format_tags=comment -of default=nw=1:nk=1 "$M4A")" "whosaid:channels=mic,app" "$mode: output carries the channel tag"
+  done
+else
+  echo "SKIP: needs ffmpeg and macOS 15+"
+fi
+
 echo "-- helper source typechecks --"
 if command -v swiftc >/dev/null 2>&1; then
   swiftc -typecheck -swift-version 5 -target "$(uname -m)-apple-macos15.0" "$REPO/lib/record_app.swift"

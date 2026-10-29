@@ -463,17 +463,24 @@ while !args.isEmpty {
 // Ignore default SIGINT/SIGTERM handling; these dispatch sources take over.
 // Before capture starts there is nothing to save, so a signal exits at once.
 // During capture the first one finishes cleanly; a second one exits hard, so
-// Ctrl-C twice (or timeout/pkill) always ends the process.
+// Ctrl-C twice (or timeout/pkill) always ends the process. A second signal
+// within 1 s of the first is the same stop arriving twice (a parent that
+// signals both the process group and the whosaid script, which forwards its
+// SIGTERM here), so it is ignored rather than turned into a hard exit.
 signal(SIGINT, SIG_IGN)
 signal(SIGTERM, SIG_IGN)
 var signalSources: [DispatchSourceSignal] = []
 var recorder: Recorder?
-var signalled = false
+var signalledAt: Date?
 for sig in [SIGINT, SIGTERM] {
     let src = DispatchSource.makeSignalSource(signal: sig, queue: .main)
     src.setEventHandler {
-        guard let rec = recorder, !signalled else { terminate(130) }
-        signalled = true
+        guard let rec = recorder else { terminate(130) }
+        if let first = signalledAt {
+            if Date().timeIntervalSince(first) < 1 { return }
+            terminate(130)
+        }
+        signalledAt = Date()
         rec.finish(code: 0)
     }
     src.resume()

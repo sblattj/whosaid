@@ -6,6 +6,15 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ## [Unreleased]
 
+### Fixed
+
+- `whosaid record` (mic, `--app` and `--browser`) now stops cleanly on SIGTERM.
+  Before, SIGTERM from a parent process killed the script and left the capture
+  child running until its 3h cap, so no file was ever saved. The script now
+  forwards SIGTERM to the child and finishes as it does on Ctrl-C. The `--app`
+  helper also treats a second signal within 1 s as the same stop, so a parent
+  that signals both the script and its process group still gets the file.
+
 ## [1.19.0] - 2026-10-29
 
 ### Added
