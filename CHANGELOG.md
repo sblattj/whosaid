@@ -6,6 +6,8 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ## [Unreleased]
 
+## [1.22.0] - 2026-10-29
+
 ### Added
 
 - `whosaid autorecord setup --app A | --browser --workspace WS [--owner NAME]`
@@ -15,7 +17,6 @@ All notable changes to whosaid are documented here. This project adheres to
   the first failed step and lists what is left to do by hand. `--owner` starts
   `WS/whosaid.toml` with `[workspace] owner` and never edits an existing one;
   `--dry-run` changes nothing.
-
 - `whosaid live` keeps a live transcript of the call being recorded (#131). It
   follows the `record --app` / `autorecord` capture, transcribes new audio about
   every 20 s with MLX Whisper (turbo, loaded once), and writes `me:` / `them:`
