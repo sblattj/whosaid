@@ -6,6 +6,8 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ## [Unreleased]
 
+## [1.20.0] - 2026-10-29
+
 ### Added
 
 - `whosaid record --watch-call --app A [--interval S]` streams the app's mic and speaker
