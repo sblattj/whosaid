@@ -6,6 +6,14 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ## [Unreleased]
 
+### Fixed
+
+- `record --app --wait-for-call` retries a permission error at capture start up
+  to 4 times, 2 s apart, instead of exiting at once (#129). macOS refused one
+  capture the moment a call started with the grant on, and `autorecord` then
+  lost the first 30 s. The log names the error domain and code; a grant that is
+  really missing still exits 5.
+
 ## [1.21.0] - 2026-10-29
 
 ### Added

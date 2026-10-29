@@ -571,11 +571,26 @@ Task {
         startupAfterWait = watchdog(limit, "starting the capture")
         // The app may have restarted (an update) during a long wait; a stale
         // SCRunningApplication would fail the capture, so look it up again (#122).
-        let fresh = await shareableContent()
-        if let again = fresh.applications.first(where: { $0.bundleIdentifier == bundle }) {
+        var fresh: SCShareableContent? = nil
+        for attempt in 1...5 {
+            do {
+                fresh = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: false)
+                break
+            } catch {
+                guard isPermissionError(error), attempt < 5 else {
+                    if isPermissionError(error) { permissionExit() }
+                    log("ScreenCaptureKit failed: \(error.localizedDescription)")
+                    terminate(1)
+                }
+                let ns = error as NSError
+                log("app list refused (\(ns.domain) \(ns.code): \(ns.localizedDescription)); retry \(attempt)/4 in 2s")
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
+            }
+        }
+        if let again = fresh!.applications.first(where: { $0.bundleIdentifier == bundle }) {
             target = again
         }
-        displays = fresh.displays
+        displays = fresh!.displays
     }
     guard let display = displays.first else {
         log("no display available to attach the capture stream to.")
@@ -591,12 +606,30 @@ Task {
         terminate(1)
     }
     recorder = rec
-    do {
-        try await rec.start(target: target, display: display)
-    } catch {
-        if isPermissionError(error) { permissionExit() }
-        log("could not start capture: \(error.localizedDescription)")
-        terminate(1)
+    // Right after a call starts, macOS has refused the capture once with a
+    // permission error while the grant was on (#129); a retry seconds later
+    // worked. After a wait (the grant was fine at startup), retry a few times.
+    var attempt = 1
+    while true {
+        do {
+            try await rec.start(target: target, display: display)
+            break
+        } catch {
+            if isPermissionError(error) && waitForCall && attempt < 5 {
+                let ns = error as NSError
+                log("capture refused (\(ns.domain) \(ns.code): \(ns.localizedDescription)); retry \(attempt)/4 in 2s")
+                attempt += 1
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
+                if let fresh = try? await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: false),
+                   let again = fresh.applications.first(where: { $0.bundleIdentifier == bundle }) {
+                    target = again
+                }
+                continue
+            }
+            if isPermissionError(error) { permissionExit() }
+            log("could not start capture: \(error.localizedDescription)")
+            terminate(1)
+        }
     }
     startupAfterWait.cancel()
     log("capturing \(target.applicationName) (\(target.bundleIdentifier))\(withMic ? " + mic" : "") — Ctrl-C to stop.")
