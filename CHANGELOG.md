@@ -6,6 +6,8 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ## [Unreleased]
 
+## [1.19.0] - 2026-10-29
+
 ### Added
 
 - `whosaid record --app` can run unattended next to `whosaid watch` (#119).
