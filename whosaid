@@ -464,8 +464,10 @@ RECORD FLAGS
   --leave             With --browser: click the in-call element at --max-seconds.
   --into DIR          With --browser or --app: save DIR/<timestamp>[-label].m4a, print the path
                       and skip transcription (whosaid watch ingests it).
-  --wait-for-call     With --app: wait until the app opens the mic (a call starts),
-                      then record. Exit 0 with no file if the wait is interrupted.
+  --wait-for-call     With --app: wait until the app opens the mic (a call starts).
+                      With --browser: wait until a meeting tab (or --target) shows
+                      its in-call element; a browser not running yet counts as
+                      waiting. Then record. Exit 0 with no file if interrupted.
   --until-call-ends   With --app: stop once none of the app's processes (A and its
                       A.* helpers) has used the mic for --idle-seconds (default 30).
   --idle-seconds N    With --until-call-ends: how long the mic must stay closed.
@@ -1454,10 +1456,11 @@ record_app_audio() {
 
 # Record one browser tab's meeting audio over CDP into OUT, an .m4a.
 # lib/record_browser.py writes OUT atomically (temp name, then rename).
-# Args: out no_mic cdp_port target leave_selector max_seconds leave
+# Args: out no_mic cdp_port target leave_selector max_seconds leave wait_call
 record_browser_audio() {
-  local out="$1" no_mic="$2" cdp_port="$3" target="$4" sel="$5" maxs="$6" leave="$7"
+  local out="$1" no_mic="$2" cdp_port="$3" target="$4" sel="$5" maxs="$6" leave="$7" wait_call="${8:-0}"
   local rb=(--out "$out" --cdp-port "$cdp_port")
+  [[ "$wait_call" == 1 ]] && rb+=(--wait-for-call)
   [[ -n "$target" ]] && rb+=(--target "$target")
   [[ -n "$sel" ]] && rb+=(--leave-selector "$sel")
   [[ -n "$maxs" ]] && rb+=(--max-seconds "$maxs")
@@ -1523,8 +1526,12 @@ cmd_record() {
     log "--browser and --app are mutually exclusive."
     exit 2
   fi
-  if [[ -z "$app" ]] && [[ "$wait_call" == 1 || "$until_end" == 1 || -n "$idle_secs" ]]; then
-    log "--wait-for-call, --until-call-ends and --idle-seconds only apply with --app."
+  if [[ "$wait_call" == 1 && -z "$app" && "$browser" != 1 ]]; then
+    log "--wait-for-call only applies with --app or --browser."
+    exit 2
+  fi
+  if [[ -z "$app" ]] && [[ "$until_end" == 1 || -n "$idle_secs" ]]; then
+    log "--until-call-ends and --idle-seconds only apply with --app (--browser always stops when the call ends)."
     exit 2
   fi
   if [[ -n "$idle_secs" && "$until_end" != 1 ]]; then
@@ -1562,7 +1569,24 @@ cmd_record() {
 
   rc=0
   if [[ "$browser" == 1 ]]; then
-    record_browser_audio "$out" "$no_mic" "$cdp_port" "$target" "$leave_sel" "$max_secs" "$leave"
+    record_browser_audio "$out" "$no_mic" "$cdp_port" "$target" "$leave_sel" "$max_secs" "$leave" "$wait_call"
+    if [[ "$wait_call" == 1 && ! -e "$out" ]]; then
+      # record_browser exits 0 with no file when the wait was interrupted.
+      log "stopped while waiting for a call; nothing recorded."
+      return 0
+    fi
+    if [[ "$wait_call" == 1 && -s "$out" ]]; then
+      # Name the file for when the call started (its creation_time), not the wait.
+      local ct started_out
+      ct="$(ffprobe -v error -show_entries format_tags=creation_time -of csv=p=0 "$out" 2>/dev/null || true)"
+      if [[ "$ct" =~ ^([0-9]{4})-([0-9]{2})-([0-9]{2})T([0-9]{2}):([0-9]{2}):([0-9]{2}) ]]; then
+        started_out="$outdir/${BASH_REMATCH[1]}${BASH_REMATCH[2]}${BASH_REMATCH[3]}T${BASH_REMATCH[4]}${BASH_REMATCH[5]}${BASH_REMATCH[6]}Z${out#"$outdir/$ts"}"
+        if [[ "$started_out" != "$out" && ! -e "$started_out" ]]; then
+          mv "$out" "$started_out"
+          out="$started_out"
+        fi
+      fi
+    fi
     if [[ -n "$into" ]]; then
       # Exit 3 can leave no file; any other failure already exited above.
       if [[ ! -s "$out" ]]; then

@@ -29,7 +29,13 @@ Usage:
                     [--target TARGETID|URL-SUBSTRING] [--leave-selector CSS]
                     [--max-seconds N] [--no-mic] [--leave]
                     [--poll-seconds 2] [--drain-seconds 2] [--arm-seconds 60]
+                    [--wait-for-call [--wait-poll-seconds 4]]
   record_browser.py --list-targets [--cdp-host H] [--cdp-port P]
+
+--wait-for-call (#121) first waits, polling every --wait-poll-seconds, until a
+page on a known meeting host (or the --target match) shows its in-call
+element; an unreachable CDP endpoint counts as "not yet" (the browser may not
+be open). A signal during the wait exits 0 with no file.
 
 Exit codes: 0 finalized (call-ended / max-seconds / interrupted); 2 usage;
 3 tab closed or CDP failed mid-run, drained audio finalized to --out;
@@ -188,13 +194,19 @@ def part_path(out: str) -> str:
     return os.path.join(d, f".{name}.part")
 
 
-def finalize_cmd(webm: str, part: str, no_mic: bool) -> list[str]:
-    """ffmpeg argv: webm -> m4a at `part`. -f mp4 since `part` ends in .part."""
+def finalize_cmd(webm: str, part: str, no_mic: bool, started: str | None = None) -> list[str]:
+    """ffmpeg argv: webm -> m4a at `part`. -f mp4 since `part` ends in .part.
+
+    `started` (UTC ISO 8601) becomes the creation_time tag, which dates the
+    meeting folder on ingest; without it ingest falls back to the mtime.
+    """
     cmd = ["ffmpeg", "-hide_banner", "-loglevel", "warning", "-y", "-i", webm]
     if no_mic:
         cmd += ["-ac", "1", "-c:a", "aac", "-b:a", "96k"]
     else:
         cmd += ["-ac", "2", "-c:a", "aac", "-b:a", "128k", "-metadata", f"comment={CHANNEL_TAG}"]
+    if started:
+        cmd += ["-metadata", f"creation_time={started}"]
     return cmd + ["-f", "mp4", part]
 
 
@@ -357,6 +369,11 @@ def install_js(no_mic: bool) -> str:
     return INSTALL_JS.replace("__NO_MIC__", "true" if no_mic else "false")
 
 
+def in_call_js(selector: str) -> str:
+    """Standalone in-call probe for --wait-for-call (no recorder injected yet)."""
+    return f"!!document.querySelector({json.dumps(selector)})"
+
+
 def poll_js(selector: str | None) -> str:
     return f"window.__whosaidRec.poll({json.dumps(selector)})"
 
@@ -387,22 +404,26 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
     p.add_argument("--poll-seconds", type=float, default=2.0)
     p.add_argument("--drain-seconds", type=float, default=2.0)
     p.add_argument("--arm-seconds", type=float, default=60.0)
+    p.add_argument("--wait-for-call", action="store_true")
+    p.add_argument("--wait-poll-seconds", type=float, default=4.0)
     a = p.parse_args(argv)
     if not a.list_targets and not a.out:
         p.error("--out is required (or --list-targets)")
-    if min(a.poll_seconds, a.drain_seconds, a.max_seconds) <= 0:
-        p.error("--poll-seconds, --drain-seconds and --max-seconds must be > 0")
+    if min(a.poll_seconds, a.drain_seconds, a.max_seconds, a.wait_poll_seconds) <= 0:
+        p.error("--poll-seconds, --drain-seconds, --max-seconds and --wait-poll-seconds must be > 0")
+    if a.wait_for_call and a.list_targets:
+        p.error("--wait-for-call does not apply to --list-targets")
     return a
 
 
-def finalize(webm: str, out: str, no_mic: bool, elapsed: float) -> int:
+def finalize(webm: str, out: str, no_mic: bool, elapsed: float, started: str | None = None) -> int:
     """webm -> --out via a .part sibling. Returns the exit code for "no file"."""
     if not os.path.exists(webm) or os.path.getsize(webm) == 0:
         log("nothing captured; no file written")
         return EXIT_EMPTY
     os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)
     part = part_path(out)
-    rc = subprocess.run(finalize_cmd(webm, part, no_mic), stdin=subprocess.DEVNULL).returncode
+    rc = subprocess.run(finalize_cmd(webm, part, no_mic, started), stdin=subprocess.DEVNULL).returncode
     if rc != 0 or not os.path.exists(part) or os.path.getsize(part) == 0:
         if os.path.exists(part):
             os.remove(part)
@@ -418,8 +439,78 @@ def finalize(webm: str, out: str, no_mic: bool, elapsed: float) -> int:
     return EXIT_OK
 
 
+def wait_candidates(targets: list[dict], target: str | None, leave_selector: str | None) -> list[tuple[dict, str]]:
+    """(page, in-call selector) pairs --wait-for-call probes on one poll."""
+    out = []
+    for p in pages_only(targets):
+        url = p.get("url", "")
+        if target and not (p.get("id") == target or target in url):
+            continue
+        sel = leave_selector or provider_selector(url)
+        if sel and p.get("webSocketDebuggerUrl"):
+            out.append((p, sel))
+    return out
+
+
+def page_in_call(page: dict, selector: str) -> bool:
+    """One short CDP session: does the page show its in-call element right now?"""
+    try:
+        cdp = CDPSession(page["webSocketDebuggerUrl"])
+    except CDPError:
+        return False
+    try:
+        return bool(cdp.evaluate(in_call_js(selector)))
+    except CDPError:
+        return False
+    finally:
+        cdp.close()
+
+
+def wait_for_call(a: argparse.Namespace, stop: dict) -> dict | None:
+    """Block until a meeting page is in a call; None if a signal arrived first."""
+    log(f"waiting for a meeting tab to join a call (CDP port {a.cdp_port}); Ctrl-C to give up.")
+    cdp_down = False
+    while stop["sig"] is None:
+        try:
+            targets = fetch_targets(a.cdp_host, a.cdp_port)
+            if cdp_down:
+                log(f"CDP at {a.cdp_host}:{a.cdp_port} is reachable again.")
+            cdp_down = False
+        except (OSError, ValueError) as e:
+            if not cdp_down:
+                log(f"CDP at {a.cdp_host}:{a.cdp_port} is not reachable yet ({e}); still waiting. "
+                    f"The browser needs --remote-debugging-port={a.cdp_port}.")
+            cdp_down = True
+            targets = []
+        for page, sel in wait_candidates(targets, a.target, a.leave_selector):
+            if stop["sig"] is not None:
+                break
+            if page_in_call(page, sel):
+                log(f"{page.get('title', '') or page.get('url', '')} is in a call; starting.")
+                return page
+        deadline = time.monotonic() + a.wait_poll_seconds
+        while stop["sig"] is None and time.monotonic() < deadline:
+            time.sleep(0.1)
+    return None
+
+
 def main(argv: list[str] | None = None) -> int:
     a = parse_args(argv)
+
+    stop = {"sig": None}
+
+    def on_signal(signum, _frame):
+        stop["sig"] = signum  # checked by the loops; never raise mid-I/O
+
+    if a.wait_for_call:
+        signal.signal(signal.SIGINT, on_signal)
+        signal.signal(signal.SIGTERM, on_signal)
+        found = wait_for_call(a, stop)
+        if found is None:
+            log("stopped while waiting for a call; nothing recorded.")
+            return EXIT_OK
+        # Re-read the target list so the page's websocket URL is current.
+        a.target = found.get("id")
 
     try:
         targets = fetch_targets(a.cdp_host, a.cdp_port)
@@ -457,17 +548,13 @@ def main(argv: list[str] | None = None) -> int:
         log(str(e))
         return EXIT_NO_CDP
 
-    stop = {"sig": None}
-
-    def on_signal(signum, _frame):
-        stop["sig"] = signum  # checked by the loop; never raise mid-I/O
-
     signal.signal(signal.SIGINT, on_signal)
     signal.signal(signal.SIGTERM, on_signal)
 
     tmpdir = tempfile.mkdtemp(prefix="whosaid-browser-")
     webm = os.path.join(tmpdir, "capture.webm")
     start = time.monotonic()
+    started = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     reason = None
     try:
         try:
@@ -480,6 +567,8 @@ def main(argv: list[str] | None = None) -> int:
         log("recording" + (" (no mic)" if a.no_mic else " (L=mic, R=tab audio)"))
 
         tracker = CallTracker(a.arm_seconds, start)
+        if a.wait_for_call:
+            tracker.armed = True  # the wait already saw the in-call element
         streams_seen = 0
         stream_warned = False
         next_poll = next_drain = start
@@ -531,7 +620,7 @@ def main(argv: list[str] | None = None) -> int:
                 reason = "tab-closed"
         cdp.close()
         log(f"stopped: {reason}")
-        rc = finalize(webm, a.out, a.no_mic, time.monotonic() - start)
+        rc = finalize(webm, a.out, a.no_mic, time.monotonic() - start, started)
         if rc != EXIT_OK:
             return rc
         return EXIT_TAB_CLOSED if reason == "tab-closed" else EXIT_OK

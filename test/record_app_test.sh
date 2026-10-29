@@ -84,7 +84,7 @@ echo "-- call flags (#119) exit 2 without --app or --until-call-ends --"
 for flag in --wait-for-call --until-call-ends; do
   run_w record $flag
   assert_eq "$RC" 2 "'record $flag' without --app exits 2"
-  assert_contains "$OUT" "only apply with --app" "explains $flag"
+  assert_contains "$OUT" "with --app" "explains $flag"
 done
 run_w record --app X --idle-seconds 10
 assert_eq "$RC" 2 "'--idle-seconds' without --until-call-ends exits 2"

@@ -6,6 +6,16 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ## [Unreleased]
 
+### Added
+
+- `whosaid record --browser --wait-for-call` waits until a meeting tab (Teams
+  web, Meet, Zoom web, or `--target` with `--leave-selector`) shows its in-call
+  element, then records it and stops when the call ends (#121). A browser that
+  is not running yet counts as waiting; Ctrl-C while waiting exits 0 with no
+  file. Like `--app`, the file is named and `creation_time`-tagged for when the
+  call started. It needs no Screen Recording grant, so it suits Macs without
+  admin rights.
+
 ## [1.19.0] - 2026-10-29
 
 ### Added

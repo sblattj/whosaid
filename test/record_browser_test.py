@@ -108,20 +108,41 @@ cmd = rb.finalize_cmd("/t/c.webm", part, no_mic=True)
 check(cmd == ["ffmpeg", "-hide_banner", "-loglevel", "warning", "-y", "-i", "/t/c.webm",
               "-ac", "1", "-c:a", "aac", "-b:a", "96k", "-f", "mp4", part], "no-mic finalize command")
 check(rb.poll_js('a"b') == 'window.__whosaidRec.poll("a\\"b")', "poll selector is JSON-quoted")
+cmd = rb.finalize_cmd("/t/c.webm", part, no_mic=True, started="2026-10-29T15:28:00Z")
+check(cmd[-5:] == ["-metadata", "creation_time=2026-10-29T15:28:00Z", "-f", "mp4", part],
+      "finalize tags creation_time with the capture start")
+check(rb.in_call_js('a"b') == '!!document.querySelector("a\\"b")', "in-call probe is JSON-quoted")
+
+# ---- --wait-for-call candidates (#121) ----
+ws = {"webSocketDebuggerUrl": "ws://x"}
+cands = rb.wait_candidates([page("A", "https://teams.microsoft.com/v2/") | ws,
+                            page("B", "https://example.com/") | ws,
+                            page("C", "https://meet.google.com/x") | {"webSocketDebuggerUrl": ""},  # skipped
+                            page("D", "https://teams.live.com/", type_="iframe") | ws], None, None)
+check([c[0]["id"] for c in cands] == ["A"], f"wait probes meeting pages with a websocket only: {cands}")
+cands = rb.wait_candidates([page("A", "https://teams.microsoft.com/v2/") | ws,
+                            page("B", "https://example.com/room") | ws], "room", "#hang")
+check([(c[0]["id"], c[1]) for c in cands] == [("B", "#hang")], "--target and --leave-selector narrow the wait")
 
 
 # ---- fake CDP end to end ----
-def fake_cdp(webm_b64, ws_port_box, close_after_drain=False, in_call_forever=False):
-    """Serve canned Runtime.evaluate replies; returns the websockets server."""
+def fake_cdp(webm_b64, ws_port_box, close_after_drain=False, in_call_forever=False, joins_after=None):
+    """Serve canned Runtime.evaluate replies; returns the websockets server.
+
+    joins_after=N: the standalone --wait-for-call probe answers False N times, then True.
+    """
     from websockets.sync.server import serve
     polls = itertools.repeat(True) if in_call_forever else iter([True, True, False, False])
+    probes = itertools.chain(itertools.repeat(False, joins_after or 0), itertools.repeat(True))
     sent = {"drain": False}
 
     def handler(ws):
         for raw in ws:
             msg = json.loads(raw)
             expr = msg["params"]["expression"]
-            if "MediaRecorder" in expr:  # install (its body also mentions drain/poll)
+            if expr.startswith("!!document.querySelector("):  # --wait-for-call probe
+                value = next(probes)
+            elif "MediaRecorder" in expr:  # install (its body also mentions drain/poll)
                 value = {"installed": True, "micOk": True, "micError": None}
             elif ".poll(" in expr:
                 value = {"inCall": next(polls, False), "remoteStreams": 1, "micOk": True}
@@ -151,12 +172,15 @@ if shutil.which("ffmpeg") and shutil.which("ffprobe"):
         wsrv = fake_cdp(b64, box)
         wsrv2 = fake_cdp(b64, box, close_after_drain=True)
         wsrv3 = fake_cdp(b64, box, in_call_forever=True)
+        wsrv4 = fake_cdp(b64, box, joins_after=2)
         listing = [page("PAGE1", "https://meet.google.com/abc-defg-hij") |
                    {"webSocketDebuggerUrl": f"ws://127.0.0.1:{box[0]}/devtools/page/PAGE1"},
                    page("PAGE2", "https://example.com/closing") |
                    {"webSocketDebuggerUrl": f"ws://127.0.0.1:{box[1]}/devtools/page/PAGE2"},
                    page("PAGE3", "https://example.com/forever") |
-                   {"webSocketDebuggerUrl": f"ws://127.0.0.1:{box[2]}/devtools/page/PAGE3"}]
+                   {"webSocketDebuggerUrl": f"ws://127.0.0.1:{box[2]}/devtools/page/PAGE3"},
+                   page("PAGE4", "https://example.com/lobby") |
+                   {"webSocketDebuggerUrl": f"ws://127.0.0.1:{box[3]}/devtools/page/PAGE4"}]
 
         class Lister(http.server.BaseHTTPRequestHandler):
             def do_GET(self):
@@ -177,7 +201,7 @@ if shutil.which("ffmpeg") and shutil.which("ffprobe"):
             r = subprocess.run([sys.executable, script, "--list-targets", "--cdp-port", port],
                                capture_output=True, text=True, timeout=30)
             check(r.returncode == 0 and r.stdout.startswith("PAGE1\t")
-                  and len(r.stdout.splitlines()) == 3, f"--list-targets: {r!r}")
+                  and len(r.stdout.splitlines()) == 4, f"--list-targets: {r!r}")
             out = Path(d, "rec", "call.m4a")
             r = subprocess.run([sys.executable, script, "--out", str(out), "--cdp-port", port,
                                 "--poll-seconds", "0.1", "--drain-seconds", "0.1", "--max-seconds", "30"],
@@ -222,6 +246,35 @@ if shutil.which("ffmpeg") and shutil.which("ffprobe"):
             r = subprocess.run([sys.executable, script, "--out", str(out), "--cdp-port", "1"],
                                capture_output=True, text=True, timeout=30)
             check(r.returncode == 6, f"unreachable CDP exits 6, got {r.returncode}")
+            # --wait-for-call (#121): PAGE4 is in the lobby for 2 probes, then joins.
+            waited = Path(d, "rec", "waited.m4a")
+            r = subprocess.run([sys.executable, script, "--out", str(waited), "--cdp-port", port,
+                                "--wait-for-call", "--wait-poll-seconds", "0.1", "--target", "PAGE4",
+                                "--leave-selector", "#hangup", "--poll-seconds", "0.1",
+                                "--drain-seconds", "0.1", "--max-seconds", "30"],
+                               capture_output=True, text=True, timeout=60)
+            check(r.returncode == 0 and "is in a call; starting" in r.stderr
+                  and "record-browser: stopped: call-ended" in r.stderr, f"wait then record: rc={r.returncode} {r.stderr}")
+            ct = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format_tags=creation_time",
+                                 "-of", "csv=p=0", str(waited)], capture_output=True, text=True).stdout.strip()
+            check(waited.exists() and sc.is_tagged(str(waited)) and ct.startswith("20"),
+                  f"waited capture is tagged and dated: {ct!r}")
+            # Unreachable CDP is a wait state; SIGINT during the wait exits 0 with no file.
+            none = Path(d, "rec", "none.m4a")
+            p = subprocess.Popen([sys.executable, script, "--out", str(none), "--cdp-port", "1",
+                                  "--wait-for-call", "--wait-poll-seconds", "0.1"],
+                                 stderr=subprocess.PIPE, text=True)
+            lines = []
+            for line in p.stderr:
+                lines.append(line)
+                if "not reachable yet" in line:
+                    break
+            p.send_signal(signal.SIGINT)
+            lines += p.stderr.readlines()
+            rc = p.wait(timeout=30)
+            err = "".join(lines)
+            check(rc == 0 and "stopped while waiting" in err and not none.exists(),
+                  f"interrupted wait exits 0, no file: rc={rc} {err}")
             r = subprocess.run([sys.executable, script, "--cdp-port", port], capture_output=True, text=True)
             check(r.returncode == 2, "missing --out exits 2")
         finally:
@@ -229,6 +282,7 @@ if shutil.which("ffmpeg") and shutil.which("ffprobe"):
             wsrv.shutdown()
             wsrv2.shutdown()
             wsrv3.shutdown()
+            wsrv4.shutdown()
 else:
     print("SKIP: ffmpeg/ffprobe not found (fake CDP end to end)")
 
