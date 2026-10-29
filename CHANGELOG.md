@@ -6,6 +6,16 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ## [Unreleased]
 
+### Added
+
+- `whosaid autorecord setup --app A | --browser --workspace WS [--owner NAME]`
+  sets up unattended call recording on a new Mac in one command (#127): `whosaid
+  setup --yes` (dependencies, models; `--skip-deps` skips it), `autorecord
+  install`, then `watch install --into WS --source <into> --no-fda`. It stops at
+  the first failed step and lists what is left to do by hand. `--owner` starts
+  `WS/whosaid.toml` with `[workspace] owner` and never edits an existing one;
+  `--dry-run` changes nothing.
+
 ### Fixed
 
 - `record --app --wait-for-call` retries a permission error at capture start up

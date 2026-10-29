@@ -106,4 +106,47 @@ esac
     check(plistlib.loads(r.stdout.encode())["Label"] == ar.LABEL, "dry run prints the plist")
     check(not (d / "apps").exists(), "dry run builds nothing")
 
+    # ---- setup (#127) ----
+    calls = d / "calls"
+    fake2 = d / "whosaid2"
+    fake2.write_text(f"""#!/bin/bash
+echo "$*" >> {calls}
+[[ $1 == setup ]] && exit 7
+exit 0
+""")
+    fake2.chmod(0o755)
+    (d / "ws").mkdir()
+    setup = [sys.executable, str(ROOT / "lib" / "autorecord.py"), "setup", "--app", "com.example.app",
+             "--into", str(d / "rec2"), "--workspace", str(d / "ws"), "--whosaid", str(fake2)]
+    senv = dict(env, WHOSAID_AUTORECORD_APP_DIR=str(d / "apps"))
+    r = subprocess.run(setup + ["--owner", "Alice_Example", "--dry-run"], capture_output=True, text=True,
+                       timeout=30, env=senv)
+    check(r.returncode == 0, f"setup dry run exits 0: {r.stderr}")
+    check(f"{fake2} setup --yes" in r.stderr and "2/3 record every call" in r.stderr
+          and "watch install --into" in r.stderr and "--no-fda --dry-run" in r.stderr,
+          f"setup dry run lists all three steps: {r.stderr}")
+    check(calls.read_text().split("\n")[0].startswith("watch install") and "setup --yes" not in calls.read_text(),
+          "dry run only calls watch install --dry-run")
+    check(not (d / "ws" / "whosaid.toml").exists() and not (d / "apps").exists() and not (d / "rec2").exists(),
+          "setup dry run writes nothing")
+    check('Whosaid Call Recorder' in r.stdout and "whosaid enroll" in r.stdout, f"lists what is left: {r.stdout}")
+    calls.write_text("")
+    r = subprocess.run(setup, capture_output=True, text=True, timeout=30, env=senv)
+    check(r.returncode == 7 and "`whosaid setup` failed (exit 7)" in r.stderr
+          and calls.read_text().strip() == "setup --yes" and not (d / "rec2").exists(),
+          f"a failed deps step stops setup before install: {r.returncode} {r.stderr}")
+    r = subprocess.run(setup + ["--owner", 'x"; rm', "--dry-run"], capture_output=True, text=True,
+                       timeout=30, env=senv)
+    check(r.returncode == 2, "an owner that would break the toml is refused")
+    r = subprocess.run(setup[:-6] + ["--into", str(d / "ws"), "--workspace", str(d / "ws"),
+                                    "--whosaid", str(fake2), "--dry-run"],
+                       capture_output=True, text=True, timeout=30, env=senv)
+    check(r.returncode == 2 and "must be different" in r.stderr, "recordings folder != workspace")
+    ar.write_owner(d / "ws", "Alice_Example", False)
+    check((d / "ws" / "whosaid.toml").read_text().startswith('[workspace]\nowner = "Alice_Example"'),
+          "owner written to a new whosaid.toml")
+    (d / "ws" / "whosaid.toml").write_text("# mine\n")
+    ar.write_owner(d / "ws", "Bob_Example", False)
+    check((d / "ws" / "whosaid.toml").read_text() == "# mine\n", "an existing whosaid.toml is never edited")
+
 print(f"PASS: autorecord_test ({CHECKS} checks)")

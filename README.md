@@ -183,6 +183,14 @@ whosaid autorecord status        # installed? running? recent log lines
 whosaid autorecord uninstall     # a call in progress is saved first
 ```
 
+**A new Mac in one command.** After `git clone`, `whosaid autorecord setup` runs `whosaid setup --yes` (dependencies, models), `autorecord install`, then `watch install`, stops at the first failed step, and lists what is left to do by hand (the permission toggle, `whosaid enroll`). `--owner` starts the workspace's `whosaid.toml` with your name; an existing one is left as is. Try it with `--dry-run` first.
+
+```bash
+git clone https://github.com/sblattj/whosaid ~/code/whosaid && cd ~/code/whosaid
+./whosaid autorecord setup --app com.microsoft.teams2 --label teams \
+  --workspace ~/meetings --owner Alice_Example   # or --browser instead of --app
+```
+
 - **When it records.** `--app` watches whether the app has the microphone open: it starts when the app opens the mic and stops 30 s (`--idle-seconds`) after it closes it. `--browser` watches meeting tabs (Teams web, Meet, Zoom web) for their hang-up button. Neither reads the screen.
 - **Login.** `install` starts it at every login. `--app` builds a small launcher, `~/Applications/Whosaid Call Recorder.app`, and opens System Settings so you can turn it on under Screen & System Audio Recording. That permission belongs to the launcher, which is only rebuilt when whosaid changes it, so re-running `install` with other flags keeps it.
 - **No admin rights?** If that toggle asks for an admin password, use `--browser` with the meeting on the web. Start the browser with `--remote-debugging-port=9222` (autorecord never launches or changes your browser). An organization policy can turn remote debugging off.

@@ -21,6 +21,10 @@ autorecord.py: record every call unattended (`whosaid autorecord`, GitHub issue 
   uninstall  Stop it (a call in progress is saved) and remove the LaunchAgent.
              --purge also removes the launcher app (and with it the grant).
   status     Installed mode, running or not, recent log lines.
+  setup      A new Mac in one command (#127): `whosaid setup --yes` (deps, models),
+             `install`, then `whosaid watch install --into <workspace> --source <into>`
+             so each saved call is transcribed. --owner starts a whosaid.toml naming
+             the workspace owner; --skip-deps; --dry-run changes nothing.
 
 The `whosaid watch` LaunchAgent pointed at the same folder ingests each file.
 Stdlib only.
@@ -32,6 +36,7 @@ import fcntl
 import hashlib
 import os
 import plistlib
+import re
 import shutil
 import signal
 import subprocess
@@ -359,7 +364,87 @@ Next: start your browser with --remote-debugging-port={a.cdp_port} and use the m
 in it (Teams web, Meet, Zoom web). Autorecord does not launch or change the browser.
 A browser managed by an organization policy can disable remote debugging.
 Log: tail -f {into / LOG_NAME}""")
-    print(f"Transcribe each call automatically: whosaid watch install --into <workspace> --source {into} --no-fda")
+    if not getattr(a, "from_setup", False):
+        print(f"Transcribe each call automatically: whosaid watch install --into <workspace> --source {into} --no-fda")
+    return 0
+
+
+OWNER_OK = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_ .'-]*$")
+
+
+def write_owner(ws: Path, owner: str, dry: bool) -> None:
+    """Start a workspace config naming its owner; never edit an existing one."""
+    toml = ws / "whosaid.toml"
+    if toml.exists():
+        log(f"setup: {toml} exists; left as is (set [workspace] owner there to change it)")
+        return
+    if dry:
+        log(f"setup: would write {toml}: [workspace] owner = \"{owner}\"")
+        return
+    toml.write_text(f'[workspace]\nowner = "{owner}"   # whose action items this workspace tracks\n')
+    log(f"setup: wrote {toml} (owner {owner})")
+
+
+def step(title: str, argv: list[str], dry: bool) -> int:
+    log(f"== {title}: {' '.join(argv)}")
+    if dry and "--dry-run" not in argv:
+        return 0
+    return subprocess.run(argv).returncode
+
+
+def cmd_setup(a: argparse.Namespace) -> int:
+    """One command for a new Mac: deps + models, autorecord at login, transcribe each call."""
+    if sys.platform != "darwin" and not a.dry_run:
+        log("autorecord setup: macOS only (launchd).")
+        return 1
+    if a.owner and not OWNER_OK.match(a.owner):
+        log(f"autorecord setup: --owner {a.owner!r}: use letters, digits, space, _ . ' -")
+        return 2
+    whosaid = str(Path(a.whosaid).expanduser().resolve())
+    ws = Path(a.workspace).expanduser().resolve()
+    into = Path(a.into).expanduser().resolve()
+    if ws == into:
+        log("autorecord setup: --workspace and --into must be different folders")
+        return 2
+    if a.dry_run:
+        log("== DRY RUN: nothing installed, nothing written ==")
+
+    if not a.skip_deps:
+        rc = step("1/3 dependencies and models", [whosaid, "setup", "--yes"], a.dry_run)
+        if rc:
+            log(f"autorecord setup: `whosaid setup` failed (exit {rc}); fix that and re-run")
+            return rc
+
+    log(f"== 2/3 record every call ({'app ' + a.app if a.app else 'browser'}) into {into}")
+    a.into, a.whosaid, a.from_setup = str(into), whosaid, True
+    rc = cmd_install(a)
+    if rc:
+        return rc
+
+    if not a.dry_run:
+        ws.mkdir(parents=True, exist_ok=True)
+    if a.owner:
+        write_owner(ws, a.owner, a.dry_run)
+    watch = [whosaid, "watch", "install", "--into", str(ws), "--source", str(into), "--no-fda"]
+    if a.dry_run and ws.is_dir():
+        watch.append("--dry-run")
+    rc = step("3/3 transcribe each saved call", watch, a.dry_run)
+    if rc:
+        log(f"autorecord setup: `whosaid watch install` failed (exit {rc})")
+        return rc
+
+    todo = []
+    if a.app:
+        todo.append(f'turn on "{APP_NAME}" in System Settings > Privacy & Security > '
+                    "Screen & System Audio Recording")
+    else:
+        todo.append(f"start your browser with --remote-debugging-port={a.cdp_port} and join meetings there")
+    if not a.owner:
+        todo.append(f'name the workspace owner: [workspace] owner = "Your_Name" in {ws / "whosaid.toml"}')
+    todo.append("teach whosaid your voice: whosaid enroll")
+    todo.append("check: whosaid autorecord status   (then join a call)")
+    print("\nSetup " + ("would be " if a.dry_run else "") + "done. Left for you:")
+    print("\n".join(f"  {n}. {t}" for n, t in enumerate(todo, 1)))
     return 0
 
 
@@ -428,19 +513,27 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
     i.add_argument("--dry-run", action="store_true")
     u = sub.add_parser("uninstall")
     u.add_argument("--purge", action="store_true")
+    st = sub.add_parser("setup")
+    add_mode_args(st)
+    st.add_argument("--workspace", required=True, help="meeting workspace the transcripts go into")
+    st.add_argument("--owner", help="workspace owner label for a new whosaid.toml, e.g. Alice_Example")
+    st.add_argument("--skip-deps", action="store_true", help="skip `whosaid setup` (deps, models)")
+    st.add_argument("--no-open", action="store_true")
+    st.add_argument("--dry-run", action="store_true")
     s = sub.add_parser("status")
     s.add_argument("--lines", type=int, default=8)
     a = p.parse_args(argv)
     if getattr(a, "idle_seconds", 1) <= 0:
         p.error("--idle-seconds must be > 0")
-    if a.cmd in ("run", "install") and a.browser is False and a.target:
+    if a.cmd in ("run", "install", "setup") and a.browser is False and a.target:
         p.error("--target only applies with --browser")
     return a
 
 
 def main(argv: list[str] | None = None) -> int:
     a = parse_args(argv)
-    return {"run": cmd_run, "install": cmd_install, "uninstall": cmd_uninstall, "status": cmd_status}[a.cmd](a)
+    return {"run": cmd_run, "install": cmd_install, "uninstall": cmd_uninstall, "status": cmd_status,
+            "setup": cmd_setup}[a.cmd](a)
 
 
 if __name__ == "__main__":

@@ -682,6 +682,8 @@ AUTORECORD
   whosaid autorecord install   (same flags) [--no-open] [--dry-run]
   whosaid autorecord uninstall [--purge]
   whosaid autorecord status    [--lines N]
+  whosaid autorecord setup     --app A | --browser --workspace WS [--owner NAME]
+                               [--into DIR] [--label L] [--skip-deps] [--no-open] [--dry-run]
   run loops: wait for a call, record it into --into (default ~/Recordings), repeat.
   --app A uses `record --app A --wait-for-call --until-call-ends` (A is a bundle ID,
   e.g. com.microsoft.teams2); --browser uses `record --browser --wait-for-call` on a
@@ -695,6 +697,9 @@ AUTORECORD
   needs no grant (no admin rights needed) and never launches or changes the browser.
   uninstall stops it (a call in progress is saved); --purge also removes the app.
   Pair it with: whosaid watch install --into <ws> --source <into> --no-fda
+  setup does a new Mac in one go: whosaid setup --yes (deps, models), install, then
+  that watch install; --owner NAME starts <ws>/whosaid.toml (an existing one is left
+  as is). It stops at the first failed step and lists what is left to do by hand.
 
 ENV OVERRIDES
   WHOSAID_MODEL        Default Whisper model repo (default: large-v3; turbo repo = rollback).
@@ -2596,10 +2601,10 @@ cmd_wiki() {
 # a launchd job started from an installed symlink still finds the checkout.
 cmd_autorecord() {
   if want_help "$@"; then help_section "AUTORECORD"; exit 0; fi
-  local usage="usage: whosaid autorecord run|install|uninstall|status [flags]"
+  local usage="usage: whosaid autorecord run|install|setup|uninstall|status [flags]"
   [[ $# -eq 0 ]] && { log "autorecord: need a subcommand. $usage"; exit 1; }
   case "$1" in
-    run|install|uninstall|status) ;;
+    run|install|setup|uninstall|status) ;;
     *) log "autorecord: unknown subcommand '$1'. $usage"; exit 1 ;;
   esac
   require_module "$REPO_DIR/lib/autorecord.py" autorecord
