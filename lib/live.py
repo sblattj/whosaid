@@ -358,6 +358,9 @@ def cmd_run(a: argparse.Namespace) -> int:
     done: set[Path] = set()
     log(f"model {a.model}; waiting for a call being recorded (Ctrl-C to quit)")
     waiting_logged = False
+    if a.capture and not Path(a.capture).is_dir():
+        log(f"no capture at {a.capture}")
+        return 1
     while not state["stop"] and time.monotonic() < deadline:
         cap = Path(a.capture) if a.capture else active_capture()
         if cap and cap not in done:
@@ -367,9 +370,6 @@ def cmd_run(a: argparse.Namespace) -> int:
             if a.once or a.capture:
                 return 0
             continue
-        if a.capture:
-            log(f"no capture at {a.capture}")
-            return 1
         if not waiting_logged:
             log("no call is being recorded; waiting")
             waiting_logged = True
@@ -402,11 +402,12 @@ def main(argv: list[str] | None = None) -> int:
     s = sub.add_parser("show")
     s.add_argument("--into", default=str(DEFAULT_INTO))
     s.add_argument("--minutes", type=float)
+    argv = list(sys.argv[1:] if argv is None else argv)
+    if not argv or argv[0] not in ("run", "show", "-h", "--help"):
+        argv.insert(0, "run")  # bare `whosaid live [flags]` means run
     a = p.parse_args(argv)
     if a.cmd == "show":
         return cmd_show(a)
-    if a.cmd is None:
-        a = r.parse_args(argv or [])
     if a.chunk_seconds < 5:
         p.error("--chunk-seconds must be >= 5")
     return cmd_run(a)

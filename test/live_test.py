@@ -135,4 +135,9 @@ with tempfile.TemporaryDirectory() as d:
     check(r["active"] and r["lines"] == 2 and "at 0" not in r["transcript"], f"last N minutes, live: {r}")
     check(not live.latest_session(d / "none")["ok"], "no session: ok=false with a hint")
 
+# ---- CLI: bare `whosaid live --flags` means run; a missing --capture fails ----
+live.cmd_run = lambda a: ("run", a.once, a.capture)
+check(live.main(["--once", "--capture", "/x"]) == ("run", True, "/x"), "bare flags parse as run")
+check(live.main([]) == ("run", False, None), "no args = run")
+
 print(f"PASS: live_test ({CHECKS} checks)")
