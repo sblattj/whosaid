@@ -14,25 +14,22 @@ import WhosaidKit
     MenuBarExtra {
       MenuContent().environment(model)
     } label: {
-      Image(systemName: model.state?.recording == true ? "record.circle.fill" : "waveform")
+      MenuBarLabel(menu: model.menu)
     }
     .menuBarExtraStyle(.window)
     Settings { SettingsView().environment(model) }
   }
 }
 
-struct MenuContent: View {
-  @Environment(AppModel.self) var model
-  @Environment(\.openWindow) var openWindow
+struct MenuBarLabel: View {
+  let menu: MenuPresentation
   var body: some View {
-    VStack(alignment: .leading, spacing: 8) {
-      Text(model.state?.headline ?? "starting").font(.headline)
-      Divider()
-      Button("Open whosaid") { openWindow(id: "main"); NSApp.activate() }
-      Button("Quit") { NSApp.terminate(nil) }
+    HStack(spacing: 3) {
+      Image(systemName: menu.symbol)
+      if let t = menu.title { Text(t).monospacedDigit() }
+      if menu.live { Image(systemName: "pencil.line") }
     }
-    .padding(12)
-    .frame(width: 280)
+    .accessibilityLabel(menu.headline)
   }
 }
 

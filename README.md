@@ -235,6 +235,8 @@ whosaid app uninstall
 
 The app never records and never asks for Screen & System Audio Recording: `Whosaid Call Recorder.app` keeps that grant. Pick the workspace and the recordings folder in its Settings (or set `WHOSAID_WORKSPACE` / `WHOSAID_RECORDINGS`). With no workspace, or one that is not indexed yet, the window says what to do next. Settings also has "Open at login". Needs macOS 15 and Swift 6.
 
+The menu bar item shows one glyph per state, from `whosaid app-state`: a waveform while idle, a red record dot with the elapsed time while a call is recorded (plus a pencil when `whosaid live` is transcribing it), gears while the last call is transcribed, a check just after, a pause sign while autorecord is paused and a warning triangle when something needs a look. Its panel has Stop and save now, Pause autorecord for 1 hour, the last three meetings, Name N unknown voices, search and Settings.
+
 ### Enroll from an existing recording
 
 Already have a clip of the person speaking? Skip the mic and cut a reference straight from it:
@@ -810,6 +812,8 @@ See [Menu bar glyph](#menu-bar-glyph-whosaid-watch-menubar-swiftbar) for the ful
 including why a fresh grant needs a relaunch.
 
 ### Menu bar glyph: `whosaid watch menubar` (SwiftBar)
+
+> Installed the native app (`whosaid app install`)? Its menu bar item is the default and shows the same states plus autorecord, the live transcript, stop-and-save, pause and the last meetings, without SwiftBar or its Full Disk Access grant. The SwiftBar plugin below keeps working as the lightweight option; run one or the other, not both.
 
 `whosaid watch menubar install [--workspace <ws>] [--interval 10s]` symlinks a stdlib-only
 SwiftBar plugin (`contrib/swiftbar/whosaid.10s.py`) into SwiftBar's plugin directory, so the

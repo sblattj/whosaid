@@ -61,6 +61,14 @@ final class AppModel {
   private var stream: AppStateStream?
   private var streamTask: Task<Void, Never>?
   private var watcher: FolderWatcher?
+  /// Ticks once a second while recording, for the elapsed time in the menu bar.
+  var now = Date()
+  private var ticker: Timer?
+  var recent: [MeetingRow] = []
+  private var recentKey: String?
+  /// The last menu action's outcome (stop-now, pause), shown under the headline.
+  var actionNote: String?
+  var menu: MenuPresentation { MenuPresentation(state, now: now) }
 
   init(paths: WhosaidPaths = .resolve()) {
     self.paths = paths
@@ -68,6 +76,12 @@ final class AppModel {
   }
 
   func start() {
+    if let fixture = ProcessInfo.processInfo.environment["WHOSAID_APP_SELFTEST_STATE"].flatMap({ FileManager.default.contents(atPath: $0) }),
+       let v = try? JSONValue.parse(fixture) {
+      apply(AppState(raw: v))  // self-test: a fixture snapshot instead of the live stream
+      Task { await refreshHealth() }
+      return
+    }
     restartStream()
     watchWorkspace()
     Task { await refreshHealth() }
@@ -86,7 +100,7 @@ final class AppModel {
     let s = AppStateStream(paths: paths)
     stream = s
     streamTask = Task { [weak self] in
-      for await st in s.states() { self?.state = st }
+      for await st in s.states() { self?.apply(st) }
     }
   }
 
@@ -104,10 +118,56 @@ final class AppModel {
         health = .noIndex("whosaid index \(ws)")
       } else {
         health = .ready(meetings: meetings)
+        await refreshRecent()
       }
     } catch {
       health = .error("the whosaid MCP server did not answer: \(error)")
     }
+  }
+
+  func apply(_ st: AppState) {
+    state = st
+    let rec = menu.recording
+    if rec && ticker == nil {
+      ticker = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { _ in
+        Task { @MainActor in AppModelLocator.model?.now = Date() }
+      }
+    } else if !rec {
+      ticker?.invalidate()
+      ticker = nil
+    }
+    now = Date()
+    let key = st.lastIngestFolder ?? ""
+    if key != recentKey {
+      recentKey = key
+      Task { await refreshRecent() }
+    }
+  }
+
+  /// The three newest meetings for the menu (whosaid_meetings, newest first).
+  func refreshRecent() async {
+    guard let ws = paths.workspace, case .ready = health, let mcp else { recent = []; return }
+    let r = try? await mcp.call("whosaid_meetings", ["workspace": .string(ws), "limit": .number(3), "compact": .bool(true)])
+    recent = (r?["meetings"]?.array ?? []).compactMap { MeetingRow($0) }
+  }
+
+  private var cli: CLIRunner { CLIRunner(whosaid: paths.whosaid) }
+
+  func stopNow() async {
+    actionNote = "Saving the call…"
+    let r = try? await cli.run(["autorecord", "stop-now", "--into", paths.recordings, "--wait", "60"], timeout: 75)
+    actionNote = r?.status == 0 ? "Saved " + ((r?.stdout ?? "").split(separator: "/").last.map(String.init) ?? "")
+      : "Stop failed: " + (r?.stderr.split(separator: "\n").last.map(String.init) ?? "no answer")
+  }
+
+  func pause(minutes: Int) async {
+    let r = try? await cli.run(["autorecord", "pause", "--minutes", String(minutes), "--into", paths.recordings])
+    actionNote = r?.status == 0 ? nil : "Pause failed: " + (r?.stderr.split(separator: "\n").last.map(String.init) ?? "no answer")
+  }
+
+  func resume() async {
+    let r = try? await cli.run(["autorecord", "resume", "--into", paths.recordings])
+    actionNote = r?.status == 0 ? nil : "Resume failed"
   }
 
   func setWorkspace(_ path: String?) {
@@ -133,5 +193,31 @@ final class AppModel {
     paths.recordings = path
     UserDefaults.standard.set(path, forKey: WhosaidPaths.defaultsKeys.recordings)
     restartStream()
+  }
+}
+
+/// One row of "Last meetings": the folder name split into a date and a title.
+struct MeetingRow: Identifiable, Equatable {
+  let folder: String
+  var id: String { folder }
+
+  init?(_ v: JSONValue) {
+    guard let f = v["folder"]?.string else { return nil }
+    folder = f
+  }
+
+  /// 2026-10-28-1400-planning -> ("planning", "Oct 28 14:00")
+  var title: String {
+    let parts = folder.split(separator: "-", maxSplits: 4).map(String.init)
+    guard parts.count == 5, parts[0].count == 4 else { return folder }
+    return parts[4].replacingOccurrences(of: "-", with: " ").replacingOccurrences(of: "_", with: " ")
+  }
+
+  var when: String {
+    let parts = folder.split(separator: "-", maxSplits: 4).map(String.init)
+    guard parts.count >= 4, parts[3].count == 4 else { return "" }
+    let months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+    let m = (Int(parts[1]) ?? 1) - 1
+    return "\(months[max(0, min(11, m))]) \(Int(parts[2]) ?? 0) \(parts[3].prefix(2)):\(parts[3].suffix(2))"
   }
 }

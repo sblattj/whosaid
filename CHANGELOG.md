@@ -8,6 +8,14 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ### Added
 
+- The macOS app's menu bar item: one glyph per `app-state` state (idle,
+  waiting, transcribing, done, warn, agent not loaded, recording with the
+  elapsed time, recording with the live transcript, saving, paused) and a
+  panel with Stop and save now, Pause autorecord for 1 hour / Resume, the last
+  three meetings, Name N unknown voices, Search, Open whosaid and Settings. The
+  SwiftBar plugin stays as the lightweight option.
+- `test/app_state_fixtures.py` builds one real `app-state` snapshot per menu
+  bar state from fixture logs and state files; the Swift tests read them.
 - `whosaid app build|install|open|uninstall|test`: a native macOS app (SwiftUI,
   Command Line Tools only) with a menu bar item and a library window whose
   vertical sidebar holds Library, People and Recorder. It reads `whosaid mcp`

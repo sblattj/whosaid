@@ -19,6 +19,10 @@ import AppKit
     main.makeKeyAndOrderFront(nil)
     for _ in 0..<40 where model.health == .unknown { try? await Task.sleep(for: .milliseconds(250)) }
     lines.append("health \(model.health)")
+    if ProcessInfo.processInfo.environment["WHOSAID_APP_SELFTEST_MENU"] != nil {
+      await menuShots(model: model, out: out, lines: &lines)
+      finish(out, lines); return
+    }
     let wanted = ProcessInfo.processInfo.environment["WHOSAID_APP_SELFTEST_ITEMS"]?.split(separator: ",").map(String.init)
     for item in SidebarItem.allCases where wanted == nil || wanted!.contains(item.rawValue) {
       model.selection = item
@@ -27,6 +31,30 @@ import AppKit
       lines.append("shot \(item.rawValue) \(ok ? "ok" : "MISSING")")
     }
     finish(out, lines)
+  }
+
+  /// The menu panel (hosted in a plain window so it can be captured without a
+  /// click) and the status item, for the snapshot the model was given.
+  static func menuShots(model: AppModel, out: String, lines: inout [String]) async {
+    lines.append("menubar state \(model.state?.menu.rawValue ?? "none") symbol \(model.menu.symbol) title \(model.menu.title ?? "-")")
+    lines.append("headline \(model.menu.headline)")
+    // The status item itself cannot be captured per window: its label is drawn above the panel.
+    let host = NSHostingController(rootView: VStack(spacing: 0) {
+      HStack { Spacer(); MenuBarLabel(menu: model.menu).padding(6).background(.quaternary, in: .rect(cornerRadius: 5)) }
+        .padding(8)
+      Divider()
+      MenuContent()
+    }.environment(model))
+    let panel = NSWindow(contentViewController: host)
+    panel.styleMask = [.titled]
+    panel.title = "whosaid menu"
+    panel.setContentSize(host.view.fittingSize)
+    panel.center()
+    NSApp.activate()
+    panel.makeKeyAndOrderFront(nil)
+    try? await Task.sleep(for: .milliseconds(900))
+    lines.append("shot menu \(await snapshot(panel, to: "\(out).menu.png") ? "ok" : "MISSING")")
+    panel.close()
   }
 
   /// Asks the harness (bin/selftest.sh, run from a terminal) to capture this one
