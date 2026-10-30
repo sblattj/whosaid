@@ -71,6 +71,23 @@ with tempfile.TemporaryDirectory() as d:
     check(app_cli.cmd_open(argparse.Namespace(built=False, dest=str(dest))) == 1, "open with nothing installed fails")
     app_cli.built_app = real_built
 
+# Signing: the local certificate when the keychain has it, else ad hoc; the env wins.
+real_run = app_cli.subprocess.run
+def fake_security(out):
+    return lambda argv, **kw: subprocess.CompletedProcess(argv, 0, stdout=out, stderr="")
+os.environ.pop("WHOSAID_SIGN_IDENTITY", None)
+app_cli.subprocess.run = fake_security('  1) ABC "Apple Development: someone"\n     1 identities found\n')
+check(app_cli.sign_identity() == "-", "no local certificate: sign ad hoc")
+app_cli.subprocess.run = fake_security('  1) 64712D "whosaid local signing" (CSSMERR_TP_NOT_TRUSTED)\n')
+check(app_cli.sign_identity() == app_cli.SIGN_NAME, "local certificate present (untrusted is fine): sign with it")
+os.environ["WHOSAID_SIGN_IDENTITY"] = "Developer ID Application: X"
+check(app_cli.sign_identity() == "Developer ID Application: X", "WHOSAID_SIGN_IDENTITY overrides")
+del os.environ["WHOSAID_SIGN_IDENTITY"]
+check(app_cli.cmd_sign_setup(argparse.Namespace()) == 0, "sign-setup with the certificate present does nothing")
+app_cli.subprocess.run = real_run
+check(app_cli.parse_args(["sign-setup"]).cmd == "sign-setup", "`whosaid app sign-setup` parses")
+check("extendedKeyUsage = critical, codeSigning" in app_cli.CERT_CONF, "the certificate is for code signing")
+
 r = subprocess.run([str(ROOT / "whosaid"), "app"], capture_output=True, text=True, timeout=60)
 check(r.returncode == 0 and "whosaid app install" in r.stdout, f"bare `whosaid app` prints its help: {r.stderr}")
 r = subprocess.run([str(ROOT / "whosaid"), "app", "nope"], capture_output=True, text=True, timeout=60)

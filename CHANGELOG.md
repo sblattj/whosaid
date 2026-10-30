@@ -6,6 +6,15 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ## [Unreleased]
 
+## [1.24.4] - 2026-10-30
+
+### Fixed
+- The app no longer loses Full Disk Access (and asks for Desktop access again) after every update. Builds were signed ad hoc, so macOS saw each one as a new app. `whosaid app build` now signs with a local "whosaid local signing" certificate when the login keychain has it, so the grant survives updates; `WHOSAID_SIGN_IDENTITY` overrides it.
+- `app/live-shot.sh` runs the app against an empty throwaway workspace, so a screenshot run never reads ~/Desktop.
+
+### Added
+- `whosaid app sign-setup`: once per Mac, makes that certificate in the login keychain. `whosaid autorecord setup` lists it next to `whosaid app install`.
+
 ## [1.24.3] - 2026-10-30
 
 ### Fixed

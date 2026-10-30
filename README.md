@@ -229,6 +229,7 @@ It joins `autorecord status --json`, the watcher's state for the workspace (the 
 A menu bar app plus a library window: meetings, live now, action items, your commitments, topics, chats, people, unnamed voices and the recorder, in one vertical sidebar. It is SwiftUI, built with the Command Line Tools only (no Xcode needed), and it reads whosaid the way an agent does: `whosaid mcp` for the library and one `whosaid app-state --watch` for the menu bar.
 
 ```bash
+whosaid app sign-setup  # once per Mac: a local signing certificate, so updates keep Full Disk Access
 whosaid app install     # swift build -c release, then ~/Applications/whosaid.app
 whosaid app open
 whosaid app test        # swift test for WhosaidKit

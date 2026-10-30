@@ -101,7 +101,7 @@ REPO_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
 
 # Single source of truth for the released version. Bump this alongside the
 # CHANGELOG.md entry and git tag at release time.
-WHOSAID_VERSION="1.24.3"
+WHOSAID_VERSION="1.24.4"
 
 HELPER="$REPO_DIR/lib/transcribe_mlx.py"
 DIARIZER="$REPO_DIR/lib/diarize_sherpa.py"
@@ -203,7 +203,7 @@ USAGE
   whosaid doctor                       Read-only environment/model/device report.
   whosaid version | --version | -V     Print the installed version.
   whosaid mcp                          Run the MCP server (stdio) for AI agents / Claude.
-  whosaid app build|install|open|uninstall|test
+  whosaid app build|install|open|uninstall|test|sign-setup
                                         The native macOS app (menu bar + library window),
                                         built with the Command Line Tools; see APP.
   whosaid <audio> [<audio> ...] [flags]
@@ -765,13 +765,16 @@ APP STATE
   start and on every change (at least once a minute). Read-only.
 
 APP
-  whosaid app build [--debug]          swift build in app/, then app/.build/whosaid.app (ad hoc signed)
+  whosaid app build [--debug]          swift build in app/, then app/.build/whosaid.app, signed with
+                                        the "whosaid local signing" certificate (else ad hoc).
   whosaid app install [--dest DIR] [--no-build]
                                         Build, then copy whosaid.app into ~/Applications
                                         (or $WHOSAID_APP_DIR); remembers this checkout's whosaid.
   whosaid app open [--built]           Open the installed (or just built) app.
   whosaid app uninstall [--dest DIR]   Quit it and remove the installed copy.
   whosaid app test                     swift test for WhosaidKit (Command Line Tools flags included).
+  whosaid app sign-setup               Once per Mac: add a local signing certificate to the login
+                                        keychain so app updates keep Full Disk Access.
   The app reads `whosaid mcp` and `whosaid app-state --watch`; it never records and
   never holds the Screen & System Audio Recording grant. Needs macOS 15 and Swift 6.
 

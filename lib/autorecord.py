@@ -644,7 +644,7 @@ def cmd_setup(a: argparse.Namespace) -> int:
         todo.append(f'name the workspace owner: [workspace] owner = "Your_Name" in {ws / "whosaid.toml"}')
     todo.append("teach whosaid your voice: whosaid enroll")
     todo.append("check: whosaid autorecord status   (then join a call)")
-    todo.append("optional: the macOS app (menu bar, library, Live now): whosaid app install"
+    todo.append("optional: the macOS app (menu bar, library, Live now): whosaid app sign-setup && whosaid app install"
                 + ("" if a.live else "; add --live here to see the call live in it"))
     print("\nSetup " + ("would be " if a.dry_run else "") + "done. Left for you:")
     print("\n".join(f"  {n}. {t}" for n, t in enumerate(todo, 1)))

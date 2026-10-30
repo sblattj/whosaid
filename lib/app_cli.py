@@ -4,13 +4,17 @@ app_cli.py: build and install the native macOS app (`whosaid app`).
 
   build      `swift build -c release` in app/ with the Command Line Tools only,
              then assemble app/.build/whosaid.app (Info.plist, resources) and
-             sign it ad hoc. --debug builds the debug configuration.
+             sign it with the "whosaid local signing" certificate when the
+             login keychain has it (else ad hoc). --debug builds debug.
   install    build, then copy whosaid.app into ~/Applications (or
              $WHOSAID_APP_DIR / --dest). The app finds this checkout's
              `whosaid` (WHOSAID_BIN baked into its defaults at install).
   open       open the installed app (or the built one with --built).
   uninstall  quit it and remove the installed copy.
   test       `swift test` with the flags swift-testing needs under the CLT.
+  sign-setup make the "whosaid local signing" certificate once. An ad hoc
+             signature changes on every build, so macOS treats each update as
+             a new app and forgets Full Disk Access; a certificate keeps it.
 
 The app never records and never holds the Screen & System Audio Recording
 grant: `Whosaid Call Recorder.app` keeps that. Stdlib only.
@@ -32,6 +36,19 @@ APP_NAME = "whosaid.app"
 EXECUTABLE = "WhosaidApp"
 CLT_DEV = Path("/Library/Developer/CommandLineTools/Library/Developer")
 BUILD_TIMEOUT = 900
+SIGN_NAME = "whosaid local signing"
+OPENSSL = "/usr/bin/openssl"  # LibreSSL: its pkcs12 output imports into the keychain as is
+CERT_CONF = """[req]
+distinguished_name = dn
+x509_extensions = ext
+prompt = no
+[dn]
+CN = whosaid local signing
+[ext]
+basicConstraints = critical, CA:false
+keyUsage = critical, digitalSignature
+extendedKeyUsage = critical, codeSigning
+"""
 
 
 def log(msg: str) -> None:
@@ -71,6 +88,19 @@ def built_app(config: str) -> Path:
     return APP_SRC / ".build" / f"{APP_NAME}" if config == "release" else APP_SRC / ".build" / f"debug-{APP_NAME}"
 
 
+def has_identity(name: str = SIGN_NAME) -> bool:
+    r = subprocess.run(["security", "find-identity", "-p", "codesigning"], capture_output=True, text=True)
+    return r.returncode == 0 and f'"{name}"' in r.stdout
+
+
+def sign_identity() -> str:
+    """$WHOSAID_SIGN_IDENTITY, else the local certificate if present, else ad hoc ("-")."""
+    env = os.environ.get("WHOSAID_SIGN_IDENTITY", "").strip()
+    if env:
+        return env
+    return SIGN_NAME if has_identity() else "-"
+
+
 def cmd_build(a: argparse.Namespace) -> int:
     if shutil.which("swift") is None:
         log("app build: `swift` not found. Install the Command Line Tools: xcode-select --install")
@@ -100,10 +130,16 @@ def cmd_build(a: argparse.Namespace) -> int:
         shutil.copytree(res, out / "Contents" / "Resources" / res.name)
     with open(out / "Contents" / "Info.plist", "wb") as fh:
         plistlib.dump(info_plist(version()), fh)
-    sign = subprocess.run(["codesign", "--force", "--sign", "-", str(out)], capture_output=True, text=True)
+    ident = sign_identity()
+    sign = subprocess.run(["codesign", "--force", "--sign", ident, str(out)], capture_output=True, text=True)
     if sign.returncode:
         log(f"app build: codesign failed: {sign.stderr.strip()}")
         return 1
+    if ident == "-":
+        log("app build: signed ad hoc, so macOS asks for permissions again after each update. "
+            "Run `whosaid app sign-setup` once to keep them.")
+    else:
+        log(f"app build: signed with \"{ident}\"")
     print(out)
     return 0
 
@@ -157,6 +193,37 @@ def cmd_uninstall(a: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_sign_setup(a: argparse.Namespace) -> int:
+    if has_identity():
+        log(f"sign-setup: \"{SIGN_NAME}\" is already in the login keychain")
+        return 0
+    import tempfile
+    keychain = Path.home() / "Library" / "Keychains" / "login.keychain-db"
+    with tempfile.TemporaryDirectory(prefix="whosaid-sign-") as d:
+        t = Path(d)
+        (t / "cert.conf").write_text(CERT_CONF)
+        steps = [
+            [OPENSSL, "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "3650",
+             "-keyout", str(t / "key.pem"), "-out", str(t / "cert.pem"), "-config", str(t / "cert.conf")],
+            [OPENSSL, "pkcs12", "-export", "-inkey", str(t / "key.pem"), "-in", str(t / "cert.pem"),
+             "-name", SIGN_NAME, "-out", str(t / "id.p12"), "-passout", "pass:whosaid"],
+            ["security", "import", str(t / "id.p12"), "-k", str(keychain), "-P", "whosaid",
+             "-T", "/usr/bin/codesign"],
+        ]
+        for argv in steps:
+            r = subprocess.run(argv, capture_output=True, text=True)
+            if r.returncode:
+                log(f"sign-setup: {Path(argv[0]).name} failed: {(r.stderr or r.stdout).strip()}")
+                return 1
+    if not has_identity():
+        log("sign-setup: imported, but codesign cannot see the identity")
+        return 1
+    log(f"sign-setup: added \"{SIGN_NAME}\" to the login keychain (only this Mac can sign with it). "
+        "Next: `whosaid app install` (the first signing asks for your login password: click Always Allow), then in System Settings > Privacy & Security > Full Disk Access "
+        "turn whosaid off and on once (remove any older whosaid rows). Later updates keep the grant.")
+    return 0
+
+
 def test_argv() -> list[str]:
     fw, lib = CLT_DEV / "Frameworks", CLT_DEV / "usr" / "lib"
     argv = ["swift", "test", "--package-path", str(APP_SRC)]
@@ -188,13 +255,14 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
     u = sub.add_parser("uninstall")
     u.add_argument("--dest")
     sub.add_parser("test")
+    sub.add_parser("sign-setup", help="make a local signing certificate so updates keep macOS permissions")
     return p.parse_args(argv)
 
 
 def main(argv: list[str] | None = None) -> int:
     a = parse_args(argv)
     return {"build": cmd_build, "install": cmd_install, "open": cmd_open,
-            "uninstall": cmd_uninstall, "test": cmd_test}[a.cmd](a)
+            "uninstall": cmd_uninstall, "test": cmd_test, "sign-setup": cmd_sign_setup}[a.cmd](a)
 
 
 if __name__ == "__main__":
