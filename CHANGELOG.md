@@ -6,6 +6,8 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ## [Unreleased]
 
+## [1.23.1] - 2026-10-29
+
 ### Fixed
 
 - `whosaid app-state` (and the app's menu bar) no longer warns while the
