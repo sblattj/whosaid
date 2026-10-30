@@ -35,6 +35,8 @@ info = app_cli.info_plist(ver)
 check(info["CFBundleIdentifier"] == "com.whosaid.app" and info["LSUIElement"] is True
       and info["CFBundleExecutable"] == app_cli.EXECUTABLE and info["LSMinimumSystemVersion"] == "15.0",
       f"Info.plist: {info}")
+check(info.get("CFBundleIconFile") == "AppIcon" and (app_cli.APP_SRC / "Icon" / "AppIcon.icns").is_file(),
+      "the bundle names AppIcon and the icns is checked in")
 check("NSMicrophoneUsageDescription" not in info and "NSScreenCaptureUsageDescription" not in info,
       "the app asks for no capture permission (the recorder app keeps the grant)")
 argv = app_cli.test_argv()

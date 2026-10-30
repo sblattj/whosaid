@@ -6,6 +6,11 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ## [Unreleased]
 
+## [1.24.2] - 2026-10-30
+
+### Added
+- The macOS app has an icon: two speech bubbles (yellow for me, blue for them) with a waveform, so Cmd+Tab and the Dock stop showing the blank placeholder. `app/Icon/make-icon.sh` redraws `AppIcon.icns` from `app/Icon/draw-icon.swift`.
+
 ## [1.24.1] - 2026-10-30
 
 ### Fixed

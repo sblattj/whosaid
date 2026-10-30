@@ -54,6 +54,7 @@ def info_plist(ver: str) -> dict:
         "CFBundlePackageType": "APPL",
         "CFBundleShortVersionString": ver,
         "CFBundleVersion": ver,
+        "CFBundleIconFile": "AppIcon",  # app/Icon/AppIcon.icns, copied into Contents/Resources
         "LSMinimumSystemVersion": "15.0",
         "LSUIElement": True,  # a menu bar app; the main window opens at launch and from the menu
         "NSHumanReadableCopyright": "MIT",
@@ -92,6 +93,9 @@ def cmd_build(a: argparse.Namespace) -> int:
     (out / "Contents" / "MacOS").mkdir(parents=True)
     (out / "Contents" / "Resources").mkdir()
     shutil.copy2(Path(binpath) / EXECUTABLE, out / "Contents" / "MacOS" / EXECUTABLE)
+    icon = APP_SRC / "Icon" / "AppIcon.icns"
+    if icon.is_file():
+        shutil.copy2(icon, out / "Contents" / "Resources" / icon.name)
     for res in Path(binpath).glob("*.bundle"):
         shutil.copytree(res, out / "Contents" / "Resources" / res.name)
     with open(out / "Contents" / "Info.plist", "wb") as fh:
