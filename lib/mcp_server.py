@@ -59,6 +59,7 @@ if _LIB_DIR not in sys.path:
     sys.path.insert(0, _LIB_DIR)
 import wsconfig  # noqa: E402
 import live as live_mod  # noqa: E402
+import live_insights  # noqa: E402
 
 # Single source of truth: lib/__init__.py (pyproject.toml reads it too, via
 # hatch's dynamic version). Import both ways so the file works as a package
@@ -1843,6 +1844,70 @@ def whosaid_live(minutes: Optional[float] = None, recordings: Optional[str] = No
         return {"ok": False, "error": "minutes must be > 0", "hint": "omit it for the whole call"}
     return live_mod.latest_session(into, minutes)
 
+
+
+_DESC_LIVE_INSIGHTS = (
+    "What the call being recorded right now is about: topics (label, share of talk time, top "
+    "terms, first/last clock), rolling summaries per few minutes, and next steps tagged agreed or "
+    "suggested with who said them ('me' = the user's mic, 'them' = the other side). Built fresh "
+    "from the newest live transcript, the same data as the app's Live page. Pair it with "
+    "whosaid_live for the verbatim lines and whosaid_live_ask to find where something was said. "
+    "Local files only; ok=false with a hint when no live transcript exists."
+)
+
+
+def _clock(started: Optional[float], t: float) -> str:
+    return datetime.fromtimestamp(started + t).strftime("%H:%M:%S") if started else ""
+
+
+@mcp.tool(name="whosaid_live_insights", description=_DESC_LIVE_INSIGHTS, annotations=_read_only())
+def whosaid_live_insights(recordings: Optional[str] = None) -> dict:
+    """Topics, summaries and next steps for the newest live session (no wordgraph nodes)."""
+    into = Path(recordings).expanduser() if recordings else live_mod.DEFAULT_INTO
+    head = live_mod.latest_session(into)
+    head.pop("transcript", None)
+    if not head["ok"]:
+        return head
+    jl = Path(head["jsonl"])
+    meta, entries = live_mod.read_entries(jl)
+    res = live_insights.build(meta, entries, session=jl.name[: -len(".jsonl")])
+    started = float(meta["started"]) if meta.get("started") else None
+    topics = [{"label": t["label"], "rank": t["rank"], "share": t["share"], "terms": t["terms"],
+               "first": _clock(started, t["firstT"]), "last": _clock(started, t["lastT"]),
+               "new": t["new"]} for t in res["topics"]]
+    label = {t["id"]: t["label"] for t in res["topics"]}
+    summaries = [{"from": _clock(started, s["from"]), "to": _clock(started, s["to"]),
+                  "bullets": s["bullets"], "topics": [label.get(i, i) for i in s["topics"]]}
+                 for s in res["summaries"]]
+    steps = [{"kind": n["kind"], "who": n["who"], "clock": n["clock"], "text": n["text"],
+              "topic": label.get(n["topicId"], n["topicId"])} for n in res["nextSteps"]]
+    return dict(head, topics=topics, summaries=summaries, next_steps=steps)
+
+
+_DESC_LIVE_ASK = (
+    "Find where something was said in the call being recorded right now: ranks live transcript "
+    "lines against `question` (term overlap, no model call) and returns the best matches with "
+    "clock, who ('me'/'them') and text, so you can answer from them and cite the times. Pass "
+    "`minutes` to search only the last N minutes. Local files only; ok=false with a hint when no "
+    "live transcript exists."
+)
+
+
+@mcp.tool(name="whosaid_live_ask", description=_DESC_LIVE_ASK, annotations=_read_only())
+def whosaid_live_ask(question: str, minutes: Optional[float] = None, recordings: Optional[str] = None) -> dict:
+    """Lexical matches for `question` in the newest live session; never calls Claude."""
+    if not (question or "").strip():
+        return {"ok": False, "error": "question is empty", "hint": "pass what to look for"}
+    if minutes is not None and minutes <= 0:
+        return {"ok": False, "error": "minutes must be > 0", "hint": "omit it for the whole call"}
+    into = Path(recordings).expanduser() if recordings else live_mod.DEFAULT_INTO
+    res = live_insights.ask(into, question, ws=None, minutes=minutes)
+    if not res["ok"]:
+        res["hint"] = "start one with `whosaid live` while a call is being recorded"
+    res.pop("mode", None)
+    for m in res.get("matches", []):
+        m.pop("t", None)
+    return res
 
 _DESC_SET_STATUS = (
     "Mark one action item or commitment (AI-NNN or CM-NNN) with a status, for example done when "

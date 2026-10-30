@@ -86,6 +86,8 @@ def main() -> None:
         "whosaid_reprocess",
         "whosaid_record_browser",
         "whosaid_live",
+        "whosaid_live_insights",
+        "whosaid_live_ask",
         "whosaid_set_status",
     } | workspace_tools
 

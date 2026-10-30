@@ -6,6 +6,16 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ## [Unreleased]
 
+## [1.24.0] - 2026-10-30
+
+### Added
+
+- MCP `whosaid_live_insights`: the call in progress as topics (label, share, terms,
+  first/last clock), rolling summaries and agreed or suggested next steps, built
+  fresh from the newest live transcript.
+- MCP `whosaid_live_ask`: the live transcript lines that best match a question,
+  with clock and me/them, optionally within the last N minutes. No model call.
+
 ## [1.23.3] - 2026-10-30
 
 ### Changed
