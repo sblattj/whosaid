@@ -84,7 +84,16 @@ guys folks everyone everybody whoa wow bye soon forgot forget remember exactly d
 absolutely correct awesome damn gosh anyways honestly literally question questions side using
 feel feeling coming another ago assuming appreciate seen saw happen happened point minute
 minutes second seconds hour hours morning afternoon evening work working works
+giving expecting discussing discuss discussed mind half touch becomes become became mostly
+early additional current close many set best heard helpful help different use used went
+inside high four five three six ten couple few kinda maybe across along else trying tried
+everything anything nothing someone somebody anyone people person things whatever certain
 """.split())
+FILLER_RE = re.compile(r"^(?:(?:so|yeah|yes|okay|ok|um|uh|well|and|but|like|right|oh|alright|all right|"
+                       r"i mean|you know|actually|basically|anyway|now)\b[,.]?\s+)+", re.I)
+JOIN_GAP = 8.0           # same speaker, next line this soon: one utterance for sentence picking
+MAX_POINT_WORDS = 35     # a summary bullet or next step longer than this is a run-on
+MIN_POINT_WORDS = 6
 
 WORD_RE = re.compile(r"[a-z][a-z0-9']*[a-z0-9]|[a-z]")
 SENT_RE = re.compile(r"[^.!?]+[.!?]*")
@@ -101,7 +110,9 @@ ACTION_RE = re.compile(r"\b(send|write|draft|fix|ship|add|update|file|open|book|
                        r"finish|deliver|demo|document|migrate|configure|install|investigate|"
                        r"look into|talk to|figure out|communicate|grant|sync with|email)\b", re.I)
 # a sentence cut off mid-thought by the transcript chunking
-DANGLING_RE = re.compile(r"(\b(the|a|an|to|and|of|with|for|but|or|that|in|on|at|my|our|your)|-)\W*$", re.I)
+DANGLING_RE = re.compile(r"(\b(the|a|an|to|and|of|with|for|but|or|that|in|on|at|my|our|your|so|if|then|"
+                         r"because|which|is|are|was|were|be|this|these|those|like|just|about|from|as|i|we|"
+                         r"you|they|it's|i'm|we're|you're|um|uh)|-)\W*$", re.I)
 
 
 def log(msg: str) -> None:
@@ -137,6 +148,42 @@ def slug(s: str) -> str:
 
 def sentences(text: str) -> list[str]:
     return [s.strip() for s in SENT_RE.findall(text) if s.strip()]
+
+
+def utterances(entries: list[dict]) -> list[tuple[int, str]]:
+    """(first entry index, text) with consecutive lines of one speaker joined while the
+    gap stays under JOIN_GAP: live lines break mid-sentence, sentences should not."""
+    out: list[tuple[int, str]] = []
+    prev = None
+    for i, e in enumerate(entries):
+        text = (e.get("text") or "").strip()
+        if not text:
+            continue
+        if prev is not None and entries[prev]["who"] == e["who"] \
+                and float(e["t"]) - float(entries[prev]["t"]) <= JOIN_GAP and out:
+            out[-1] = (out[-1][0], out[-1][1] + " " + text)
+        else:
+            out.append((i, text))
+        prev = i
+    return out
+
+
+def tidy(sentence: str) -> str:
+    """No leading filler ("So yeah, ..."), a capital first letter."""
+    s = FILLER_RE.sub("", sentence.strip()).strip()
+    return s[:1].upper() + s[1:] if s else s
+
+
+def point_ok(s: str) -> bool:
+    """A sentence that reads as a whole point: ends cleanly, not a run-on, not a fragment."""
+    n = len(words(s))
+    return MIN_POINT_WORDS <= n <= MAX_POINT_WORDS and not DANGLING_RE.search(s) \
+        and bool(re.search(r"[.!?]['\")]*$", s))
+
+
+def title(phrase: str) -> str:
+    """Title case that leaves apostrophes alone ("Zoe's", not "Zoe'S")."""
+    return " ".join(w[:1].upper() + w[1:] for w in phrase.split())
 
 
 def mmss(seconds: float) -> str:
@@ -281,22 +328,36 @@ def finish(entries: list[dict], chunks: list[list[int]], topics: list[dict], dur
         total_ms += tp["ms"]
         tp["weight"] = {w: c * math.log(1 + nt / tdf[w]) for w, c in tp["terms"].items()}
         tp["top"] = sorted(tp["weight"], key=lambda w: (-tp["weight"][w], w))
+        nameable = [w for w in tp["top"] if not w.endswith("'s")] or tp["top"]
         bg = Counter()
         for i in idx:
             bg.update(bigrams(entries[i].get("text") or ""))
         tp["bigrams"] = bg
-        dom = tp["top"][0] if tp["top"] else tp["id"].rsplit("-", 1)[0]
+        dom = nameable[0] if nameable else tp["id"].rsplit("-", 1)[0]
         pair = sorted((b for b, c in bg.items() if c >= 2 and dom in b.split()),
                       key=lambda b: (-bg[b], b))
         if not pair:  # a phrase from the topic's top terms beats one bare word
-            top = set(tp["top"][:TOPIC_TERMS])
+            top = set(nameable[:TOPIC_TERMS])
             pair = sorted((b for b, c in bg.items() if c >= 2 and set(b.split()) <= top),
                           key=lambda b: (-bg[b], b))
         if pair:
-            tp["label"] = pair[0].title()
-        else:  # no repeated phrase: the two strongest terms say more than one
-            tp["label"] = " · ".join(w.title() for w in tp["top"][:2]) or dom.title()
+            tp["label"] = title(pair[0])
+        else:  # no repeated phrase: two strong terms said together, else the strongest alone
+            tp["label"] = title(dom) if not tp["top"] else co_label(entries, idx, nameable[:TOPIC_TERMS])
     return total_ms
+
+
+def co_label(entries: list[dict], idx: list[int], top: list[str]) -> str:
+    """'A · B' for the pair of top terms said in the same line most often (twice at
+    least), the stronger first; else the strongest term alone."""
+    sets = [set(content(entries[i].get("text") or "")) for i in idx]
+    best, hits = None, 1
+    for a in range(len(top)):
+        for b in range(a + 1, len(top)):
+            n = sum(1 for s in sets if top[a] in s and top[b] in s)
+            if n > hits:
+                best, hits = (top[a], top[b]), n
+    return " · ".join(title(w) for w in best) if best else title(top[0])
 
 
 def node(nid, topic, parent, depth, label, description="", source="meeting") -> dict:
@@ -348,19 +409,27 @@ def summaries(entries, chunks, of_chunk, topics, df, last_t) -> list[dict]:
     n = len(chunks)
     idf = {w: math.log(1 + n / c) for w, c in df.items()}
     freq = Counter(w for e in entries for w in content(e.get("text") or ""))
+    utts = utterances(entries)
     out = []
     windows = max(1, math.ceil((last_t + 1e-9) / SUMMARY_SECONDS))
     for k in range(windows):
         lo, hi = k * SUMMARY_SECONDS, (k + 1) * SUMMARY_SECONDS
-        cands = []
-        for i, e in enumerate(entries):
+        cands, loose = [], []
+        for i, text in utts:
+            e = entries[i]
             if lo <= float(e["t"]) < hi or (k == windows - 1 and float(e["t"]) >= hi):
-                for j, s in enumerate(sentences(e.get("text") or "")):
+                for j, s in enumerate(sentences(text)):
+                    s = tidy(s)
                     ws = sorted(set(content(s)))  # sorted: float sums independent of hash order
                     if len(ws) < 2:
                         continue
                     score = sum(math.log(1 + freq[w]) * idf.get(w, 1.0) for w in ws) / math.sqrt(len(ws) + 1)
-                    cands.append((score, i, j, e["who"], s))
+                    if point_ok(s):
+                        cands.append((score, i, j, e["who"], s))
+                    elif len(words(s)) <= MAX_POINT_WORDS and not DANGLING_RE.search(s):
+                        loose.append((score, i, j, e["who"], s))
+        if len(cands) < 2:  # a window of fragments: the cleanest of them beats an empty card
+            cands += sorted(loose, key=lambda c: (-c[0], c[1], c[2]))[:2 - len(cands)]
         top = sorted(cands, key=lambda c: (-c[0], c[1], c[2]))[:3 if len(cands) >= 6 else 2]
         top.sort(key=lambda c: (c[1], c[2]))
         bullets = [f"{c[3]}: {c[4]}" for c in top]
@@ -376,7 +445,7 @@ def summaries(entries, chunks, of_chunk, topics, df, last_t) -> list[dict]:
 
 def classify(sentence: str) -> str | None:
     s = sentence.strip()
-    if len(words(s)) < 4 or NAV_RE.search(s) or DANGLING_RE.search(s):
+    if len(words(s)) < 4 or len(words(s)) > MAX_POINT_WORDS or NAV_RE.search(s) or DANGLING_RE.search(s):
         return None
     if AGREED_RE.search(s) and ACTION_RE.search(s) and not s.endswith("?") \
             and not re.search(r"\b(could|might|maybe)\b", s, re.I):
@@ -392,15 +461,21 @@ def classify(sentence: str) -> str | None:
 
 def next_steps(entries, topics, topic_of_entry) -> list[dict]:
     out, seen = [], set()
-    for i, e in enumerate(entries):
-        for s in sentences(e.get("text") or ""):
+    found: list[tuple[int, str, str]] = []
+    # joined utterances first (whole sentences), then single lines: an unpunctuated
+    # speaker's lines join into one run-on that hides a short promise inside it
+    for i, text in utterances(entries) + [(i, e.get("text") or "") for i, e in enumerate(entries)]:
+        for s in sentences(text):
+            s = tidy(s)
             kind = classify(s)
             key = " ".join(words(s))
-            if kind and key not in seen:
+            if kind and key not in seen and not any(key in k for k in seen):
                 seen.add(key)
-                out.append({"id": f"ns-{len(out) + 1}", "kind": kind, "who": e["who"], "t": float(e["t"]),
-                            "clock": e.get("clock") or "", "text": s,
-                            "topicId": topics[topic_of_entry[i]]["id"]})
+                found.append((i, kind, s))
+    for i, kind, s in sorted(found, key=lambda f: f[0]):
+        e = entries[i]
+        out.append({"id": f"ns-{len(out) + 1}", "kind": kind, "who": e["who"], "t": float(e["t"]),
+                    "clock": e.get("clock") or "", "text": s, "topicId": topics[topic_of_entry[i]]["id"]})
     return out
 
 

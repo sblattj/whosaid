@@ -326,4 +326,33 @@ with tempfile.TemporaryDirectory() as d:
     check(built == [("opus", "", 900)] and a["mode"] == "claude" and a["answer"] == "stub answer [09:15:10]",
           f"engine = claude constructs ClaudeCLI: {built} {a['mode']}")
 
+# ---------------------------------------------------------------- readable points
+check(li.title("zoe's rollout") == "Zoe's Rollout", "title keeps apostrophes")
+check(li.tidy("so yeah, the cache needs a fix.") == "The cache needs a fix.", "tidy drops filler, capitalizes")
+for cut in ("we can ship it so", "the parser is", "then we", "send it to the"):
+    check(li.DANGLING_RE.search(cut), f"dangling: {cut!r}")
+utt = li.utterances([{"t": 0, "who": "them", "text": "The importer drops rows when"},
+                     {"t": 3, "who": "them", "text": "the header is missing."},
+                     {"t": 5, "who": "me", "text": "Got it."},
+                     {"t": 30, "who": "me", "text": "Later thought."}])
+check([u[1] for u in utt] == ["The importer drops rows when the header is missing.", "Got it.", "Later thought."],
+      f"one speaker's close lines join, a speaker change or long gap splits: {utt}")
+check(li.co_label([{"text": "pager rota pager"}, {"text": "pager rota"}, {"text": "budget"}], [0, 1, 2],
+                  ["pager", "budget", "rota"]) == "Pager · Rota", "co_label pairs terms said together")
+check(li.co_label([{"text": "pager"}, {"text": "budget"}], [0, 1], ["pager", "budget"]) == "Pager",
+      "co_label never pairs terms that are never said together")
+mumble = [{"t": 0, "who": "me", "text": "to"}, {"t": 1, "who": "me", "text": "to"},
+          {"t": 2, "who": "me", "text": "i'll just share the link"}, {"t": 3, "who": "me", "text": "so"},
+          {"t": 4, "who": "them", "text": "So we can review the parser fix and then we ship it on Monday."}]
+ins = li.build({"ended": True}, mumble, now=0)
+check(any(s["who"] == "me" and s["text"] == "I'll just share the link" for s in ins["nextSteps"]),
+      f"a short promise inside an unpunctuated run survives: {[s['text'] for s in ins['nextSteps']]}")
+check(all(b.split(": ", 1)[1][:1].isupper() for s in ins["summaries"] for b in s["bullets"]),
+      f"summary bullets start a sentence: {ins['summaries']}")
+
+import live_quality  # noqa: E402
+q = live_quality.rates(live_quality.score_source(li.build(*live_quality.load_jsonl(ROOT / "test/fixtures/live/call.jsonl"), now=0),
+                                                 [], set(), {}))
+check(q["score"] >= 90 and q["bullet_dangling"] == 0, f"the fixture call scores well: {q}")
+
 print(f"PASS: live_insights_test ({CHECKS} checks)")

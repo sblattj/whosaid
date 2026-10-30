@@ -6,6 +6,17 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ## [Unreleased]
 
+## [1.24.3] - 2026-10-30
+
+### Fixed
+- Live summaries are whole sentences: one speaker's lines are joined before sentences are picked, leading filler ("So yeah, ...") is dropped, and fragments, run-ons and sentences that stop mid-thought are passed over when a whole one exists.
+- Live next steps get the same cleanup, and a short promise inside an unpunctuated run of lines ("i'll just share the link") is still found.
+- Topic labels: no more pairs of words that were never said together ("Mind · Pager"), no possessives ("Zoe'S"), and more filler words kept out of labels. This also tidies the Topics library.
+
+### Added
+- `test/live_quality.py` scores labels, summaries and next steps over live sessions and a sample of workspace meetings, so a change can be measured before and after.
+- `app/live-shot.sh` screenshots the Live now page for a copied session, built by the checkout's own code; `app/selftest.sh` now starts its own copy of the app (`open -n`) instead of reusing one that is already running.
+
 ## [1.24.2] - 2026-10-30
 
 ### Added

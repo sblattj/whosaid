@@ -11,7 +11,8 @@ for v in WHOSAID_WORKSPACE WHOSAID_RECORDINGS WHOSAID_BIN WHOSAID_SPEAKER_DB; do
 blank=(--env WHOSAID_WORKSPACE= --env WHOSAID_RECORDINGS= --env WHOSAID_BIN= --env WHOSAID_SPEAKER_DB=)
 # A copy left running ignores new --env values ("already running"): stop it first.
 pkill -f "$APP/Contents/MacOS/" 2>/dev/null && sleep 1
-open "${blank[@]}" "${envargs[@]}" --env WHOSAID_APP_SELFTEST="$OUT" "$APP"
+# -n: a second copy, so an installed whosaid that is already running is left alone.
+open -n "${blank[@]}" "${envargs[@]}" --env WHOSAID_APP_SELFTEST="$OUT" "$APP"
 end=$((SECONDS + ${SELFTEST_TIMEOUT:-90})); last=""
 while (( SECONDS < end )) && [[ ! -s "$OUT" ]]; do
   if [[ -f "$OUT.req" ]]; then
