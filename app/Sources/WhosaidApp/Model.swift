@@ -69,6 +69,7 @@ final class AppModel {
   /// The last menu action's outcome (stop-now, pause), shown under the headline.
   var actionNote: String?
   var menu: MenuPresentation { MenuPresentation(state, now: now) }
+  let live = LiveModel()
 
   // Library (P4)
   var meetings: [MeetingSummary] = []
@@ -105,11 +106,13 @@ final class AppModel {
     if let fixture = ProcessInfo.processInfo.environment["WHOSAID_APP_SELFTEST_STATE"].flatMap({ FileManager.default.contents(atPath: $0) }),
        let v = try? JSONValue.parse(fixture) {
       apply(AppState(raw: v))  // self-test: a fixture snapshot instead of the live stream
+      live.attach(paths: paths)
       Task { await refreshHealth() }
       return
     }
     restartStream()
     watchWorkspace()
+    live.attach(paths: paths)
     Task { await refreshHealth() }
   }
 
@@ -162,6 +165,7 @@ final class AppModel {
 
   func apply(_ st: AppState) {
     state = st
+    live.syncFollower(callLive: st.liveActive)
     let rec = menu.recording
     if rec && ticker == nil {
       ticker = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { _ in

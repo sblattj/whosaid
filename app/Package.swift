@@ -6,7 +6,7 @@ let package = Package(
   products: [.executable(name: "WhosaidApp", targets: ["WhosaidApp"])],
   targets: [
     .target(name: "WhosaidKit"),
-    .executableTarget(name: "WhosaidApp", dependencies: ["WhosaidKit"]),
+    .executableTarget(name: "WhosaidApp", dependencies: ["WhosaidKit"], resources: [.copy("Resources/wordgraph")]),
     .testTarget(name: "WhosaidKitTests", dependencies: ["WhosaidKit"]),
   ]
 )

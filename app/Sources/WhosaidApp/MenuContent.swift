@@ -28,7 +28,7 @@ struct MenuContent: View {
         MenuRow(symbol: "record.circle", title: app.map { "Call in \(Self.appName($0))" } ?? "Call",
                 detail: m.title, tint: .red) {}
           .disabled(true)
-        MenuRow(symbol: "text.bubble", title: "Open live panel", shortcut: "⌘L") { show(.live) }
+        MenuRow(symbol: "text.bubble", title: "Open live panel", shortcut: "⌘L") { openWindow(id: "live-panel"); NSApp.activate() }
           .keyboardShortcut("l")
         MenuRow(symbol: "stop.circle", title: m.saving ? "Saving…" : "Stop and save now") {
           Task { await model.stopNow() }

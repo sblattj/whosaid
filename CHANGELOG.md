@@ -8,6 +8,19 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ### Added
 
+- The macOS app's Live now workspace: five lanes over the newest `whosaid live`
+  session (me / them transcript, topic buckets that mark a revisit, the jibbr
+  balloon wordgraph, 5-minute summaries, agreed and suggested next steps), a
+  full-window wordgraph, and a ⌘L floating panel with "Ask about this call". The
+  wordgraph is a bundled offline page in a WKWebView that may load only its own
+  files. `test/app_network_gate_test.py` checks that the app has no network API
+  and the page no fetch; a Swift test checks a navigation to http is cancelled.
+  `app/g7a.sh` replays a synthetic call into a throwaway folder and reports
+  latency, topics, fps and CPU.
+- `whosaid live insights build|follow` and `whosaid live ask`: a local engine
+  for topic buckets, wordgraph nodes, summaries and next steps from a live
+  transcript (`<start>.insights.json`), and questions about the call (a search,
+  or Claude only with `[summarizer] engine = "claude"`).
 - The macOS app's My commitments and Action items pages: the ranked worklist
   with P1 to P3 chips and why strings, every action item with its owner, an
   Open / Done / All filter, links that open the source meeting scrolled to the

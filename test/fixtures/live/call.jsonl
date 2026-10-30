@@ -1,0 +1,141 @@
+{"meta": {"started": 1793289600.0, "ended": true, "updated": 1793291120.5}}
+{"t": 4.0, "clock": "09:00:04", "who": "me", "text": "Morning. Can we start with the parser bug from yesterday? The timestamp regex is still failing on some transcripts."}
+{"t": 16.05, "clock": "09:00:16", "who": "them", "text": "Sure. The regex breaks when a speaker label has a colon inside the brackets. The greedy match eats the whole line."}
+{"t": 29.0, "clock": "09:00:29", "who": "me", "text": "Right, the greedy match grabs everything up to the last colon, so the speaker label swallows the text."}
+{"t": 40.6, "clock": "09:00:40", "who": "them", "text": "I reproduced it with a fixture that has nested brackets and a timestamp in the middle of the line."}
+{"t": 52.65, "clock": "09:00:52", "who": "me", "text": "Does the fixture cover the hour format too, or only minutes and seconds in the timestamp?"}
+{"t": 63.35, "clock": "09:01:03", "who": "them", "text": "Only minutes and seconds. The parser treats a three digit hour as a speaker label, which is another edge case."}
+{"t": 75.85, "clock": "09:01:15", "who": "me", "text": "So two bugs. The greedy match on the colon, and the hour edge case in the timestamp regex."}
+{"t": 87.45, "clock": "09:01:27", "who": "them", "text": "Yes. A lazy match fixes the colon problem. The hour edge case needs a separate unit test."}
+{"t": 98.6, "clock": "09:01:38", "who": "me", "text": "I'll write the unit test for the hour edge case this afternoon."}
+{"t": 107.5, "clock": "09:01:47", "who": "them", "text": "Good. I'll fix the greedy match in the regex and add the nested brackets fixture to the parser suite."}
+{"t": 119.55, "clock": "09:01:59", "who": "me", "text": "Should we also run the parser over the old transcripts to see how many lines it drops?"}
+{"t": 130.7, "clock": "09:02:10", "who": "them", "text": "Maybe. A dry run over the archive would show whether the regex change shifts any speaker label."}
+{"t": 141.85, "clock": "09:02:21", "who": "me", "text": "The parser also logs a warning per dropped line, so the dry run output would tell us the edge case count."}
+{"t": 154.8, "clock": "09:02:34", "who": "them", "text": "Agreed. The warning count from the parser is a decent signal for the regex change."}
+{"t": 165.05, "clock": "09:02:45", "who": "me", "text": "What about the unicode colon? Some transcripts use a full width colon after the speaker label."}
+{"t": 175.75, "clock": "09:02:55", "who": "them", "text": "That one is rare. We could normalize the colon before the regex runs, as a later parser fix."}
+{"t": 187.35, "clock": "09:03:07", "who": "me", "text": "Fine, keep the unicode colon out of this patch. The greedy match and the hour timestamp come first."}
+{"t": 198.95, "clock": "09:03:18", "who": "them", "text": "Understood. The parser patch will have the lazy match, the fixture, and the unit test for the hour edge case."}
+{"t": 211.45, "clock": "09:03:31", "who": "me", "text": "And the fixture should keep one line with nested brackets and a colon inside the speaker label."}
+{"t": 222.6, "clock": "09:03:42", "who": "them", "text": "Yes, the nested brackets fixture already has that line. The regex test asserts the speaker label exactly."}
+{"t": 233.75, "clock": "09:03:53", "who": "them", "text": "The lazy match also changes how the parser handles a trailing colon with no text after the speaker label."}
+{"t": 245.8, "clock": "09:04:05", "who": "me", "text": "An empty line after the speaker label should parse as an empty turn, not drop the timestamp."}
+{"t": 256.95, "clock": "09:04:16", "who": "them", "text": "Then the fixture needs an empty turn case too, next to the nested brackets case."}
+{"t": 267.2, "clock": "09:04:27", "who": "me", "text": "Yes, add the empty turn to the fixture. The unit test can assert the timestamp survives."}
+{"t": 277.9, "clock": "09:04:37", "who": "them", "text": "Okay. The regex test grows by three cases: nested brackets, empty turn, and the hour timestamp."}
+{"t": 288.6, "clock": "09:04:48", "who": "me", "text": "How long until the parser patch is ready for review, roughly?"}
+{"t": 297.05, "clock": "09:04:57", "who": "them", "text": "A day for the regex and the fixture. The unit test review can happen in parallel."}
+{"t": 307.75, "clock": "09:05:07", "who": "me", "text": "Great, that covers the parser bug for now."}
+{"t": 314.85, "clock": "09:05:14", "who": "them", "text": "Next item is the release notes for the version going out at the end of the month."}
+{"t": 326.0, "clock": "09:05:26", "who": "me", "text": "The changelog has every merged change, but the release notes need highlights a reader can scan."}
+{"t": 336.7, "clock": "09:05:36", "who": "them", "text": "Agreed. Three or four highlights at the top of the release notes, then the full changelog below."}
+{"t": 347.85, "clock": "09:05:47", "who": "me", "text": "One highlight is the breaking change in the config file. That needs a migration guide link."}
+{"t": 358.55, "clock": "09:05:58", "who": "them", "text": "The migration guide is half written. The breaking change section should show the old and new config keys."}
+{"t": 370.15, "clock": "09:06:10", "who": "me", "text": "Let's put a before and after config snippet in the release notes right under the breaking change."}
+{"t": 381.3, "clock": "09:06:21", "who": "them", "text": "I'll draft the release notes highlights tomorrow and share the draft in the channel."}
+{"t": 391.1, "clock": "09:06:31", "who": "me", "text": "Should we tag the version before the release notes are final, or wait for the draft review?"}
+{"t": 402.25, "clock": "09:06:42", "who": "them", "text": "We should wait. The version tag goes on the commit that also updates the changelog and the release notes."}
+{"t": 414.3, "clock": "09:06:54", "who": "me", "text": "Makes sense. The changelog entry and the version tag in one commit keeps the release clean."}
+{"t": 425.0, "clock": "09:07:05", "who": "them", "text": "Do we want screenshots in the release notes? The settings panel changed a lot in this version."}
+{"t": 436.15, "clock": "09:07:16", "who": "me", "text": "Maybe two screenshots of the settings panel. More than that and the release notes get heavy."}
+{"t": 446.85, "clock": "09:07:26", "who": "them", "text": "Two screenshots then. I'll capture them on a clean profile so the settings panel looks default."}
+{"t": 457.55, "clock": "09:07:37", "who": "me", "text": "The changelog also lists the deprecated flags. Those belong next to the breaking change in the highlights."}
+{"t": 468.7, "clock": "09:07:48", "who": "them", "text": "Right, deprecated flags and the breaking change together, with the migration guide link after them."}
+{"t": 478.95, "clock": "09:07:58", "who": "me", "text": "How about a short upgrade checklist at the end of the release notes for people skipping a version?"}
+{"t": 490.55, "clock": "09:08:10", "who": "them", "text": "A skip version upgrade checklist would help. It can reuse the migration guide steps."}
+{"t": 500.35, "clock": "09:08:20", "who": "me", "text": "Good. So the release notes draft has highlights, the breaking change, deprecated flags, screenshots and the upgrade checklist."}
+{"t": 511.95, "clock": "09:08:31", "who": "me", "text": "Who reads the release notes first? Mostly admins checking the breaking change before they upgrade."}
+{"t": 522.2, "clock": "09:08:42", "who": "them", "text": "Then the breaking change goes first in the highlights, before the new features."}
+{"t": 531.55, "clock": "09:08:51", "who": "me", "text": "And the new features get one line each in the release notes, with the changelog holding the details."}
+{"t": 543.15, "clock": "09:09:03", "who": "them", "text": "The changelog format also needs a cleanup. Some entries have no version heading at all."}
+{"t": 553.4, "clock": "09:09:13", "who": "me", "text": "We could add a changelog lint check that fails when an entry lacks a version heading."}
+{"t": 564.1, "clock": "09:09:24", "who": "them", "text": "A changelog lint check is cheap. It runs in the release workflow before the tag step."}
+{"t": 574.8, "clock": "09:09:34", "who": "me", "text": "Okay, the release workflow runs the changelog lint, then the version tag, then publishes the release notes."}
+{"t": 585.95, "clock": "09:09:45", "who": "them", "text": "That is the whole draft. The version tag waits until the draft review is done."}
+{"t": 596.2, "clock": "09:09:56", "who": "me", "text": "Onboarding docs next. Two new hires start soon and the setup guide is out of date."}
+{"t": 606.9, "clock": "09:10:06", "who": "them", "text": "The setup guide still shows the old install steps. Half the commands moved to the bootstrap script."}
+{"t": 618.05, "clock": "09:10:18", "who": "me", "text": "So the install steps section should just say run the bootstrap script and check the output."}
+{"t": 628.75, "clock": "09:10:28", "who": "them", "text": "Yes, and the onboarding docs need a troubleshooting section for the permissions prompt on first launch."}
+{"t": 639.45, "clock": "09:10:39", "who": "me", "text": "The permissions prompt confuses everyone. A screenshot of the microphone permission dialog would help the new hires."}
+{"t": 650.6, "clock": "09:10:50", "who": "them", "text": "I'll add the permission dialog screenshot to the troubleshooting section of the onboarding docs."}
+{"t": 660.4, "clock": "09:11:00", "who": "me", "text": "What about a walkthrough video for the setup guide? Ten minutes, screen only, no voice over."}
+{"t": 671.1, "clock": "09:11:11", "who": "them", "text": "A walkthrough video goes stale fast. Maybe a short one that only covers the bootstrap script and the permissions prompt."}
+{"t": 683.6, "clock": "09:11:23", "who": "me", "text": "Fair. A short walkthrough video for the bootstrap script, and the setup guide holds the details."}
+{"t": 694.3, "clock": "09:11:34", "who": "them", "text": "The onboarding checklist also needs an owner. Right now new hires ask in the channel who grants repository access."}
+{"t": 706.35, "clock": "09:11:46", "who": "me", "text": "Let's put the repository access request at the top of the onboarding checklist with the form link."}
+{"t": 717.5, "clock": "09:11:57", "who": "them", "text": "Good idea. The checklist order would be repository access, bootstrap script, permissions prompt, then the first build."}
+{"t": 728.65, "clock": "09:12:08", "who": "me", "text": "And the first build step should mention the long model download, otherwise new hires think it froze."}
+{"t": 739.8, "clock": "09:12:19", "who": "them", "text": "Right. The model download takes a while on the first build. The setup guide can show the expected size."}
+{"t": 751.85, "clock": "09:12:31", "who": "me", "text": "I will rewrite the install steps in the setup guide this week."}
+{"t": 760.75, "clock": "09:12:40", "who": "them", "text": "Then I'll review the onboarding docs once your setup guide rewrite lands."}
+{"t": 769.65, "clock": "09:12:49", "who": "me", "text": "Could we also ask the new hires to note every confusing step in the onboarding checklist during their first week?"}
+{"t": 782.15, "clock": "09:13:02", "who": "them", "text": "Yes, a feedback column in the onboarding checklist. The new hires fill it in as they go."}
+{"t": 793.3, "clock": "09:13:13", "who": "me", "text": "That gives us a list of fixes for the setup guide after each new hires cohort."}
+{"t": 804.0, "clock": "09:13:24", "who": "them", "text": "And the troubleshooting section grows from that feedback instead of from guesses."}
+{"t": 812.9, "clock": "09:13:32", "who": "me", "text": "One more thing for the onboarding docs: the glossary page has dead links to the old wiki."}
+{"t": 824.05, "clock": "09:13:44", "who": "them", "text": "We could fix the glossary dead links in the same pass as the setup guide rewrite."}
+{"t": 834.75, "clock": "09:13:54", "who": "them", "text": "The onboarding docs also link a setup guide for the old laptop image that nobody uses now."}
+{"t": 845.9, "clock": "09:14:05", "who": "me", "text": "Delete that old laptop image page from the onboarding docs and redirect the link to the setup guide."}
+{"t": 857.5, "clock": "09:14:17", "who": "them", "text": "Fine. The redirect keeps old bookmarks working for anyone who saved the onboarding link."}
+{"t": 867.3, "clock": "09:14:27", "who": "me", "text": "The new hires also need the editor settings. The setup guide can point to the shared settings file."}
+{"t": 878.9, "clock": "09:14:38", "who": "them", "text": "Good, a shared editor settings file in the setup guide saves the new hires an hour of tweaking."}
+{"t": 890.5, "clock": "09:14:50", "who": "me", "text": "Okay, the glossary goes with the setup guide rewrite."}
+{"t": 898.05, "clock": "09:14:58", "who": "them", "text": "Quick return to the parser bug. While we talked I ran the dry run over the archive with the regex change."}
+{"t": 911.0, "clock": "09:15:11", "who": "me", "text": "Oh nice. How many lines did the parser drop with the lazy match?"}
+{"t": 920.35, "clock": "09:15:20", "who": "them", "text": "The parser dropped nine lines in the whole archive, all with the three digit hour timestamp edge case."}
+{"t": 931.95, "clock": "09:15:31", "who": "me", "text": "So the greedy match fix works, and only the hour edge case remains in the timestamp regex."}
+{"t": 943.1, "clock": "09:15:43", "who": "them", "text": "Exactly. The warning count matched the dropped lines, so the parser logging is accurate."}
+{"t": 952.9, "clock": "09:15:52", "who": "me", "text": "Then the hour unit test I write today should use one of those nine lines as the fixture."}
+{"t": 964.5, "clock": "09:16:04", "who": "them", "text": "I'll paste the nine lines into the fixture file so the unit test uses real timestamp shapes."}
+{"t": 975.65, "clock": "09:16:15", "who": "me", "text": "Great. Can the regex accept one to three hour digits without matching a speaker label by mistake?"}
+{"t": 986.8, "clock": "09:16:26", "who": "them", "text": "Yes, anchor the timestamp regex on the opening bracket and limit the hour to three digits."}
+{"t": 997.5, "clock": "09:16:37", "who": "me", "text": "The nested brackets fixture should still pass with that anchor. Run the parser suite before pushing."}
+{"t": 1008.2, "clock": "09:16:48", "who": "them", "text": "Will do. I'll run the full parser suite with the new anchor and the nested brackets fixture before the push."}
+{"t": 1020.7, "clock": "09:17:00", "who": "me", "text": "And note the dry run numbers in the pull request so the regex change has evidence."}
+{"t": 1031.4, "clock": "09:17:11", "who": "them", "text": "Sure, the pull request gets the dry run counts and the dropped line samples."}
+{"t": 1041.2, "clock": "09:17:21", "who": "me", "text": "Did the dry run touch the unicode colon lines at all?"}
+{"t": 1049.65, "clock": "09:17:29", "who": "them", "text": "Two lines had the unicode colon. The parser kept them, but the speaker label came out wrong."}
+{"t": 1060.8, "clock": "09:17:40", "who": "me", "text": "Then the unicode colon normalize step really is a separate parser fix later. Not in this patch."}
+{"t": 1071.95, "clock": "09:17:51", "who": "them", "text": "Agreed, separate patch. I will file it so the unicode colon case is tracked."}
+{"t": 1081.75, "clock": "09:18:01", "who": "me", "text": "Good, the parser is settled."}
+{"t": 1087.5, "clock": "09:18:07", "who": "me", "text": "Last big item, the cloud bill. The monthly spend went up again and the budget review is next week."}
+{"t": 1099.55, "clock": "09:18:19", "who": "them", "text": "Most of the monthly spend is the storage bucket for the raw recordings. Retention is set to forever."}
+{"t": 1111.15, "clock": "09:18:31", "who": "me", "text": "Forever retention on the storage bucket explains it. What would a ninety day retention policy save?"}
+{"t": 1121.85, "clock": "09:18:41", "who": "them", "text": "Roughly forty percent of the storage cost. The raw recordings older than ninety days are rarely read."}
+{"t": 1133.0, "clock": "09:18:53", "who": "me", "text": "Then the retention policy is the first lever. The compute instances are the second."}
+{"t": 1142.8, "clock": "09:19:02", "who": "them", "text": "The compute instances run all night for the batch jobs. Reserved capacity would cut that cost by a third."}
+{"t": 1154.85, "clock": "09:19:14", "who": "me", "text": "Reserved capacity needs a one year commitment. Is the batch load stable enough for that budget?"}
+{"t": 1165.55, "clock": "09:19:25", "who": "them", "text": "The batch load has been flat for six months. Reserved capacity for the baseline compute instances looks safe."}
+{"t": 1177.15, "clock": "09:19:37", "who": "me", "text": "What about egress? The cloud bill shows a spike in egress from the storage bucket last month."}
+{"t": 1188.3, "clock": "09:19:48", "who": "them", "text": "The egress spike came from a misconfigured sync job pulling the whole storage bucket every night."}
+{"t": 1199.0, "clock": "09:19:59", "who": "me", "text": "So fixing the sync job removes the egress spike, and the retention policy shrinks the storage bucket."}
+{"t": 1210.15, "clock": "09:20:10", "who": "them", "text": "Yes. With both, the monthly spend drops back under the budget line."}
+{"t": 1219.05, "clock": "09:20:19", "who": "me", "text": "We should set cost alerts so the next egress spike shows up in days, not on the monthly cloud bill."}
+{"t": 1231.55, "clock": "09:20:31", "who": "them", "text": "Cost alerts at eighty and one hundred percent of the monthly budget would catch it."}
+{"t": 1241.8, "clock": "09:20:41", "who": "me", "text": "Let's set the cost alerts today, before anything else changes."}
+{"t": 1249.8, "clock": "09:20:49", "who": "them", "text": "I'll set up the cost alerts on the budget this afternoon and send the thresholds to the channel."}
+{"t": 1261.4, "clock": "09:21:01", "who": "me", "text": "I'll fix the sync job schedule so it only pulls new recordings, which ends the egress spike."}
+{"t": 1272.55, "clock": "09:21:12", "who": "them", "text": "And the retention policy change on the storage bucket needs sign off before we apply it."}
+{"t": 1283.25, "clock": "09:21:23", "who": "me", "text": "I will write a one page cost summary for the budget review with the retention policy and reserved capacity numbers."}
+{"t": 1295.75, "clock": "09:21:35", "who": "them", "text": "How about including the egress spike chart in the cost summary? It makes the sync job story obvious."}
+{"t": 1307.35, "clock": "09:21:47", "who": "me", "text": "Yes, the egress chart goes in the cost summary next to the monthly spend trend."}
+{"t": 1317.6, "clock": "09:21:57", "who": "them", "text": "Should we price reserved capacity for two years too, just to compare against the one year commitment?"}
+{"t": 1328.75, "clock": "09:22:08", "who": "me", "text": "Maybe, if the cloud pricing page makes it quick. The one year reserved capacity is the main option."}
+{"t": 1340.35, "clock": "09:22:20", "who": "them", "text": "Got it. The cost summary covers retention policy, reserved capacity, the egress spike and cost alerts."}
+{"t": 1351.05, "clock": "09:22:31", "who": "me", "text": "Sounds good, I'll book the budget review slot for the cost summary next week."}
+{"t": 1360.85, "clock": "09:22:40", "who": "them", "text": "The cloud bill also has a line for idle compute instances in the test account."}
+{"t": 1371.1, "clock": "09:22:51", "who": "me", "text": "Idle compute instances in the test account should shut down at night. That is free money."}
+{"t": 1381.8, "clock": "09:23:01", "who": "them", "text": "A nightly shutdown schedule for the test account compute instances is easy to add."}
+{"t": 1391.6, "clock": "09:23:11", "who": "me", "text": "What does the idle compute cost per month, ballpark, on the cloud bill?"}
+{"t": 1400.95, "clock": "09:23:20", "who": "them", "text": "About a tenth of the monthly spend. Smaller than the storage bucket, but it adds up over the budget year."}
+{"t": 1413.45, "clock": "09:23:33", "who": "me", "text": "Put the idle compute instances in the cost summary too, as the quick win."}
+{"t": 1423.25, "clock": "09:23:43", "who": "them", "text": "Okay, the quick win is the nightly shutdown, the big lever is the retention policy on the storage bucket."}
+{"t": 1435.3, "clock": "09:23:55", "who": "me", "text": "And the reserved capacity is the slow lever, since the commitment needs budget approval."}
+{"t": 1445.1, "clock": "09:24:05", "who": "them", "text": "Right, the reserved capacity purchase goes through the budget review, not before."}
+{"t": 1454.0, "clock": "09:24:14", "who": "me", "text": "We might also tag every storage bucket with an owner so the cloud bill splits cost by team."}
+{"t": 1465.6, "clock": "09:24:25", "who": "them", "text": "Owner tags on each storage bucket would make the cost alerts point at the right team."}
+{"t": 1476.3, "clock": "09:24:36", "who": "them", "text": "Then the budget review has everything: the storage bucket retention, compute instances and the cloud bill trend."}
+{"t": 1487.45, "clock": "09:24:47", "who": "me", "text": "Okay, recap. Parser fix and the hour unit test, the release notes draft, the setup guide rewrite, and the cost alerts."}
+{"t": 1500.4, "clock": "09:25:00", "who": "them", "text": "That matches my list. I'll send the recap notes in the channel after the call."}
+{"t": 1510.65, "clock": "09:25:10", "who": "me", "text": "Thanks, talk tomorrow."}

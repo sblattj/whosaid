@@ -61,34 +61,39 @@ struct DetailView: View {
 
   var body: some View {
     Group {
-      switch model.health {
-      case .unknown:
-        ProgressView("Reading the workspace")
-      case .notConfigured:
-        EmptyState(symbol: "folder.badge.questionmark", title: "Choose your meetings folder",
-                   message: "whosaid keeps transcripts in a workspace folder. Pick it in Settings (the folder `whosaid watch` ingests into).",
-                   action: ("Open Settings", { NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil) }))
-      case .missing(let ws):
-        EmptyState(symbol: "folder.badge.minus", title: "Workspace folder not found",
-                   message: "\(ws) does not exist. Pick another folder in Settings.", action: nil)
-      case .noIndex(let cmd):
-        EmptyState(symbol: "magnifyingglass", title: "No meetings indexed yet",
-                   message: "Transcripts appear here once the workspace is indexed. Run: \(cmd)", action: nil)
-      case .error(let msg):
-        EmptyState(symbol: "exclamationmark.triangle", title: "whosaid is not answering", message: msg, action: nil)
-      case .ready:
-        switch item {
-        case .meetings: MeetingsView(chats: false)
-        case .chats: MeetingsView(chats: true)
-        case .people: PeopleView(unnamedOnly: false)
-        case .unnamed: PeopleView(unnamedOnly: true)
-        case .commitments: CommitmentsView()
-        case .actionItems: ActionItemsView()
-        default: placeholder
-        }
-      }
+      // Live now reads the recordings folder, not the workspace: it works before one is set up.
+      if item == .live { LiveWorkspaceView() } else { workspaceContent }
     }
     .navigationTitle(item.title)
+  }
+
+  @ViewBuilder var workspaceContent: some View {
+    switch model.health {
+    case .unknown:
+      ProgressView("Reading the workspace")
+    case .notConfigured:
+      EmptyState(symbol: "folder.badge.questionmark", title: "Choose your meetings folder",
+                 message: "whosaid keeps transcripts in a workspace folder. Pick it in Settings (the folder `whosaid watch` ingests into).",
+                 action: ("Open Settings", { NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil) }))
+    case .missing(let ws):
+      EmptyState(symbol: "folder.badge.minus", title: "Workspace folder not found",
+                 message: "\(ws) does not exist. Pick another folder in Settings.", action: nil)
+    case .noIndex(let cmd):
+      EmptyState(symbol: "magnifyingglass", title: "No meetings indexed yet",
+                 message: "Transcripts appear here once the workspace is indexed. Run: \(cmd)", action: nil)
+    case .error(let msg):
+      EmptyState(symbol: "exclamationmark.triangle", title: "whosaid is not answering", message: msg, action: nil)
+    case .ready:
+      switch item {
+      case .meetings: MeetingsView(chats: false)
+      case .chats: MeetingsView(chats: true)
+      case .people: PeopleView(unnamedOnly: false)
+      case .unnamed: PeopleView(unnamedOnly: true)
+      case .commitments: CommitmentsView()
+      case .actionItems: ActionItemsView()
+      default: placeholder
+      }
+    }
   }
 
   @ViewBuilder var placeholder: some View {

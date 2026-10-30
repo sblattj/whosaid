@@ -12,7 +12,7 @@ blank=(--env WHOSAID_WORKSPACE= --env WHOSAID_RECORDINGS= --env WHOSAID_BIN= --e
 # A copy left running ignores new --env values ("already running"): stop it first.
 pkill -f "$APP/Contents/MacOS/" 2>/dev/null && sleep 1
 open "${blank[@]}" "${envargs[@]}" --env WHOSAID_APP_SELFTEST="$OUT" "$APP"
-end=$((SECONDS + 90)); last=""
+end=$((SECONDS + ${SELFTEST_TIMEOUT:-90})); last=""
 while (( SECONDS < end )) && [[ ! -s "$OUT" ]]; do
   if [[ -f "$OUT.req" ]]; then
     req=$(cat "$OUT.req"); 
@@ -23,4 +23,4 @@ while (( SECONDS < end )) && [[ ! -s "$OUT" ]]; do
   sleep 0.2
 done
 rm -f "$OUT.req"
-cat "$OUT" 2>/dev/null || { echo "selftest: no result in 90s"; exit 1; }
+cat "$OUT" 2>/dev/null || { echo "selftest: no result in ${SELFTEST_TIMEOUT:-90}s"; exit 1; }

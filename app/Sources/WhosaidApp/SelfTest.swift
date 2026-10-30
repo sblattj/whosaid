@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import WebKit
 import WhosaidKit
 
 /// D15: WHOSAID_APP_SELFTEST=<path> lists windows, snapshots the main window once
@@ -61,6 +62,9 @@ import WhosaidKit
       try? await Task.sleep(for: .milliseconds(900))
       lines.append("search \(model.searchHits.count) hit(s), context \(model.searchContext.count) turn(s)")
       lines.append("shot search \(await snapshot(main, to: "\(out).search.png") ? "ok" : "MISSING")")
+    }
+    if let secs = env["WHOSAID_APP_SELFTEST_LIVE"].flatMap(Double.init) {
+      await liveShots(seconds: secs, model: model, main: main, out: out, lines: &lines)
     }
     // G3: browsing every page above must not have made a single audio player.
     lines.append("audio players \(ClipPlayer.created)")
@@ -125,6 +129,102 @@ import WhosaidKit
     model.selection = .actionItems
     try? await Task.sleep(for: .milliseconds(1500))
     lines.append("items done \(model.items.filter(\.isDone).map(\.id))")
+  }
+
+  /// G7a: WHOSAID_APP_SELFTEST_LIVE=<max seconds> follows a replayed call (app/g7a.sh writes
+  /// it into the fixture's recordings folder) with the real insights child. One line per
+  /// change in the line count (for latency), a frame every 2 s (for the recording), fps in
+  /// the lane and full window, the panel with an ask, and the G4 probe. Refuses unless the
+  /// recordings folder is an app fixture: the follower must never see ~/Recordings.
+  static func liveShots(seconds: Double, model: AppModel, main: NSWindow, out: String, lines: inout [String]) async {
+    let rec = model.paths.recordings
+    guard rec.contains("whosaid-app-fixture") else {
+      lines.append("live REFUSED (WHOSAID_RECORDINGS must be an app fixture folder)"); return
+    }
+    let live = model.live
+    model.selection = .live
+    // An occluded window makes WebKit report the page hidden and pause the balloons, so
+    // float it above other apps' windows while measuring; restored at the end.
+    let level = main.level
+    main.level = .floating
+    main.orderFrontRegardless()
+    defer { main.level = level }
+    live.syncFollower(callLive: false, force: true)
+    let start = Date()
+    var last = -1, frame = 0, settled = 0
+    var fpsLane: [Double] = []
+    while Date().timeIntervalSince(start) < seconds {
+      try? await Task.sleep(for: .seconds(1))
+      let s = live.session
+      let n = s?.entries.count ?? 0
+      if n != last {
+        lines.append("seen n=\(n) wall=\(String(format: "%.2f", Date().timeIntervalSince1970)) topics=\(s?.insights?.topics.count ?? 0)")
+        last = n
+      }
+      if let f = live.fps, live.fpsNodes > 0 { fpsLane.append(f) }
+      if Int(Date().timeIntervalSince(start)) % 2 == 0 {
+        _ = await snapshot(main, to: "\(out).live-\(String(format: "%03d", frame)).png"); frame += 1
+      }
+      // Done once the call ended and the insights caught up with its last line.
+      if let s, s.ended, let i = s.insights, i.t >= (s.entries.last?.t ?? 0) { settled += 1 }
+      if settled >= 3 { break }
+    }
+    let s = live.session
+    let i = s?.insights
+    lines.append("live ended=\(s?.ended ?? false) lines=\(s?.entries.count ?? 0) topics=\(i?.topics.count ?? 0) nodes=\(i?.nodeCount ?? 0) summaries=\(i?.summaries.count ?? 0) agreed=\(i?.agreed.count ?? 0) suggested=\(i?.suggested.count ?? 0)")
+    if let t = i?.topics.max(by: { $0.visits < $1.visits }) { lines.append("deepest topic \(t.id) visits=\(t.visits)") }
+    if let web = findWeb(main.contentView) {
+      let st = try? await web.evaluateJavaScript("[typeof window.whosaidWordgraph, document.querySelectorAll('.wordgraph-balloon').length, innerWidth, innerHeight, document.hidden].join(' ')")
+      lines.append("web \(st.map { "\($0)" } ?? "no answer") frame \(Int(web.frame.width))x\(Int(web.frame.height)) ready \(live.webReady)")
+    }
+    lines.append("shot live-lanes \(await snapshot(main, to: "\(out).live-lanes.png") ? "ok" : "MISSING")")
+    live.fullWordgraph = true
+    var fpsFull: [Double] = []
+    try? await Task.sleep(for: .milliseconds(800))  // the full-window view replaces the lane's web view
+    let web = findWeb(main.contentView)
+    for k in 0..<8 {
+      // Keep every balloon moving, so this measures fps under load, not an idle page.
+      if k % 2 == 0 { _ = try? await web?.evaluateJavaScript("window.whosaidWordgraph.shake(); 1") }
+      try? await Task.sleep(for: .seconds(1))
+      if let f = live.fps, live.fpsNodes > 0 { fpsFull.append(f) }
+    }
+    lines.append("fps lane \(stats(fpsLane)) full \(stats(fpsFull)) at \(live.fpsNodes) nodes")
+    lines.append("shot live-wordgraph \(await snapshot(main, to: "\(out).live-wordgraph.png") ? "ok" : "MISSING")")
+    // G4: the page itself tries to leave for the network; the delegate must cancel it.
+    if let web {
+      let before = live.blockedNavigations
+      _ = try? await web.evaluateJavaScript("location.href = 'http://127.0.0.1:9419/g4'; 1")
+      try? await Task.sleep(for: .seconds(1))
+      lines.append("g4 blocked \(live.blockedNavigations - before) url \(web.url?.scheme ?? "none")")
+    } else {
+      lines.append("g4 no web view")
+    }
+    live.fullWordgraph = false
+    // The ⌘L panel, hosted in a plain window so it can be captured, with one question.
+    await live.ask("who sends the fixture", workspace: model.paths.workspace)
+    lines.append("ask mode=\(live.answer?.mode ?? "none") matches=\(live.answer?.matches.count ?? 0)")
+    let host = NSHostingController(rootView: LivePanel().environment(model).frame(width: 340, height: 620))
+    let w = NSWindow(contentViewController: host)
+    w.title = "Live"
+    w.level = .floating
+    w.makeKeyAndOrderFront(nil)
+    try? await Task.sleep(for: .milliseconds(900))
+    lines.append("shot live-panel \(await snapshot(w, to: "\(out).live-panel.png") ? "ok" : "MISSING")")
+    w.close()
+    live.stopFollower()
+  }
+
+  static func stats(_ xs: [Double]) -> String {
+    guard !xs.isEmpty else { return "none" }
+    let s = xs.sorted()
+    return String(format: "min=%.0f median=%.0f n=%d", s[0], s[s.count / 2], s.count)
+  }
+
+  static func findWeb(_ v: NSView?) -> WKWebView? {
+    guard let v else { return nil }
+    if let w = v as? WKWebView { return w }
+    for sub in v.subviews { if let w = findWeb(sub) { return w } }
+    return nil
   }
 
   /// The menu panel (hosted in a plain window so it can be captured without a

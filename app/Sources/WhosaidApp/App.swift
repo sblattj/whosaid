@@ -12,6 +12,14 @@ import WhosaidKit
     }
     .defaultLaunchBehavior(.presented)
     .defaultSize(width: 1280, height: 800)
+    .commands { LivePanelCommand() }
+    Window("Live", id: "live-panel") {
+      LivePanel().environment(model)
+    }
+    .windowLevel(.floating)
+    .windowResizability(.contentMinSize)
+    .defaultSize(width: 340, height: 620)
+    .defaultPosition(.trailing)
     MenuBarExtra {
       MenuContent().environment(model)
     } label: {
@@ -19,6 +27,16 @@ import WhosaidKit
     }
     .menuBarExtraStyle(.window)
     Settings { SettingsView().environment(model) }
+  }
+}
+
+/// ⌘L opens the floating live panel from any window.
+struct LivePanelCommand: Commands {
+  @Environment(\.openWindow) var openWindow
+  var body: some Commands {
+    CommandGroup(after: .windowArrangement) {
+      Button("Open Live Panel") { openWindow(id: "live-panel") }.keyboardShortcut("l")
+    }
   }
 }
 
@@ -35,6 +53,10 @@ struct MenuBarLabel: View {
 }
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
+  func applicationWillTerminate(_ n: Notification) {
+    MainActor.assumeIsolated { AppModelLocator.model?.live.stopFollower() }
+  }
+
   func applicationDidFinishLaunching(_ n: Notification) {
     guard let out = ProcessInfo.processInfo.environment["WHOSAID_APP_SELFTEST"] else { return }
     Task { @MainActor in await SelfTest.run(out: out) }

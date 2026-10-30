@@ -722,6 +722,9 @@ LIVE
   whosaid live [run] [--into DIR] [--chunk-seconds N] [--once] [--capture DIR] [--model M]
   whosaid live show  [--into DIR] [--minutes N]
   whosaid live status [--into DIR] [--json]
+  whosaid live insights build --jsonl F [--out F]
+  whosaid live insights follow [--into DIR] [--poll S] [--once] [--max-hours N]
+  whosaid live ask --question Q [--into DIR] [--ws WS] [--minutes N] [--json]
   run follows the call `record --app` / autorecord is capturing and transcribes it as
   it happens, locally (default model whisper-large-v3-turbo, or WHOSAID_LIVE_MODEL):
   every ~20 s it appends "me:" (your mic) and "them:" (the app) lines with times to
@@ -731,6 +734,12 @@ LIVE
   show prints the newest live transcript (or its last N minutes). Agents: the
   whosaid_live MCP tool returns the same. status (--json) describes the newest session
   without its text: path, started, updated, active, ended, lines; exit 0.
+  insights writes <stem>.insights.json next to a session's .jsonl: topics (with
+  revisits), a topic/term wordgraph, 5-minute summaries and agreed/suggested next
+  steps, all computed locally; follow keeps the newest session's file current
+  (--once: exits after the call ends). ask answers from the newest session by
+  local search; only a --ws whose whosaid.toml sets [summarizer] engine = "claude"
+  sends the transcript to Claude (on failure: the search answer, engine_error set).
 
 APP STATE
   whosaid app-state [--json] [--workspace WS] [--into DIR]
@@ -2687,6 +2696,12 @@ cmd_app() {
 cmd_live() {
   if want_help "$@"; then help_section "LIVE"; exit 0; fi
   require_module "$REPO_DIR/lib/live.py" live
+  # insights build|follow and ask: stdlib only, no uv
+  if [[ "${1:-}" == insights || "${1:-}" == ask ]]; then
+    require_module "$REPO_DIR/lib/live_insights.py" "live $1"
+    [[ "$1" == insights ]] && shift
+    exec "$WHOSAID_PY" "$REPO_DIR/lib/live_insights.py" "$@"
+  fi
   if [[ "${1:-}" == show || "${1:-}" == status ]]; then
     exec "$WHOSAID_PY" "$REPO_DIR/lib/live.py" "$@"
   fi
