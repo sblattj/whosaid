@@ -37,9 +37,11 @@ struct TopicsView: View {
       await reload(ws)
       // a rebuild from the terminal (or the watcher) shows up without a relaunch
       watcher?.cancel()  // the previous workspace's watcher
-      watcher = await Task.detached {
+      let w = await Task.detached {
         FolderWatcher(path: ws) { Task { @MainActor in await AppModelLocator.model?.topicsChanged() } }
       }.value
+      // the page closed (or the workspace moved on) while the folder opened
+      if Task.isCancelled { w?.cancel() } else { watcher = w }
     }
     .onChange(of: model.topicsStamp) { _, _ in
       if let ws = model.paths.workspace { Task { await reload(ws) } }
