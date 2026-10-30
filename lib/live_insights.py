@@ -41,6 +41,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import live  # noqa: E402
+try:
+    from . import __version__  # type: ignore[attr-defined]
+except ImportError:
+    from __init__ import __version__  # type: ignore[attr-defined]  # noqa: E402
 
 VERSION = 1
 CHUNK_SECONDS = 45.0
@@ -223,7 +227,7 @@ def assign(entries: list[dict], chunks: list[list[int]]) -> tuple[list[dict], li
 def build(meta: dict, entries: list[dict], session: str = "", now: float | None = None) -> dict:
     entries = sorted(entries, key=lambda e: float(e["t"]))
     last_t = float(entries[-1]["t"]) if entries else 0.0
-    out = {"version": VERSION, "session": session, "updated": time.time() if now is None else now,
+    out = {"version": VERSION, "builder": __version__, "session": session, "updated": time.time() if now is None else now,
            "t": last_t, "lines": len(entries), "ended": bool(meta.get("ended")),
            "topics": [], "nodes": [], "summaries": [], "nextSteps": []}
     if not entries:
@@ -414,6 +418,18 @@ def write_json(path: Path, obj: dict) -> None:
     os.replace(tmp, path)
 
 
+def stale(jl: Path, out: Path | None = None) -> bool:
+    """True when the insights are missing, older than the transcript, or built by another
+    whosaid release (its rules may differ), so a reopened session never shows old rules."""
+    out = out or insights_path(jl)
+    try:
+        if out.stat().st_mtime < jl.stat().st_mtime:
+            return True
+        return json.loads(out.read_text()).get("builder") != __version__
+    except (OSError, ValueError, AttributeError):
+        return True
+
+
 def build_file(jl: Path, out: Path | None = None, now: float | None = None) -> tuple[Path, dict]:
     meta, entries = live.read_entries(jl)
     stem = jl.name[: -len(".jsonl")] if jl.name.endswith(".jsonl") else jl.stem
@@ -548,6 +564,8 @@ def main(argv: list[str] | None = None) -> int:
     b = sub.add_parser("build", help="one .jsonl -> its .insights.json")
     b.add_argument("--jsonl", required=True)
     b.add_argument("--out")
+    b.add_argument("--if-stale", action="store_true",
+                   help="skip when the insights are newer than the transcript and from this release")
     f = sub.add_parser("follow", help="keep the newest session's .insights.json current")
     f.add_argument("--into", default=str(live.DEFAULT_INTO))
     f.add_argument("--poll", type=float, default=1.0)
@@ -566,7 +584,11 @@ def main(argv: list[str] | None = None) -> int:
         if not jl.is_file():
             print(f"live insights: no such file {jl}", file=sys.stderr)
             return 1
-        out, res = build_file(jl, Path(args.out).expanduser() if args.out else None)
+        dest = Path(args.out).expanduser() if args.out else None
+        if args.if_stale and not stale(jl, dest):
+            print(f"{dest or insights_path(jl)}: current")
+            return 0
+        out, res = build_file(jl, dest)
         print(f"{out}: {len(res['topics'])} topic(s), {len(res['nodes'])} node(s), "
               f"{len(res['nextSteps'])} next step(s)")
         return 0

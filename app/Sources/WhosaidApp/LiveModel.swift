@@ -77,12 +77,13 @@ final class LiveModel {
     follower = nil
   }
 
-  /// A finished session without insights gets them once (`live insights build`).
-  func buildInsightsIfMissing() async {
-    guard let s = session, s.insights == nil, !active else { return }
-    _ = try? await CLIRunner(whosaid: whosaid).run(["live", "insights", "build", "--jsonl", s.jsonl.path], timeout: 30)
-    stamp = ""
-    await poll()
+  /// A finished session gets insights from this release's rules: built when missing,
+  /// rebuilt when older than the transcript or written by another whosaid
+  /// (`live insights build --if-stale` decides; a current file is left alone).
+  func refreshInsights() async {
+    guard let s = session, !active, FileManager.default.isExecutableFile(atPath: whosaid) else { return }
+    _ = try? await CLIRunner(whosaid: whosaid).run(["live", "insights", "build", "--if-stale", "--jsonl", s.jsonl.path], timeout: 30)
+    await poll()  // the stamp moves only if the file was rewritten, so this cannot loop
   }
 
   /// "Ask about this call": `whosaid live ask`, which searches the transcript unless the

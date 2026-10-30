@@ -6,6 +6,16 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ## [Unreleased]
 
+## [1.24.1] - 2026-10-30
+
+### Fixed
+
+- A finished live session reopened in the app no longer shows insights from an older
+  whosaid: `.insights.json` now records the release that built it (`builder`), and the
+  app runs `whosaid live insights build --if-stale`, which rebuilds when the file is
+  missing, older than the transcript, or from another release, and leaves it alone
+  otherwise.
+
 ## [1.24.0] - 2026-10-30
 
 ### Added

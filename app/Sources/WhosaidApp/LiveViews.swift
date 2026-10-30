@@ -30,7 +30,7 @@ struct LiveWorkspaceView: View {
     }
     .onAppear { live.lanesVisible = true }
     .onDisappear { live.lanesVisible = false }
-    .task(id: live.stamp) { await live.buildInsightsIfMissing() }
+    .task(id: live.stamp) { await live.refreshInsights() }
   }
 }
 

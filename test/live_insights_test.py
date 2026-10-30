@@ -159,6 +159,30 @@ with tempfile.TemporaryDirectory() as d:
     check(not list(Path(d).glob("*.tmp")), "no .tmp left behind")
     check(json.loads(out.read_text())["session"] == "20261029T090000", "session = stem")
 
+    # ---- stale: a reopened session is rebuilt with this release's rules ----
+    check(json.loads(out.read_text())["builder"] == li.__version__, "insights record the whosaid that built them")
+    check(not li.stale(jl), "fresh insights are current")
+    import contextlib, io  # noqa: E401
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        rc = li.main(["build", "--if-stale", "--jsonl", str(jl)])
+    check(rc == 0 and buf.getvalue().strip().endswith(": current"), f"--if-stale skips a current file: {buf.getvalue()}")
+    old = json.loads(out.read_text())
+    old["builder"] = "0.0.1"
+    old["topics"] = []
+    out.write_text(json.dumps(old))
+    check(li.stale(jl), "insights from another release are stale")
+    with contextlib.redirect_stdout(io.StringIO()):
+        li.main(["build", "--if-stale", "--jsonl", str(jl)])
+    new = json.loads(out.read_text())
+    check(new["builder"] == li.__version__ and new["topics"], "--if-stale rebuilds an old-release file")
+    os.utime(out, (jl.stat().st_mtime - 10, jl.stat().st_mtime - 10))
+    check(li.stale(jl), "insights older than the transcript are stale")
+    out.write_text("{not json")
+    check(li.stale(jl), "unreadable insights are stale")
+    out.unlink()
+    check(li.stale(jl), "missing insights are stale")
+
 # ---- follow --once against a replay ----
 with tempfile.TemporaryDirectory() as d:
     fol = subprocess.Popen([sys.executable, str(ROOT / "lib" / "live_insights.py"), "follow", "--into", d,
