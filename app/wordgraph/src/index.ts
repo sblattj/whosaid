@@ -67,9 +67,16 @@ function start() {
   let controller: BalloonController | undefined;
   let selected: string | undefined;
 
-  // A narrow lane shows topics and ideas only; the full window shows every depth.
+  // A narrow lane shows topics and ideas only, for the top LANE_TOPICS topics;
+  // the full window shows every topic at every depth.
+  const LANE_TOPICS = 6;
   let maxDepth = Number.POSITIVE_INFINITY;
-  const shown = (): InsightsGraph => ({ topics: graph.topics, nodes: graph.nodes.filter(node => node.depth <= maxDepth) });
+  const shown = (): InsightsGraph => {
+    if (!Number.isFinite(maxDepth)) return graph;
+    const top = new Set([...graph.topics].sort((a, b) => a.rank - b.rank).slice(0, LANE_TOPICS).map(t => t.id));
+    return { topics: graph.topics.filter(t => top.has(t.id)),
+             nodes: graph.nodes.filter(node => node.depth <= maxDepth && top.has(node.topicId)) };
+  };
   const refresh = () => {
     current = buildScene(shown(), folds);
     hint.hidden = current.visible.length > 0;
@@ -93,11 +100,12 @@ function start() {
 
   window.whosaidWordgraph = {
     setInsights(obj) {
-      const wasEmpty = current.visible.length === 0;
+      const wasEmpty = current.visible.length === 0, before = current.visible.length;
       graph = readInsights(obj);
       refresh();
       if (selected) controller?.select(selected);
       if (wasEmpty && current.visible.length > 0) controller?.fit();
+      else if (current.visible.length !== before) controller?.refit();  // new nodes stay in view
     },
     setMotion(motion) {
       if (motion === 'lively' || motion === 'calm' || motion === 'paused') controller?.setMotion(motion);

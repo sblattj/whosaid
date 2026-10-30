@@ -6,6 +6,24 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ## [Unreleased]
 
+### Fixed
+
+- `whosaid live`: the "me" lane no longer fills with made-up lines ("you",
+  "the", one phrase looped dozens of times). Only your speech islands are sent
+  to Whisper, not 20 s of mostly masked silence; a chunk with under 0.8 s of
+  your voice is skipped; segments Whisper itself rates as guesses (average
+  log-prob under -1.0, compression ratio over 2.4), known silence phrases and
+  repeats of a recent line are dropped.
+- `live insights`: a next step needs an action, so "that's what I'll say" or
+  "let's do this" no longer count as agreed; sentences cut off mid-thought and
+  duplicates are left out. Filler words (guys, whoa, soon, forgot, ...) no
+  longer name topics, and a topic without a repeated phrase is named by its
+  two strongest terms.
+- App wordgraph lane: shows the top 6 topics, lays islands out to the lane's
+  shape (a narrow lane gets one column, not a tiny grid) and refits when new
+  nodes arrive, so bubbles are no longer cut off at the edge. The full-window
+  wordgraph still shows everything.
+
 ## [1.23.1] - 2026-10-29
 
 ### Fixed

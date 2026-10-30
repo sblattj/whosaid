@@ -76,6 +76,10 @@ you're you've your yours yourself yourselves actually anyway basically guess hmm
 um uh alright cool great good fine nice yep nope sounds look looks looking gonna today
 tomorrow tonight week next last first time bit day days able call talk talked talking said
 wait sorry hey hello hi stuff whole part already agree agreed send sent come came give
+guys folks everyone everybody whoa wow bye soon forgot forget remember exactly definitely
+absolutely correct awesome damn gosh anyways honestly literally question questions side using
+feel feeling coming another ago assuming appreciate seen saw happen happened point minute
+minutes second seconds hour hours morning afternoon evening work working works
 """.split())
 
 WORD_RE = re.compile(r"[a-z][a-z0-9']*[a-z0-9]|[a-z]")
@@ -88,7 +92,12 @@ NAV_RE = re.compile(r"\b(let's|we'll) (move on|switch|talk about|go back|start w
                     r"circle back|pick up where|see where)\b", re.I)
 ACTION_RE = re.compile(r"\b(send|write|draft|fix|ship|add|update|file|open|book|schedule|check|"
                        r"review|merge|move|cut|post|share|set up|test|run|rerun|ping|loop|"
-                       r"tag|publish|record|pull|split|cap|track|own|take|land|bump|clean)\b", re.I)
+                       r"tag|publish|record|pull|split|cap|track|own|take|land|bump|clean|set|"
+                       r"build|create|polish|promote|deploy|implement|follow up|reach out|prepare|"
+                       r"finish|deliver|demo|document|migrate|configure|install|investigate|"
+                       r"look into|talk to|figure out|communicate|grant|sync with|email)\b", re.I)
+# a sentence cut off mid-thought by the transcript chunking
+DANGLING_RE = re.compile(r"(\b(the|a|an|to|and|of|with|for|but|or|that|in|on|at|my|our|your)|-)\W*$", re.I)
 
 
 def log(msg: str) -> None:
@@ -275,7 +284,14 @@ def finish(entries: list[dict], chunks: list[list[int]], topics: list[dict], dur
         dom = tp["top"][0] if tp["top"] else tp["id"].rsplit("-", 1)[0]
         pair = sorted((b for b, c in bg.items() if c >= 2 and dom in b.split()),
                       key=lambda b: (-bg[b], b))
-        tp["label"] = (pair[0] if pair else dom).title()
+        if not pair:  # a phrase from the topic's top terms beats one bare word
+            top = set(tp["top"][:TOPIC_TERMS])
+            pair = sorted((b for b, c in bg.items() if c >= 2 and set(b.split()) <= top),
+                          key=lambda b: (-bg[b], b))
+        if pair:
+            tp["label"] = pair[0].title()
+        else:  # no repeated phrase: the two strongest terms say more than one
+            tp["label"] = " · ".join(w.title() for w in tp["top"][:2]) or dom.title()
     return total_ms
 
 
@@ -356,9 +372,10 @@ def summaries(entries, chunks, of_chunk, topics, df, last_t) -> list[dict]:
 
 def classify(sentence: str) -> str | None:
     s = sentence.strip()
-    if len(words(s)) < 4 or NAV_RE.search(s):
+    if len(words(s)) < 4 or NAV_RE.search(s) or DANGLING_RE.search(s):
         return None
-    if AGREED_RE.search(s) and not s.endswith("?") and not re.search(r"\b(could|might|maybe)\b", s, re.I):
+    if AGREED_RE.search(s) and ACTION_RE.search(s) and not s.endswith("?") \
+            and not re.search(r"\b(could|might|maybe)\b", s, re.I):
         return "agreed"
     if SUGGESTED_RE.search(s) and ACTION_RE.search(s):
         return "suggested"
@@ -370,11 +387,13 @@ def classify(sentence: str) -> str | None:
 
 
 def next_steps(entries, topics, topic_of_entry) -> list[dict]:
-    out = []
+    out, seen = [], set()
     for i, e in enumerate(entries):
         for s in sentences(e.get("text") or ""):
             kind = classify(s)
-            if kind:
+            key = " ".join(words(s))
+            if kind and key not in seen:
+                seen.add(key)
                 out.append({"id": f"ns-{len(out) + 1}", "kind": kind, "who": e["who"], "t": float(e["t"]),
                             "clock": e.get("clock") or "", "text": s,
                             "topicId": topics[topic_of_entry[i]]["id"]})

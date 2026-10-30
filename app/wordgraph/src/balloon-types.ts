@@ -23,6 +23,8 @@ export interface BalloonController {
   focusTopic(topicId: string): void;
   zoomBy(factor: number): void;
   fit(): void;
+  /** Fit again unless the user has moved the camera (new data, same view). */
+  refit(): void;
   reset(): void;
   shake(): void;
   setMotion(motion: BalloonMotion): void;

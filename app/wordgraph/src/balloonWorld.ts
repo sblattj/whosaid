@@ -259,7 +259,13 @@ export function createBalloonWorld(
         (item) => item.id === node.id || item.topicId === node.topicId,
       ),
       count = Math.max(1, rootNodes.length),
-      columns = Math.ceil(Math.sqrt(count));
+      // islands sit 460 x 390 apart: pick the columns that best match the view's shape,
+      // so a tall narrow lane gets a column of islands, not a tiny square grid
+      aspect = measurable ? width / height : 1,
+      columns = Math.min(
+        count,
+        Math.max(1, Math.round(Math.sqrt((count * aspect * 390) / 460))),
+      );
     if (!node.parentId)
       return {
         x: (rootIndex % columns) * 460,
@@ -861,6 +867,9 @@ export function createBalloonWorld(
       options.onCamera?.(k);
       render();
       requestFrame();
+    },
+    refit() {
+      if (!userCamera) fitNodes(nodes);
     },
     fit() {
       requestedTopic = undefined;

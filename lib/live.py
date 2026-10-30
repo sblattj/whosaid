@@ -42,6 +42,14 @@ DEFAULT_INTO = Path.home() / "Recordings"
 DEFAULT_MODEL = "mlx-community/whisper-large-v3-turbo"
 RMS_FLOOR = 0.004        # about -48 dBFS: below it a chunk is silence, not sent to Whisper
 NO_SPEECH_MAX = 0.6      # segments Whisper itself rates as probably silence are dropped
+LOGPROB_MIN = -1.0       # Whisper's own fallback bar: a lower average log-prob is a guess
+COMPRESSION_MAX = 2.4    # Whisper's own fallback bar: text this repetitive is a loop
+MIN_LOCAL_SECONDS = 0.8  # a mic chunk with less of your own voice than this is not sent
+GAP_KEEP = 0.3           # silence kept between your speech islands once the rest is cut out
+REPEAT_WINDOW = 4        # the same short text as one of a leg's last few lines is a loop
+# what Whisper says to silence and noise; never kept on its own
+HALLUCINATIONS = frozenset({"you", "thank you", "thanks", "thank you so much", "thanks for watching",
+                            "thank you for watching", "the", "bye", "i", "s", "so", "and", "to", "a"})
 ENDED_AFTER = 20.0       # no growth on any leg for this long = the capture is over
 ACTIVE_WINDOW = 90.0     # a session written within this many seconds counts as live
 LOCAL_MARGIN_DB = 15.0   # same bleed rule as stereo_channels.py (mic this far over the app = you)
@@ -201,6 +209,94 @@ def mask_bleed(mic, app):
     return out
 
 
+def compact(samples, keep: float = GAP_KEEP):
+    """Cut every all-zero stretch longer than `keep` seconds down to `keep` seconds.
+
+    The masked mic is mostly zeros with short islands of your voice; 20 s of that
+    makes Whisper invent words and loop. Returns the shorter samples and the runs
+    [(compact_start, original_start, length)] that map a time back."""
+    import numpy as np
+    n, k = len(samples), int(keep * RATE)
+    nz = np.flatnonzero(samples)
+    if not len(nz):
+        return samples[:0], []
+    runs, parts, pos = [], [], 0
+    gaps = np.flatnonzero(np.diff(nz) > k)
+    starts = np.concatenate(([nz[0]], nz[gaps + 1]))
+    ends = np.concatenate((nz[gaps], [nz[-1]])) + 1
+    for a, b in zip(starts, ends):
+        a, b = max(0, a - k // 2), min(n, b + k // 2)
+        if parts and a < runs[-1][1] + runs[-1][2]:
+            a = runs[-1][1] + runs[-1][2]
+        if b <= a:
+            continue
+        runs.append((pos, int(a), int(b - a)))
+        parts.append(samples[a:b])
+        pos += b - a
+    return np.concatenate(parts), runs
+
+
+def original_time(runs, t: float) -> float:
+    """Seconds in the compacted samples -> seconds in the original chunk."""
+    x = t * RATE
+    for cs, os_, ln in runs:
+        if x < cs + ln:
+            return (os_ + max(0.0, x - cs)) / RATE
+    cs, os_, ln = runs[-1]
+    return (os_ + ln) / RATE
+
+
+def norm_text(text: str) -> str:
+    return " ".join("".join(c for c in text.lower() if c.isalnum() or c in " '").split())
+
+
+def keep_segment(seg: dict) -> bool:
+    """False for what Whisper produces from silence, noise or a decoding loop."""
+    text = norm_text(seg.get("text") or "")
+    if sum(c.isalpha() for c in text) < 2 or text in HALLUCINATIONS:
+        return False
+    if float(seg.get("no_speech_prob") or 0) > NO_SPEECH_MAX:
+        return False
+    if seg.get("avg_logprob") is not None and float(seg["avg_logprob"]) < LOGPROB_MIN:
+        return False
+    if seg.get("compression_ratio") is not None and float(seg["compression_ratio"]) > COMPRESSION_MAX:
+        return False
+    return True
+
+
+def repeated(entries: list[dict], who: str, text: str) -> bool:
+    """The same short text as one of this leg's last few lines: a decoding loop."""
+    key = norm_text(text)
+    if len(key.split()) > 8:
+        return False
+    recent = [e for e in entries[-4 * REPEAT_WINDOW:] if e["who"] == who][-REPEAT_WINDOW:]
+    return any(norm_text(e["text"]) == key for e in recent)
+
+
+def transcribe_chunks(chunks: dict, transcribe, prior: list[dict]) -> list[dict]:
+    """New {t, who, text} lines from one cut of both legs. Your mic has the other
+    side's bleed masked out and only your speech islands are sent."""
+    import numpy as np
+    out: list[dict] = []
+    for who, (start, samples) in chunks.items():
+        runs = None
+        if who == "me":
+            samples = mask_bleed(samples, chunks.get("them", (0, None))[1])
+            if np.count_nonzero(samples) < MIN_LOCAL_SECONDS * RATE:
+                continue
+            samples, runs = compact(samples)
+        if rms(samples) < RMS_FLOOR:
+            continue
+        for seg in transcribe(samples):
+            text = (seg.get("text") or "").strip()
+            if not keep_segment(seg) or repeated(prior + out, who, text):
+                continue
+            off = float(seg.get("start") or 0)
+            t = start / RATE + (original_time(runs, off) if runs else off)
+            out.append({"t": round(t, 2), "who": who, "text": text})
+    return out
+
+
 def db(x) -> float:
     import numpy as np
     if not len(x):
@@ -276,20 +372,10 @@ def follow(capture: Path, into: Path, transcribe, chunk_seconds: float = 20.0,
         final = stop() or (grew == 0 and quiet_for >= ended_after)
         added = 0
         while (chunks := take_chunks(legs, chunk_seconds, final)) is not None:
-            if "me" in chunks:
-                start, mic = chunks["me"]
-                chunks["me"] = (start, mask_bleed(mic, chunks.get("them", (0, None))[1]))
-            for who, (start, samples) in chunks.items():
-                if rms(samples) < RMS_FLOOR:
-                    continue
-                for seg in transcribe(samples):
-                    text = (seg.get("text") or "").strip()
-                    if not text or float(seg.get("no_speech_prob") or 0) > NO_SPEECH_MAX:
-                        continue
-                    t = start / RATE + float(seg.get("start") or 0)
-                    entries.append({"t": round(t, 2), "clock": datetime.fromtimestamp(started + t).strftime("%H:%M:%S"),
-                                    "who": who, "text": text})
-                    added += 1
+            for e in transcribe_chunks(chunks, transcribe, entries):
+                e["clock"] = datetime.fromtimestamp(started + e["t"]).strftime("%H:%M:%S")
+                entries.append(e)
+                added += 1
         if added or final:
             write_session(md, jl, started, entries, ended=final)
         if final:

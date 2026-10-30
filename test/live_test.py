@@ -83,6 +83,34 @@ check(live.rms(bleed) < live.RMS_FLOOR, "speaker bleed on the mic is silenced")
 own = live.mask_bleed(loud, np.zeros_like(loud))      # app silent: the local voice
 check(np.array_equal(own, loud), "the local voice is kept")
 
+# ---- speech islands: the masked mic is cut down to your voice ----
+tone = np.frombuffer(pcm(1, True), dtype="<i2").astype(np.float32) / 32768.0
+gap = np.zeros(5 * live.RATE, dtype=np.float32)
+sparse = np.concatenate([gap, tone, gap, tone, gap])           # 2 s of voice in 17 s
+small, runs = live.compact(sparse)
+check(2 * live.RATE <= len(small) <= 3 * live.RATE, f"long silences cut down: {len(small) / live.RATE:.2f}s")
+check(abs(live.original_time(runs, 0.2) - 5.05) < 0.11, f"time maps back: {live.original_time(runs, 0.2):.2f}")
+check(abs(live.original_time(runs, len(small) / live.RATE - 0.2) - 11.8) < 0.2, "second island maps back")
+check(live.compact(np.zeros(100, dtype=np.float32))[1] == [], "all silence: nothing left")
+
+# ---- Whisper's guesses are dropped ----
+ok = {"text": " We ship the fix on Friday.", "no_speech_prob": 0.05, "avg_logprob": -0.3, "compression_ratio": 1.2}
+check(live.keep_segment(ok), "a confident line is kept")
+for bad, why in ((dict(ok, text=" you"), "'you' alone"), (dict(ok, text=" Thank you."), "'Thank you.' alone"),
+                 (dict(ok, text=" ."), "punctuation only"), (dict(ok, avg_logprob=-1.4), "a low-confidence guess"),
+                 (dict(ok, compression_ratio=3.1), "a decoding loop"), (dict(ok, no_speech_prob=0.9), "no speech")):
+    check(not live.keep_segment(bad), f"dropped: {why}")
+prior = [{"t": i, "who": "me", "text": "I have a call."} for i in range(2)]
+check(live.repeated(prior, "me", "I have a call"), "the same short line again is a loop")
+check(not live.repeated(prior, "them", "I have a call."), "the other leg saying it is not")
+
+# a mic chunk with only a blip of your voice is not sent at all
+blip = np.concatenate([np.zeros(10 * live.RATE, dtype=np.float32), tone[: live.RATE // 4]])
+sent = []
+live.transcribe_chunks({"me": (0, blip), "them": (0, np.zeros_like(blip))},
+                       lambda x: sent.append(len(x)) or [], [])
+check(sent == [], "a quarter second of mic is not sent to Whisper")
+
 # ---- follow a capture: mic speaks, app is silent, then the capture ends ----
 calls = []
 
@@ -118,7 +146,8 @@ with tempfile.TemporaryDirectory() as d:
     check("them:" not in text, "a silent app leg adds nothing (no Whisper call, no phantom lines)")
     check("Thank you." not in text, "no-speech segments are dropped")
     check("(call ended)" in text, "the end is marked")
-    check(sum(calls) == int(13.5 * live.RATE), f"every mic sample transcribed once: {sum(calls)}")
+    check(12 * live.RATE <= sum(calls) < 13.5 * live.RATE,
+          f"all 12 s of mic speech sent once, the silences between cut short: {sum(calls)}")
     meta, entries = live.read_entries(md.with_suffix(".jsonl"))
     check(meta["ended"] is True and all(e["who"] == "me" for e in entries), "jsonl meta + entries")
     check(entries == sorted(entries, key=lambda e: e["t"]), "lines in time order")
