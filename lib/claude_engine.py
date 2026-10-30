@@ -99,8 +99,9 @@ class ClaudeCLI:
     """One isolated `claude -p` process per .chat call (see the module docstring)."""
 
     def __init__(self, model: str = DEFAULT_MODEL, *, binary: str = "",
-                 timeout: int = DEFAULT_TIMEOUT) -> None:
+                 timeout: int = DEFAULT_TIMEOUT, max_tokens: int = 0) -> None:
         self.model = model
+        self.max_tokens = max_tokens     # > 0: CLAUDE_CODE_MAX_OUTPUT_TOKENS for the child
         self.binary = resolve_bin(binary)
         if not self.binary:
             raise SummarizerError("the Claude Code CLI (`claude`) was not found",
@@ -132,8 +133,11 @@ class ClaudeCLI:
     def _once(self, system: str, user: str) -> str:
         cwd = tempfile.mkdtemp(prefix="whosaid-claude-")
         try:
+            env = self.child_env()
+            if self.max_tokens > 0:
+                env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] = str(self.max_tokens)
             proc = subprocess.run(self.argv(system), input=user, capture_output=True, text=True,
-                                  cwd=cwd, env=self.child_env(), timeout=self.timeout)
+                                  cwd=cwd, env=env, timeout=self.timeout)
         except subprocess.TimeoutExpired as e:
             raise _Retry(f"no reply within {self.timeout}s") from e
         except OSError as e:

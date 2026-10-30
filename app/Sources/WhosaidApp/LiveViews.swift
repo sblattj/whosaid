@@ -209,10 +209,20 @@ struct SummariesLane: View {
   let insights: LiveInsights?
   var body: some View {
     VStack(spacing: 0) {
-      LaneTitle(title: "Summaries", detail: "every 5 min")
+      LaneTitle(title: "Summaries", detail: insights?.aiModel == nil ? "every 5 min" : "AI recap + every 5 min")
       Divider()
       ScrollView {
         LazyVStack(alignment: .leading, spacing: 10) {
+          if let i = insights, !i.aiRecap.isEmpty {
+            VStack(alignment: .leading, spacing: 4) {
+              Label("So far (AI)", systemImage: "sparkles").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+              ForEach(i.aiRecap, id: \.self) { b in
+                Text("• " + b).fixedSize(horizontal: false, vertical: true)
+              }
+            }
+            .padding(10)
+            .background(Color.accentColor.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
+          }
           ForEach((insights?.summaries ?? []).reversed()) { s in
             VStack(alignment: .leading, spacing: 4) {
               Text("\(Transcript.clock(s.from)) to \(Transcript.clock(s.to))").font(.caption.monospacedDigit()).foregroundStyle(.secondary)
@@ -238,7 +248,7 @@ struct NextStepsLane: View {
   let insights: LiveInsights?
   var body: some View {
     VStack(spacing: 0) {
-      LaneTitle(title: "Next steps", detail: "live")
+      LaneTitle(title: "Next steps", detail: insights?.aiModel == nil ? "live" : "live · AI")
       Divider()
       ScrollView {
         LazyVStack(alignment: .leading, spacing: 8) {

@@ -24,6 +24,7 @@ final class LiveModel {
   private var follower: Process?
   private var into = ""
   private var whosaid = ""
+  private var workspace: String?
 
   var active: Bool { session?.active() ?? false }
 
@@ -32,6 +33,7 @@ final class LiveModel {
   func attach(paths: WhosaidPaths) {
     into = paths.recordings
     whosaid = paths.whosaid
+    workspace = paths.workspace
     guard timer == nil else { return }
     timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { _ in
       Task { @MainActor in await AppModelLocator.model?.live.poll() }
@@ -61,6 +63,8 @@ final class LiveModel {
       let p = Process()
       p.executableURL = URL(fileURLWithPath: whosaid)
       p.arguments = ["live", "insights", "follow", "--into", into, "--poll", "1", "--max-hours", "12"]
+      // the AI layer runs only when this workspace's whosaid.toml says [live] ai = "claude"
+      if let workspace, !workspace.isEmpty { p.arguments! += ["--ws", workspace] }
       p.environment = WhosaidPaths.childEnvironment()
       p.standardOutput = FileHandle.nullDevice
       p.standardError = FileHandle.nullDevice

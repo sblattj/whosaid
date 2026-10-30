@@ -90,6 +90,9 @@ public struct LiveInsights: Sendable, Equatable {
   public let nextSteps: [NextStep]
   public let t: Double
   public let json: String
+  /// The opt-in AI layer (`[live] ai = "claude"`): its model and recap, nil when off.
+  public let aiModel: String?
+  public let aiRecap: [String]
 
   public init?(data: Data) {
     guard let v = try? JSONValue.parse(data), v["version"] != nil else { return nil }
@@ -99,6 +102,8 @@ public struct LiveInsights: Sendable, Equatable {
     nextSteps = (v["nextSteps"]?.array ?? []).compactMap(NextStep.init)
     t = v["t"]?.double ?? 0
     json = String(decoding: data, as: UTF8.self)
+    aiModel = v["ai"]?["model"]?.string
+    aiRecap = (v["ai"]?["recap"]?.array ?? []).compactMap(\.string)
   }
 
   public var agreed: [NextStep] { nextSteps.filter { $0.kind == "agreed" } }

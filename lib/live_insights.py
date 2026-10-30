@@ -6,12 +6,15 @@ call (`whosaid live insights`, `whosaid live ask`; the macOS app reads it).
   build   One shot: <stem>.jsonl -> <stem>.insights.json (tmp + os.replace).
   follow  Follow the newest <into>/.live/*.jsonl and rewrite its .insights.json
           whenever the transcript changes (--once: exit after the ended call).
+          --ws: a workspace with `[live] ai = "claude"` also gets AI labels,
+          a recap and next steps every few minutes (lib/live_ai.py; CLOUD).
   ask     Answer a question from the newest live session: lexical search by
           default; only `[summarizer] engine = "claude"` in <ws>/whosaid.toml
           sends the transcript to Claude (any failure falls back to search).
 
 The engine is local and deterministic (no model, no network): the same entries
-give the same JSON apart from `updated`. Entries are cut into ~45 s chunks of
+give the same JSON apart from `updated`. The opt-in AI layer never changes it: its
+<stem>.ai.json sidecar is overlaid when the file is written. Entries are cut into ~45 s chunks of
 consecutive turns (by transcript `t`, never wall clock); each chunk joins the
 topic whose term vector it matches best (cosine over tf-idf, idf from the chunks
 seen so far, so a chunk's topic depends only on what came before it) or opens a
@@ -611,7 +614,9 @@ def stale(jl: Path, out: Path | None = None) -> bool:
     whosaid release (its rules may differ), so a reopened session never shows old rules."""
     out = out or insights_path(jl)
     try:
-        if out.stat().st_mtime < jl.stat().st_mtime:
+        import live_ai
+        side = live_ai.ai_path(jl)
+        if out.stat().st_mtime < jl.stat().st_mtime or (side.is_file() and out.stat().st_mtime < side.stat().st_mtime):
             return True
         return json.loads(out.read_text()).get("builder") != __version__
     except (OSError, ValueError, AttributeError):
@@ -622,15 +627,23 @@ def build_file(jl: Path, out: Path | None = None, now: float | None = None) -> t
     meta, entries = live.read_entries(jl)
     stem = jl.name[: -len(".jsonl")] if jl.name.endswith(".jsonl") else jl.stem
     res = build(meta, entries, stem, now)
+    import live_ai
+    live_ai.overlay(res, live_ai.read(jl))
     out = out or insights_path(jl)
     write_json(out, res)
     return out, res
 
 
 def follow(into: Path, poll: float = 1.0, once: bool = False, max_hours: float = 12.0,
-           stop=lambda: False) -> int:
+           stop=lambda: False, ws: str | None = None) -> int:
     deadline = time.monotonic() + max_hours * 3600
-    seen: dict[Path, tuple[int, int]] = {}
+    import live_ai
+    cfg = live_ai.config(ws)
+    if cfg:
+        log(f"AI layer on ({cfg['ai_model']}, every {cfg['ai_every']} s of talk, at most "
+            f"{cfg['ai_max_calls']} calls): transcript lines go to Anthropic")
+        live_ai.Worker(into, cfg, stop=lambda: stop() or time.monotonic() >= deadline).start()
+    seen: dict[Path, tuple] = {}
     waiting = False
     while not stop() and time.monotonic() < deadline:
         found = live.sessions(into)
@@ -644,7 +657,8 @@ def follow(into: Path, poll: float = 1.0, once: bool = False, max_hours: float =
         jl = found[-1]
         try:
             st = jl.stat()
-            sig = (st.st_mtime_ns, st.st_size)
+            side = live_ai.ai_path(jl)
+            sig = (st.st_mtime_ns, st.st_size, side.stat().st_mtime_ns if side.is_file() else 0)
             if seen.get(jl) != sig:
                 out, res = build_file(jl)
                 seen[jl] = sig
@@ -759,6 +773,7 @@ def main(argv: list[str] | None = None) -> int:
     f.add_argument("--poll", type=float, default=1.0)
     f.add_argument("--once", action="store_true", help="exit after the ended session is written")
     f.add_argument("--max-hours", type=float, default=12.0)
+    f.add_argument("--ws", help="workspace whose whosaid.toml [live] ai = \"claude\" turns on the AI layer")
     a = sub.add_parser("ask", help="answer a question from the newest live session")
     a.add_argument("--into", default=str(live.DEFAULT_INTO))
     a.add_argument("--question", "-q", required=True)
@@ -788,7 +803,7 @@ def main(argv: list[str] | None = None) -> int:
         signal.signal(signal.SIGINT, on_signal)
         signal.signal(signal.SIGTERM, on_signal)
         return follow(Path(args.into).expanduser(), args.poll, args.once, args.max_hours,
-                      stop=lambda: state["stop"])
+                      stop=lambda: state["stop"], ws=args.ws)
     res = ask(Path(args.into).expanduser(), args.question, args.ws, args.minutes)
     if args.json:
         print(json.dumps(res, indent=1))

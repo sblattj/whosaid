@@ -6,11 +6,13 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ## [Unreleased]
 
+### Added
+- Opt-in AI layer for live insights (CLOUD): with `[live] ai = "claude"` in the workspace, the live follower asks Claude every 3 minutes of talk (at most 40 calls, 90 s and 1500 output tokens each) for topic labels, a short recap and next steps, and the Live page shows them ("So far (AI)"). Off by default and separate from `[summarizer]`. Answers live in `<start>.ai.json`; local labels are kept as `localLabel`; a restart or a failed call waits for new talk instead of calling again.
+- `ClaudeCLI(max_tokens=...)` caps output tokens through `CLAUDE_CODE_MAX_OUTPUT_TOKENS`.
+- `test/live_quality.py --judge`: Claude (`claude -p`, Sonnet) grades every topic label 1-5 from the topic's own lines and suggests a better one; about 4k tokens per call graded. `ClaudeCLI.tokens` counts the tokens of its calls.
+
 ### Changed
 - Live topic labels read as topics. A label is now the topic's best phrase or term weighted by how much it reads as a thing: "the build" and capitalized product names ("PR", kept in the transcript's own spelling) score up; verbs, -ly hedges, abstractions ("ability", "Monday") and people (the local speaker registry, or "thanks Zoe") score down. On a 22-call sample a Claude judge rated 22% of labels good (4-5 of 5), up from 17%, and none are names now.
-
-### Added
-- `test/live_quality.py --judge`: Claude (`claude -p`, Sonnet) grades every topic label 1-5 from the topic's own lines and suggests a better one; about 4k tokens per call graded. `ClaudeCLI.tokens` counts the tokens of its calls.
 
 ## [1.24.4] - 2026-10-30
 
