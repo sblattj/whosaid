@@ -6,6 +6,8 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ## [Unreleased]
 
+## [1.23.0] - 2026-10-29
+
 ### Added
 
 - `whosaid topics build [WS]`: topics across meetings into `<WS>/_topics.json`
@@ -87,6 +89,13 @@ All notable changes to whosaid are documented here. This project adheres to
 - `whosaid app-state [--json | --watch SECONDS]`: one read-only snapshot of
   autorecord, the watcher, the live session, the newest meeting and unnamed
   voices, with a composed `menubar.state`, for the macOS app's menu bar.
+
+### Fixed
+
+- `autorecord`: a Ctrl-C or stop-now that was not delivered no longer blocks
+  the next one for the same capture.
+- `whosaid app build` fails with a message, not a traceback, when swift cannot
+  report its build folder.
 
 ## [1.22.0] - 2026-10-29
 
