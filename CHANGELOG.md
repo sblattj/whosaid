@@ -6,6 +6,8 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ## [Unreleased]
 
+## [1.23.2] - 2026-10-30
+
 ### Fixed
 
 - `whosaid live`: the "me" lane no longer fills with made-up lines ("you",
