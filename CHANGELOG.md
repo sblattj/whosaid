@@ -6,6 +6,14 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ## [Unreleased]
 
+## [1.23.3] - 2026-10-30
+
+### Changed
+
+- whosaid.app shows in the Dock and ⌘Tab while one of its windows (library, Live
+  panel, Settings) is open or minimized, and goes back to menu bar only when the
+  last one closes. A window buried behind other apps is one ⌘Tab away.
+
 ## [1.23.2] - 2026-10-30
 
 ### Fixed
