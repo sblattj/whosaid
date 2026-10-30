@@ -260,6 +260,7 @@ def cmd_run(a: argparse.Namespace) -> int:
                 os.killpg(child.pid, signal.SIGINT)
                 return True
             except OSError:
+                state["signalled"] = False  # not delivered: a later Ctrl-C or stop-now still works
                 return False
 
     def on_signal(_signum, _frame):

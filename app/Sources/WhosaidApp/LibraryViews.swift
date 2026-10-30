@@ -327,6 +327,8 @@ struct SpeakerCard: View {
     .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 8))
     .onAppear { name = cluster.name; role = cluster.role }
     .onChange(of: cluster) { name = cluster.name; role = cluster.role; needsForce = false }
+    .onChange(of: name) { needsForce = false }  // a new name has not been through the similarity check
+    .onChange(of: role) { needsForce = false }
   }
 
   func save(force: Bool) {

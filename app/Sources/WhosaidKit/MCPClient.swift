@@ -37,7 +37,8 @@ public actor MCPClient {
       Task { await self?.receive(chunk) }
     }
     p.terminationHandler = { [weak self] proc in
-      Task { await self?.died(proc.terminationStatus) }
+      let pid = proc.processIdentifier, status = proc.terminationStatus
+      Task { await self?.died(status, pid: pid) }
     }
     try p.run()
     process = p
@@ -102,7 +103,9 @@ public actor MCPClient {
     pending.removeValue(forKey: id)?.resume(throwing: error)
   }
 
-  func died(_ status: Int32) {
+  func died(_ status: Int32, pid: Int32) {
+    // a late handler from a child that stop() already let go of must not touch its successor
+    if let p = process, p.processIdentifier != pid { return }
     process = nil
     stdin = nil
     for (_, k) in pending { k.resume(throwing: WhosaidError.exited(status)) }

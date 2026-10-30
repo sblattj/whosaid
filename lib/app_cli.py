@@ -80,8 +80,12 @@ def cmd_build(a: argparse.Namespace) -> int:
     if r.returncode:
         log(f"app build: swift build failed (exit {r.returncode})")
         return r.returncode
-    binpath = subprocess.run(["swift", "build", "-c", config, "--package-path", str(APP_SRC), "--show-bin-path"],
-                             capture_output=True, text=True, timeout=120).stdout.strip()
+    show = subprocess.run(["swift", "build", "-c", config, "--package-path", str(APP_SRC), "--show-bin-path"],
+                          capture_output=True, text=True, timeout=120, env=swift_env())
+    binpath = show.stdout.strip()
+    if show.returncode or not (Path(binpath) / EXECUTABLE).is_file():
+        log(f"app build: no built binary at {binpath or '(swift build --show-bin-path failed)'}")
+        return show.returncode or 1
     out = built_app(config)
     if out.exists():
         shutil.rmtree(out)

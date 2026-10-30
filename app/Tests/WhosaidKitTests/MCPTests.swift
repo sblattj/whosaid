@@ -14,7 +14,7 @@ func mcpRoundTrip() async throws {
   let env = ProcessInfo.processInfo.environment
   let ws = FileManager.default.temporaryDirectory.appendingPathComponent("whosaid-mcp-\(UUID().uuidString)")
   try FileManager.default.createDirectory(at: ws, withIntermediateDirectories: true)
-  try #"[summarizer]\nengine = "none"\n"#.write(to: ws.appendingPathComponent("whosaid.toml"), atomically: true, encoding: .utf8)
+  try "[summarizer]\nengine = \"none\"\n".write(to: ws.appendingPathComponent("whosaid.toml"), atomically: true, encoding: .utf8)
   defer { try? FileManager.default.removeItem(at: ws) }
   let c = MCPClient(whosaid: URL(fileURLWithPath: env["WHOSAID_TEST_BIN"]!), workspace: ws.path)
   let tools = try await c.listTools()

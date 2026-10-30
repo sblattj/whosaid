@@ -9,7 +9,7 @@ type Message =
   | { type: 'ready' }
   | { type: 'click'; id: string; label: string; topicId: string; depth: number }
   | { type: 'fold'; id: string; expanded: boolean }
-  | { type: 'fps'; fps: number; nodes: number };
+  | { type: 'fps'; fps: number | null; nodes: number };
 
 declare global {
   interface Window {

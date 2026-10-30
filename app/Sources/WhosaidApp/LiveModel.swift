@@ -41,10 +41,14 @@ final class LiveModel {
 
   func poll() async {
     let dir = into
-    let newStamp = await Task.detached { LiveSession.newest(into: dir).map(LiveSession.stamp) ?? "" }.value
+    // one lookup: the stamp and the session read come from the same file
+    let (newStamp, file) = await Task.detached { () -> (String, URL?) in
+      let f = LiveSession.newest(into: dir)
+      return (f.map(LiveSession.stamp) ?? "", f)
+    }.value
     guard newStamp != stamp else { return }
     stamp = newStamp
-    let read = await Task.detached { LiveSession.newest(into: dir).flatMap(LiveSession.init(jsonl:)) }.value
+    let read = await Task.detached { file.flatMap(LiveSession.init(jsonl:)) }.value
     session = read
     if let n = read?.entries.count, seenAt[n] == nil { seenAt[n] = Date() }
   }

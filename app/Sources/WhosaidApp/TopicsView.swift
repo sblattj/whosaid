@@ -36,6 +36,7 @@ struct TopicsView: View {
       guard let ws = model.paths.workspace else { return }
       await reload(ws)
       // a rebuild from the terminal (or the watcher) shows up without a relaunch
+      watcher?.cancel()  // the previous workspace's watcher
       watcher = await Task.detached {
         FolderWatcher(path: ws) { Task { @MainActor in await AppModelLocator.model?.topicsChanged() } }
       }.value

@@ -129,7 +129,8 @@ final class AppModel {
       let w = await Task.detached {
         FolderWatcher(path: ws) { Task { @MainActor in await AppModelLocator.model?.refreshHealth() } }
       }.value
-      if paths.workspace == ws { watcher = w } else { w?.cancel() }
+      // two quick calls: the first to land wins, the other is cancelled, never two live watchers
+      if paths.workspace == ws, watcher == nil { watcher = w } else { w?.cancel() }
     }
   }
 
