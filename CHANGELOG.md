@@ -8,6 +8,12 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ### Added
 
+- `whosaid autorecord install|run|setup --live`: also run `whosaid live` during
+  each capture, started when the capture starts and stopped when it is saved
+  (off by default; `status --json` reports it). `autorecord setup` now points at
+  the macOS app. The app's Recorder page shows autorecord's state, setup, last
+  saved call or error and recent log, with stop, pause and resume, and the command
+  that turns the live transcript on.
 - The macOS app's Live now workspace: five lanes over the newest `whosaid live`
   session (me / them transcript, topic buckets that mark a revisit, the jibbr
   balloon wordgraph, 5-minute summaries, agreed and suggested next steps), a

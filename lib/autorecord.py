@@ -90,6 +90,8 @@ AGENT_PATH = ":".join([
 WAIT_RETRY = {2: 30.0, 6: 10.0}  # app not running / bad flag; CDP target race
 EXIT_PERMISSION = 5               # Screen & System Audio Recording missing or revoked
 BACKOFF_START, BACKOFF_MAX = 30.0, 300.0
+LIVE_LOG = f"{CONTROL_DIR}/live.log"
+LIVE_STOP_WAIT = 30.0  # `live` transcribes the last chunk after SIGTERM, then marks the call ended
 
 
 def log(msg: str) -> None:
@@ -184,7 +186,8 @@ class State:
         self.data = {"version": 1, "pid": os.getpid(), "controls": True,
                      "mode": "app" if a.app else "browser", "app": a.app, "label": a.label,
                      "into": str(into), "state": "waiting", "since": iso(), "child_pid": None,
-                     "paused_until": None, "last_saved": None, "last_error": None}
+                     "paused_until": None, "last_saved": None, "last_error": None,
+                     "live": bool(getattr(a, "live", False)), "live_pid": None}
 
     def set(self, **kw) -> None:
         with self.lock:
@@ -263,6 +266,43 @@ def cmd_run(a: argparse.Namespace) -> int:
         state["stop"] = True
         interrupt_child()
 
+    # --live: one `whosaid live --once` per capture, started when the capture starts
+    # and stopped (SIGTERM, then a final chunk) when the record child exits.
+    live = {"proc": None}
+
+    def start_live() -> None:
+        if not a.live or (live["proc"] and live["proc"].poll() is None):
+            return
+        try:
+            (into / CONTROL_DIR).mkdir(exist_ok=True)
+            out = open(into / LIVE_LOG, "a")
+            live["proc"] = subprocess.Popen([a.whosaid, "live", "run", "--into", str(into), "--once"],
+                                            stdin=subprocess.DEVNULL, stdout=out, stderr=out,
+                                            start_new_session=True)
+            out.close()
+        except OSError as e:
+            tee.line(f"autorecord: could not start the live transcript: {e}")
+            return
+        st.set(live_pid=live["proc"].pid)
+        tee.line(f"autorecord: live transcript started (log {into / LIVE_LOG})")
+
+    def stop_live() -> None:
+        p = live["proc"]
+        if p is None:
+            return
+        live["proc"] = None
+        if p.poll() is None:
+            try:
+                os.killpg(p.pid, signal.SIGTERM)
+                p.wait(timeout=LIVE_STOP_WAIT)
+            except subprocess.TimeoutExpired:
+                os.killpg(p.pid, signal.SIGKILL)
+                p.wait()
+            except OSError:
+                pass
+        st.set(live_pid=None)
+        tee.line("autorecord: live transcript stopped")
+
     def controls() -> None:
         """Poll the pause and stop-now files while the loop runs."""
         while not state["stop"]:
@@ -312,6 +352,7 @@ def cmd_run(a: argparse.Namespace) -> int:
         def pump(stream=child.stderr, mine=child):
             for line in stream:
                 text = line.rstrip()
+                began = False
                 with sig_lock:  # a late line from a finished child changes nothing
                     if state["child"] is mine and state["phase"] != "saving":
                         if CAPTURE_ENDED.search(text):
@@ -320,14 +361,18 @@ def cmd_run(a: argparse.Namespace) -> int:
                         elif state["phase"] == "waiting" and CAPTURE_STARTED.search(text):
                             state["phase"] = "recording"
                             st.set(state="recording")
+                            began = True
                 if " peak " not in line:  # the 10 s progress ticks stay out of the log
                     tee.line(line)
+                if began:
+                    start_live()
 
         t = threading.Thread(target=pump, daemon=True)
         t.start()
         out = child.stdout.read()
         rc = child.wait()
         t.join(timeout=5)
+        stop_live()
         saved = next((ln for ln in reversed(out.splitlines()) if ln.strip().endswith(".m4a")), None)
         kind, delay = classify(rc, saved)
         if kind == "failed" and state["signalled"]:
@@ -365,6 +410,7 @@ def cmd_run(a: argparse.Namespace) -> int:
         end = time.monotonic() + delay * float(os.environ.get("WHOSAID_AUTORECORD_DELAY_SCALE") or 1)
         while not state["stop"] and time.monotonic() < end:
             time.sleep(0.2)
+    stop_live()
     st.set(state="stopped", child_pid=None)
     tee.line("autorecord: stopped")
     return 0
@@ -431,6 +477,8 @@ def run_args(a: argparse.Namespace) -> list[str]:
         args.append("--no-mic")
     if a.label:
         args += ["--label", a.label]
+    if a.live:
+        args.append("--live")
     return args
 
 
@@ -595,6 +643,8 @@ def cmd_setup(a: argparse.Namespace) -> int:
         todo.append(f'name the workspace owner: [workspace] owner = "Your_Name" in {ws / "whosaid.toml"}')
     todo.append("teach whosaid your voice: whosaid enroll")
     todo.append("check: whosaid autorecord status   (then join a call)")
+    todo.append("optional: the macOS app (menu bar, library, Live now): whosaid app install"
+                + ("" if a.live else "; add --live here to see the call live in it"))
     print("\nSetup " + ("would be " if a.dry_run else "") + "done. Left for you:")
     print("\n".join(f"  {n}. {t}" for n, t in enumerate(todo, 1)))
     return 0
@@ -686,7 +736,9 @@ def installed_config() -> dict | None:
     args = list(data.get("ProgramArguments") or [])
     return {"into": args[args.index("--into") + 1] if "--into" in args else str(DEFAULT_INTO),
             "mode": "app" if "--app" in args else "browser",
-            "app": args[args.index("--app") + 1] if "--app" in args else None}
+            "app": args[args.index("--app") + 1] if "--app" in args else None,
+            "label": args[args.index("--label") + 1] if "--label" in args else None,
+            "live": "--live" in args}
 
 
 def status(into_arg: str | None = None) -> dict:
@@ -724,6 +776,7 @@ def status(into_arg: str | None = None) -> dict:
             pass
     return {"installed": cfg is not None, "loaded": loaded, "running": running,
             "controls": live_file, "mode": (cfg or data or {}).get("mode"), "app": (cfg or data or {}).get("app"),
+            "live": bool((cfg or data or {}).get("live")), "label": (cfg or data or {}).get("label"),
             "into": str(into), **src, "paused_until": iso(until) if until else src.get("paused_until"),
             "elapsed": elapsed, "source": "state-file" if live_file else "log"}
 
@@ -807,6 +860,8 @@ def add_mode_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--target")
     p.add_argument("--label", default="call")
     p.add_argument("--no-mic", action="store_true")
+    p.add_argument("--live", action="store_true",
+                   help="also run `whosaid live` during each capture (a live me/them transcript)")
     p.add_argument("--whosaid", default=default_whosaid())
 
 

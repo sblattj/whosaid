@@ -49,6 +49,13 @@ public struct MenuPresentation: Equatable, Sendable {
     }
   }
 
+  /// "Teams" for com.microsoft.teams2; the last bundle part, capitalized, otherwise.
+  public static func appName(_ bundle: String) -> String {
+    let known = ["com.microsoft.teams2": "Teams", "com.microsoft.teams": "Teams", "us.zoom.xos": "Zoom",
+                 "com.google.Chrome": "Chrome", "com.apple.Safari": "Safari"]
+    return known[bundle] ?? bundle.split(separator: ".").last.map { $0.prefix(1).uppercased() + $0.dropFirst() } ?? bundle
+  }
+
   /// 12:41 under an hour, 1:02:41 after.
   public static func elapsed(_ secs: TimeInterval) -> String {
     let t = max(0, Int(secs))

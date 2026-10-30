@@ -25,7 +25,7 @@ struct MenuContent: View {
       if m.recording {
         SectionLabel("Recording")
         let app = model.state?.raw["autorecord"]?["app"]?.string
-        MenuRow(symbol: "record.circle", title: app.map { "Call in \(Self.appName($0))" } ?? "Call",
+        MenuRow(symbol: "record.circle", title: app.map { "Call in \(MenuPresentation.appName($0))" } ?? "Call",
                 detail: m.title, tint: .red) {}
           .disabled(true)
         MenuRow(symbol: "text.bubble", title: "Open live panel", shortcut: "⌘L") { openWindow(id: "live-panel"); NSApp.activate() }
@@ -86,11 +86,6 @@ struct MenuContent: View {
     NSApp.activate()
   }
 
-  static func appName(_ bundle: String) -> String {
-    let known = ["com.microsoft.teams2": "Teams", "com.microsoft.teams": "Teams", "us.zoom.xos": "Zoom",
-                 "com.google.Chrome": "Chrome", "com.apple.Safari": "Safari"]
-    return known[bundle] ?? bundle.split(separator: ".").last.map { $0.prefix(1).uppercased() + $0.dropFirst() } ?? bundle
-  }
 }
 
 struct SectionLabel: View {

@@ -685,7 +685,7 @@ WATCH
 
 AUTORECORD
   whosaid autorecord run       --app A | --browser [--into DIR] [--idle-seconds N]
-                               [--cdp-port P] [--target T] [--label L] [--no-mic]
+                               [--cdp-port P] [--target T] [--label L] [--no-mic] [--live]
   whosaid autorecord install   (same flags) [--no-open] [--dry-run]
   whosaid autorecord uninstall [--purge]
   whosaid autorecord status    [--lines N] [--json] [--into DIR]
@@ -693,13 +693,16 @@ AUTORECORD
   whosaid autorecord resume    [--into DIR]
   whosaid autorecord stop-now  [--wait N] [--into DIR]
   whosaid autorecord setup     --app A | --browser --workspace WS [--owner NAME]
-                               [--into DIR] [--label L] [--skip-deps] [--no-open] [--dry-run]
+                               [--into DIR] [--label L] [--live] [--skip-deps] [--no-open] [--dry-run]
   run loops: wait for a call, record it into --into (default ~/Recordings), repeat.
   --app A uses `record --app A --wait-for-call --until-call-ends` (A is a bundle ID,
   e.g. com.microsoft.teams2); --browser uses `record --browser --wait-for-call` on a
   browser started with --remote-debugging-port. One copy per folder; it never gives
   up (app not running and no browser are waiting states; failures back off to 5 min).
   Log: <into>/.autorecord.log. Default --label: call.
+  --live also runs `whosaid live --once` while each call is captured (a live me/them
+  transcript for the app's Live now and the whosaid_live tool); it starts with the
+  capture and stops with it. Off by default. Its log: <into>/.autorecord/live.log.
   install starts run at every login. --app needs Screen & System Audio Recording and
   the microphone, which macOS grants to apps: install builds a small launcher,
   ~/Applications/Whosaid Call Recorder.app, rebuilt only when its source changes so a

@@ -197,6 +197,7 @@ git clone https://github.com/sblattj/whosaid ~/code/whosaid && cd ~/code/whosaid
 - **Login.** `install` starts it at every login. `--app` builds a small launcher, `~/Applications/Whosaid Call Recorder.app`, and opens System Settings so you can turn it on under Screen & System Audio Recording. That permission belongs to the launcher, which is only rebuilt when whosaid changes it, so re-running `install` with other flags keeps it.
 - **No admin rights?** If that toggle asks for an admin password, use `--browser` with the meeting on the web. Start the browser with `--remote-debugging-port=9222` (autorecord never launches or changes your browser). An organization policy can turn remote debugging off.
 - **Robust by default.** One copy per folder. An app that isn't running or a browser that isn't open yet is a waiting state; other failures back off to 5 minutes and keep trying. Log: `~/Recordings/.autorecord.log`.
+- **Live with every call (opt-in).** Add `--live` to `install` or `setup` and each capture also runs `whosaid live`, which starts when the capture starts and stops when it is saved, so the app's Live now and the `whosaid_live` tool follow every call with no extra step. Its log: `~/Recordings/.autorecord/live.log`. The app's Recorder page shows whether it is on and the command to turn it on.
 - `whosaid autorecord run` is the same loop in the foreground, for a terminal tab.
 
 ### Follow the call as it happens: `whosaid live`
@@ -234,6 +235,8 @@ whosaid app test        # swift test for WhosaidKit
 whosaid app uninstall
 ```
 
+![Live now in the app, on a synthetic call](docs/img/app-live-now.png)
+
 The app never records and never asks for Screen & System Audio Recording: `Whosaid Call Recorder.app` keeps that grant. Pick the workspace and the recordings folder in its Settings (or set `WHOSAID_WORKSPACE` / `WHOSAID_RECORDINGS`). With no workspace, or one that is not indexed yet, the window says what to do next. Settings also has "Open at login". Needs macOS 15 and Swift 6.
 
 The menu bar item shows one glyph per state, from `whosaid app-state`: a waveform while idle, a red record dot with the elapsed time while a call is recorded (plus a pencil when `whosaid live` is transcribing it), gears while the last call is transcribed, a check just after, a pause sign while autorecord is paused and a warning triangle when something needs a look. Its panel has Stop and save now, Pause autorecord for 1 hour, the last three meetings, Name N unknown voices, search and Settings.
@@ -245,6 +248,10 @@ A meeting's Speakers tab has one card per voice: turns and talk time, a name fie
 My commitments is the ranked worklist for the workspace owner (`whosaid_worklist`): P1 to P3 chips, why each ranks where it does, and a link that opens the meeting at the moment it was said. Above it, "Looks done?" lists later statements that may show an item is finished (`whosaid_tracking_suggestions`), with the quote and why it matched. Nothing changes until you click Mark done, which records one status event with that quote as evidence (`whosaid_set_status`). Action items lists every item from every meeting, with the same Open / Done / All filter.
 
 Live now follows the newest `whosaid live` session in five lanes: the me / them transcript, topic buckets, a wordgraph, 5-minute summaries and next steps (agreed vs suggested). Topics are buckets: when the talk comes back to a subject, its bucket is marked "back 2×" instead of starting a new one, and a fresh one is marked "new". The wordgraph is the balloon graph from jibbr (topic, idea, detail by color; dashed lines join words shared by two topics): drag and throw the balloons, click one to fold its branch, or switch it to full window. The lanes come from `whosaid live insights follow`, a small local engine the app starts only while a call is live; it writes `<start>.insights.json` next to the live transcript. ⌘L opens a narrow floating panel to keep next to the call, with the last lines, the topics and "Ask about this call" (`whosaid live ask`): it searches the live transcript, unless the workspace sets `[summarizer] engine = "claude"`, which sends the transcript to Claude for the answer. The wordgraph page is bundled in the app and can load only its own files: no fetches, and any other navigation is cancelled.
+
+Recorder shows what autorecord is doing (waiting, recording, paused), what it records and into which folder, whether the live transcript and the watcher are on, the last saved call or error and the recent log, with the same Stop and save now, Pause and Resume as the menu bar. It never installs anything itself: when the live transcript is off it shows the `whosaid autorecord install ... --live` command to copy.
+
+![The Recorder page on a fixture](docs/img/app-recorder.png)
 
 ### Enroll from an existing recording
 

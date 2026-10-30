@@ -61,8 +61,12 @@ struct DetailView: View {
 
   var body: some View {
     Group {
-      // Live now reads the recordings folder, not the workspace: it works before one is set up.
-      if item == .live { LiveWorkspaceView() } else { workspaceContent }
+      // Live now and Recorder read the recordings folder, not the workspace: they work before one is set up.
+      switch item {
+      case .live: LiveWorkspaceView()
+      case .recorder: RecorderView()
+      default: workspaceContent
+      }
     }
     .navigationTitle(item.title)
   }

@@ -338,4 +338,61 @@ echo "{rec}/20261029T160000Z-call.m4a"; exit 0
     check(not (d / "sigs").exists(), f"no SIGINT while saving: {(d / 'sigs').read_text() if (d / 'sigs').exists() else ''}")
     check("autorecord: saved " in (rec / ar.LOG_NAME).read_text(), "the file is saved")
 
+# ---- --live: `whosaid live` starts with the capture and stops with it (macOS app, P8) ----
+with tempfile.TemporaryDirectory() as d:
+    d = Path(d)
+    rec = d / "rec"
+    fake = d / "whosaid"
+    # `live`: records its argv and SIGTERM, then exits like live does (final chunk, ended).
+    # `record`: call 1 captures for 1 s and saves; call 2 finds no app (exit 2), so no live.
+    fake.write_text(f"""#!/bin/bash
+if [[ $1 == live ]]; then
+  echo "$*" > {d}/live.args
+  trap 'echo stopped >> {d}/live.events; exit 0' TERM
+  echo started >> {d}/live.events
+  while true; do sleep 0.1; done
+fi
+n=$(( $(cat {d}/n 2>/dev/null || echo 0) + 1 )); echo $n > {d}/n
+if [[ $n == 1 ]]; then
+  echo "record-app: Example opened the mic; starting the capture." >&2
+  sleep 1
+  [[ -f {d}/live.events ]] && cp {d}/live.events {d}/live.during
+  echo "record-app: capture ended; saving the recording" >&2
+  echo "{rec}/20261029T160000Z-call.m4a"; exit 0
+fi
+echo "no running app matches" >&2; exit 2
+""")
+    fake.chmod(0o755)
+    env = dict(os.environ, HOME=str(d / "home"), WHOSAID_AUTORECORD_MAX_LOOPS="2",
+               WHOSAID_AUTORECORD_DELAY_SCALE="0.001")
+    run = [sys.executable, str(ROOT / "lib" / "autorecord.py"), "run", "--app", "com.example.app",
+           "--into", str(rec), "--whosaid", str(fake)]
+    r = subprocess.run(run, capture_output=True, text=True, timeout=60, env=env)
+    check(r.returncode == 0 and not (d / "live.events").exists() and not (rec / ar.LIVE_LOG).exists(),
+          f"without --live no live child runs: {r.stderr}")
+    (d / "n").unlink()
+    r = subprocess.run(run + ["--live"], capture_output=True, text=True, timeout=60, env=env)
+    logtxt = (rec / ar.LOG_NAME).read_text().split("autorecord: stopped")[1]
+    check(r.returncode == 0, f"run --live exits 0: {r.stderr}")
+    check((d / "live.args").read_text().split() == ["live", "run", "--into", str(rec), "--once"],
+          f"live follows this folder, one call: {(d / 'live.args').read_text()}")
+    check((d / "live.during").read_text() == "started\n", "live runs while the capture runs")
+    check((d / "live.events").read_text() == "started\nstopped\n", f"live got one SIGTERM: {(d / 'live.events').read_text()}")
+    order = [logtxt.find(x) for x in ("starting the capture", "live transcript started",
+                                      "live transcript stopped", "autorecord: saved", "record exited 2")]
+    check(all(i >= 0 for i in order) and order == sorted(order),
+          f"capture start -> live start -> live stop -> saved -> next wait: {order}\n{logtxt}")
+    check(logtxt.count("live transcript started") == 1, "the no-app wait starts no live child")
+    sj = json.loads((rec / ar.STATE_NAME).read_text())
+    check(sj["live"] is True and sj["live_pid"] is None and sj["state"] == "stopped", f"state file: {sj}")
+    check(not subprocess.run(["pgrep", "-f", f"{fake} live"], capture_output=True).stdout, "no live child outlives the loop")
+    # install and status carry the opt-in.
+    i = ar.parse_args(["install", "--app", "com.example.app", "--into", "/r", "--whosaid", "/w", "--live"])
+    check(ar.build_plist(i, None)["ProgramArguments"][-1] == "--live", "install --live reaches the agent's run")
+    i = ar.parse_args(["install", "--app", "com.example.app", "--into", "/r", "--whosaid", "/w"])
+    check("--live" not in ar.build_plist(i, None)["ProgramArguments"], "live stays off by default")
+    s = json.loads(subprocess.run([sys.executable, str(ROOT / "lib" / "autorecord.py"), "status", "--json",
+                                   "--into", str(rec)], capture_output=True, text=True, timeout=30, env=env).stdout)
+    check(s["live"] is True, f"status --json reports live from the last loop: {s}")
+
 print(f"PASS: autorecord_test ({CHECKS} checks)")
