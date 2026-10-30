@@ -19,7 +19,8 @@ A worker thread (never the follow loop: a call takes seconds) asks Claude for
 topic labels, a short recap and next steps, and writes <stem>.ai.json (tmp +
 os.replace) with the transcript time it saw, its call count and its tokens, so a
 restarted follower waits for new talk instead of calling again. A failed call is
-recorded and waits `ai_every` too. build() stays local and deterministic: the
+recorded and waits `ai_every` too; after MAX_FAILURES in a row (say, a lapsed login) it
+stops calling for that session. build() stays local and deterministic: the
 sidecar is overlaid when the insights file is written (overlay()), and every
 overlaid topic keeps its `localLabel`. Stdlib only.
 """
@@ -38,6 +39,7 @@ import live  # noqa: E402
 
 AI_VERSION = 1
 MIN_LINES = 12           # a call this short has nothing to label yet
+MAX_FAILURES = 3         # failed calls in a row before the session stops calling
 PROMPT_CHARS = 24000     # newest transcript lines sent per call (about 6k tokens)
 TOPICS_SENT = 12
 LINES_PER_TOPIC = 4
@@ -149,7 +151,8 @@ def _client(cfg: dict):
 
 
 def due(state: dict, meta: dict, entries: list[dict], cfg: dict) -> bool:
-    if len(entries) < MIN_LINES or int(state.get("calls") or 0) >= int(cfg["ai_max_calls"]):
+    if (len(entries) < MIN_LINES or int(state.get("calls") or 0) >= int(cfg["ai_max_calls"])
+            or int(state.get("failures") or 0) >= MAX_FAILURES):
         return False
     last_t = max(float(e["t"]) for e in entries)
     seen = float(state.get("t") or -1e9)
@@ -171,7 +174,7 @@ def step(jl: Path, cfg: dict, now: float | None = None) -> dict | None:
            "final": bool(meta.get("ended")), "calls": int(state.get("calls") or 0) + 1,
            "tokens": int(state.get("tokens") or 0), "updated": time.time() if now is None else now,
            "labels": state.get("labels") or {}, "recap": state.get("recap") or [],
-           "nextSteps": state.get("nextSteps") or [], "error": ""}
+           "nextSteps": state.get("nextSteps") or [], "error": "", "failures": 0}
     client = None
     try:
         client = _client(cfg)
@@ -182,7 +185,9 @@ def step(jl: Path, cfg: dict, now: float | None = None) -> dict | None:
         out["model"] = getattr(client, "resolved_model", "") or cfg["ai_model"]
     except Exception as e:  # noqa: BLE001  any failure: keep the last good answer, wait ai_every
         out["error"] = str(e)[:300]
-        log(f"{jl.name}: {out['error']}")
+        out["failures"] = int(state.get("failures") or 0) + 1
+        log(f"{jl.name}: {out['error']}" + (f" ({MAX_FAILURES} failures in a row: no more calls this session)"
+                                           if out["failures"] >= MAX_FAILURES else ""))
     out["tokens"] += int(getattr(client, "tokens", 0) or 0)
     write(ai_path(jl), out)
     return out

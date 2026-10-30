@@ -7,7 +7,7 @@ All notable changes to whosaid are documented here. This project adheres to
 ## [Unreleased]
 
 ### Added
-- Opt-in AI layer for live insights (CLOUD): with `[live] ai = "claude"` in the workspace, the live follower asks Claude every 3 minutes of talk (at most 40 calls, 90 s and 1500 output tokens each) for topic labels, a short recap and next steps, and the Live page shows them ("So far (AI)"). Off by default and separate from `[summarizer]`. Answers live in `<start>.ai.json`; local labels are kept as `localLabel`; a restart or a failed call waits for new talk instead of calling again.
+- Opt-in AI layer for live insights (CLOUD): with `[live] ai = "claude"` in the workspace, the live follower asks Claude every 3 minutes of talk (at most 40 calls, 90 s and 1500 output tokens each) for topic labels, a short recap and next steps, and the Live page shows them ("So far (AI)"). Off by default and separate from `[summarizer]`. Answers live in `<start>.ai.json`; local labels are kept as `localLabel`; a restart or a failed call waits for new talk instead of calling again, and 3 failures in a row stop the calls for that session.
 - `ClaudeCLI(max_tokens=...)` caps output tokens through `CLAUDE_CODE_MAX_OUTPUT_TOKENS`.
 - `test/live_quality.py --judge`: Claude (`claude -p`, Sonnet) grades every topic label 1-5 from the topic's own lines and suggests a better one; about 4k tokens per call graded. `ClaudeCLI.tokens` counts the tokens of its calls.
 

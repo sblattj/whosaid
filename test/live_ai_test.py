@@ -124,6 +124,9 @@ with tempfile.TemporaryDirectory() as d:
     check(out and side["error"].startswith("`claude -p` failed") and side["calls"] == 2 and len(side["recap"]) == 2
           and side["tokens"] == 2000, "a failed call is recorded and keeps the last good answer")
     check(live_ai.step(jl, cfg) is None, "after a failure: waits for new talk, no hot retry")
+    check(side["failures"] == 1, "a failure is counted")
+    check(not live_ai.due({"failures": live_ai.MAX_FAILURES}, {}, entries, cfg), "MAX_FAILURES in a row: no more calls")
+    check(live_ai.due({"failures": live_ai.MAX_FAILURES - 1}, {}, entries, cfg), "fewer failures: still due")
 
     # overlay through build_file, with localLabel kept; --if-stale sees a newer sidecar
     path, res = li.build_file(jl)
