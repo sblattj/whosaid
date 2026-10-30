@@ -139,8 +139,11 @@ def compose(ar: dict, w: dict, lv: dict) -> dict:
         if (ar.get("last_error") or {}).get("kind") == "permission":
             return {"state": "warn", "headline": "autorecord has no Screen & System Audio Recording permission"}
         return {"state": "warn", "headline": f"autorecord: the recorder keeps failing (exit {(ar.get('last_error') or {}).get('rc')})"}
-    if w.get("installed") and w.get("loaded") and w.get("running") is False:
-        return {"state": "warn", "headline": "the watcher launch agent is loaded but not running"}
+    # the watcher runs on demand (WatchPaths + StartInterval): between runs it is loaded,
+    # not running and exited 0. Only a failed last run needs a look.
+    last = w.get("last_exit_status")
+    if w.get("installed") and w.get("loaded") and w.get("running") is False and last not in (None, 0):
+        return {"state": "warn", "headline": f"the watcher's last run failed (exit {last})"}
     if ar.get("installed") and ar.get("loaded") and ar.get("running") is False:
         return {"state": "warn", "headline": "the autorecord launch agent is loaded but not running"}
     if w.get("installed") and w.get("loaded") is False:

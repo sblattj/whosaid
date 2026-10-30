@@ -39,7 +39,7 @@ cases = [
     ("warn", {**ar_wait, "state": "error", "last_error": {"kind": "permission", "rc": 5}}, idle_w, no_live),
     ("warn", {**ar_wait, "state": "error", "last_error": {"kind": "failed", "rc": 1}}, idle_w, no_live),
     ("warn", {**ar_wait, "running": False}, idle_w, no_live),
-    ("warn", ar_wait, {**idle_w, "running": False}, no_live),
+    ("warn", ar_wait, {**idle_w, "running": False, "last_exit_status": 1}, no_live),
     ("agent-not-loaded", ar_wait, {**idle_w, "loaded": False}, no_live),
     ("agent-not-loaded", {**ar_wait, "loaded": False}, idle_w, no_live),
     ("recording-live", {**ar_wait, "state": "recording"}, idle_w, {"ok": True, "active": True}),
@@ -50,6 +50,9 @@ cases = [
     ("waiting", ar_wait, {**idle_w, "state": "waiting"}, no_live),
     ("done", ar_wait, {**idle_w, "state": "done"}, no_live),
     ("idle", ar_wait, idle_w, no_live),
+    # between on-demand runs the watcher is loaded, not running, last exit 0: not a warning
+    ("idle", ar_wait, {**idle_w, "running": False, "last_exit_status": 0}, no_live),
+    ("idle", ar_wait, {**idle_w, "running": False, "last_exit_status": None}, no_live),
     ("idle", {"installed": False, "loaded": None, "state": "not-installed"},
      {"installed": False, "loaded": None, "state": "idle"}, no_live),
 ]

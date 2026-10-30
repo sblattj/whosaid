@@ -6,6 +6,12 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ## [Unreleased]
 
+### Fixed
+
+- `whosaid app-state` (and the app's menu bar) no longer warns while the
+  watcher sits between runs. It runs on demand (WatchPaths + StartInterval), so
+  loaded, not running and exit 0 is normal; only a failed last run warns.
+
 ## [1.23.0] - 2026-10-29
 
 ### Added
