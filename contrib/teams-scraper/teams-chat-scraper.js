@@ -93,12 +93,35 @@
   const IMAGE_SEL       = 'img[itemtype="http://schema.skype.com/AMSImage"]';
   const IMAGE_RETRIES   = Number(window.__TS_IMAGE_RETRIES ?? 2);       // extra passes for images still loading
   const IMAGE_RETRY_MS  = Number(window.__TS_IMAGE_RETRY_MS ?? 1500);   // wait at the newest end before each pass
+  // The Chats folder stops at about 45 rows and ends in a "See more" row; older chats load only on click.
+  const LOAD_MORE_SEL     = '[data-testid="load-next-page-button"]';
+  const LOAD_MORE_MAX     = Number(window.__TS_LOAD_MORE_MAX ?? 20);       // pages per run
+  const LOAD_MORE_WAIT_MS = Number(window.__TS_LOAD_MORE_WAIT_MS ?? 8000); // wait for the next page to mount
 
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const qsa = (sel, root = document) => Array.from(root.querySelectorAll(sel));
 
   function listChatRows() {
     return qsa('[role="treeitem"][data-item-type="chat"]');
+  }
+
+  // Click the Chats folder's "See more" row until it is gone (all chats loaded) or the
+  // page cap is hit. Returns how many pages were loaded.
+  async function loadAllChatPages() {
+    let pages = 0;
+    for (let btn; pages < LOAD_MORE_MAX && (btn = document.querySelector(LOAD_MORE_SEL)); pages++) {
+      const before = listChatRows().length;
+      if (btn.scrollIntoView) btn.scrollIntoView({ block: 'center' });
+      btn.click();
+      let waited = 0;
+      while (waited < LOAD_MORE_WAIT_MS && listChatRows().length === before && document.querySelector(LOAD_MORE_SEL)) {
+        await sleep(250);
+        waited += 250;
+      }
+      if (listChatRows().length === before) break;   // click did nothing; don't spin
+      await sleep(300);
+    }
+    return pages;
   }
 
   // Sticky rail filter pills (issue #57). A pressed pill hides chats from the rail.
@@ -280,6 +303,7 @@
     ts.result = {};
     ts.pills = { cleared: [], restored: [], countBefore: null, countAfter: null, warning: null };
     ts.readiness = null;
+    ts.loadMorePages = 0;
     ts.stale = [];
     let tree = null;
     const warnings = [];
@@ -287,8 +311,11 @@
     // Enumerate chats; scroll the (virtualized) tree so every row mounts once.
     async function enumerateChats() {
       const seen = new Set();
+      ts.loadMorePages += await loadAllChatPages();
       tree = listChatRows()[0]?.closest('[role="tree"]') || null;
       for (let pass = 0; pass < 40; pass++) {
+        // The "See more" row can mount only once the tree is scrolled near it.
+        ts.loadMorePages += await loadAllChatPages();
         for (const row of listChatRows()) {
           const name = rowName(row);
           if (name) seen.add(name);
@@ -302,6 +329,7 @@
     // Re-find a chat row by name (the tree re-virtualizes as it scrolls).
     async function findRow(name) {
       let row = listChatRows().find((r) => (r.getAttribute('aria-label') || r.innerText).includes(name));
+      if (!row && await loadAllChatPages()) row = listChatRows().find((r) => (r.getAttribute('aria-label') || r.innerText).includes(name));
       if (!row) {
         // scroll the tree looking for it
         for (let s = 0; s < 40 && !row; s++) {
