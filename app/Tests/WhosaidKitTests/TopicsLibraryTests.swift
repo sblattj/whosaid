@@ -42,7 +42,9 @@ private let file = #"""
 }
 
 @Test func topicsLibraryLabels() throws {
-  #expect(TopicsLibrary.dateLabel("2026-09-15T09:00") == "Sep 15, 2026")
+  // the label follows the user's locale: "Sep 15, 2026" in en_US
+  let sep15 = try #require(DateComponents(calendar: .current, year: 2026, month: 9, day: 15).date)
+  #expect(TopicsLibrary.dateLabel("2026-09-15T09:00") == sep15.formatted(.dateTime.month(.abbreviated).day().year()))
   #expect(TopicsLibrary.dateLabel(nil) == "" && TopicsLibrary.dateLabel("soon") == "")
   #expect(TopicsLibrary.duration(125_000) == "2:05" && TopicsLibrary.duration(3_725_000) == "1:02:05")
   let dir = FileManager.default.temporaryDirectory.appendingPathComponent("whosaid-topics-\(UUID().uuidString)")
