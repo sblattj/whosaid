@@ -1,6 +1,8 @@
 #!/bin/bash
 # Run the app in self-test mode and capture only its own window on request.
 # Usage: selftest.sh <app> <out-prefix> [VAR=value ...]  (env for the app)
+# AX=1: also save the window's accessibility tree as <png>.ax.txt (app/ax-dump.sh;
+# needs the Accessibility grant for this terminal).
 APP=${1:?app}; OUT=${2:?out}; shift 2
 rm -f "$OUT" "$OUT".*
 envargs=(); for kv in "$@"; do envargs+=(--env "$kv"); done
@@ -18,7 +20,10 @@ while (( SECONDS < end )) && [[ ! -s "$OUT" ]]; do
   if [[ -f "$OUT.req" ]]; then
     req=$(cat "$OUT.req"); 
     if [[ "$req" != "$last" ]]; then
-      read -r png wid <<<"$req"; screencapture -x -o -l "$wid" "$png"; last="$req"
+      read -r png wid <<<"$req"
+      # the tree first: the app waits for the PNG, so the page holds still until then
+      [[ -n "${AX:-}" ]] && pid=$(pgrep -nf "$APP/Contents/MacOS/") && "$(dirname "$0")/ax-dump.sh" "$pid" --text --timeout 5 >"$png.ax.txt" 2>&1
+      screencapture -x -o -l "$wid" "$png"; last="$req"
     fi
   fi
   sleep 0.2

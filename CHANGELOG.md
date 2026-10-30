@@ -6,6 +6,9 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ## [Unreleased]
 
+### Added
+- `app/ax-dump.sh <pid> [--text]`: prints a running app's accessibility tree (what VoiceOver reads), so a check can read the UI as text. `AX=1 app/selftest.sh` (and `app/live-shot.sh`) saves it next to each screenshot as `<png>.ax.txt`. Needs the Accessibility grant for the terminal. `app/live-shot.sh` also brings along a `<stem>.ai.json` next to the session.
+
 ## [1.25.0] - 2026-10-30
 
 ### Added
