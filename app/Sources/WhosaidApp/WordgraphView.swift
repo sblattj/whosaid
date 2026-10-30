@@ -65,8 +65,14 @@ struct WordgraphView: NSViewRepresentable {
         web.evaluateJavaScript("window.whosaidWordgraph && window.whosaidWordgraph.setMaxDepth(\(maxDepth))")
       }
       if let json, json != sentJSON {
+        let first = sentJSON == nil
         sentJSON = json
         web.evaluateJavaScript("window.whosaidWordgraph && window.whosaidWordgraph.setInsights(\(json))")
+        if first {  // fit again once the balloons have spread out and the view has its final size
+          DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak web] in
+            web?.evaluateJavaScript("window.whosaidWordgraph && window.whosaidWordgraph.fit()")
+          }
+        }
       }
       if motion != sentMotion {
         sentMotion = motion

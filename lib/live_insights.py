@@ -231,6 +231,29 @@ def build(meta: dict, entries: list[dict], session: str = "", now: float | None 
     df = Counter()
     for idx in chunks:
         df.update({w for i in idx for w in content(entries[i].get("text") or "")})
+    total_ms = finish(entries, chunks, topics, dur)
+    nt = len(topics)
+
+    order = sorted(range(nt), key=lambda k: (-topics[k]["ms"], topics[k]["firstT"], topics[k]["id"]))
+    rank = {k: r + 1 for r, k in enumerate(order)}
+    for k in order:
+        tp = topics[k]
+        out["topics"].append({
+            "id": tp["id"], "rootId": tp["id"], "label": tp["label"], "rank": rank[k],
+            "speakingMs": tp["ms"], "visits": tp["visits"],
+            "share": round(tp["ms"] / total_ms, 4) if total_ms else round(1 / nt, 4),
+            "new": tp["firstT"] >= last_t - NEW_WINDOW, "firstT": tp["firstT"], "lastT": tp["lastT"],
+            "terms": tp["top"][:TOPIC_TERMS]})
+
+    out["nodes"] = wordgraph(entries, topics, order)
+    out["summaries"] = summaries(entries, chunks, of_chunk, topics, df, last_t)
+    out["nextSteps"] = next_steps(entries, topics, topic_of_entry)
+    return out
+
+
+def finish(entries: list[dict], chunks: list[list[int]], topics: list[dict], dur: list[float]) -> int:
+    """Fill in every topic's entries, speaking time, term weights, top terms, bigrams
+    and label (in place); returns the total speaking ms. Shared with topics.py."""
     tdf = Counter()
     for tp in topics:
         tdf.update(set(tp["terms"]))
@@ -253,22 +276,7 @@ def build(meta: dict, entries: list[dict], session: str = "", now: float | None 
         pair = sorted((b for b, c in bg.items() if c >= 2 and dom in b.split()),
                       key=lambda b: (-bg[b], b))
         tp["label"] = (pair[0] if pair else dom).title()
-
-    order = sorted(range(nt), key=lambda k: (-topics[k]["ms"], topics[k]["firstT"], topics[k]["id"]))
-    rank = {k: r + 1 for r, k in enumerate(order)}
-    for k in order:
-        tp = topics[k]
-        out["topics"].append({
-            "id": tp["id"], "rootId": tp["id"], "label": tp["label"], "rank": rank[k],
-            "speakingMs": tp["ms"], "visits": tp["visits"],
-            "share": round(tp["ms"] / total_ms, 4) if total_ms else round(1 / nt, 4),
-            "new": tp["firstT"] >= last_t - NEW_WINDOW, "firstT": tp["firstT"], "lastT": tp["lastT"],
-            "terms": tp["top"][:TOPIC_TERMS]})
-
-    out["nodes"] = wordgraph(entries, topics, order)
-    out["summaries"] = summaries(entries, chunks, of_chunk, topics, df, last_t)
-    out["nextSteps"] = next_steps(entries, topics, topic_of_entry)
-    return out
+    return total_ms
 
 
 def node(nid, topic, parent, depth, label, description="", source="meeting") -> dict:

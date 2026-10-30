@@ -87,6 +87,8 @@ final class AppModel {
   var trackingError: String?
   /// A source link opened a meeting at this second: the transcript scrolls to it.
   var focus: (folder: String, t: Double)?
+  /// Bumped when the workspace folder changes, so the Topics page re-reads _topics.json.
+  var topicsStamp = 0
   var people: [JSONValue] = []
   var peopleLoaded = false
   var searchOpen = false
@@ -335,6 +337,18 @@ final class AppModel {
     selectedMeeting = meeting
     meetingTab = .transcript
     focus = t.map { (meeting, $0) }
+  }
+
+  func topicsChanged() async { topicsStamp += 1 }
+
+  /// `whosaid topics build <ws>`: local, no network. Returns the one-line result or the error.
+  func buildTopics() async -> String? {
+    guard let ws = paths.workspace else { return "No workspace set" }
+    let r = try? await cli.run(["topics", "build", ws], timeout: 600)
+    guard let r else { return "Building topics did not finish" }
+    let last = { (s: String) in s.split(separator: "\n").last.map(String.init) }
+    return r.status == 0 ? last(r.stdout).map { $0.components(separatedBy: " -> ").first ?? $0 }
+      : "Building topics failed: " + (last(r.stderr) ?? "exit \(r.status)")
   }
 
   func stopNow() async {

@@ -486,8 +486,12 @@ export function createBalloonWorld(
       top = Math.min(...items.map((n) => n.y - n.radius)),
       bottom = Math.max(...items.map((n) => n.y + n.radius));
     const sidePad = Math.min(70, width * 0.12);
-    const topPad = Math.max(50, height * 0.08);
-    const bottomPad = Math.max(width < 600 ? 150 : 110, height * 0.16);
+    // short views (a topic's graph above its meetings) cap the pads by height; tall ones are unchanged
+    const topPad = Math.min(Math.max(50, height * 0.08), height * 0.12);
+    const bottomPad = Math.min(
+      Math.max(width < 600 ? 150 : 110, height * 0.16),
+      Math.max(84, height * 0.25),
+    );
     const k = Math.max(
       MIN_ZOOM,
       Math.min(

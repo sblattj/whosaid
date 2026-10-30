@@ -61,10 +61,11 @@ struct DetailView: View {
 
   var body: some View {
     Group {
-      // Live now and Recorder read the recordings folder, not the workspace: they work before one is set up.
+      // Live now and Recorder read the recordings folder and Topics reads <ws>/_topics.json: none needs the index.
       switch item {
       case .live: LiveWorkspaceView()
       case .recorder: RecorderView()
+      case .topics: TopicsView()
       default: workspaceContent
       }
     }

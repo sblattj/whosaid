@@ -8,6 +8,12 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ### Added
 
+- `whosaid topics build [WS]`: topics across meetings into `<WS>/_topics.json`
+  (the live insights clustering per meeting, merged by label or terms, stable ids,
+  ranked by meetings then recency, a wordgraph per topic, no speaker names), and
+  the macOS app's Topics page: the ranked list, a topic's wordgraph and the
+  meetings it came up in, each opening at the transcript. The wordgraph's fit
+  keeps less padding in short views.
 - `whosaid autorecord install|run|setup --live`: also run `whosaid live` during
   each capture, started when the capture starts and stopped when it is saved
   (off by default; `status --json` reports it). `autorecord setup` now points at

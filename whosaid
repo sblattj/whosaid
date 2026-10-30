@@ -28,6 +28,7 @@
 #   whosaid memos <sub>             list | pull | delete | shortcut-recipe: Voice Memos helpers.
 #   whosaid autorecord <sub>        run | install | uninstall | status: record every call unattended.
 #   whosaid live [show]             Live me/them transcript of the call being recorded.
+#   whosaid topics build [WS]       Topics across meetings into <WS>/_topics.json (the app's Topics).
 #   whosaid help                  This message.
 #
 # See `whosaid help` for the full flag reference.
@@ -743,6 +744,15 @@ LIVE
   (--once: exits after the call ends). ask answers from the newest session by
   local search; only a --ws whose whosaid.toml sets [summarizer] engine = "claude"
   sends the transcript to Claude (on failure: the search answer, engine_error set).
+
+TOPICS
+  whosaid topics build [WS] [--out F] [--chats] [--json]
+  Rolls every meeting's topics (the same local clustering as live insights) up across
+  meetings into <WS>/_topics.json (default WS: $WHOSAID_WORKSPACE): each topic with its
+  label, terms, meetings (newest first, with where it starts) and a wordgraph, ranked
+  by number of meetings, then the latest one. Ids stay put as meetings are added.
+  Teams chats and mail are left out unless --chats. Local, no model, no network; the
+  macOS app's Topics page reads the file and can rebuild it.
 
 APP STATE
   whosaid app-state [--json] [--workspace WS] [--into DIR]
@@ -2810,6 +2820,11 @@ case "${1:-}" in
     ;;
   live)
     cmd_live "${@:2}"
+    ;;
+  topics)
+    if want_help "${@:2}"; then help_section "TOPICS"; exit 0; fi
+    require_module "$REPO_DIR/lib/topics.py" topics
+    exec "$WHOSAID_PY" "$REPO_DIR/lib/topics.py" "${@:2}"
     ;;
   app-state)
     cmd_app_state "${@:2}"

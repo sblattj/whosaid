@@ -253,6 +253,19 @@ Recorder shows what autorecord is doing (waiting, recording, paused), what it re
 
 ![The Recorder page on a fixture](docs/img/app-recorder.png)
 
+Topics rolls up what each meeting was about, across meetings, from `<workspace>/_topics.json`. Topics are ranked by how many meetings they came up in, then by how recently. A topic shows its terms, its own wordgraph and the meetings it came up in, each opening its transcript where the topic starts. Rebuild runs `whosaid topics build`.
+
+![Topics on a fixture workspace](docs/img/app-topics.png)
+
+### Topics across meetings: `whosaid topics build`
+
+```bash
+whosaid topics build ~/meetings          # writes ~/meetings/_topics.json
+whosaid topics build ~/meetings --chats  # Teams chats and mail too
+```
+
+It runs the same local topic clustering as `whosaid live insights` over each meeting's speaker transcript, then merges topics across meetings: same label, or terms that match closely enough. A topic keeps its id as meetings are added, so links to it stay put. Each topic lists its meetings (date, the label it had there, talk time, where it starts), its top terms and a wordgraph. Speaker names are not written to the file. Stdlib only: no model, no network.
+
 ### Enroll from an existing recording
 
 Already have a clip of the person speaking? Skip the mic and cut a reference straight from it:

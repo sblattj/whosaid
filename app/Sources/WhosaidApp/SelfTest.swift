@@ -29,7 +29,7 @@ import WhosaidKit
     let wanted = env["WHOSAID_APP_SELFTEST_ITEMS"]?.split(separator: ",").map(String.init)
     for item in SidebarItem.allCases where wanted == nil || wanted!.contains(item.rawValue) {
       model.selection = item
-      try? await Task.sleep(for: .milliseconds(item == .meetings || item == .people ? 1500 : 600))
+      try? await Task.sleep(for: .milliseconds(item == .meetings || item == .people || item == .topics ? 1500 : 600))
       let ok = await snapshot(main, to: "\(out).\(item.rawValue).png")
       lines.append("shot \(item.rawValue) \(ok ? "ok" : "MISSING")")
       if item == .meetings, let pick = env["WHOSAID_APP_SELFTEST_TABS"] {
