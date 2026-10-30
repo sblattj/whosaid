@@ -18,7 +18,10 @@ seen so far, so a chunk's topic depends only on what came before it) or opens a
 new topic. A topic id is the slug of its first chunk's dominant term plus an
 ordinal and is never reassigned. A topic back after >= 120 s away counts one
 more visit. A turn lasts until the next one, capped at 20 s (the last turn:
-words / 2.5 s); speakingMs, ranks and shares use that. Wordgraph: topic ->
+words / 2.5 s); speakingMs, ranks and shares use that. A topic's label is its
+best phrase or term by weight x shape: things ("the build"), capitalized names of
+products ("PR", "Slack") score up, verbs ("we build"), -ly hedges, abstractions and
+people score down (people: the local speaker registry, or "thanks Zoe"). Wordgraph: topic ->
 top terms (depth 1) -> bigrams holding the term, then co-occurring terms
 (depth 2), at most 6 children each. Summaries are extractive, one per 5
 transcript minutes. Next steps come from cue phrases (agreed vs suggested).
@@ -328,36 +331,146 @@ def finish(entries: list[dict], chunks: list[list[int]], topics: list[dict], dur
         total_ms += tp["ms"]
         tp["weight"] = {w: c * math.log(1 + nt / tdf[w]) for w, c in tp["terms"].items()}
         tp["top"] = sorted(tp["weight"], key=lambda w: (-tp["weight"][w], w))
-        nameable = [w for w in tp["top"] if not w.endswith("'s")] or tp["top"]
         bg = Counter()
         for i in idx:
             bg.update(bigrams(entries[i].get("text") or ""))
         tp["bigrams"] = bg
-        dom = nameable[0] if nameable else tp["id"].rsplit("-", 1)[0]
-        pair = sorted((b for b, c in bg.items() if c >= 2 and dom in b.split()),
-                      key=lambda b: (-bg[b], b))
-        if not pair:  # a phrase from the topic's top terms beats one bare word
-            top = set(nameable[:TOPIC_TERMS])
-            pair = sorted((b for b, c in bg.items() if c >= 2 and set(b.split()) <= top),
-                          key=lambda b: (-bg[b], b))
-        if pair:
-            tp["label"] = title(pair[0])
-        else:  # no repeated phrase: two strong terms said together, else the strongest alone
-            tp["label"] = title(dom) if not tp["top"] else co_label(entries, idx, nameable[:TOPIC_TERMS])
+    bdf = Counter()
+    for tp in topics:
+        bdf.update({b for b, c in tp["bigrams"].items() if c >= 2})
+    stats = word_stats(entries)
+    for tp in topics:
+        tp["label"] = pick_label(tp, entries, nt, bdf, stats)
     return total_ms
 
 
-def co_label(entries: list[dict], idx: list[int], top: list[str]) -> str:
-    """'A · B' for the pair of top terms said in the same line most often (twice at
-    least), the stronger first; else the strongest term alone."""
-    sets = [set(content(entries[i].get("text") or "")) for i in idx]
-    best, hits = None, 1
-    for a in range(len(top)):
-        for b in range(a + 1, len(top)):
-            n = sum(1 for s in sets if top[a] in s and top[b] in s)
-            if n > hits:
-                best, hits = (top[a], top[b]), n
-    return " · ".join(title(w) for w in best) if best else title(top[0])
+DET_CUE = frozenset("the a an this that our your my their his her its some any each every which what "
+                    "new same whole".split())
+VERB_CUE = frozenset("to will i'll we'll you'll they'll can could should would don't didn't doesn't won't "
+                     "can't let's gonna must might may i we you they".split())
+NAME_CUE = frozenset("thanks thank hey hi ask asked tell told ping pinged cc talked talk with".split())
+TOKEN_RE = re.compile(r"[A-Za-z][A-Za-z0-9']*[A-Za-z0-9]|[A-Za-z]")
+BIGRAM_BOOST = 4.0       # a two-word phrase beats one word of the same weight
+PAIR_MIN = 0.3           # a second label part needs this share of the first one's score
+# words that are never the topic on their own: hedges, sizes, days, numbers, abstractions
+LABEL_STOP = frozenset("""
+ability difference idea problem problems issue issues thing value values big small bigger smaller
+part parts kind sort lot lots bit stuff way ways point points question questions reason case cases
+time times day days week weeks today tomorrow yesterday monday tuesday wednesday thursday friday
+morning afternoon one two seven eight nine twenty hundred thousand number numbers place level levels
+shoulders side end start beginning sense matter fact example examples option options piece pieces
+""".split())
+
+
+def word_stats(entries: list[dict]) -> dict[str, dict]:
+    """Per lower-case word: how often it follows a determiner ("the build": a thing) or a
+    subject/modal ("we build": an action), and how often it is capitalized away from a
+    sentence start, with its usual capitalized spelling ("PR", "Slack")."""
+    st: dict[str, dict] = {}
+    for e in entries:
+        text = (e.get("text") or "").replace("’", "'")
+        prev, initial = "", True
+        for m in TOKEN_RE.finditer(text):
+            tok = m.group(0)
+            w = tok.lower()
+            d = st.setdefault(w, {"n": 0, "det": 0, "verb": 0, "mid": 0, "cap": 0, "name": 0,
+                                  "forms": Counter()})
+            d["n"] += 1
+            d["name"] += prev in NAME_CUE and tok[:1].isupper() and not tok.isupper()
+            d["det"] += prev in DET_CUE
+            d["verb"] += prev in VERB_CUE
+            if not initial:
+                d["mid"] += 1
+                if tok[:1].isupper() and w != "i" and not w.startswith("i'"):
+                    d["cap"] += 1
+                    d["forms"][tok] += 1
+            prev = w
+            initial = bool(re.search(r"[.!?]\s*$", text[m.end():m.end() + 2]))
+    return st
+
+
+def known_names() -> frozenset:
+    """First and last names of the voices in the local speaker registry: a person is never
+    the topic. Read once per process; WHOSAID_SPEAKER_DB points elsewhere (tests)."""
+    global _NAMES
+    if _NAMES is None:
+        path = Path(os.environ.get("WHOSAID_SPEAKER_DB") or Path.home() / ".config" / "whosaid" / "speakers.json")
+        try:
+            reg = json.loads(path.read_text())
+            names = [s.get("name", "") for s in reg.get("speakers", [])] if isinstance(reg, dict) else []
+        except (OSError, ValueError, AttributeError):
+            names = []
+        _NAMES = frozenset(w for n in names for w in words(str(n)) if len(w) > 2)
+    return _NAMES
+
+
+_NAMES: frozenset | None = None
+
+
+def is_person(w: str, stats: dict) -> bool:
+    d = stats.get(w)
+    return w in known_names() or bool(d and d["name"] >= 1 and d["name"] / d["n"] >= 0.2)
+
+
+def shape(w: str, stats: dict) -> float:
+    """How much w reads as a topic (a thing or a name) rather than an action or a hedge."""
+    d = stats.get(w)
+    if not d:
+        return 1.0
+    n = max(1, d["n"])
+    det, verb = d["det"] / n, d["verb"] / n
+    cap = d["cap"] / d["mid"] if d["mid"] >= 2 else 0.0
+    m = (1 + 1.5 * det) * max(0.2, 1 - 1.5 * verb)
+    if w.endswith("ly"):
+        m *= 0.15
+    if cap >= 0.6:
+        m *= 1.8
+    elif w.endswith(("ed", "ing")) and det < 0.2:
+        m *= 0.5
+    return m
+
+
+def spell(w: str, stats: dict) -> str:
+    """The transcript's own capitalized spelling when it mostly writes it that way, else Title."""
+    d = stats.get(w)
+    if d and d["mid"] >= 2 and d["cap"] / d["mid"] >= 0.6 and d["forms"]:
+        return d["forms"].most_common(1)[0][0]
+    return title(w)
+
+
+def pick_label(tp: dict, entries: list[dict], nt: int, bdf: Counter, stats: dict) -> str:
+    """The best-scoring repeated phrase or term (weight x shape), plus a second one said with
+    it when that one scores close: "Release Notes & Slack"."""
+    nameable = [w for w in tp["top"] if not w.endswith("'s") and w not in LABEL_STOP and not is_person(w, stats)] \
+        or [w for w in tp["top"] if not w.endswith("'s")] or tp["top"]
+    if not nameable:
+        return title(tp["id"].rsplit("-", 1)[0])
+    strong = set(nameable[:12])
+    cands = []
+    for b, c in tp["bigrams"].items():
+        a, z = b.split()
+        if a in LABEL_STOP or z in LABEL_STOP or a.endswith("'s") or is_person(a, stats) or is_person(z, stats):
+            continue
+        if c >= 2 or (a in strong and z in strong):  # said twice, or once but made of two strong terms
+            sc = c * math.log(1 + nt / max(1, bdf[b])) * (0.4 * shape(a, stats) + 0.6 * shape(z, stats)) \
+                * BIGRAM_BOOST * (1.0 if c >= 2 else 0.6)
+            cands.append((sc, b, f"{spell(a, stats)} {spell(z, stats)}"))
+    for w in nameable[:12]:
+        cands.append((tp["weight"][w] * shape(w, stats), w, spell(w, stats)))
+    cands.sort(key=lambda c: (-c[0], c[1]))
+    best = cands[0]
+    if " " in best[1]:
+        return best[2]
+    sets = [set(content(entries[i].get("text") or "")) for i in tp["idx"]]
+    for sc, key, shown in cands[1:]:
+        if sc < PAIR_MIN * best[0]:
+            break
+        parts = key.split()
+        if best[1] in parts or shape(parts[-1], stats) < 1.0:
+            continue
+        if any(best[1] in s and set(parts) <= s for s in sets):
+            return f"{best[2]} & {shown}"
+    return best[2]
 
 
 def node(nid, topic, parent, depth, label, description="", source="meeting") -> dict:

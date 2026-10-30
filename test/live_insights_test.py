@@ -25,6 +25,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "lib"))
+os.environ["WHOSAID_SPEAKER_DB"] = str(Path(tempfile.gettempdir()) / "whosaid-no-registry.json")  # no names
 import live  # noqa: E402
 import live_insights as li  # noqa: E402
 
@@ -61,7 +62,8 @@ check(all(a["speakingMs"] >= b["speakingMs"] for a, b in zip(by_rank, by_rank[1:
 check(abs(sum(t["share"] for t in topics) - 1.0) < 0.01, "shares sum to 1")
 check(not any(t["new"] for t in topics), "ended call: nothing is new")
 labels = {t["label"].lower() for t in topics}
-check(any("release" in x for x in labels) and any("onboarding" in x for x in labels), f"labels: {labels}")
+check(any("release" in x for x in labels) and any("onboarding" in x or "setup" in x for x in labels),
+      f"labels: {labels}")
 check(all(t["label"] == t["label"].title() for t in topics), "labels are title case")
 
 parser = next(t for t in topics if "regex" in t["terms"])
@@ -337,10 +339,18 @@ utt = li.utterances([{"t": 0, "who": "them", "text": "The importer drops rows wh
                      {"t": 30, "who": "me", "text": "Later thought."}])
 check([u[1] for u in utt] == ["The importer drops rows when the header is missing.", "Got it.", "Later thought."],
       f"one speaker's close lines join, a speaker change or long gap splits: {utt}")
-check(li.co_label([{"text": "pager rota pager"}, {"text": "pager rota"}, {"text": "budget"}], [0, 1, 2],
-                  ["pager", "budget", "rota"]) == "Pager · Rota", "co_label pairs terms said together")
-check(li.co_label([{"text": "pager"}, {"text": "budget"}], [0, 1], ["pager", "budget"]) == "Pager",
-      "co_label never pairs terms that are never said together")
+st = li.word_stats([{"text": "We merged the PR. The PR is open. Ask the PR bot."},
+                    {"text": "We probably shipped it, and we deploy daily."},
+                    {"text": "Thanks Zoe, and hey Zoe. Thanks Zoe."}])
+check(li.spell("pr", st) == "PR", "spell keeps the transcript's own capitals (PR, not Pr)")
+check(li.shape("pr", st) > 1.5 > li.shape("probably", st) and li.shape("deploy", st) < 1.0,
+      "shape: a capitalized thing after 'the' beats an -ly hedge and a verb after 'we'")
+check(li.is_person("zoe", st) and not li.is_person("pr", st), "is_person: a capitalized word after thanks/hey")
+tp = {"id": "x-1", "top": ["probably", "ability", "zoe", "release", "notes"],
+      "weight": {"probably": 9.0, "ability": 8.0, "zoe": 7.0, "release": 3.0, "notes": 3.0},
+      "bigrams": Counter({"release notes": 2}), "idx": [0]}
+check(li.pick_label(tp, [{"text": "release notes"}], 3, Counter({"release notes": 1}), st) == "Release Notes",
+      "pick_label: a repeated phrase beats hedges, abstractions and names")
 mumble = [{"t": 0, "who": "me", "text": "to"}, {"t": 1, "who": "me", "text": "to"},
           {"t": 2, "who": "me", "text": "i'll just share the link"}, {"t": 3, "who": "me", "text": "so"},
           {"t": 4, "who": "them", "text": "So we can review the parser fix and then we ship it on Monday."}]

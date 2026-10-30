@@ -13,6 +13,11 @@ Prints one line per source and an aggregate; --out writes the numbers as JSON.
 Real transcript text is only printed with --show (local eyeballing, never paste).
 Lower is better for every rate; "score" is 100 minus the weighted problem rate.
 
+--judge also asks Claude (`claude -p`, Sonnet by default: dev tooling on the
+subscription) to grade every topic label 1-5 from that topic's own lines and to
+offer a better one: a measure the regex checks above cannot give. It sends
+transcript lines to Anthropic; --judge-out keeps the grades (real text, local).
+
 Run: python3 test/live_quality.py --jsonl ~/Recordings/.live/X.jsonl --workspace ~/Desktop/transcripts --sample 30
 """
 from __future__ import annotations
@@ -43,6 +48,15 @@ WEIGHTS = {"label_fallback": 1.0, "label_apostrophe": 1.0, "label_name": 2.0, "l
            "bullet_short": 1.0, "bullet_dup": 1.0, "step_dangling": 2.0, "step_lower": 1.0, "step_long": 1.0}
 LONG_WORDS = 35  # a bullet or step longer than this is a run-on, not a point
 MAX_SOURCES = 200
+JUDGE_TOPICS = 12        # the biggest topics per source the judge grades
+JUDGE_LINES = 8          # lines shown per topic
+JUDGE_TIMEOUT = 240
+JUDGE_SYSTEM = (
+    "You grade topic labels on a live meeting dashboard. Each topic comes with its label and lines "
+    "from that part of the call. Grade each label 1-5: 5 = what a participant would call this topic; "
+    "4 = right gist, a bit clunky; 3 = vague but not wrong; 2 = a side word, not the topic; "
+    "1 = meaningless or misleading. Also give a better label of 2-4 words. Reply with JSON only, no "
+    'prose: [{"n": 1, "score": 4, "better": "..."}, ...] with one object per topic.')
 
 
 def log(msg: str) -> None:
@@ -158,6 +172,76 @@ def rates(c: dict) -> dict:
     return out
 
 
+def topic_samples(entries: list[dict]) -> list[dict]:
+    """The builder's own topics with the lines that carry each one's top terms."""
+    entries = sorted(entries, key=lambda e: float(e["t"]))
+    chunks = li.chunk(entries)
+    topics, _ = li.assign(entries, chunks)
+    li.finish(entries, chunks, topics, li.durations(entries))
+    out = []
+    for tp in sorted(topics, key=lambda tp: -tp["ms"])[:JUDGE_TOPICS]:
+        top = set(tp["top"][:li.TOPIC_TERMS])
+        ranked = sorted(tp["idx"], key=lambda i: -len(top & set(li.content(entries[i].get("text") or ""))))
+        lines = [f"{entries[i]['who']}: {(entries[i].get('text') or '')[:220]}" for i in sorted(ranked[:JUDGE_LINES])]
+        out.append({"label": tp["label"], "terms": tp["top"][:li.TOPIC_TERMS], "lines": lines})
+    return out
+
+
+def judge_prompt(samples: list[dict]) -> str:
+    parts = []
+    for n, sm in enumerate(samples, 1):
+        parts.append(f"Topic {n}. Label: {sm['label']}\n" + "\n".join(f"  {ln}" for ln in sm["lines"]))
+    return "\n\n".join(parts)
+
+
+def parse_grades(reply: str, k: int) -> list[dict]:
+    m = re.search(r"\[.*\]", reply, re.S)
+    rows = json.loads(m.group(0)) if m else []
+    by_n = {int(r.get("n", 0)): r for r in rows if isinstance(r, dict)}
+    out = []
+    for n in range(1, k + 1):
+        r = by_n.get(n) or {}
+        try:
+            sc = max(1, min(5, int(r.get("score"))))
+        except (TypeError, ValueError):
+            sc = None
+        out.append({"score": sc, "better": str(r.get("better") or "")})
+    return out
+
+
+def judge(sources: list, model: str, workers: int) -> tuple[list[dict], int]:
+    """Grade every source's labels -> ([{source, labels:[{label, score, better}]}], tokens)."""
+    from concurrent.futures import ThreadPoolExecutor
+    from claude_engine import ClaudeCLI, SummarizerError
+
+    def one(n_src):
+        n, (sid, meta, entries, _sp) = n_src
+        samples = topic_samples(entries)
+        if not samples:
+            return {"source": n, "labels": []}, 0
+        client = ClaudeCLI(model, timeout=JUDGE_TIMEOUT)
+        try:
+            grades = parse_grades(client.chat(JUDGE_SYSTEM, judge_prompt(samples)), len(samples))
+        except (SummarizerError, ValueError) as e:
+            log(f"judge [{n}]: {e}")
+            return {"source": n, "labels": [], "error": str(e)[:200]}, client.tokens
+        log(f"judge [{n}/{len(sources)}]: {len(samples)} labels, {client.tokens} tokens")
+        return {"source": n, "labels": [{"label": sm["label"], **g} for sm, g in zip(samples, grades)]}, client.tokens
+
+    with ThreadPoolExecutor(max_workers=workers) as ex:
+        res = list(ex.map(one, enumerate(sources, 1)))
+    return [r for r, _ in res], sum(t for _, t in res)
+
+
+def judge_summary(graded: list[dict]) -> dict:
+    scores = [lb["score"] for g in graded for lb in g["labels"] if lb["score"]]
+    if not scores:
+        return {"judged": 0}
+    return {"judged": len(scores), "judge_mean": round(sum(scores) / len(scores), 2),
+            "judge_low": round(sum(s <= 2 for s in scores) / len(scores), 3),
+            "judge_good": round(sum(s >= 4 for s in scores) / len(scores), 3)}
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--jsonl", action="append", default=[], help="a live session .jsonl (repeatable)")
@@ -165,6 +249,10 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--sample", type=int, default=30, help="meetings to sample from --workspace (default 30)")
     ap.add_argument("--out", help="write per-source and aggregate numbers here as JSON")
     ap.add_argument("--show", action="store_true", help="print labels and bullets (real text: local only)")
+    ap.add_argument("--judge", action="store_true", help="grade labels with `claude -p` (sends lines to Anthropic)")
+    ap.add_argument("--judge-model", default="sonnet")
+    ap.add_argument("--judge-workers", type=int, default=4)
+    ap.add_argument("--judge-out", help="write each label, grade and suggestion here (real text: local only)")
     a = ap.parse_args(argv)
 
     sources = []
@@ -202,6 +290,13 @@ def main(argv: list[str] | None = None) -> int:
             for st in ins["nextSteps"][:10]:
                 print(f"  step   {st['kind']}: {st['text']}")
     agg = rates(total)
+    if a.judge:
+        t0 = time.time()
+        graded, tokens = judge(sources, a.judge_model, a.judge_workers)
+        agg.update(judge_summary(graded), judge_tokens=tokens)
+        log(f"judge: {tokens} tokens in {time.time() - t0:.0f}s")
+        if a.judge_out:
+            Path(a.judge_out).write_text(json.dumps(graded, indent=1))
     print(json.dumps({"sources": len(sources), **{k: total[k] for k in ("labels", "bullets", "steps")}, **agg}))
     if a.out:
         Path(a.out).write_text(json.dumps({"aggregate": {**dict(total), **agg}, "sources": per}, indent=1))

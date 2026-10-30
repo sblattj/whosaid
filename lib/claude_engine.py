@@ -107,6 +107,7 @@ class ClaudeCLI:
                                   f"install it, or set [summarizer] claude_bin or {BIN_ENV} to its path")
         self.timeout = timeout
         self.calls = 0
+        self.tokens = 0                  # input + cache + output tokens over every call
         self.resolved_model = ""
 
     def argv(self, system: str) -> list[str]:
@@ -160,6 +161,10 @@ class ClaudeCLI:
                                   f"{str(result.get('result') or result.get('subtype'))[:300]}", AUTH_HINT)
         if proc.returncode != 0:
             raise _Retry(f"exit {proc.returncode}: {proc.stderr.strip()[:300]!r}")
+        u = result.get("usage")
+        if isinstance(u, dict):
+            self.tokens += sum(int(u.get(k) or 0) for k in ("input_tokens", "output_tokens",
+                               "cache_creation_input_tokens", "cache_read_input_tokens"))
         usage = result.get("modelUsage")
         if not self.resolved_model and isinstance(usage, dict) and len(usage) == 1:
             self.resolved_model = next(iter(usage))
