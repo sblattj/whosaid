@@ -6,6 +6,8 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ## [Unreleased]
 
+## [1.25.0] - 2026-10-30
+
 ### Added
 - Opt-in AI layer for live insights (CLOUD): with `[live] ai = "claude"` in the workspace, the live follower asks Claude every 3 minutes of talk (at most 40 calls, 90 s and 1500 output tokens each) for topic labels, a short recap and next steps, and the Live page shows them ("So far (AI)"). Off by default and separate from `[summarizer]`. Answers live in `<start>.ai.json`; local labels are kept as `localLabel`; a restart or a failed call waits for new talk instead of calling again, and 3 failures in a row stop the calls for that session.
 - `ClaudeCLI(max_tokens=...)` caps output tokens through `CLAUDE_CODE_MAX_OUTPUT_TOKENS`.
