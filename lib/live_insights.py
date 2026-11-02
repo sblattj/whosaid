@@ -768,6 +768,8 @@ def main(argv: list[str] | None = None) -> int:
     b.add_argument("--out")
     b.add_argument("--if-stale", action="store_true",
                    help="skip when the insights are newer than the transcript and from this release")
+    b.add_argument("--ws", help="workspace whose whosaid.toml [live] ai = \"claude\": an ended "
+                   "session gets its final AI pass first")
     f = sub.add_parser("follow", help="keep the newest session's .insights.json current")
     f.add_argument("--into", default=str(live.DEFAULT_INTO))
     f.add_argument("--poll", type=float, default=1.0)
@@ -788,6 +790,14 @@ def main(argv: list[str] | None = None) -> int:
             print(f"live insights: no such file {jl}", file=sys.stderr)
             return 1
         dest = Path(args.out).expanduser() if args.out else None
+        if args.ws:  # an ended call's last AI pass, which the stopped follower never made
+            import live_ai
+            cfg = live_ai.config(args.ws)
+            if cfg and (live.read_entries(jl)[0] or {}).get("ended"):
+                res = live_ai.step(jl, cfg)
+                if res is not None:
+                    print(f"{jl.name}: final AI pass, call {res['calls']}, {res['tokens']} tokens"
+                          + (f", failed: {res['error']}" if res["error"] else ""))
         if args.if_stale and not stale(jl, dest):
             print(f"{dest or insights_path(jl)}: current")
             return 0

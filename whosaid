@@ -730,7 +730,7 @@ LIVE
   whosaid live [run] [--into DIR] [--chunk-seconds N] [--once] [--capture DIR] [--model M]
   whosaid live show  [--into DIR] [--minutes N]
   whosaid live status [--into DIR] [--json]
-  whosaid live insights build --jsonl F [--out F]
+  whosaid live insights build --jsonl F [--out F] [--if-stale] [--ws WS]   (--ws: an ended call gets its final AI pass)
   whosaid live insights follow [--into DIR] [--poll S] [--once] [--max-hours N]
   whosaid live ask --question Q [--into DIR] [--ws WS] [--minutes N] [--json]
   run follows the call `record --app` / autorecord is capturing and transcribes it as

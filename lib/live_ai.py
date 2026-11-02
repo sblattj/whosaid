@@ -26,6 +26,7 @@ overlaid topic keeps its `localLabel`. Stdlib only.
 """
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import re
@@ -162,7 +163,19 @@ def due(state: dict, meta: dict, entries: list[dict], cfg: dict) -> bool:
 
 
 def step(jl: Path, cfg: dict, now: float | None = None) -> dict | None:
-    """One AI pass for this session when it is due -> the sidecar written, else None."""
+    """One AI pass for this session when it is due -> the sidecar written, else None.
+    One pass at a time per session: the follow worker and `live insights build --ws` (the
+    final pass after the call ends) share a lock, so they never both call Claude."""
+    lock = ai_path(jl).with_suffix(".lock")
+    with open(lock, "a") as fh:
+        try:
+            fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return None
+        return _step(jl, cfg, now)
+
+
+def _step(jl: Path, cfg: dict, now: float | None = None) -> dict | None:
     import live_insights as li
     meta, entries = live.read_entries(jl)
     state = read(jl)

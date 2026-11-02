@@ -157,6 +157,28 @@ with tempfile.TemporaryDirectory() as d:
     stop.set()
     w.join(2)
     check(live_ai.read(jl).get("calls") == 1 and not w.is_alive(), "worker made one call and stopped")
+
+    # the call ended after the follower was stopped: `build --ws` makes the final pass, once
+    ended = rec / "20261029T100000.jsonl"
+    shutil.copy(FIXTURE, ended)
+    fake.prompts.clear()
+    check(li.main(["build", "--jsonl", str(ended)]) == 0 and not live_ai.read(ended),
+          "build without --ws: no AI pass")
+    check(li.main(["build", "--jsonl", str(ended), "--ws", str(ws)]) == 0, "build --ws exits 0")
+    side = live_ai.read(ended)
+    check(side.get("final") is True and side.get("calls") == 1 and len(fake.prompts) == 1,
+          f"build --ws on an ended call: one final pass: {side.get('final')}, {side.get('calls')}")
+    check(json.loads(li.insights_path(ended).read_text())["ai"]["recap"], "the insights carry the final recap")
+    li.main(["build", "--jsonl", str(ended), "--ws", str(ws)])
+    check(len(fake.prompts) == 1 and live_ai.read(ended)["calls"] == 1, "a second build --ws: no call")
+
+    # one pass at a time: a held lock means step() skips instead of calling Claude twice
+    import fcntl
+    live_ai.ai_path(ended).unlink()
+    with open(live_ai.ai_path(ended).with_suffix(".lock"), "a") as held:
+        fcntl.flock(held, fcntl.LOCK_EX)
+        check(live_ai.step(ended, cfg) is None and len(fake.prompts) == 1, "lock held: step skips")
+    check(live_ai.step(ended, cfg) is not None and len(fake.prompts) == 2, "lock free again: step runs")
     live_ai._client = real_client
 
     # follow without an opted-in workspace never starts the worker
