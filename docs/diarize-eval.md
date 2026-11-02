@@ -41,7 +41,7 @@ The rendered pool, the built meetings and the run outputs live in the cache
 2. **Measure voice separability** (local):
 
    ```sh
-   uv run --with numpy --with sherpa-onnx python test/diarize_eval/voice_sim.py
+   uv run --with numpy --with sherpa-onnx==1.13.8 python test/diarize_eval/voice_sim.py
    ```
 
    This step embeds each enrollment clip with whosaid's own TitaNet-small extractor and

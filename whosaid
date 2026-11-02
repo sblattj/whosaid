@@ -105,6 +105,10 @@ WHOSAID_VERSION="1.25.0"
 
 HELPER="$REPO_DIR/lib/transcribe_mlx.py"
 DIARIZER="$REPO_DIR/lib/diarize_sherpa.py"
+# Pinned: an unpinned sherpa-onnx in `uv run --with` follows whatever PyPI serves; a release
+# whose source upload is older than its wheels (or a uv exclude-newer cooldown that
+# sees only the sdist) silently turns diarization into a failed cmake build.
+SHERPA_SPEC="${WHOSAID_SHERPA_SPEC:-sherpa-onnx==1.13.8}"
 VOICE_REFS="${WHOSAID_VOICE_REFS:-$REPO_DIR/voices}"
 RECORDINGS_DIR="$REPO_DIR/recordings"
 LANG_CODE_DEFAULT="${WHOSAID_LANG:-en}"
@@ -1996,7 +2000,7 @@ cmd_transcribe() {
         # (the diarizer rewrites the other sidecars itself).
         [[ "$REUSE_ASR" == "1" ]] && rm -f "$out/$base.speakers.txt"
         local diar_rc=0
-        uv run --quiet --with sherpa-onnx --with numpy python "$DIARIZER" "${dargs[@]}" || diar_rc=$?
+        uv run --quiet --with "$SHERPA_SPEC" --with numpy python "$DIARIZER" "${dargs[@]}" || diar_rc=$?
         if [[ "$diar_rc" -ne 0 ]]; then
           log "WARN diarization failed; plain transcript is unaffected."
           if [[ "$REUSE_ASR" == "1" ]]; then
@@ -2110,7 +2114,7 @@ cmd_relabel() {
     fi
   fi
   [[ "$fold_unknown" -eq 1 ]] && extra+=(--fold-unknown)
-  uv run --quiet --with sherpa-onnx --with numpy python "$DIARIZER" \
+  uv run --quiet --with "$SHERPA_SPEC" --with numpy python "$DIARIZER" \
     --relabel "$sidecar" --outdir "$sdir" ${specs[@]+"${specs[@]}"} ${extra[@]+"${extra[@]}"} ${roles[@]+"${roles[@]}"} \
     ${forgets[@]+"${forgets[@]}"} ${refs[@]+"${refs[@]}"}
   log "relabel: refresh historical commitments and views with: whosaid backfill <workspace>"

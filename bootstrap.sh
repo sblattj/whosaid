@@ -19,6 +19,8 @@ set -euo pipefail
 export PATH="$HOME/.local/bin:$HOME/bin:$HOME/homebrew/bin:$HOME/homebrew/sbin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/local/sbin:$PATH"
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Keep in step with SHERPA_SPEC in ./whosaid.
+SHERPA_SPEC="${WHOSAID_SHERPA_SPEC:-sherpa-onnx==1.13.8}"
 
 YES=0
 FORCE=0
@@ -178,7 +180,7 @@ log "warming mlx-whisper environment (first run may take a minute)..."
 uv run --quiet --with mlx-whisper python -c "import mlx_whisper"
 log "✓ mlx-whisper environment ready"
 log "warming sherpa-onnx environment..."
-uv run --quiet --with sherpa-onnx --with numpy python -c "import sherpa_onnx, numpy"
+uv run --quiet --with "$SHERPA_SPEC" --with numpy python -c "import sherpa_onnx, numpy"
 log "✓ sherpa-onnx environment ready"
 
 # ---- 6. pre-download the Whisper model ----------------------------------------------
@@ -192,7 +194,7 @@ fi
 
 # ---- 7. sherpa diarization models -----------------------------------------------------
 step 7 "downloading sherpa diarization models"
-uv run --quiet --with sherpa-onnx --with numpy python "$REPO_DIR/lib/diarize_sherpa.py" --ensure-models-only
+uv run --quiet --with "$SHERPA_SPEC" --with numpy python "$REPO_DIR/lib/diarize_sherpa.py" --ensure-models-only
 log "✓ sherpa diarization models ready"
 
 # ---- 8. install the command -------------------------------------------------------

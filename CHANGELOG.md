@@ -9,6 +9,9 @@ All notable changes to whosaid are documented here. This project adheres to
 ### Added
 - `app/ax-dump.sh <pid> [--text]`: prints a running app's accessibility tree (what VoiceOver reads), so a check can read the UI as text. `AX=1 app/selftest.sh` (and `app/live-shot.sh`) saves it next to each screenshot as `<png>.ax.txt`. Needs the Accessibility grant for the terminal. `app/live-shot.sh` also brings along a `<stem>.ai.json` next to the session.
 
+### Fixed
+- Diarization pins `sherpa-onnx==1.13.8` (`SHERPA_SPEC`, overridable with `WHOSAID_SHERPA_SPEC`) in `whosaid`, `bootstrap.sh`, `test/e2e.sh` and `pyproject.toml`. Unpinned, uv picked sherpa-onnx 2.0.1's source upload while its wheels were still inside a uv `exclude-newer` cooldown; the build needs cmake, so every ingest kept its transcript but lost its speakers. 2.0.1 gives byte-identical RTTM on a 34-minute call and a Voice Memo, so the pin changes no output. `test/sherpa_pin_test.py` keeps every call site on the same pin.
+
 ## [1.25.0] - 2026-10-30
 
 ### Added

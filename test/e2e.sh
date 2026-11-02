@@ -17,6 +17,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPT_PATH="$SCRIPT_DIR/$(basename "${BASH_SOURCE[0]}")"
 REPO="$(cd "$SCRIPT_DIR/.." && pwd)"
+SHERPA_SPEC="${WHOSAID_SHERPA_SPEC:-sherpa-onnx==1.13.8}"
 
 fail() {
   echo "FAIL: $1" >&2
@@ -343,7 +344,7 @@ grep -q '"Bob"' "$SPEAKER_DB" \
 # reuse the cached whisper json) and confirm Bob is auto-named from it.
 mkdir -p "$TMP/reload"
 set +e
-uv run --quiet --with sherpa-onnx --with numpy python "$REPO/lib/diarize_sherpa.py" \
+uv run --quiet --with "$SHERPA_SPEC" --with numpy python "$REPO/lib/diarize_sherpa.py" \
   "$TMP/dialog.wav" --whisper-json "$TMP/out/$BASE.json" \
   --outdir "$TMP/reload" --name reload --num-speakers 2 \
   > "$TMP/reload.log" 2>&1
@@ -370,7 +371,7 @@ echo "-- checking --expected-speakers (registry-anchored diarization) --"
 
 mkdir -p "$TMP/anchor"
 set +e
-uv run --quiet --with sherpa-onnx --with numpy python "$REPO/lib/diarize_sherpa.py" \
+uv run --quiet --with "$SHERPA_SPEC" --with numpy python "$REPO/lib/diarize_sherpa.py" \
   "$TMP/dialog.wav" --whisper-json "$TMP/out/$BASE.json" \
   --outdir "$TMP/anchor" --name anchored \
   --ref "Alice=$TMP/refs/Alice.wav" --expected-speakers Alice \
@@ -421,7 +422,7 @@ python3 "$REPO/test/check_sidecar_schema.py" "$ANCHOR_SIDECAR" \
 
 # An unknown expected speaker must be FATAL and must list the known names.
 set +e
-uv run --quiet --with sherpa-onnx --with numpy python "$REPO/lib/diarize_sherpa.py" \
+uv run --quiet --with "$SHERPA_SPEC" --with numpy python "$REPO/lib/diarize_sherpa.py" \
   "$TMP/dialog.wav" --whisper-json "$TMP/out/$BASE.json" \
   --outdir "$TMP/anchor" --name bogus \
   --ref "Alice=$TMP/refs/Alice.wav" --expected-speakers Alice,Nobody \
@@ -460,12 +461,12 @@ print(data.get("num_speakers","?") if data else "?")' "$1"
 
 mkdir -p "$TMP/nochunk" "$TMP/chunk"
 set +e
-uv run --quiet --with sherpa-onnx --with numpy python "$REPO/lib/diarize_sherpa.py" \
+uv run --quiet --with "$SHERPA_SPEC" --with numpy python "$REPO/lib/diarize_sherpa.py" \
   "$TMP/dialog.wav" --whisper-json "$TMP/out/$BASE.json" \
   --outdir "$TMP/nochunk" --name d --num-speakers 2 --no-chunk \
   > "$TMP/nochunk.out" 2> "$TMP/nochunk.log"
 RC_NC=$?
-uv run --quiet --with sherpa-onnx --with numpy python "$REPO/lib/diarize_sherpa.py" \
+uv run --quiet --with "$SHERPA_SPEC" --with numpy python "$REPO/lib/diarize_sherpa.py" \
   "$TMP/dialog.wav" --whisper-json "$TMP/out/$BASE.json" \
   --outdir "$TMP/chunk" --name d --num-speakers 2 --chunk-seconds 15 --jobs 2 \
   > "$TMP/chunk.out" 2> "$TMP/chunk.log"

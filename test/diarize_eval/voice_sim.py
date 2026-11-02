@@ -11,7 +11,7 @@ Embeds every voice's enrollment clip with the same TitaNet-small extractor the
 diarizer uses and writes <pool dir>/voice_sim.json: {"embedder", "ids", "sim"}.
 Local only; nothing leaves the machine.
 
-  uv run --with numpy --with sherpa-onnx python test/diarize_eval/voice_sim.py \
+  uv run --with numpy --with sherpa-onnx==1.13.8 python test/diarize_eval/voice_sim.py \
       [--pool ~/.cache/whosaid/diarize-eval/pool.json]
 """
 import argparse

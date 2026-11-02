@@ -77,7 +77,7 @@ The pipeline, per file:
    ladder and lets long recordings collapse into one repeated token). The helper keeps the fallback
    tuple, sets `condition_on_previous_text=False`, and uses `hallucination_silence_threshold` so
    dead air doesn't spawn repeated-token filler. Writes `.txt/.srt/.vtt/.tsv/.json` per `--format`.
-2. **Diarize** — `uv run --with sherpa-onnx --with numpy` invokes `lib/diarize_sherpa.py`:
+2. **Diarize** — `uv run --with sherpa-onnx==1.13.8 --with numpy` invokes `lib/diarize_sherpa.py`:
    pyannote segmentation-3.0 finds speech turns, a NeMo TitaNet-small embedding (the default —
    configurable via `DIARIZE_EMB_NAME`, with 3D-Speaker ERes2Net (English) or a zh-cn model as
    opt-in alternatives) embeds them, clustering groups them (`--speakers N` hints the count), then

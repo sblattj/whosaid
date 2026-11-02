@@ -12,12 +12,12 @@ into a speaker-labeled transcript (<base>.speakers.txt) plus an RTTM file.
 Everything stays LOCAL: no audio, text, or embeddings leave the machine.
 
 Invoked by the `whosaid` CLI via:
-  uv run --with sherpa-onnx --with numpy python diarize_sherpa.py <audio> \
+  uv run --with sherpa-onnx==1.13.8 --with numpy python diarize_sherpa.py <audio> \
       [--whisper-json X.json] [--outdir DIR] [--name BASE] [--num-speakers N] \
       [--ref Name=clip.m4a ...] [--match-threshold 0.50]
 
 Or, to pre-download/verify the models without any audio (used by `whosaid setup`):
-  uv run --quiet --with sherpa-onnx --with numpy python diarize_sherpa.py --ensure-models-only
+  uv run --quiet --with sherpa-onnx==1.13.8 --with numpy python diarize_sherpa.py --ensure-models-only
 
 Models are cached under ~/.cache/sherpa-diarization/ on first use (~30 MB).
 """
