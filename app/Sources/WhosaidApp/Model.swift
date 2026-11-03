@@ -95,6 +95,7 @@ final class AppModel {
   var peopleLoaded = false
   var voiceGroups: [VoiceGroup] = []
   var voiceGroupsLoaded = false
+  var voiceGroupsLoading = false
   var voiceGroupsInfo: JSONValue?
   var voiceGroupsError: String?
   var searchOpen = false
@@ -166,6 +167,7 @@ final class AppModel {
       } else {
         health = .ready(meetings: meetings)
         await refreshRecent()
+        if !voiceGroupsLoaded && !voiceGroupsLoading { voiceGroupsLoading = true; Task { await loadVoiceGroups() } }
       }
     } catch {
       health = .error("the whosaid MCP server did not answer: \(error)")
@@ -235,7 +237,9 @@ final class AppModel {
   /// The same unnamed voice across meetings, grouped (whosaid_voice_groups; cached on disk
   /// by the CLI until a sidecar or the registry changes).
   func loadVoiceGroups(refresh: Bool = false) async {
+    defer { voiceGroupsLoading = false }
     guard let ws = paths.workspace, let mcp else { return }
+    voiceGroupsLoading = true
     voiceGroupsError = nil
     var args: [String: JSONValue] = ["workspace": .string(ws)]
     if refresh { args["refresh"] = .bool(true) }

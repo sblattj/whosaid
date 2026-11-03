@@ -273,10 +273,14 @@ def name(ws: Path, group_id: str, person: str, role: str = "", workers: int = 4,
     out = {"ok": not failed, "group": group_id, "name": person, "enrolled": new,
            "named": sorted(done), "failed": failed, "seconds": round(time.time() - t0, 1)}
     if index and done:
-        p = subprocess.run([str(REPO / "whosaid"), "index", str(ws)], capture_output=True, text=True, timeout=1800)
-        out["indexed"] = p.returncode == 0
-        if p.returncode != 0:
-            out["index_error"] = (p.stderr or "").strip()[-400:]
+        try:
+            p = subprocess.run([str(REPO / "whosaid"), "index", str(ws)], capture_output=True, text=True, timeout=1800)
+            out["indexed"] = p.returncode == 0
+            if p.returncode != 0:
+                out["index_error"] = (p.stderr or "").strip()[-400:]
+        except (subprocess.TimeoutExpired, OSError) as e:
+            out["indexed"] = False
+            out["index_error"] = f"index did not finish: {e}"[:400]
     return out
 
 

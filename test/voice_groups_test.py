@@ -155,6 +155,20 @@ res = vg.name(ws, bad, "Someone_New")
 check(not res["ok"] and "FATAL" in res["failed"][0]["error"] and not any(a[0] == "index" for a in calls()),
       f"a failed relabel is reported and nothing is indexed: {res}")
 
+# an index that cannot start is reported, not raised
+meeting("2026-03-16-0900", {"SPEAKER_00": (unit(0, 0, 0, 0, 1), 60)})
+gid2 = next(g["id"] for g in vg.groups(ws)["groups"] if g["members"][0]["folder"] == "2026-03-16-0900")
+real_run = vg.subprocess.run
+def no_index(argv, **kw):
+    if argv[1] == "index":
+        raise OSError("whosaid not runnable")
+    return real_run(argv, **kw)
+vg.subprocess.run = no_index
+res = vg.name(ws, gid2, "Katherine_Johnson")
+vg.subprocess.run = real_run
+calls()
+check(res["ok"] and res["indexed"] is False and "not runnable" in res["index_error"], f"a broken index is reported in the result: {res}")
+
 # the CLI front: whosaid voices is wired
 check("cmd_voices" in (ROOT / "whosaid").read_text() and 'lib/voice_groups.py' in (ROOT / "whosaid").read_text(),
       "whosaid voices runs lib/voice_groups.py")
