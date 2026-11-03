@@ -561,7 +561,9 @@ def summaries(entries, chunks, of_chunk, topics, df, last_t) -> list[dict]:
 
 
 def _named(e: dict) -> dict:
-    """The live name and role of a line, when its voice matched one."""
+    """The live name and role of a line, when its voice matched one ("me" stays "me")."""
+    if e.get("who") == "me":
+        return {}
     return {k: e[k] for k in ("name", "role") if e.get(k)}
 
 

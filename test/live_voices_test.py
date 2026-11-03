@@ -121,7 +121,8 @@ ents = [{"t": 0, "who": "them", "voice": "v1", "name": "Ada Lovelace", "role": "
          "text": "We will ship the release notes on Friday after the storage review."},
         {"t": 2, "who": "them", "voice": "v2", "clock": "09:00:02",
          "text": "The storage bucket costs need a careful check before the release."},
-        {"t": 5, "who": "me", "clock": "09:00:05", "text": "I'll send the release notes to the storage team today."}]
+        {"t": 5, "who": "me", "name": "Me Myself", "role": "self", "clock": "09:00:05",
+         "text": "I'll send the release notes to the storage team today."}]
 utts = li.utterances(ents)
 check(len(utts) == 3, f"lines from different voices never join: {utts}")
 ins = li.build({"started": 0}, ents, "s")
