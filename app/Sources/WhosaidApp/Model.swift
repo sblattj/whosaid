@@ -323,7 +323,8 @@ final class AppModel {
                                                      "sort": .string("newest"), "workspace": .string(ws)], timeout: 90)
         if r["ok"]?.bool == false { itemsError = r["error"]?.string ?? "action items failed"; break }
         let snap = r["snapshot_token"]?.string
-        if offset > 0, snap != token, restarts < 3 {  // the index changed mid-read: start over
+        if offset > 0, snap != token {  // the index changed mid-read: start over, a few times
+          guard restarts < 3 else { itemsError = "Action items kept changing while loading; try again shortly"; return }
           all = []; offset = 0; token = snap; restarts += 1; continue
         }
         token = snap
