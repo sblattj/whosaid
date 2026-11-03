@@ -86,6 +86,7 @@ final class AppModel {
   var suggestions: [CompletionSuggestion] = []
   var trackingError: String?
   var itemsError: String?
+  var staleAfterDays = 14
   /// A source link opened a meeting at this second: the transcript scrolls to it.
   var focus: (folder: String, t: Double)?
   /// Bumped when the workspace folder changes, so the Topics page re-reads _topics.json.
@@ -314,10 +315,25 @@ final class AppModel {
   func loadItems() async {
     guard let ws = paths.workspace, let mcp else { return }
     itemsError = nil
+    // every page, newest meeting first: a backfilled workspace holds far more than one page
+    var all: [TrackedItem] = [], offset = 0, token: String?, restarts = 0
     do {
-      let r = try await mcp.call("whosaid_items", ["limit": .number(500), "workspace": .string(ws)], timeout: 90)
-      if r["ok"]?.bool == false { itemsError = r["error"]?.string ?? "action items failed" }
-      items = (r["items"]?.array ?? []).compactMap(TrackedItem.init)
+      while true {
+        let r = try await mcp.call("whosaid_items", ["limit": .number(500), "offset": .number(Double(offset)),
+                                                     "sort": .string("newest"), "workspace": .string(ws)], timeout: 90)
+        if r["ok"]?.bool == false { itemsError = r["error"]?.string ?? "action items failed"; break }
+        let snap = r["snapshot_token"]?.string
+        if offset > 0, snap != token {  // the index changed mid-read: start over, a few times
+          guard restarts < 3 else { itemsError = "Action items kept changing while loading; try again shortly"; return }
+          all = []; offset = 0; token = snap; restarts += 1; continue
+        }
+        token = snap
+        staleAfterDays = r["stale_after_days"]?.int ?? staleAfterDays
+        all += (r["items"]?.array ?? []).compactMap(TrackedItem.init)
+        guard let next = r["next_offset"]?.int, next > offset else { break }
+        offset = next
+      }
+      items = all
     } catch { itemsError = "whosaid is not answering: \(error)" }
   }
 

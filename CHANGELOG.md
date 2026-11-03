@@ -6,6 +6,9 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ## [Unreleased]
 
+### Added
+- Stale action items: an open item that no meeting has mentioned for `[tracking] stale_after_days` (default 14, by meeting date, 0 turns it off) and that has no tracking event reads as stale. It's a view, never a stored status. `whosaid_items` gains `stale` per item, `stale_count`, a `stale=true|false` filter and `sort="newest"`; the app's Action items page gets a Stale tab, so a backfilled backlog no longer floods Open. The page now reads every page of items, newest first (it stopped at the oldest 500).
+
 ## [1.27.1] - 2026-11-03
 
 ### Fixed

@@ -30,7 +30,7 @@ import subprocess
 import sys
 import tempfile
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Literal, Optional
 
@@ -1142,7 +1142,7 @@ _LIST_DEFAULT_LIMIT = 50
 _MEETINGS_COMPACT_KEYS = ("folder", "kind", "created", "minutes")
 # Extraction type, obligation kind, and evidence availability are distinct fields.
 _ITEMS_COMPACT_KEYS = ("id", "text", "type", "owner", "status", "kind", "accepted_owner",
-                       "evidence_available", "occurrences")
+                       "evidence_available", "occurrences", "last_seen", "stale")
 _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 
@@ -1305,10 +1305,14 @@ _DESC_WS_ITEMS = (
     "explicit_commitment, request, standing_directive, suggestion, inferred_next_step. "
     "as_of accepts an ISO date/time to reconcile historical evidence. Each item carries "
     "AI-NNN id, text, status, attribution and evidence; whosaid_item has full history. "
-    "Sorted by numeric id; filters and kind/status counts apply before paging. An omitted "
+    "Sorted by numeric id (sort='newest': newest meeting first); filters and kind/status "
+    "counts apply before paging. Each item has `stale`: still open, no tracking event, and "
+    "its newest meeting is older than [tracking] stale_after_days (default 14) before today "
+    "or as_of; a view for old backlog, never a stored status. stale=true/false filters on it; "
+    "stale_count counts it. An omitted "
     "limit always caps at 50, including later pages; follow next_offset. compact=true "
-    "keeps id, text, type, owner, status, kind, accepted_owner, evidence_available and "
-    "occurrences. Responses carry index_mtime and snapshot_token; restart from offset 0 "
+    "keeps id, text, type, owner, status, kind, accepted_owner, evidence_available, "
+    "occurrences, last_seen and stale. Responses carry index_mtime and snapshot_token; restart from offset 0 "
     "if snapshot_token changes between pages (index, corpora, tracking or config changed). "
     "Built by `whosaid index`; "
     "read-only. Keywords: action items, todos, commitments, who owes what, open items, "
@@ -1531,6 +1535,51 @@ def _tracking_args(kind: Optional[str] = None, as_of: Optional[str] = None) -> O
     return None
 
 
+_MEETING_DATE_RE = re.compile(r"^(\d{4}-\d{2}-\d{2})")
+# statuses a later meeting or a tracking event has not moved on from
+_STALE_STATUSES = {"open", "unknown"}
+
+
+def _stale_days(ws) -> int:
+    try:
+        return max(0, int(wsconfig.load_config(Path(ws)).get("tracking", {}).get("stale_after_days", 14)))
+    except (TypeError, ValueError):
+        return 14
+
+
+def _stale_cutoff(ws, as_of: Optional[str]) -> Optional[str]:
+    """The YYYY-MM-DD before which an untouched open item is stale; None turns it off (0 days).
+    Measured from as_of when given, else today in the workspace zone. Meeting folders are
+    named by their local start date, so a plain date compare is enough."""
+    days = _stale_days(ws)
+    if not days:
+        return None
+    ref = None
+    if as_of:
+        m = _MEETING_DATE_RE.match(str(as_of).strip())
+        ref = datetime.strptime(m.group(1), "%Y-%m-%d").date() if m else None
+    if ref is None:
+        tz = None
+        try:
+            from zoneinfo import ZoneInfo
+            name = wsconfig.load_config(Path(ws))["workspace"].get("tz") or ""
+            tz = ZoneInfo(name) if name else None
+        except Exception:  # noqa: BLE001 - an unknown zone falls back to local time
+            tz = None
+        ref = datetime.now(tz).date()
+    return (ref - timedelta(days=days)).isoformat()
+
+
+def _is_stale(item: dict, cutoff: Optional[str]) -> bool:
+    """Open, untouched by the tracking ledger, and last heard before cutoff (folder date)."""
+    if cutoff is None or str(item.get("status") or "open") not in _STALE_STATUSES:
+        return False
+    if item.get("status_source") not in (None, "", "corpus") or item.get("tracking_history"):
+        return False
+    m = _MEETING_DATE_RE.match(str(item.get("last_seen") or ""))
+    return bool(m) and m.group(1) < cutoff
+
+
 def _item_counts(items: list[dict]) -> dict:
     """Counts cover the filtered set, before pagination."""
     from collections import Counter
@@ -1573,6 +1622,8 @@ def whosaid_items(
     kind: Optional[str] = None,
     accepted_only: bool = False,
     as_of: Optional[str] = None,
+    stale: Optional[bool] = None,
+    sort: Literal["id", "newest"] = "id",
 ) -> dict:
     """Filter through graph.py, count matches, sort numeric IDs and page them.
 
@@ -1601,13 +1652,22 @@ def whosaid_items(
     items = [i for i in _as_list(payload, "items") if isinstance(i, dict)]
     # graph.py orders by id as text (AI-1000 before AI-999); re-sort numerically, id as tie-breaker
     items.sort(key=lambda i: (_item_num(i.get("id")), str(i.get("id") or "")))
+    cutoff = _stale_cutoff(ws, as_of)
+    for i in items:
+        i["stale"] = _is_stale(i, cutoff)
+    if sort == "newest":
+        items.sort(key=lambda i: str(i.get("last_seen") or ""), reverse=True)  # stable: id order within a meeting
+    stale_count = sum(i["stale"] for i in items)
+    if stale is not None:
+        items = [i for i in items if i["stale"] == bool(stale)]
     try:
         mtime = datetime.fromtimestamp(wsconfig.search_db(ws).stat().st_mtime, timezone.utc).isoformat()
     except OSError:
         mtime = None
     out = _paged({"ok": True, "workspace": str(ws), "index_mtime": mtime,
                   "snapshot_token": _snapshot_token(ws), "as_of": as_of,
-                  **_item_counts(items)}, "items", items, limit, offset)
+                  **_item_counts(items), "stale_count": stale_count,
+                  "stale_after_days": _stale_days(ws)}, "items", items, limit, offset)
     if compact:
         out["items"] = [{k: i.get(k) for k in _ITEMS_COMPACT_KEYS} for i in out["items"]]
         out["compact"] = True
