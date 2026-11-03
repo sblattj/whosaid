@@ -6,6 +6,9 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ## [Unreleased]
 
+### Added
+- App: hide any of the Live now lanes (Transcript, Topics, Wordgraph, Summaries, Next steps) from the lanes button next to the full-window switch, or View > Live Lanes. The choice is remembered; the last visible lane can't be hidden, and with the wordgraph hidden the other lanes stretch to fill the window.
+
 ## [1.26.1] - 2026-11-02
 
 ### Fixed

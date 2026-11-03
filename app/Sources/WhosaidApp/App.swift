@@ -37,6 +37,9 @@ struct LivePanelCommand: Commands {
     CommandGroup(after: .windowArrangement) {
       Button("Open Live Panel") { openWindow(id: "live-panel") }.keyboardShortcut("l")
     }
+    CommandGroup(after: .sidebar) {
+      Menu("Live Lanes") { LanesMenu() }
+    }
   }
 }
 

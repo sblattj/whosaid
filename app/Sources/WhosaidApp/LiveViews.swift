@@ -34,33 +34,84 @@ struct LiveWorkspaceView: View {
   }
 }
 
-/// The five lanes side by side. Each lane but the wordgraph has a drag handle on its
-/// right edge and remembers its width; the wordgraph takes what is left. (HSplitView
-/// sized its panes past the window's edge, hiding the sidebar.)
+/// The five lanes side by side, minus any the user hid (the Lanes menu). Each sized lane
+/// has a drag handle and remembers its width; the wordgraph takes what is left, and with
+/// the wordgraph hidden the others stretch to fill. (HSplitView sized its panes past the
+/// window's edge, hiding the sidebar.)
 struct LaneStack<A: View, B: View, C: View, D: View, E: View>: View {
   let transcript: A, topics: B, wordgraph: C, summaries: D, nextSteps: E
   @AppStorage("live.lane.transcript") private var wTranscript = 210.0
   @AppStorage("live.lane.topics") private var wTopics = 170.0
   @AppStorage("live.lane.summaries") private var wSummaries = 190.0
   @AppStorage("live.lane.nextSteps") private var wNext = 170.0
+  @AppStorage("live.lanes.hidden") private var hiddenLanes = ""
 
   var body: some View {
+    let hidden = LiveLane.hidden(hiddenLanes)
+    let shown = LiveLane.allCases.filter { !hidden.contains($0) }
+    let graph = shown.contains(.wordgraph)
     GeometryReader { geo in
-      // A narrow window scales the four sized lanes down, so the stack never runs past
-      // the window's edge and the wordgraph keeps at least 160 pt.
-      let k = min(1, max(0, geo.size.width - 160 - 4) / (wTranscript + wTopics + wSummaries + wNext))
+      let sized = shown.filter { $0 != .wordgraph }.map { width($0).wrappedValue }.reduce(0, +)
+      let room = geo.size.width - Double(shown.count - 1)
+      // A narrow window scales the sized lanes down so the stack never runs past the
+      // window's edge and the wordgraph keeps at least 160 pt; without it they fill.
+      let k = sized <= 0 ? 1 : graph ? min(1, max(0, room - 160) / sized) : max(0, room) / sized
       HStack(spacing: 0) {
-        transcript.frame(width: wTranscript * k)
-        LaneHandle(width: $wTranscript, sign: 1)
-        topics.frame(width: wTopics * k)
-        LaneHandle(width: $wTopics, sign: 1)
-        wordgraph.frame(minWidth: 0, maxWidth: .infinity)
-        LaneHandle(width: $wSummaries, sign: -1)
-        summaries.frame(width: wSummaries * k)
-        LaneHandle(width: $wNext, sign: -1)
-        nextSteps.frame(width: wNext * k)
+        ForEach(Array(shown.enumerated()), id: \.element) { i, lane in
+          if i > 0 { handle(between: shown[i - 1], and: lane) }
+          if lane == .wordgraph {
+            wordgraph.frame(minWidth: 0, maxWidth: .infinity)
+          } else {
+            view(lane).frame(width: width(lane).wrappedValue * k)
+          }
+        }
       }
     }
+  }
+
+  /// Lanes left of the wordgraph's slot resize from their right edge, the rest from their left.
+  @ViewBuilder private func handle(between left: LiveLane, and right: LiveLane) -> some View {
+    let order = LiveLane.allCases
+    if order.firstIndex(of: left)! < order.firstIndex(of: .wordgraph)! {
+      LaneHandle(width: width(left), sign: 1)
+    } else {
+      LaneHandle(width: width(right), sign: -1)
+    }
+  }
+
+  private func width(_ lane: LiveLane) -> Binding<Double> {
+    switch lane {
+    case .transcript: $wTranscript
+    case .topics: $wTopics
+    case .summaries: $wSummaries
+    case .nextSteps, .wordgraph: $wNext
+    }
+  }
+
+  @ViewBuilder private func view(_ lane: LiveLane) -> some View {
+    switch lane {
+    case .transcript: transcript
+    case .topics: topics
+    case .wordgraph: wordgraph
+    case .summaries: summaries
+    case .nextSteps: nextSteps
+    }
+  }
+}
+
+/// Show or hide each Live now lane; the last visible one cannot be hidden.
+struct LanesMenu: View {
+  @AppStorage("live.lanes.hidden") private var hiddenLanes = ""
+  var body: some View {
+    let hidden = LiveLane.hidden(hiddenLanes)
+    ForEach(LiveLane.allCases, id: \.self) { lane in
+      Toggle(lane.title, isOn: Binding(
+        get: { !hidden.contains(lane) },
+        set: { _ in hiddenLanes = LiveLane.toggled(lane, in: hiddenLanes) }))
+      .disabled(!hidden.contains(lane) && hidden.count == LiveLane.allCases.count - 1)
+    }
+    Divider()
+    Button("Show All Lanes") { hiddenLanes = "" }.disabled(hidden.isEmpty)
   }
 }
 
@@ -101,6 +152,12 @@ struct LiveHeader: View {
         if let i = s.insights { Text("\(i.topics.count) topics").foregroundStyle(.secondary) }
       }
       Spacer()
+      Menu {
+        LanesMenu()
+      } label: { Image(systemName: "rectangle.split.3x1") }
+        .menuStyle(.borderlessButton).fixedSize()
+        .disabled(live.fullWordgraph)
+        .help("Show or hide lanes")
       Toggle("Full-window wordgraph", isOn: $live.fullWordgraph).toggleStyle(.switch).controlSize(.small)
         .disabled(live.session == nil).fixedSize()
       Button { openWindow(id: "live-panel") } label: { Image(systemName: "rectangle.portrait.on.rectangle.portrait") }
