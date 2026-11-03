@@ -6,6 +6,8 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ## [Unreleased]
 
+## [1.27.0] - 2026-11-03
+
 ### Added
 - Live names: the live transcript names the people on the other side of the call while it runs. Each line from the meeting app is matched (TitaNet, the same model as diarization) into running voices, and each voice is named from the speaker registry, one voice per name; a name learned later moves back onto that voice's earlier lines. The transcript, summary bullets, next steps, the AI prompt, `whosaid live show` and the MCP live tools show the name (and the app shows its role tag); unknown voices stay "them", and your mic stays "me". It's a live guess: the ingest after the call still decides the names. Measured on four recorded calls: lines from voices the ingest named came out about 98% right. Needs sherpa-onnx in the live env (now pinned in `whosaid live run`); `WHOSAID_LIVE_NAMES=0` turns it off.
 - App: hide any of the Live now lanes (Transcript, Topics, Wordgraph, Summaries, Next steps) from the lanes button next to the full-window switch, or View > Live Lanes. The choice is remembered; the last visible lane can't be hidden, and with the wordgraph hidden the other lanes stretch to fill the window.
