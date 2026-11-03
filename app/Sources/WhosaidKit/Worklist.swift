@@ -16,6 +16,8 @@ public struct TrackedItem: Sendable, Equatable, Identifiable {
   /// The meeting it was said in and the second, when the evidence carries one.
   public let meeting: String?
   public let t: Double?
+  /// Open, untouched and last heard before the workspace's stale_after_days (items rows only).
+  public let stale: Bool
 
   public static let doneStatuses: Set<String> = ["delivered", "superseded", "done"]
   public var isDone: Bool { Self.doneStatuses.contains(status) }
@@ -37,6 +39,7 @@ public struct TrackedItem: Sendable, Equatable, Identifiable {
       ?? ev.first { $0["meeting"]?.string != nil }
     meeting = located?["meeting"]?.string ?? v["first_seen"]?.string
     t = located?["t_sec"]?.double
+    stale = v["stale"]?.bool ?? false
   }
 
   /// "explicit_commitment" -> "explicit commitment".
@@ -76,11 +79,14 @@ public struct CompletionSuggestion: Sendable, Equatable, Identifiable {
 }
 
 public enum ItemFilter: String, CaseIterable, Identifiable, Sendable {
-  case open = "Open", done = "Done", all = "All"
+  case open = "Open", stale = "Stale", done = "Done", all = "All"
   public var id: String { rawValue }
+  /// The worklist has no stale view: it ranks what is open.
+  public static let worklist: [ItemFilter] = [.open, .done, .all]
   public func keeps(_ i: TrackedItem) -> Bool {
     switch self {
-    case .open: !i.isDone
+    case .open: !i.isDone && !i.stale
+    case .stale: !i.isDone && i.stale
     case .done: i.isDone
     case .all: true
     }

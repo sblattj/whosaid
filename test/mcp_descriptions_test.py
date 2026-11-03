@@ -267,7 +267,8 @@ def main() -> None:
     check(set(dumps["whosaid_item"]["inputSchema"].get("required", [])) == {"id"}, "item requires id")
     check(set(dumps["whosaid_items"]["inputSchema"]["properties"])
           == {"owner", "requester", "status", "type", "workspace", "limit", "offset", "compact",
-              "kind", "accepted_only", "as_of"}, "items filters + paging + historical reconciliation")
+              "kind", "accepted_only", "as_of", "stale", "sort"}, "items filters + paging + historical reconciliation")
+    check("stale_after_days" in dumps["whosaid_items"]["description"], "items documents the stale view")
     check(set(dumps["whosaid_person"]["inputSchema"].get("required", [])) == set(), "person name is optional")
     check(set(dumps["whosaid_person"]["inputSchema"]["properties"]) == {"name", "workspace", "as_of"},
           "person exposes an optional historical date")

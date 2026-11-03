@@ -11,7 +11,7 @@ struct CommitmentsView: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
-      FilterBar(filter: $filter, counts: counts(model.worklist))
+      FilterBar(filter: $filter, counts: counts(model.worklist), cases: ItemFilter.worklist)
       Divider()
       ScrollView {
         LazyVStack(alignment: .leading, spacing: 10) {
@@ -48,6 +48,10 @@ struct ActionItemsView: View {
         LazyVStack(alignment: .leading, spacing: 10) {
           ForEach(model.items.filter(filter.keeps)) { TrackedRow(item: $0, showOwner: true) }
           if let err = model.itemsError { Text(err).foregroundStyle(.orange) }
+          if filter == .stale {
+            Text("Still open, but no meeting has mentioned them in the last \(model.staleAfterDays) days. Nothing was changed; mark one done or leave it here.")
+              .font(.callout).foregroundStyle(.secondary)
+          }
           if model.items.filter(filter.keeps).isEmpty {
             Text("No action items here").foregroundStyle(.secondary).frame(maxWidth: .infinity).padding(.top, 40)
           }
@@ -66,9 +70,10 @@ func counts(_ items: [TrackedItem]) -> [ItemFilter: Int] {
 struct FilterBar: View {
   @Binding var filter: ItemFilter
   let counts: [ItemFilter: Int]
+  var cases: [ItemFilter] = ItemFilter.allCases
   var body: some View {
     Picker("", selection: $filter) {
-      ForEach(ItemFilter.allCases) { f in Text("\(f.rawValue) \(counts[f] ?? 0)").tag(f) }
+      ForEach(cases) { f in Text("\(f.rawValue) \(counts[f] ?? 0)").tag(f) }
     }
     .pickerStyle(.segmented).labelsHidden().frame(maxWidth: 320).padding(12)
   }

@@ -20,6 +20,11 @@ import Testing
   #expect(open.tier == nil && open.section == "Asks from the team" && open.meeting == "2026-10-27-0900" && open.t == nil)
   #expect(done.isDone && ItemFilter.done.keeps(done) && !ItemFilter.open.keeps(done) && ItemFilter.all.keeps(open))
   #expect(TrackedItem(try JSONValue.parse(Data(#"{"id":"AI-3"}"#.utf8))) == nil)
+  // stale: still open, but out of Open and into Stale; a done item is never stale
+  let old = try #require(TrackedItem(try JSONValue.parse(Data(#"{"id":"AI-004","text":"Old ask","status":"open","stale":true}"#.utf8))))
+  #expect(old.stale && !ItemFilter.open.keeps(old) && ItemFilter.stale.keeps(old) && ItemFilter.all.keeps(old))
+  #expect(!open.stale && ItemFilter.open.keeps(open) && !ItemFilter.stale.keeps(open) && !ItemFilter.stale.keeps(done))
+  #expect(!ItemFilter.worklist.contains(.stale))
 }
 
 @Test func suggestionNoteCarriesTheQuote() throws {

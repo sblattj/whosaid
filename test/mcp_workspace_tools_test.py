@@ -269,7 +269,7 @@ def test_graph_tools(ws: Path, fake: FakeRunner) -> None:
     out = mcp_server.whosaid_items()
     script, args, _ = fake.last()
     check(script == "graph.py" and args == ["items", w], f"items argv: {script} {args}")
-    check(out["items"] == [{"id": "AI-001"}] and out["count"] == 1, f"items shape: {out}")
+    check(out["items"] == [{"id": "AI-001", "stale": False}] and out["count"] == 1, f"items shape: {out}")
 
     fake.queue.append(([], None))
     mcp_server.whosaid_items(owner="Bob_Example", requester="Alice_Example", status="open", type="task")
@@ -280,6 +280,31 @@ def test_graph_tools(ws: Path, fake: FakeRunner) -> None:
     fake.queue.append(([], None))
     mcp_server.whosaid_items(owner="  ", status="")
     check(fake.last()[1] == ["items", w], "blank filters are dropped")
+
+    # stale: open, untouched, newest meeting older than 14 days before as_of (folder dates)
+    rows = [{"id": "AI-001", "status": "open", "status_source": "corpus", "last_seen": "2026-01-01-0900"},
+            {"id": "AI-002", "status": "open", "status_source": "corpus", "last_seen": "2026-03-10-0900"},
+            {"id": "AI-003", "status": "delivered", "status_source": "corpus", "last_seen": "2026-01-02-0900"},
+            {"id": "AI-004", "status": "open", "status_source": "tracking", "last_seen": "2026-01-03-0900",
+             "tracking_history": [{"status": "open"}]},
+            {"id": "AI-005", "status": "open", "status_source": "corpus", "last_seen": "Hand named"}]
+    fake.queue.append(([dict(r) for r in rows], None))
+    out = mcp_server.whosaid_items(as_of="2026-03-12")
+    flags = {i["id"]: i["stale"] for i in out["items"]}
+    check(flags == {"AI-001": True, "AI-002": False, "AI-003": False, "AI-004": False, "AI-005": False}
+          and out["stale_count"] == 1 and out["stale_after_days"] == 14, f"stale flags: {flags}, {out.get('stale_count')}")
+    fake.queue.append(([dict(r) for r in rows], None))
+    out = mcp_server.whosaid_items(as_of="2026-03-12", stale=False, sort="newest", compact=True)
+    check([i["id"] for i in out["items"]] == ["AI-005", "AI-002", "AI-004", "AI-003"]
+          and out["stale_count"] == 1 and out["total"] == 4 and "stale" in out["items"][0],
+          f"stale=false drops stale items, newest first, compact keeps the flag: {out['items']}")
+    fake.queue.append(([dict(r) for r in rows], None))
+    check([i["id"] for i in mcp_server.whosaid_items(as_of="2026-03-12", stale=True)["items"]] == ["AI-001"],
+          "stale=true keeps only stale items")
+    (ws / "whosaid.toml").write_text((ws / "whosaid.toml").read_text() + "\n[tracking]\nstale_after_days = 0\n"
+                                     if (ws / "whosaid.toml").exists() else "[tracking]\nstale_after_days = 0\n")
+    fake.queue.append(([dict(r) for r in rows], None))
+    check(mcp_server.whosaid_items(as_of="2026-03-12")["stale_count"] == 0, "stale_after_days = 0 turns stale off")
 
     fake.queue.append(({"id": "AI-001", "text": "rollout checklist"}, None))
     out = mcp_server.whosaid_item(" AI-001 ")

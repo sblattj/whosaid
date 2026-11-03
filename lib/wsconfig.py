@@ -37,6 +37,9 @@ Per-workspace config is an optional TOML file, <workspace>/whosaid.toml:
   [watch]
   source = ""                    # folder to watch (default: macOS Voice Memos store)
 
+  [tracking]
+  stale_after_days = 14          # open items with no newer meeting or tracking event read as stale
+
   [diarize]                      # speaker hints for every ingest into this workspace
   max_speakers = 8               # also speakers / min_speakers / expected_speakers;
                                  # skipped when the command passes its own speaker flags
@@ -71,6 +74,9 @@ DEFAULTS: dict = {
     "search": {"ollama": "http://127.0.0.1:11434", "embed_model": "nomic-embed-text", "embed": True},
     "watch": {"source": "", "stable_seconds": 120, "max_wait_seconds": 900, "interval_seconds": 900},
     "diarize": {},
+    # an open item whose newest meeting is older than this, with no tracking event, reads as
+    # stale: old backlog stays visible without crowding today's open items (a view, not a status)
+    "tracking": {"stale_after_days": 14},
 }
 
 # diarize_sherpa.py renders "[HH:MM:SS] Name: text"; "Name (MM:SS): text" is the
