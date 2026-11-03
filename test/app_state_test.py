@@ -9,6 +9,7 @@ Run: python3 test/app_state_test.py
 """
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -106,9 +107,19 @@ with tempfile.TemporaryDirectory() as d:
     os.utime(m3 / "c.speakers.txt", (old, old))
     os.utime(m1 / "a.speakers.txt", (time.time() - 3600,) * 2)
     u = app_state.Unnamed()
-    check(u.count(ws) == {"voices": 2, "meetings": 1, "days": 14}, f"unnamed: 2 voices in 1 recent meeting: {u.count(ws)}")
+    at = time.mktime((2026, 10, 30, 12, 0, 0, 0, 0, -1))
+    check(u.count(ws, at) == {"voices": 2, "meetings": 1, "days": 14}, f"unnamed: 2 voices in 1 recent meeting: {u.count(ws, at)}")
     (m2 / "b.speakers.txt").write_text("[00:00:01] SPEAKER_00: renamed back\n")
-    check(u.count(ws)["voices"] == 3, "a rewritten file is re-read (mtime cache)")
+    check(u.count(ws, at)["voices"] == 3, "a rewritten file is re-read (mtime cache)")
+    os.utime(m3 / "c.speakers.txt", None)  # an old meeting imported today: its folder date wins
+    check(u.count(ws, at)["voices"] == 3, "a freshly written file in an old dated folder is not recent")
+    os.utime(m3 / "c.speakers.txt", (old, old))
+    undated = ws / "notes"
+    undated.mkdir()
+    (undated / "d.speakers.txt").write_text("[00:00:01] SPEAKER_04: x\n")
+    check(u.count(ws, time.time())["voices"] >= 1 and u.count(ws, time.time() + 60 * 86400)["voices"] == 0,
+          "an undated folder still goes by file mtime")
+    shutil.rmtree(undated)
     li = app_state.last_ingest(ws)
     check(li and li["folder"] == "2026-10-29-1000", f"newest meeting: {li}")
 

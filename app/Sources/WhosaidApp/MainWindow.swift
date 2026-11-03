@@ -35,7 +35,7 @@ struct MainWindow: View {
 
   func badge(_ item: SidebarItem) -> Int {
     switch item {
-    case .unnamed: model.state?.unnamedVoices ?? 0
+    case .unnamed: model.voiceGroupsLoaded ? model.voiceGroups.count : model.state?.unnamedVoices ?? 0
     default: 0
     }
   }
@@ -93,7 +93,7 @@ struct DetailView: View {
       case .meetings: MeetingsView(chats: false)
       case .chats: MeetingsView(chats: true)
       case .people: PeopleView(unnamedOnly: false)
-      case .unnamed: PeopleView(unnamedOnly: true)
+      case .unnamed: VoiceGroupsView()
       case .commitments: CommitmentsView()
       case .actionItems: ActionItemsView()
       default: placeholder

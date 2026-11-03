@@ -212,7 +212,7 @@ Commitment tracking: kind distinguishes explicit promises, requests, standing di
 
 Not exposed here: `enroll` and `record` are interactive microphone operations that need a live terminal. Run them from the `whosaid` CLI. The first transcribe downloads ~1.5 GB of models; run whosaid_doctor to check readiness. Full flag/env/long-audio reference: read the whosaid://guide resource.
 
-Meeting workspace (search across many transcripts): point the server at a workspace directory by launching it with WHOSAID_WORKSPACE=<dir>, or pass `workspace` on each call; there is no cwd fallback. Flow: whosaid_search (turn-level hits with meeting folder + timestamp) -> whosaid_context (the verbatim minute around one hit; do not read whole transcripts) -> whosaid_items / whosaid_item / whosaid_person for action items and per-person commitments; whosaid_worklist for one person's ranked P1/P2/P3 worklist across both corpora. whosaid_meetings, whosaid_prs and whosaid_speakers list what the graph knows; whosaid_workspace_status says whether the index exists. The index (_search.db, _WIKI.md) is built by `whosaid index <ws>` from the CLI or the watcher, never from here: every workspace tool is read-only except whosaid_set_status, which appends one status event to the tracking ledger (_tracking.json) when the user marks an item. Resources: whosaid://workspace/wiki, whosaid://workspace/action-items, whosaid://workspace/index, whosaid://workspace/meeting/{folder}/transcript and whosaid://workspace/meeting/{folder}/action-items. Everything stays local (SQLite FTS5 plus optional embeddings from a localhost Ollama)."""
+Meeting workspace (search across many transcripts): point the server at a workspace directory by launching it with WHOSAID_WORKSPACE=<dir>, or pass `workspace` on each call; there is no cwd fallback. Flow: whosaid_search (turn-level hits with meeting folder + timestamp) -> whosaid_context (the verbatim minute around one hit; do not read whole transcripts) -> whosaid_items / whosaid_item / whosaid_person for action items and per-person commitments; whosaid_worklist for one person's ranked P1/P2/P3 worklist across both corpora. whosaid_meetings, whosaid_prs and whosaid_speakers list what the graph knows; whosaid_workspace_status says whether the index exists. The index (_search.db, _WIKI.md) is built by `whosaid index <ws>` from the CLI or the watcher, never from here: every workspace tool is read-only except whosaid_set_status, which appends one status event to the tracking ledger (_tracking.json) when the user marks an item, and whosaid_name_voice_group, which names one unnamed voice across all its meetings (groups come from whosaid_voice_groups) and then rebuilds the index. Resources: whosaid://workspace/wiki, whosaid://workspace/action-items, whosaid://workspace/index, whosaid://workspace/meeting/{folder}/transcript and whosaid://workspace/meeting/{folder}/action-items. Everything stays local (SQLite FTS5 plus optional embeddings from a localhost Ollama)."""
 
 
 try:
@@ -2003,6 +2003,94 @@ def whosaid_set_status(item_id: str, status: str, note: str, workspace: Optional
         return _ws_error(str(exc), "check the id with whosaid_item and the status list in this tool's description",
                          category="tracking_error")
     return {"ok": True, "workspace": str(ws), "event": event}
+
+
+_DESC_VOICE_GROUPS = (
+    "The same unnamed voice across meetings, grouped, so it can be named once. Reads every "
+    "meeting's cluster voiceprints, keeps the unnamed (SPEAKER_NN) ones with at least "
+    "min_seconds of talk, and joins them by average-linkage cosine (threshold, default 0.65). "
+    "Returns {ok, groups:[{id, meetings, clusters, seconds, first, last, recent, cohesion, "
+    "hint, members:[{id, folder, cluster, seconds, date}]}], clusters, short_skipped}, biggest "
+    "first. hint is the nearest known voice ({name, similarity, next}) when it scores 0.55 or "
+    "more: often an unknown voice is a second print of someone already known. A hint is never "
+    "applied. recent = heard in the last 14 days. Cached in <ws>/_voice-groups.json until a "
+    "sidecar or the registry changes. Name a group with whosaid_name_voice_group. "
+    "Keywords: unnamed voices, unknown speakers, backfill, same voice, name once."
+)
+
+_DESC_NAME_VOICE_GROUP = (
+    "Name every meeting in one voice group (an id from whosaid_voice_groups). A name new to "
+    "the registry saves the largest member's voiceprint, so later recordings are named on "
+    "their own; the other members get transcript-only labels. A name already known never "
+    "changes its voiceprint. role (self/boss/peer/report/external) is saved with the name. "
+    "Rebuilds the search index once at the end. Returns {ok, name, enrolled, named, failed}. "
+    "An unknown id means the groups changed: list them again. Not read-only; about a second "
+    "or two per meeting."
+)
+
+
+@mcp.tool(name="whosaid_voice_groups", description=_DESC_VOICE_GROUPS, annotations=_read_only())
+def whosaid_voice_groups(workspace: Optional[str] = None, min_seconds: float = 5.0,
+                         threshold: float = 0.65, refresh: bool = False) -> dict:
+    """Shell `whosaid voices groups <ws> --json` (numpy lives in that env, not this one)."""
+    ws, err = _resolve_ws(workspace)
+    if err:
+        return err
+    if not (0.0 < float(threshold) <= 1.0) or float(min_seconds) < 0:
+        return _ws_error("threshold must be in (0, 1] and min_seconds >= 0",
+                         "leave both out for the defaults (0.65 and 5)")
+    args = ["voices", "groups", str(ws), "--json", "--min-seconds", str(float(min_seconds)),
+            "--threshold", str(float(threshold))] + (["--refresh"] if refresh else [])
+    return _voices_cli(args, VOICE_GROUPS_TIMEOUT, ws)
+
+
+@mcp.tool(
+    name="whosaid_name_voice_group",
+    description=_DESC_NAME_VOICE_GROUP,
+    annotations=ToolAnnotations(
+        read_only_hint=False,
+        destructive_hint=False,
+        idempotent_hint=False,
+        open_world_hint=False,
+    ),
+)
+def whosaid_name_voice_group(group_id: str, name: str, role: Optional[str] = None,
+                             workspace: Optional[str] = None) -> dict:
+    """Shell `whosaid voices name <ws> <group> <name> [--role R]`."""
+    ws, err = _resolve_ws(workspace)
+    if err:
+        return err
+    gid, person = (group_id or "").strip(), (name or "").strip()
+    if not re.fullmatch(r"vg-[0-9a-f]{10}", gid):
+        return _ws_error(f"invalid group_id '{group_id}'", "pass an id from whosaid_voice_groups")
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", person) or person.startswith("-"):
+        return _ws_error(f"invalid name '{name}'", "pass a person's name, e.g. Ada_Lovelace")
+    args = ["voices", "name", str(ws), gid, person]
+    if role and role.strip():
+        args += ["--role", role.strip()]
+    return _voices_cli(args, NAME_VOICE_GROUP_TIMEOUT, ws)
+
+
+VOICE_GROUPS_TIMEOUT = 300
+NAME_VOICE_GROUP_TIMEOUT = 900
+
+
+def _voices_cli(args: list, timeout: float, ws) -> dict:
+    try:
+        proc = _run_cli(args, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return _ws_error(f"whosaid {' '.join(args[:2])} timed out after {timeout:.0f}s",
+                         "meetings already labeled keep their label; list the groups again and retry",
+                         category="timeout")
+    except OSError as exc:
+        return _ws_error(f"could not start whosaid: {exc}", "run whosaid_doctor")
+    try:
+        out = json.loads((proc.stdout or "").strip().splitlines()[-1])
+    except (ValueError, IndexError):
+        tail = "\n".join((proc.stderr or "").strip().splitlines()[-10:])
+        return _ws_error(f"whosaid {' '.join(args[:2])} failed (exit {proc.returncode})", tail or "run whosaid_doctor")
+    out.setdefault("workspace", str(ws))
+    return out
 
 
 @mcp.tool(name="whosaid_workspace_status", description=_DESC_WS_STATUS, annotations=_read_only())
