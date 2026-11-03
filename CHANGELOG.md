@@ -6,6 +6,8 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ## [Unreleased]
 
+## [1.26.1] - 2026-11-02
+
 ### Fixed
 - Live AI: a call's final pass (the recap over the whole call) now runs. The app stopped the follower the moment the call ended, before its last pass, so the sidecar kept `final: false` and the recap missed the last minutes. `whosaid live insights build --ws WS` now makes that pass for an ended session (a no-op without `[live] ai = "claude"` or once it ran), and the app runs it after stopping the follower and when it refreshes a finished session's insights. One pass at a time per session: the follower and `build --ws` share a lock (`<start>.ai.lock`), so they never both call Claude.
 
