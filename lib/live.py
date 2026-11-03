@@ -273,9 +273,10 @@ def repeated(entries: list[dict], who: str, text: str) -> bool:
     return any(norm_text(e["text"]) == key for e in recent)
 
 
-def transcribe_chunks(chunks: dict, transcribe, prior: list[dict]) -> list[dict]:
+def transcribe_chunks(chunks: dict, transcribe, prior: list[dict], voices=None) -> list[dict]:
     """New {t, who, text} lines from one cut of both legs. Your mic has the other
-    side's bleed masked out and only your speech islands are sent."""
+    side's bleed masked out and only your speech islands are sent. With `voices`
+    (live_voices.Voices), each "them" line also gets the running voice it sounds like."""
     import numpy as np
     out: list[dict] = []
     for who, (start, samples) in chunks.items():
@@ -293,7 +294,15 @@ def transcribe_chunks(chunks: dict, transcribe, prior: list[dict]) -> list[dict]
                 continue
             off = float(seg.get("start") or 0)
             t = start / RATE + (original_time(runs, off) if runs else off)
-            out.append({"t": round(t, 2), "who": who, "text": text})
+            e = {"t": round(t, 2), "who": who, "text": text}
+            if voices is not None and who == "them":
+                end = float(seg.get("end") or off)
+                try:
+                    if (v := voices.place(samples[int(off * RATE):int(end * RATE)])):
+                        e["voice"] = v
+                except Exception as err:  # noqa: BLE001  a name is never worth the transcript
+                    log(f"live names: {err}")
+            out.append(e)
     return out
 
 
@@ -328,16 +337,21 @@ def session_paths(into: Path, started: float) -> tuple[Path, Path]:
     return d / f"{stem}.md", d / f"{stem}.jsonl"
 
 
+def speaker(e: dict) -> str:
+    """"me" for your mic; for the other side the name its voice matched, else "them"."""
+    return e["who"] if e["who"] == "me" else e.get("name") or e["who"]
+
+
 def fmt_line(e: dict) -> str:
-    return f"[{e['clock']}] {e['who']}: {e['text']}"
+    return f"[{e['clock']}] {speaker(e)}: {e['text']}"
 
 
 def write_session(md: Path, jl: Path, started: float, entries: list[dict], ended: bool) -> None:
     md.parent.mkdir(parents=True, exist_ok=True)
     entries.sort(key=lambda e: e["t"])
     head = (f"# Live transcript, call started {datetime.fromtimestamp(started):%Y-%m-%d %H:%M:%S}\n"
-            "me = your mic, them = the meeting app. Rough and unnamed; the full transcript "
-            "with names comes after the call.\n" + ("\n(call ended)\n" if ended else "\n"))
+            "me = your mic, them = the meeting app; names are a live guess from known voices. "
+            "The full transcript with names comes after the call.\n" + ("\n(call ended)\n" if ended else "\n"))
     tmp = md.with_suffix(".md.tmp")
     tmp.write_text(head + "\n".join(fmt_line(e) for e in entries) + "\n")
     os.replace(tmp, md)
@@ -350,7 +364,8 @@ def write_session(md: Path, jl: Path, started: float, entries: list[dict], ended
 # ---------------------------------------------------------------- follow one capture
 
 def follow(capture: Path, into: Path, transcribe, chunk_seconds: float = 20.0,
-           poll_seconds: float = 2.0, stop=lambda: False, ended_after: float = ENDED_AFTER) -> Path | None:
+           poll_seconds: float = 2.0, stop=lambda: False, ended_after: float = ENDED_AFTER,
+           voices=None) -> Path | None:
     legs = [Leg(capture / f"{name}.wav", who) for name, who in LEGS]
     started = None
     for name in ("app.wav", "mic.wav"):
@@ -372,10 +387,12 @@ def follow(capture: Path, into: Path, transcribe, chunk_seconds: float = 20.0,
         final = stop() or (grew == 0 and quiet_for >= ended_after)
         added = 0
         while (chunks := take_chunks(legs, chunk_seconds, final)) is not None:
-            for e in transcribe_chunks(chunks, transcribe, entries):
+            for e in transcribe_chunks(chunks, transcribe, entries, voices):
                 e["clock"] = datetime.fromtimestamp(started + e["t"]).strftime("%H:%M:%S")
                 entries.append(e)
                 added += 1
+        if added and voices is not None:
+            voices.annotate(entries)  # a voice named later gets its earlier lines back
         if added or final:
             write_session(md, jl, started, entries, ended=final)
         if final:
@@ -452,6 +469,7 @@ def cmd_run(a: argparse.Namespace) -> int:
     signal.signal(signal.SIGTERM, on_signal)
 
     transcribe = whisper_transcriber(a.model)
+    import live_voices
     deadline = time.monotonic() + a.max_hours * 3600
     done: set[Path] = set()
     log(f"model {a.model}; waiting for a call being recorded (Ctrl-C to quit)")
@@ -462,7 +480,8 @@ def cmd_run(a: argparse.Namespace) -> int:
     while not state["stop"] and time.monotonic() < deadline:
         cap = Path(a.capture) if a.capture else active_capture()
         if cap and cap not in done:
-            follow(cap, into, transcribe, a.chunk_seconds, stop=lambda: state["stop"])
+            follow(cap, into, transcribe, a.chunk_seconds, stop=lambda: state["stop"],
+                   voices=live_voices.load(log))  # per call: fresh voices, the registry as it is now
             done.add(cap)
             waiting_logged = False
             if a.once or a.capture:

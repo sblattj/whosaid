@@ -7,7 +7,12 @@ public struct LiveEntry: Sendable, Equatable, Identifiable {
   /// "me" (your mic) or "them" (the meeting app).
   public let who: String
   public let text: String
+  /// The registry voice this line sounds like (a live guess), and that voice's role tag.
+  public let name: String?
+  public let role: String?
   public var id: String { "\(t)|\(who)" }
+  /// What the line is labeled with: "me", else the matched name, else "them".
+  public var speaker: String { who == "me" ? "me" : name ?? who }
 
   public init?(_ v: JSONValue) {
     guard let t = v["t"]?.double, let text = v["text"]?.string else { return nil }
@@ -15,6 +20,8 @@ public struct LiveEntry: Sendable, Equatable, Identifiable {
     self.text = text
     clock = v["clock"]?.string ?? Transcript.clock(t)
     who = v["who"]?.string ?? "them"
+    name = v["name"]?.string.flatMap { $0.isEmpty ? nil : $0 }
+    role = v["role"]?.string.flatMap { $0.isEmpty ? nil : $0 }
   }
 }
 
@@ -66,6 +73,8 @@ public struct NextStep: Sendable, Equatable, Identifiable {
   /// "agreed" or "suggested".
   public let kind: String
   public let who: String
+  /// Who said it, when the line's voice matched a known one.
+  public let name: String?
   public let t: Double
   public let clock: String
   public let text: String
@@ -77,6 +86,7 @@ public struct NextStep: Sendable, Equatable, Identifiable {
     id = v["id"]?.string ?? "\(t)"
     kind = v["kind"]?.string ?? "suggested"
     who = v["who"]?.string ?? "them"
+    name = v["name"]?.string.flatMap { $0.isEmpty ? nil : $0 }
     clock = v["clock"]?.string ?? Transcript.clock(t)
   }
 }

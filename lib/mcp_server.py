@@ -1879,7 +1879,8 @@ def whosaid_live_insights(recordings: Optional[str] = None) -> dict:
     summaries = [{"from": _clock(started, s["from"]), "to": _clock(started, s["to"]),
                   "bullets": s["bullets"], "topics": [label.get(i, i) for i in s["topics"]]}
                  for s in res["summaries"]]
-    steps = [{"kind": n["kind"], "who": n["who"], "clock": n["clock"], "text": n["text"],
+    steps = [{"kind": n["kind"], "who": n["who"], **({"name": n["name"]} if n.get("name") else {}),
+              "clock": n["clock"], "text": n["text"],
               "topic": label.get(n["topicId"], n["topicId"])} for n in res["nextSteps"]]
     return dict(head, topics=topics, summaries=summaries, next_steps=steps)
 
@@ -1887,7 +1888,7 @@ def whosaid_live_insights(recordings: Optional[str] = None) -> dict:
 _DESC_LIVE_ASK = (
     "Find where something was said in the call being recorded right now: ranks live transcript "
     "lines against `question` (term overlap, no model call) and returns the best matches with "
-    "clock, who ('me'/'them') and text, so you can answer from them and cite the times. Pass "
+    "clock, who ('me'/'them', plus name when a known voice was recognized live) and text, so you can answer from them and cite the times. Pass "
     "`minutes` to search only the last N minutes. Local files only; ok=false with a hint when no "
     "live transcript exists."
 )

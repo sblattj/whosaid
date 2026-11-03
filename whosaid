@@ -101,7 +101,7 @@ REPO_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
 
 # Single source of truth for the released version. Bump this alongside the
 # CHANGELOG.md entry and git tag at release time.
-WHOSAID_VERSION="1.26.1"
+WHOSAID_VERSION="1.27.0"
 
 HELPER="$REPO_DIR/lib/transcribe_mlx.py"
 DIARIZER="$REPO_DIR/lib/diarize_sherpa.py"
@@ -2725,7 +2725,8 @@ cmd_live() {
   if [[ "${1:-}" == show || "${1:-}" == status ]]; then
     exec "$WHOSAID_PY" "$REPO_DIR/lib/live.py" "$@"
   fi
-  exec uv run --quiet --with mlx-whisper --with numpy python "$REPO_DIR/lib/live.py" "$@"
+  # sherpa-onnx: live names from the speaker registry (lib/live_voices.py)
+  exec uv run --quiet --with "$SHERPA_SPEC" --with mlx-whisper --with numpy python "$REPO_DIR/lib/live.py" "$@"
 }
 
 cmd_watch() {

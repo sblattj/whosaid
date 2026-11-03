@@ -166,6 +166,7 @@ def utterances(entries: list[dict]) -> list[tuple[int, str]]:
         if not text:
             continue
         if prev is not None and entries[prev]["who"] == e["who"] \
+                and entries[prev].get("voice") == e.get("voice") \
                 and float(e["t"]) - float(entries[prev]["t"]) <= JOIN_GAP and out:
             out[-1] = (out[-1][0], out[-1][1] + " " + text)
         else:
@@ -541,9 +542,9 @@ def summaries(entries, chunks, of_chunk, topics, df, last_t) -> list[dict]:
                         continue
                     score = sum(math.log(1 + freq[w]) * idf.get(w, 1.0) for w in ws) / math.sqrt(len(ws) + 1)
                     if point_ok(s):
-                        cands.append((score, i, j, e["who"], s))
+                        cands.append((score, i, j, live.speaker(e), s))
                     elif len(words(s)) <= MAX_POINT_WORDS and not DANGLING_RE.search(s):
-                        loose.append((score, i, j, e["who"], s))
+                        loose.append((score, i, j, live.speaker(e), s))
         if len(cands) < 2:  # a window of fragments: the cleanest of them beats an empty card
             cands += sorted(loose, key=lambda c: (-c[0], c[1], c[2]))[:2 - len(cands)]
         top = sorted(cands, key=lambda c: (-c[0], c[1], c[2]))[:3 if len(cands) >= 6 else 2]
@@ -557,6 +558,13 @@ def summaries(entries, chunks, of_chunk, topics, df, last_t) -> list[dict]:
         out.append({"from": int(lo), "to": int(hi), "text": " ".join(c[4] for c in top),
                     "bullets": bullets, "topics": seen})
     return out
+
+
+def _named(e: dict) -> dict:
+    """The live name and role of a line, when its voice matched one ("me" stays "me")."""
+    if e.get("who") == "me":
+        return {}
+    return {k: e[k] for k in ("name", "role") if e.get(k)}
 
 
 def classify(sentence: str) -> str | None:
@@ -590,7 +598,7 @@ def next_steps(entries, topics, topic_of_entry) -> list[dict]:
                 found.append((i, kind, s))
     for i, kind, s in sorted(found, key=lambda f: f[0]):
         e = entries[i]
-        out.append({"id": f"ns-{len(out) + 1}", "kind": kind, "who": e["who"], "t": float(e["t"]),
+        out.append({"id": f"ns-{len(out) + 1}", "kind": kind, "who": e["who"], **_named(e), "t": float(e["t"]),
                     "clock": e.get("clock") or "", "text": s, "topicId": topics[topic_of_entry[i]]["id"]})
     return out
 
@@ -712,14 +720,14 @@ def search(entries: list[dict], question: str) -> list[dict]:
             score *= 0.6   # a line that asks is a weaker answer than one that tells
         scored.append((score, i))
     scored.sort(key=lambda s: (-s[0], s[1]))
-    return [{"t": entries[i]["t"], "clock": entries[i].get("clock") or "", "who": entries[i]["who"],
+    return [{"t": entries[i]["t"], "clock": entries[i].get("clock") or "", "who": entries[i]["who"], **_named(entries[i]),
              "text": entries[i].get("text") or "", "score": round(sc, 3)} for sc, i in scored[:ASK_TOP]]
 
 
 def lexical_answer(matches: list[dict]) -> str:
     if not matches:
         return "Nothing in the live transcript matches that."
-    return " ".join(f"[{m['clock']}] {m['who']}: {m['text']}" for m in matches[:2])
+    return " ".join(f"[{m['clock']}] {live.speaker(m)}: {m['text']}" for m in matches[:2])
 
 
 ASK_SYSTEM = ("You answer questions about a call that is in progress, using only the transcript given. "
