@@ -101,7 +101,7 @@ import WhosaidKit
     lines.append("shot transcript-after \(await snapshot(main, to: "\(out).transcript-after.png") ? "ok" : "MISSING")")
     model.selection = .unnamed
     try? await Task.sleep(for: .milliseconds(1500))
-    lines.append("unnamed after \(model.people.filter { $0["named"]?.bool == false }.count)")
+    lines.append("unnamed after \(model.voiceGroups.count) voice groups")
     lines.append("shot unnamed-after \(await snapshot(main, to: "\(out).unnamed-after.png") ? "ok" : "MISSING")")
   }
 

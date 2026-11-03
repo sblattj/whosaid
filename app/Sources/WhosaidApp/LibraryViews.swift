@@ -382,6 +382,129 @@ struct PeopleView: View {
   }
 }
 
+// MARK: - Unnamed voices, grouped across meetings
+
+struct VoiceGroupsView: View {
+  @Environment(AppModel.self) var model
+  @State private var recentOnly = false
+
+  var rows: [VoiceGroup] { model.voiceGroups.filter { !recentOnly || $0.recent } }
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 0) {
+      HStack(spacing: 12) {
+        Text(header).foregroundStyle(.secondary)
+        Spacer()
+        Toggle("Last 14 days", isOn: $recentOnly).toggleStyle(.checkbox)
+        Button { Task { await model.loadVoiceGroups(refresh: true) } } label: { Image(systemName: "arrow.clockwise") }
+          .buttonStyle(.borderless).help("Group again")
+      }
+      .padding(.horizontal, 16).padding(.vertical, 10)
+      if let e = model.voiceGroupsError { Text(e).foregroundStyle(.orange).padding(.horizontal, 16) }
+      Divider()
+      ScrollView {
+        LazyVStack(alignment: .leading, spacing: 10) {
+          ForEach(rows) { VoiceGroupCard(group: $0) }
+        }
+        .padding(16)
+      }
+      .overlay {
+        if !model.voiceGroupsLoaded { ProgressView("Grouping voices across meetings…") }
+        else if rows.isEmpty && model.voiceGroupsError == nil { Text("Every voice has a name").foregroundStyle(.secondary) }
+      }
+    }
+    .task { if !model.voiceGroupsLoaded { await model.loadVoiceGroups() } }
+  }
+
+  var header: String {
+    guard let i = model.voiceGroupsInfo, model.voiceGroupsLoaded else { return "" }
+    let short = i["short_skipped"]?.int ?? 0
+    return "\(model.voiceGroups.count) unnamed voices, grouped from \(i["clusters"]?.int ?? 0) per-meeting voices"
+      + (short > 0 ? " (\(short) under \(Int(i["min_seconds"]?.double ?? 5)) s left out)" : "")
+  }
+}
+
+/// One unknown voice across its meetings: name it once, it is named in all of them.
+struct VoiceGroupCard: View {
+  @Environment(AppModel.self) var model
+  let group: VoiceGroup
+  @State private var name = ""
+  @State private var role: String?
+  @State private var saving = false
+  @State private var message: String?
+  @State private var showMeetings = false
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 8) {
+      HStack(spacing: 8) {
+        Image(systemName: "person.crop.circle.badge.questionmark").foregroundStyle(.orange)
+        Text("Unknown voice").font(.headline)
+        Text(group.summary).font(.caption).monospacedDigit().foregroundStyle(.secondary)
+        Spacer()
+        if let m = group.loudest {
+          Button {
+            Task {
+              if let url = await model.clip(folder: m.folder, cluster: m.cluster) { ClipPlayer.shared.play(url) }
+              else { message = "No clip: the recording is not where the sidecar says." }
+            }
+          } label: { Label("Play clip", systemImage: "play.circle") }
+            .buttonStyle(.borderless).help("Play a few seconds of this voice from \(m.folder)")
+        }
+      }
+      if let h = group.hint {
+        HStack(spacing: 6) {
+          Image(systemName: "waveform.badge.magnifyingglass").foregroundStyle(.secondary)
+          Text("Sounds like \(h.name) (\(h.similarity, format: .number.precision(.fractionLength(2))))")
+            .foregroundStyle(.secondary)
+          Button("Use") { name = h.name; role = h.role }.buttonStyle(.link)
+        }
+        .font(.callout)
+      }
+      HStack(spacing: 8) {
+        TextField("Name", text: $name).textFieldStyle(.roundedBorder).frame(minWidth: 160, maxWidth: 240)
+        Button(group.meetings == 1 ? "Name it" : "Name in all \(group.meetings) meetings") { save() }
+          .disabled(saving || !Speakers.validName(name) || Transcript.isUnnamed(name))
+        if saving { ProgressView().controlSize(.small) }
+        Spacer()
+      }
+      Picker("Role", selection: $role) {
+        Text("no role").tag(String?.none)
+        ForEach(Speakers.roles, id: \.self) { Text($0).tag(String?.some($0)) }
+      }
+      .pickerStyle(.segmented).labelsHidden().fixedSize()
+      DisclosureGroup("Meetings", isExpanded: $showMeetings) {
+        ForEach(group.members) { m in
+          Button {
+            model.openSource(meeting: m.folder, t: nil)
+            model.meetingTab = .speakers
+          } label: {
+            HStack {
+              Text(m.folder)
+              Text(m.cluster).font(.caption.monospaced()).foregroundStyle(.secondary)
+              Spacer()
+              Text(Transcript.clock(m.seconds)).font(.caption).monospacedDigit().foregroundStyle(.secondary)
+            }
+          }
+          .buttonStyle(.plain)
+        }
+      }
+      .font(.callout)
+      if let message { Text(message).font(.caption).foregroundStyle(.orange) }
+    }
+    .padding(12)
+    .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 8))
+  }
+
+  func save() {
+    saving = true
+    message = nil
+    Task {
+      message = await model.nameVoiceGroup(group, name: name, role: role)
+      saving = false
+    }
+  }
+}
+
 struct PersonDetail: View {
   let name: String?
   let row: JSONValue?

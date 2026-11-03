@@ -80,8 +80,24 @@ def watch_state(ws: Path | None) -> dict:
             "running": running, "last_exit_status": last, "state": state, "detail": detail}
 
 
+FOLDER_DATE_RE = re.compile(r"^(\d{4})-(\d{2})-(\d{2})")
+
+
+def _folder_time(name: str) -> float | None:
+    """A dated meeting folder's local midnight, so an imported backlog counts by when it
+    was held, not when its files were written. None for an undated folder."""
+    m = FOLDER_DATE_RE.match(name)
+    if not m:
+        return None
+    try:
+        return time.mktime((int(m[1]), int(m[2]), int(m[3]), 0, 0, 0, 0, 0, -1))
+    except (OverflowError, ValueError):
+        return None
+
+
 class Unnamed:
-    """SPEAKER_NN clusters per recent meeting, cached by speakers-file mtime."""
+    """SPEAKER_NN clusters per recent meeting (by folder date, else file mtime), cached by
+    speakers-file mtime."""
 
     def __init__(self):
         self.cache: dict[Path, tuple[float, int]] = {}
@@ -91,13 +107,16 @@ class Unnamed:
             return {"voices": 0, "meetings": 0, "days": UNNAMED_DAYS}
         cutoff = (now or time.time()) - UNNAMED_DAYS * 86400
         voices = meetings = 0
-        for _name, files in watch_iter_meetings(ws):
+        for name, files in watch_iter_meetings(ws):
+            held = _folder_time(name)
+            if held is not None and held < cutoff - 86400:  # a day of slack for the zone
+                continue
             for f in files:
                 try:
                     mtime = f.stat().st_mtime
                 except OSError:
                     continue
-                if mtime < cutoff:
+                if held is None and mtime < cutoff:
                     continue
                 hit = self.cache.get(f)
                 if not hit or hit[0] != mtime:

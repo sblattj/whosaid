@@ -89,6 +89,8 @@ def main() -> None:
         "whosaid_live_insights",
         "whosaid_live_ask",
         "whosaid_set_status",
+        "whosaid_voice_groups",
+        "whosaid_name_voice_group",
     } | workspace_tools
 
     # --- tool-name set + prefix ---
@@ -322,6 +324,21 @@ def main() -> None:
     check(all(t in d_ss for t in ("ONE curated status event", "done (= delivered)", "Unknown ids are refused")),
           "set_status desc: one event, done alias, refusal")
     check("whosaid_set_status" in mcp_server.SERVER_INSTRUCTIONS, "instructions name the one writing workspace tool")
+
+    # --- voice groups: list read-only, naming writes ---
+    vg = dumps["whosaid_voice_groups"]
+    check((vg.get("annotations") or {}).get("readOnlyHint") is True
+          and set(vg["inputSchema"]["properties"]) == {"workspace", "min_seconds", "threshold", "refresh"},
+          f"voice_groups: read-only, params: {vg['inputSchema']['properties'].keys()}")
+    check(all(t in vg["description"] for t in ("average-linkage", "never applied", "whosaid_name_voice_group")),
+          "voice_groups desc: how it groups, hints are not applied, how to name")
+    nv = dumps["whosaid_name_voice_group"]
+    check((nv.get("annotations") or {}).get("readOnlyHint") is False
+          and set(nv["inputSchema"].get("required") or []) == {"group_id", "name"},
+          f"name_voice_group: writes, needs group_id and name: {nv['inputSchema']}")
+    check(all(t in nv["description"] for t in ("largest member", "transcript-only", "never changes its voiceprint")),
+          "name_voice_group desc: what is saved")
+    check("whosaid_name_voice_group" in mcp_server.SERVER_INSTRUCTIONS, "instructions name the voice naming tool")
 
     # --- whosaid_reprocess: mutating, dry run by default ---
     rp = dumps["whosaid_reprocess"]

@@ -6,8 +6,14 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ## [Unreleased]
 
+## [1.28.0] - 2026-11-03
+
 ### Added
 - Stale action items: an open item that no meeting has mentioned for `[tracking] stale_after_days` (default 14, by meeting date, 0 turns it off) and that has no tracking event reads as stale. It's a view, never a stored status. `whosaid_items` gains `stale` per item, `stale_count`, a `stale=true|false` filter and `sort="newest"`; the app's Action items page gets a Stale tab, so a backfilled backlog no longer floods Open. The page now reads every page of items, newest first (it stopped at the oldest 500).
+- Name a voice once, not once per meeting: `whosaid voices groups <ws>` groups the same unnamed voice across every meeting (average-linkage cosine of the cluster voiceprints, 0.65; clusters under 5 s left out) with how many meetings it spans, its talk time, when it was last heard and the nearest known voice as a hint. `whosaid voices name <ws> <group> <Name> [--role R]` names it everywhere: a new name saves one voiceprint (the largest member's) so later recordings are named on their own, the other meetings get transcript-only labels, a known name never changes its print, and the index is rebuilt once. MCP: `whosaid_voice_groups` and `whosaid_name_voice_group`. The app's Unnamed voices page now lists these groups (play a clip, use the hint, pick a role, name it in all its meetings), and its badge counts groups. Known gap, same as naming one meeting's card: per-meeting action items and commitments keep their SPEAKER_NN owner.
+
+### Changed
+- The menu's unknown-voices count goes by the meeting folder's date, not the file's write time, so an imported backlog no longer counts as the last 14 days.
 
 ## [1.27.1] - 2026-11-03
 

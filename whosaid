@@ -101,7 +101,7 @@ REPO_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
 
 # Single source of truth for the released version. Bump this alongside the
 # CHANGELOG.md entry and git tag at release time.
-WHOSAID_VERSION="1.27.1"
+WHOSAID_VERSION="1.28.0"
 
 HELPER="$REPO_DIR/lib/transcribe_mlx.py"
 DIARIZER="$REPO_DIR/lib/diarize_sherpa.py"
@@ -318,6 +318,12 @@ USAGE
   whosaid backfill <ws> [--dry-run]
                                         Apply historical registry names/roles,
                                         refresh commitments and dependent views.
+  whosaid voices groups <ws> [--json] [--min-seconds S] [--threshold T] [--refresh]
+                                        Group the same unnamed voice across meetings,
+                                        with a nearest-known-voice hint per group.
+  whosaid voices name <ws> <group-id> <Name> [--role ROLE] [--no-index]
+                                        Name every meeting in one group; a new name
+                                        saves one voiceprint, the rest are labels.
   whosaid index <ws> [--no-embed] [--rebuild]
                                         Build <ws>/_search.db (full text, optional
                                         embeddings, entity graph) and <ws>/_WIKI.md.
@@ -2479,6 +2485,16 @@ except BaseException:
 # --index then runs `whosaid index <ws>` (issue #14), so this is a plain call
 # rather than an exec.
 # Historical registry changes are explicit and auditable.
+# whosaid voices groups|name <ws> ...: lib/voice_groups.py. Grouping needs numpy;
+# naming shells `whosaid relabel` per meeting, then `whosaid index` once.
+cmd_voices() {
+  if want_help "$@" || [[ $# -eq 0 ]]; then
+    uv run --quiet --with numpy python "$REPO_DIR/lib/voice_groups.py" --help
+    return $?
+  fi
+  uv run --quiet --with numpy python "$REPO_DIR/lib/voice_groups.py" "$@"
+}
+
 cmd_backfill() {
   if want_help "$@"; then
     uv run --quiet --with numpy python "$REPO_DIR/lib/backfill.py" --help
@@ -2792,6 +2808,9 @@ case "${1:-}" in
     ;;
   backfill)
     cmd_backfill "${@:2}"
+    ;;
+  voices)
+    cmd_voices "${@:2}"
     ;;
   roll-up|rollup)
     cmd_rollup "${@:2}"

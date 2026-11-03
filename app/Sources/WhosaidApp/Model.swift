@@ -93,6 +93,11 @@ final class AppModel {
   var topicsStamp = 0
   var people: [JSONValue] = []
   var peopleLoaded = false
+  var voiceGroups: [VoiceGroup] = []
+  var voiceGroupsLoaded = false
+  var voiceGroupsLoading = false
+  var voiceGroupsInfo: JSONValue?
+  var voiceGroupsError: String?
   var searchOpen = false
   var searchQuery = ""
   var searching = false
@@ -162,6 +167,7 @@ final class AppModel {
       } else {
         health = .ready(meetings: meetings)
         await refreshRecent()
+        if !voiceGroupsLoaded && !voiceGroupsLoading { voiceGroupsLoading = true; Task { await loadVoiceGroups() } }
       }
     } catch {
       health = .error("the whosaid MCP server did not answer: \(error)")
@@ -226,6 +232,44 @@ final class AppModel {
     let r = try? await mcp.call("whosaid_person", ["workspace": .string(ws)], timeout: 60)
     people = (r?["people"]?.array ?? []).sorted { ($0["turns"]?.int ?? 0) > ($1["turns"]?.int ?? 0) }
     peopleLoaded = true
+  }
+
+  /// The same unnamed voice across meetings, grouped (whosaid_voice_groups; cached on disk
+  /// by the CLI until a sidecar or the registry changes).
+  func loadVoiceGroups(refresh: Bool = false) async {
+    defer { voiceGroupsLoading = false }
+    guard let ws = paths.workspace, let mcp else { return }
+    voiceGroupsLoading = true
+    voiceGroupsError = nil
+    var args: [String: JSONValue] = ["workspace": .string(ws)]
+    if refresh { args["refresh"] = .bool(true) }
+    do {
+      let r = try await mcp.call("whosaid_voice_groups", args, timeout: 300)
+      if r["ok"]?.bool == false { voiceGroupsError = r["error"]?.string ?? "voice groups failed" }
+      voiceGroups = VoiceGroup.list(r)
+      voiceGroupsInfo = r
+    } catch { voiceGroupsError = "whosaid is not answering: \(error)" }
+    voiceGroupsLoaded = true
+  }
+
+  /// Names every meeting of one group; nil on success, else what went wrong.
+  func nameVoiceGroup(_ group: VoiceGroup, name: String, role: String?) async -> String? {
+    guard let ws = paths.workspace, let mcp else { return "No workspace" }
+    var args: [String: JSONValue] = ["workspace": .string(ws), "group_id": .string(group.id), "name": .string(name)]
+    if let role { args["role"] = .string(role) }
+    let r: JSONValue
+    do { r = try await mcp.call("whosaid_name_voice_group", args, timeout: 900) } catch { return "Naming failed: \(error)" }
+    folderInfo = [:]
+    peopleLoaded = false
+    revision += 1
+    await loadVoiceGroups()
+    await loadPeople()
+    await refreshHealth()
+    if r["ok"]?.bool == false {
+      let failed = r["failed"]?.array?.count ?? 0
+      return (r["error"]?.string ?? "\(failed) meeting\(failed == 1 ? "" : "s") could not be labeled")
+    }
+    return nil
   }
 
   func person(_ name: String) async -> JSONValue? {
