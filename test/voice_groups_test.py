@@ -169,6 +169,28 @@ vg.subprocess.run = real_run
 calls()
 check(res["ok"] and res["indexed"] is False and "not runnable" in res["index_error"], f"a broken index is reported in the result: {res}")
 
+# two clusters of one meeting in a group are relabeled one at a time, not at once
+meeting("2026-03-17-0900", {"SPEAKER_00": (unit(0, 0, 0, 0, 0, 1), 60), "SPEAKER_01": (unit(0, 0, 0, 0, 0, 1, 0.05), 50)})
+meeting("2026-03-18-0900", {"SPEAKER_02": (unit(0, 0, 0, 0, 0, 1, 0, 0.05), 80)})
+g3 = next(g for g in vg.groups(ws)["groups"] if g["members"][0]["folder"] == "2026-03-18-0900")
+check(g3["meetings"] == 2 and len(g3["members"]) == 3, f"fixture: one meeting gives two members: {g3}")
+seen = []
+real_relabel = vg._relabel
+def slow_relabel(ws_, m, *a, **kw):
+    seen.append(("start", m["id"]))
+    r = real_relabel(ws_, m, *a, **kw)
+    seen.append(("end", m["id"]))
+    return r
+vg._relabel = slow_relabel
+res = vg.name(ws, g3["id"], "Dorothy_Vaughan", index=False)
+vg._relabel = real_relabel
+calls()
+side = json.loads((ws / "2026-03-17-0900" / "transcript.diarization.json").read_text())
+check(res["ok"] and side["names"]["SPEAKER_00"] == side["names"]["SPEAKER_01"] == "Dorothy_Vaughan",
+      f"both clusters of the shared sidecar keep the name: {side['names']}")
+same = [i for i, (_, mid) in enumerate(seen) if mid.startswith("2026-03-17-0900/")]
+check([seen[i][0] for i in same] == ["start", "end", "start", "end"], f"same-sidecar relabels never overlap: {seen}")
+
 # the CLI front: whosaid voices is wired
 check("cmd_voices" in (ROOT / "whosaid").read_text() and 'lib/voice_groups.py' in (ROOT / "whosaid").read_text(),
       "whosaid voices runs lib/voice_groups.py")

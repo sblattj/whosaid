@@ -262,14 +262,24 @@ def name(ws: Path, group_id: str, person: str, role: str = "", workers: int = 4,
     done.append(mid)
     if new:
         log(f"saved {person}'s voiceprint from {mid}")
-    rest = members[1:]
+    # one worker per sidecar: two clusters of the same meeting are relabeled one after
+    # the other, never at once (each relabel rewrites the whole sidecar)
+    by_sidecar: dict[str, list] = {}
+    for m in members[1:]:
+        by_sidecar.setdefault(m["id"].rsplit("#", 1)[0], []).append(m)
+
+    def run_sidecar(ms):
+        return [_relabel(ws, m, person, False, "", timeout) for m in ms]
+
+    total, n = len(members) - 1, 0
     with concurrent.futures.ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
-        futs = [pool.submit(_relabel, ws, m, person, False, "", timeout) for m in rest]
-        for n, f in enumerate(concurrent.futures.as_completed(futs), 1):
-            mid, err = f.result()
-            (failed if err else done).append(mid if not err else {"id": mid, "error": err})
-            if n % 5 == 0 or n == len(futs):
-                log(f"{n}/{len(futs)} labeled")
+        futs = [pool.submit(run_sidecar, ms) for ms in by_sidecar.values()]
+        for f in concurrent.futures.as_completed(futs):
+            for mid, err in f.result():
+                (failed if err else done).append(mid if not err else {"id": mid, "error": err})
+                n += 1
+                if n % 5 == 0 or n == total:
+                    log(f"{n}/{total} labeled")
     out = {"ok": not failed, "group": group_id, "name": person, "enrolled": new,
            "named": sorted(done), "failed": failed, "seconds": round(time.time() - t0, 1)}
     if index and done:
