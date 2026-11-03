@@ -6,6 +6,8 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ## [Unreleased]
 
+## [1.27.1] - 2026-11-03
+
 ### Fixed
 - App: Action items showed 0 on a real workspace. Replies over one pipe read (a 500-item page is about 600 KB) were reassembled out of order and dropped; the MCP client now joins chunks in order. A failed load now shows its error instead of an empty list.
 
