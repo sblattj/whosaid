@@ -48,7 +48,8 @@ DEFAULTS = {"ai": "", "ai_model": "sonnet", "ai_every": 180, "ai_max_calls": 40,
             "ai_timeout": 90, "ai_max_tokens": 1500}
 SYSTEM = (
     "You keep a live dashboard for a meeting that is in progress. 'me' is the user (their mic); "
-    "'them' is everyone on the other side. You get the topic buckets found so far (id, current "
+    "'them' is everyone on the other side, and a line from a recognized voice shows that person's "
+    "name instead (a live guess). Write about people by those names. You get the topic buckets found so far (id, current "
     "label, key terms, a few lines) and the newest part of the transcript, each line as "
     "[seconds] who: text. Reply with JSON only, no prose:\n"
     '{"labels": {"<topic id>": "<2-4 word label>"}, "recap": ["<bullet>"], '
@@ -112,10 +113,10 @@ def prompt(insights: dict, entries: list[dict]) -> str:
         inside.sort(key=lambda e: -len(terms & set(re.findall(r"[a-z']+", (e.get("text") or "").lower()))))
         lines = sorted(inside[:LINES_PER_TOPIC], key=lambda e: float(e["t"]))
         parts.append(f"- id {tp['id']} | label: {tp.get('label', '')} | terms: {', '.join(tp.get('terms') or [])}")
-        parts += [f"    [{int(float(e['t']))}] {e['who']}: {(e.get('text') or '')[:200]}" for e in lines]
+        parts += [f"    [{int(float(e['t']))}] {live.speaker(e)}: {(e.get('text') or '')[:200]}" for e in lines]
     tail, size = [], 0
     for e in reversed(entries):
-        line = f"[{int(float(e['t']))}] {e['who']}: {e.get('text') or ''}"
+        line = f"[{int(float(e['t']))}] {live.speaker(e)}: {e.get('text') or ''}"
         size += len(line) + 1
         if size > PROMPT_CHARS:
             break

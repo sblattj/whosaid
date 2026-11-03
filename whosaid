@@ -2725,7 +2725,8 @@ cmd_live() {
   if [[ "${1:-}" == show || "${1:-}" == status ]]; then
     exec "$WHOSAID_PY" "$REPO_DIR/lib/live.py" "$@"
   fi
-  exec uv run --quiet --with mlx-whisper --with numpy python "$REPO_DIR/lib/live.py" "$@"
+  # sherpa-onnx: live names from the speaker registry (lib/live_voices.py)
+  exec uv run --quiet --with "$SHERPA_SPEC" --with mlx-whisper --with numpy python "$REPO_DIR/lib/live.py" "$@"
 }
 
 cmd_watch() {

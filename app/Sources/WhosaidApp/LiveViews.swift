@@ -182,11 +182,19 @@ struct LaneTitle: View {
   }
 }
 
+/// "me", the matched name (with its role tag), or "them".
 struct WhoLabel: View {
-  let who: String
+  let entry: LiveEntry
   var body: some View {
-    Text(who).font(.caption.weight(.semibold)).foregroundStyle(who == "me" ? Color.accentColor : .orange)
-      .frame(width: 34, alignment: .leading)
+    HStack(spacing: 3) {
+      Text(entry.speaker).font(.caption.weight(.semibold))
+        .foregroundStyle(entry.who == "me" ? Color.accentColor : .orange)
+      if entry.who != "me", entry.name != nil, let role = entry.role {
+        Text(role).font(.caption2).foregroundStyle(.secondary)
+      }
+    }
+    .frame(minWidth: 34, alignment: .leading)
+    .help(entry.name != nil && entry.who != "me" ? "Matched from known voices during the call; the ingest decides the final names" : "")
   }
 }
 
@@ -195,7 +203,7 @@ struct TranscriptLane: View {
   let active: Bool
   var body: some View {
     VStack(spacing: 0) {
-      LaneTitle(title: "Transcript", detail: "me / them")
+      LaneTitle(title: "Transcript", detail: "me / names / them")
       Divider()
       TranscriptLaneBody(entries: entries, active: active)
     }
@@ -324,7 +332,7 @@ struct NextStepsLane: View {
       HStack(alignment: .top, spacing: 6) {
         Image(systemName: symbol).foregroundStyle(color)
         VStack(alignment: .leading, spacing: 2) {
-          Text((n.who == "me" ? "You: " : "") + n.text).fixedSize(horizontal: false, vertical: true)
+          Text((n.who == "me" ? "You: " : n.name.map { "\($0): " } ?? "") + n.text).fixedSize(horizontal: false, vertical: true)
           Text(n.clock).font(.caption.monospacedDigit()).foregroundStyle(.tertiary)
         }
       }
@@ -371,7 +379,7 @@ struct LivePanel: View {
           ForEach(a.matches) { e in
             HStack(alignment: .top, spacing: 4) {
               Text(e.clock).font(.caption.monospacedDigit()).foregroundStyle(.tertiary)
-              WhoLabel(who: e.who)
+              WhoLabel(entry: e)
               Text(e.text).font(.caption).fixedSize(horizontal: false, vertical: true)
             }
           }
@@ -404,7 +412,7 @@ struct TranscriptLaneBody: View {
           ForEach(entries) { e in
             VStack(alignment: .leading, spacing: 1) {
               HStack(spacing: 4) {
-                WhoLabel(who: e.who)
+                WhoLabel(entry: e)
                 Text(e.clock).font(.caption.monospacedDigit()).foregroundStyle(.tertiary)
               }
               Text(e.text).font(.callout).fixedSize(horizontal: false, vertical: true)

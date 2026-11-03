@@ -84,3 +84,13 @@ private func liveDir() throws -> URL {
   #expect(blocked?.absoluteString == "http://127.0.0.1:9419/probe")
   #expect(nav.blocked.count == 1 && web.url?.isFileURL == true)
 }
+
+@Test func liveEntryShowsTheMatchedName() throws {
+  func entry(_ json: String) throws -> LiveEntry {
+    try #require(LiveEntry(try JSONDecoder().decode(JSONValue.self, from: Data(json.utf8))))
+  }
+  let named = try entry(#"{"t": 1, "who": "them", "text": "x", "voice": "v1", "name": "Ada Lovelace", "role": "boss"}"#)
+  #expect(named.speaker == "Ada Lovelace" && named.role == "boss")
+  #expect(try entry(#"{"t": 1, "who": "them", "text": "x", "name": ""}"#).speaker == "them")
+  #expect(try entry(#"{"t": 1, "who": "me", "text": "x", "name": "Me Myself", "role": "self"}"#).speaker == "me")
+}
