@@ -85,6 +85,7 @@ final class AppModel {
   var items: [TrackedItem] = []
   var suggestions: [CompletionSuggestion] = []
   var trackingError: String?
+  var itemsError: String?
   /// A source link opened a meeting at this second: the transcript scrolls to it.
   var focus: (folder: String, t: Double)?
   /// Bumped when the workspace folder changes, so the Topics page re-reads _topics.json.
@@ -312,8 +313,12 @@ final class AppModel {
 
   func loadItems() async {
     guard let ws = paths.workspace, let mcp else { return }
-    let r = try? await mcp.call("whosaid_items", ["limit": .number(500), "workspace": .string(ws)], timeout: 90)
-    items = (r?["items"]?.array ?? []).compactMap(TrackedItem.init)
+    itemsError = nil
+    do {
+      let r = try await mcp.call("whosaid_items", ["limit": .number(500), "workspace": .string(ws)], timeout: 90)
+      if r["ok"]?.bool == false { itemsError = r["error"]?.string ?? "action items failed" }
+      items = (r["items"]?.array ?? []).compactMap(TrackedItem.init)
+    } catch { itemsError = "whosaid is not answering: \(error)" }
   }
 
   /// The P1 write path: one curated status event in the tracking ledger. Only an explicit

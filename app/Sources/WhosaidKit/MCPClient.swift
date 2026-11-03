@@ -13,7 +13,6 @@ public actor MCPClient {
   var stdin: FileHandle?
   var nextID = 1
   var pending: [Int: CheckedContinuation<JSONValue, Error>] = [:]
-  var buffer = Data()
 
   public init(whosaid: URL, workspace: String?) {
     executable = whosaid
@@ -32,9 +31,14 @@ public actor MCPClient {
     p.standardInput = inPipe
     p.standardOutput = outPipe
     p.standardError = FileHandle.nullDevice
+    // chunks are joined here, in pipe order; a Task per chunk could run them out of order and
+    // garble any reply bigger than one read (a 500-item page is ~600 KB)
+    let lines = LineBuffer()
     outPipe.fileHandleForReading.readabilityHandler = { [weak self] h in
       let chunk = h.availableData
-      Task { await self?.receive(chunk) }
+      if chunk.isEmpty { h.readabilityHandler = nil; return }
+      let whole = lines.feed(chunk)
+      if !whole.isEmpty { Task { await self?.receive(whole) } }
     }
     p.terminationHandler = { [weak self] proc in
       let pid = proc.processIdentifier, status = proc.terminationStatus
@@ -88,12 +92,10 @@ public actor MCPClient {
     try stdin.write(contentsOf: data)
   }
 
-  func receive(_ chunk: Data) {
-    buffer.append(chunk)
-    while let nl = buffer.firstIndex(of: 0x0A) {
-      let line = buffer[buffer.startIndex..<nl]
-      buffer = Data(buffer[buffer.index(after: nl)...])
-      guard let msg = try? JSONValue.parse(Data(line)), let id = msg["id"]?.int, let k = pending.removeValue(forKey: id) else { continue }
+  /// Whole JSON-RPC lines; each carries its id, so their order doesn't matter.
+  func receive(_ lines: [Data]) {
+    for line in lines {
+      guard let msg = try? JSONValue.parse(line), let id = msg["id"]?.int, let k = pending.removeValue(forKey: id) else { continue }
       if let err = msg["error"] { k.resume(throwing: WhosaidError.rpc(err["message"]?.string ?? "error")) }
       else { k.resume(returning: msg["result"] ?? .null) }
     }

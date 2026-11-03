@@ -39,3 +39,33 @@ func mcpRoundTrip() async throws {
   #expect(Date().timeIntervalSince(started) < 8)
   await c.stop()
 }
+
+/// A reply far bigger than one pipe read (the Action items page asks for 500 items, ~600 KB)
+/// arrives whole: chunks are joined in order, not as racing tasks.
+@Test func mcpBigReplyArrivesWhole() async throws {
+  let dir = FileManager.default.temporaryDirectory.appendingPathComponent("whosaid-mcpbig-\(UUID().uuidString)")
+  try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+  defer { try? FileManager.default.removeItem(at: dir) }
+  let bin = dir.appendingPathComponent("whosaid")
+  try """
+  #!/usr/bin/env python3
+  import json, sys
+  for line in sys.stdin:
+      m = json.loads(line)
+      if "id" not in m:
+          continue
+      res = {}
+      if m["method"] == "tools/call":
+          items = [{"id": f"AI-{i:04d}", "text": "x" * 400} for i in range(5000)]
+          res = {"content": [{"type": "text", "text": json.dumps({"ok": True, "items": items})}]}
+      sys.stdout.write(json.dumps({"jsonrpc": "2.0", "id": m["id"], "result": res}) + "\\n")
+      sys.stdout.flush()
+  """.write(to: bin, atomically: true, encoding: .utf8)
+  try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: bin.path)
+  let c = MCPClient(whosaid: bin, workspace: dir.path)
+  for _ in 0..<3 {
+    let r = try await c.call("whosaid_items", timeout: 20)
+    #expect(r["items"]?.array?.count == 5000)
+  }
+  await c.stop()
+}
