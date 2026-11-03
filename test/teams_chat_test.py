@@ -222,6 +222,21 @@ def run(tmp: Path) -> None:
     res_d = teams_chat.ingest(export, ws_d, tz_flag=TZ, dry_run=True)
     check(len(res_d) == 3 and sorted(p.name for p in ws_d.iterdir()) == ["whosaid.toml"], "dry-run writes nothing")
 
+    # ---- (e2) adding a [teams.names] mapping later relabels, not duplicates (no source IDs)
+    ws_m = fresh(tmp, "ws-map-later")
+    teams_chat.ingest(export, ws_m, tz_flag=TZ, self_name=SELF)
+    (ws_m / "whosaid.toml").write_text('[teams.names]\n"Roe: Richard" = "Roe Richard"\n', encoding="utf-8")
+    res_m = teams_chat.ingest(export, ws_m, tz_flag=TZ, self_name=SELF)
+    check(all(r["new"] == 0 for r in res_m), f"mapping change adds no messages: {res_m}")
+    for f in folders(ws_m):
+        sc_m = json.loads((ws_m / f / "teams.diarization.json").read_text(encoding="utf-8"))
+        spk_m = [seg["speaker"] for seg in sc_m["segments"]]
+        check(ROE not in spk_m, f"raw display name left behind in {f}: {spk_m}")
+        check(len(spk_m) == len({(seg["epoch_ms"], seg["text"]) for seg in sc_m["segments"]}),
+              f"duplicate segments in {f}: {spk_m}")
+        txt_m = (ws_m / f / "teams.speakers.txt").read_text(encoding="utf-8")
+        check(ROE + ":" not in txt_m, f"raw name in speakers.txt {f}")
+
     # ---- (f) name collision with an unrelated dated folder -> -2
     ws_c = fresh(tmp, "ws-coll")
     (ws_c / "2026-09-24-0905").mkdir()

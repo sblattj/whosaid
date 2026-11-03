@@ -398,13 +398,31 @@ def pick_folder_name(ws: Path, group: dict, tz: tzinfo, reserved: set[str]) -> s
     return name
 
 
-def existing_messages(sidecar: dict | None) -> dict[MessageKey, tuple[str, str]]:
+def stored_speaker(seg: dict, sidecar: dict | None, name_map: dict[str, str] | None = None) -> str:
+    """A stored segment's speaker under the current [teams.names].
+
+    Rows without a source ID are keyed on speaker + body, so a mapping added
+    after the first ingest would otherwise turn every old row into a new one.
+    The sidecar's names (display -> canonical at that time) give the display
+    name back, since the stored speaker may be sanitized."""
+    speaker = str(seg.get("speaker", "Unknown"))
+    if not name_map:
+        return speaker
+    for display, canonical in ((sidecar or {}).get("names") or {}).items():
+        if canonical == speaker:
+            return resolve_speaker(str(display), name_map)
+    return speaker
+
+
+def existing_messages(sidecar: dict | None,
+                      name_map: dict[str, str] | None = None) -> dict[MessageKey, tuple[str, str]]:
     out: dict[MessageKey, tuple[str, str]] = {}
     for seg in (sidecar or {}).get("segments", []) or []:
         if isinstance(seg, dict) and isinstance(seg.get("epoch_ms"), int):
+            speaker = stored_speaker(seg, sidecar, name_map)
             key = _message_key(seg["epoch_ms"], _message_id(seg, seg["epoch_ms"]),
-                               str(seg.get("speaker", "Unknown")), str(seg.get("text", "")))
-            out[key] = (str(seg.get("speaker", "Unknown")), str(seg.get("text", "")))
+                               speaker, str(seg.get("text", "")))
+            out[key] = (speaker, str(seg.get("text", "")))
     return out
 
 
@@ -590,11 +608,11 @@ def ingest(export: str | os.PathLike, ws: str | os.PathLike, *, tz_flag: str | N
     for g in group_chat_days(records, tz, name_map):
         folder = find_existing(ws, g, src)
         old_sc = read_sidecar(folder, src) if folder else None
-        merged = existing_messages(old_sc)
+        merged = existing_messages(old_sc, name_map)
         for segment in (old_sc or {}).get("segments", []):
             if isinstance(segment, dict) and isinstance(segment.get("epoch_ms"), int):
                 key = _message_key(segment["epoch_ms"], _message_id(segment, segment["epoch_ms"]),
-                                   str(segment.get("speaker", "Unknown")), str(segment.get("text", "")))
+                                   stored_speaker(segment, old_sc, name_map), str(segment.get("text", "")))
                 g["metadata"].setdefault(key, segment)
                 if src == OUTLOOK and key in g["messages"]:
                     speaker, text = g["messages"][key]

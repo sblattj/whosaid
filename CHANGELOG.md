@@ -9,6 +9,9 @@ All notable changes to whosaid are documented here. This project adheres to
 ### Added
 - App: hide any of the Live now lanes (Transcript, Topics, Wordgraph, Summaries, Next steps) from the lanes button next to the full-window switch, or View > Live Lanes. The choice is remembered; the last visible lane can't be hidden, and with the wordgraph hidden the other lanes stretch to fill the window.
 
+### Fixed
+- Teams/Outlook ingest: adding a `[teams.names]` mapping after a chat was first ingested now relabels the old messages instead of adding a second copy of each under the mapped name. Exports without source message IDs key messages on speaker plus body, and the stored speaker is now re-resolved through the sidecar's display names and the current mapping before matching.
+
 ## [1.26.1] - 2026-11-02
 
 ### Fixed
