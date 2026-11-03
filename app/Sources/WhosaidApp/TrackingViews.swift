@@ -47,6 +47,7 @@ struct ActionItemsView: View {
       ScrollView {
         LazyVStack(alignment: .leading, spacing: 10) {
           ForEach(model.items.filter(filter.keeps)) { TrackedRow(item: $0, showOwner: true) }
+          if let err = model.itemsError { Text(err).foregroundStyle(.orange) }
           if model.items.filter(filter.keeps).isEmpty {
             Text("No action items here").foregroundStyle(.secondary).frame(maxWidth: .infinity).padding(.top, 40)
           }
