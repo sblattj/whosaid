@@ -237,6 +237,17 @@ def run(tmp: Path) -> None:
         txt_m = (ws_m / f / "teams.speakers.txt").read_text(encoding="utf-8")
         check(ROE + ":" not in txt_m, f"raw name in speakers.txt {f}")
 
+    # ---- (e3) removing the last [teams.names] mapping relabels back, not duplicates
+    (ws_m / "whosaid.toml").write_text("", encoding="utf-8")
+    res_u = teams_chat.ingest(export, ws_m, tz_flag=TZ, self_name=SELF)
+    check(all(r["new"] == 0 for r in res_u), f"mapping removal adds no messages: {res_u}")
+    for f in folders(ws_m):
+        sc_u = json.loads((ws_m / f / "teams.diarization.json").read_text(encoding="utf-8"))
+        spk_u = [seg["speaker"] for seg in sc_u["segments"]]
+        check("Roe Richard" not in spk_u, f"old mapped name left behind in {f}: {spk_u}")
+        check(len(spk_u) == len({(seg["epoch_ms"], seg["text"]) for seg in sc_u["segments"]}),
+              f"duplicate segments after removal in {f}: {spk_u}")
+
     # ---- (f) name collision with an unrelated dated folder -> -2
     ws_c = fresh(tmp, "ws-coll")
     (ws_c / "2026-09-24-0905").mkdir()

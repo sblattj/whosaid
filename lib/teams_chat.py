@@ -404,13 +404,12 @@ def stored_speaker(seg: dict, sidecar: dict | None, name_map: dict[str, str] | N
     Rows without a source ID are keyed on speaker + body, so a mapping added
     after the first ingest would otherwise turn every old row into a new one.
     The sidecar's names (display -> canonical at that time) give the display
-    name back, since the stored speaker may be sanitized."""
+    name back, since the stored speaker may be sanitized. An empty map still
+    resolves, so removing the last mapping relabels back to the display name."""
     speaker = str(seg.get("speaker", "Unknown"))
-    if not name_map:
-        return speaker
     for display, canonical in ((sidecar or {}).get("names") or {}).items():
         if canonical == speaker:
-            return resolve_speaker(str(display), name_map)
+            return resolve_speaker(str(display), name_map or {})
     return speaker
 
 
