@@ -6,6 +6,8 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ## [Unreleased]
 
+## [1.28.1] - 2026-11-04
+
 ### Fixed
 - Teams/Outlook ingest: adding a `[teams.names]` mapping after a chat was first ingested now relabels the old messages instead of adding a second copy of each under the mapped name, and removing a mapping relabels them back. Exports without source message IDs key messages on speaker plus body, and the stored speaker is now re-resolved through the sidecar's display names and the current mapping before matching.
 
