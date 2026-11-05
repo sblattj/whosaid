@@ -184,6 +184,49 @@ with tempfile.TemporaryDirectory() as d:
     check(rc == 0 and r["ok"] and r["active"] and r["lines"] == 1 and "transcript" not in r
           and r["jsonl"].endswith(".jsonl") and r["updated"], f"status --json, live session: {r}")
 
+# ---- model: cached repo loads with no network; a flaky fetch is retried ----
+calls = []
+
+
+def cached(repo_id, local_files_only=False):
+    calls.append(local_files_only)
+    if not local_files_only:
+        raise AssertionError("network used for a cached model")
+    return "/cache/" + repo_id
+
+
+check(live.resolve_model("org/m", download=cached) == "/cache/org/m" and calls == [True],
+      f"cached model resolves offline: {calls}")
+
+calls, waits = [], []
+
+
+def flaky(repo_id, local_files_only=False):
+    calls.append(local_files_only)
+    if local_files_only:
+        raise FileNotFoundError("not cached")
+    if calls.count(False) < 2:
+        raise ConnectionError("Broken pipe")
+    return "/fresh/" + repo_id
+
+
+check(live.resolve_model("org/m", download=flaky, sleep=waits.append) == "/fresh/org/m"
+      and calls == [True, False, False] and waits == [live.MODEL_FETCH_BACKOFF],
+      f"uncached model retries a dropped download: {calls} {waits}")
+
+
+def down(repo_id, local_files_only=False):
+    raise ConnectionError("Broken pipe")
+
+
+try:
+    live.resolve_model("org/m", download=down, sleep=lambda s: None)
+    check(False, "a download that never works should raise")
+except ConnectionError:
+    check(True, "gives up after MODEL_FETCH_TRIES")
+with tempfile.TemporaryDirectory() as d:
+    check(live.resolve_model(d, download=down) == d, "a local path is used as is")
+
 # ---- CLI: bare `whosaid live --flags` means run; a missing --capture fails ----
 live.cmd_run = lambda a: ("run", a.once, a.capture)
 check(live.main(["--once", "--capture", "/x"]) == ("run", True, "/x"), "bare flags parse as run")

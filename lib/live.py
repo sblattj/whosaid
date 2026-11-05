@@ -319,11 +319,42 @@ def rms(samples) -> float:
     return float(np.sqrt(np.mean(samples ** 2))) if len(samples) else 0.0
 
 
+MODEL_FETCH_TRIES = 3
+MODEL_FETCH_BACKOFF = 5.0  # seconds, doubled per retry
+
+
+def resolve_model(model: str, download=None, sleep=time.sleep) -> str:
+    """A local folder for `model`. A path is used as is; a Hub repo id comes from
+    the local cache with no network call, and only a model that isn't cached is
+    downloaded, with retries. Without this, mlx_whisper asks the Hub for repo info
+    on every load, so a flaky network (a proxy dropping the connection) killed the
+    live transcript at its first chunk even though the model was on disk."""
+    if Path(model).expanduser().exists():
+        return str(Path(model).expanduser())
+    if download is None:
+        from huggingface_hub import snapshot_download as download
+    try:
+        return download(repo_id=model, local_files_only=True)
+    except Exception:  # noqa: BLE001  not cached (or a partial cache): fetch it below
+        pass
+    for i in range(MODEL_FETCH_TRIES):
+        try:
+            return download(repo_id=model)
+        except Exception as err:  # noqa: BLE001
+            if i == MODEL_FETCH_TRIES - 1:
+                raise
+            wait = MODEL_FETCH_BACKOFF * 2 ** i
+            log(f"model {model}: download failed ({err}); retrying in {wait:.0f}s")
+            sleep(wait)
+    raise RuntimeError("unreachable")
+
+
 def whisper_transcriber(model: str):
     import mlx_whisper
+    path = resolve_model(model)
 
     def run(samples) -> list[dict]:
-        r = mlx_whisper.transcribe(samples, path_or_hf_repo=model, language="en", verbose=None,
+        r = mlx_whisper.transcribe(samples, path_or_hf_repo=path, language="en", verbose=None,
                                    condition_on_previous_text=False, hallucination_silence_threshold=2.0)
         return r.get("segments") or []
     return run
