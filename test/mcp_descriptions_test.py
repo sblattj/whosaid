@@ -91,6 +91,12 @@ def main() -> None:
         "whosaid_set_status",
         "whosaid_voice_groups",
         "whosaid_name_voice_group",
+        "whosaid_draft_new",
+        "whosaid_draft_write",
+        "whosaid_draft_verify",
+        "whosaid_drafts",
+        "whosaid_draft_stakeholders",
+        "whosaid_draft_stale",
     } | workspace_tools
 
     # --- tool-name set + prefix ---
@@ -324,6 +330,21 @@ def main() -> None:
     check(all(t in d_ss for t in ("ONE curated status event", "done (= delivered)", "Unknown ids are refused")),
           "set_status desc: one event, done alias, refusal")
     check("whosaid_set_status" in mcp_server.SERVER_INSTRUCTIONS, "instructions name the one writing workspace tool")
+
+    # --- drafts outbox (#165): three writers, three readers, no stage or send over MCP ---
+    for name in ("whosaid_draft_new", "whosaid_draft_write", "whosaid_draft_verify"):
+        ann = dumps[name].get("annotations") or {}
+        check(ann.get("readOnlyHint") is False and ann.get("destructiveHint") is False
+              and ann.get("openWorldHint") is False, f"{name} annotations: {ann}")
+        check(name in mcp_server.SERVER_INSTRUCTIONS, f"instructions name {name}")
+    for name in ("whosaid_drafts", "whosaid_draft_stakeholders", "whosaid_draft_stale"):
+        check((dumps[name].get("annotations") or {}).get("readOnlyHint") is True, f"{name} must be read-only")
+    check(not any("stage" in n or "send" in n for n in by_name), "no stage/send tool over MCP")
+    check(set(dumps["whosaid_draft_new"]["inputSchema"].get("required") or []) == {"to", "topic"},
+          "draft_new requires to + topic")
+    check(set(dumps["whosaid_draft_stakeholders"]["inputSchema"].get("required") or []) == {"topics"},
+          "draft_stakeholders requires topics")
+    check(all("\u2014" not in (by_name[n].description or "") for n in by_name if "draft" in n), "drafts: no em dash")
 
     # --- voice groups: list read-only, naming writes ---
     vg = dumps["whosaid_voice_groups"]

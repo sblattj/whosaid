@@ -29,6 +29,7 @@
 #   whosaid autorecord <sub>        run | install | uninstall | status: record every call unattended.
 #   whosaid live [show]             Live me/them transcript of the call being recorded.
 #   whosaid topics build [WS]       Topics across meetings into <WS>/_topics.json (the app's Topics).
+#   whosaid drafts <sub>            Offline outbox of verified chat drafts: new | verify | list | stage ...
 #   whosaid help                  This message.
 #
 # See `whosaid help` for the full flag reference.
@@ -763,6 +764,25 @@ TOPICS
   by number of meetings, then the latest one. Ids stay put as meetings are added.
   Teams chats and mail are left out unless --chats. Local, no model, no network; the
   macOS app's Topics page reads the file and can rebuild it.
+
+DRAFTS
+  whosaid drafts new --to "First Last" --topic T [--page /abs/page.html] [--supersedes ID] [--new-chat]
+  whosaid drafts text ID --file draft.md | claims ID --file claims.json | attach ID PAGE
+  whosaid drafts verify ID | list [--all] [--mine] [--json] | mine | show ID [--json] | path ID
+  whosaid drafts stakeholders [WS] --topic T [--topic T2] [--repo DIR --path P] [--exclude NAME] [--json]
+  whosaid drafts stale-check [WS] [ID] [--json]
+  whosaid drafts stage ID|--all [--dry-run] [--tab TARGET] | mark-sent ID | drop ID [--reason R]
+  An offline outbox for chat drafts an agent writes for you, one folder per draft in
+  ~/.drafts/<id>/ (WHOSAID_DRAFTS_DIR overrides): draft.md, claims.json, draft.json.
+  Each draft records the agent session that wrote it (and how to resume it). verify
+  checks the gates (every claim has a verdict, refuted claims dropped, confirmed ones
+  carry evidence, tech claims a doc URL, stakeholders searched, no em dash) and stamps
+  a content hash; a later edit reads as stale. stakeholders ranks who spoke about the
+  topics (search rank x recency) plus who changed the files. stale-check flags drafts
+  whose stakeholders said something on their topics after the verify. stage is the
+  only step that drives a browser: it takes ~/.drafts/.outbox.lock, refuses stale
+  drafts and rival drafts to the same person, then runs WHOSAID_DRAFTS_STAGER with
+  --chat NAME --md FILE [--attach PAGE] and TEAMS_OUTBOX_LOCK set. Nothing is sent.
 
 APP STATE
   whosaid app-state [--json] [--workspace WS] [--into DIR]
@@ -2852,6 +2872,11 @@ case "${1:-}" in
     if want_help "${@:2}"; then help_section "TOPICS"; exit 0; fi
     require_module "$REPO_DIR/lib/topics.py" topics
     exec "$WHOSAID_PY" "$REPO_DIR/lib/topics.py" "${@:2}"
+    ;;
+  drafts)
+    if want_help "${@:2}"; then help_section "DRAFTS"; exit 0; fi
+    require_module "$REPO_DIR/lib/drafts.py" drafts
+    exec "$WHOSAID_PY" "$REPO_DIR/lib/drafts.py" "${@:2}"
     ;;
   app-state)
     cmd_app_state "${@:2}"

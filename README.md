@@ -269,6 +269,44 @@ whosaid topics build ~/meetings --chats  # Teams chats and mail too
 
 It runs the same local topic clustering as `whosaid live insights` over each meeting's speaker transcript, then merges topics across meetings: same label, or terms that match closely enough. A topic keeps its id as meetings are added, so links to it stay put. Each topic lists its meetings (date, the label it had there, talk time, where it starts), its top terms and a wordgraph. Speaker names are not written to the file. Stdlib only: no model, no network.
 
+### A drafts outbox for agent-written chat messages: `whosaid drafts`
+
+When several AI agents draft chat messages for you, they fight over the one browser tab, you
+lose track of which session wrote which draft, and a draft goes stale as the work moves.
+`whosaid drafts` keeps them offline until you stage them, one folder per draft under
+`~/.drafts/<id>/` (`WHOSAID_DRAFTS_DIR` overrides): `draft.md`, `claims.json` and `draft.json`.
+
+```bash
+whosaid drafts new --to "Test Person" --topic "dns records" --page ~/pages/dns-plan.html
+whosaid drafts stakeholders ~/meetings --topic "dns records" --repo ~/code/infra --path dns/
+whosaid drafts claims <id> --file claims.json   # claims, stakeholders, docs
+whosaid drafts text <id> --file draft.md
+whosaid drafts verify <id>
+whosaid drafts list                             # state and the session that wrote each one
+whosaid drafts stale-check ~/meetings           # stakeholders said something new since verify?
+whosaid drafts stage <id>                       # you run this; nothing is sent
+```
+
+- **Who wrote it.** `new` records the Claude Code session (`CLAUDE_CODE_SESSION_ID`, joined to
+  the session registry for its name, cwd and pid) and a resume command. `show` prints it.
+- **Claims first.** Each claim in `claims.json` has a `kind` (code, tech, people, status), a
+  `verdict` (confirmed, refuted, unverified) and `evidence`. `verify` refuses a draft with an
+  unchecked claim, a refuted claim not marked `dropped`, a confirmed claim without evidence, a
+  confirmed tech claim without a doc URL, no stakeholders, a stakeholder with no searched topics,
+  or an em dash. It stamps a hash of the message, claims and pages; any later edit reads as stale.
+- **Who has opinions.** `stakeholders` ranks speakers by search rank on the topics with a
+  90-day recency half-life (unnamed `SPEAKER_NN` voices skipped), plus who changed `--path` in
+  `--repo` over the last six months. Read what the top people said before claiming what they want.
+- **Staging last.** `stage` takes `~/.drafts/.outbox.lock`, refuses stale drafts and a second
+  open draft to the same person, then runs `WHOSAID_DRAFTS_STAGER` (your command that pastes into
+  the chat) with `--chat NAME --md FILE [--attach PAGE ...]`, plus `--replace
+  --only-these-attachments` on a restage, and `TEAMS_OUTBOX_LOCK` set. One draft per run with
+  `--all`. `mark-sent` and `drop` close a draft.
+
+Agents use the same outbox over MCP: `whosaid_draft_new`, `whosaid_draft_write`,
+`whosaid_draft_verify`, `whosaid_drafts`, `whosaid_draft_stakeholders`, `whosaid_draft_stale`.
+There is no stage or send tool.
+
 ### Enroll from an existing recording
 
 Already have a clip of the person speaking? Skip the mic and cut a reference straight from it:
@@ -1094,6 +1132,8 @@ Add it to your MCP client config:
 | `whosaid_samples` | Exports one short representative WAV per speaker cluster (longest segment, clamped to `seconds`) so you can listen and confirm an identity before trusting a label. |
 | `whosaid_reprocess` | Re-diarizes older meetings in a workspace (wraps `whosaid reprocess`, reusing the existing ASR). Mutating, but `dry_run` defaults to true: it reports the plan and changes nothing until you pass `dry_run=false`. |
 | `whosaid_record_browser` | Records a browser meeting tab over the DevTools port. `action` is `start`, `stop` or `status`. Not read-only. Needs a browser started with `--remote-debugging-port`; no Screen Recording permission. Auto-stops when the call ends. |
+| `whosaid_draft_new`, `whosaid_draft_write`, `whosaid_draft_verify` | Write a chat draft into the [drafts outbox](#a-drafts-outbox-for-agent-written-chat-messages-whosaid-drafts) with its claims, stakeholders and pages, then check the gates. Not read-only. Local files only; never stages or sends. |
+| `whosaid_drafts`, `whosaid_draft_stakeholders`, `whosaid_draft_stale` | List or show drafts; rank who spoke about a topic; find drafts whose stakeholders said something new since verify. Read-only. |
 
 `enroll` and mic/app `record` stay CLI-only. They need an interactive terminal and
 Microphone permission. The first `whosaid_transcribe` call downloads ~1.5 GB of models; call

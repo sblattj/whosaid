@@ -6,6 +6,10 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ## [Unreleased]
 
+### Added
+- `whosaid drafts`: an offline outbox for chat drafts that AI agents write for you (#165). Each draft is a folder in `~/.drafts/<id>/` that records the agent session that wrote it and how to resume it. `verify` checks claim verdicts, evidence, doc URLs for tech claims, stakeholders and em dashes, and stamps a content hash so later edits read as stale. `stakeholders` ranks who spoke about a topic (search rank with a 90-day recency half-life, plus git authors of the paths). `stale-check` flags drafts whose stakeholders said something new after the verify. `stage` holds a lock, refuses stale and rival drafts, and runs your `WHOSAID_DRAFTS_STAGER` command; nothing is sent.
+- MCP tools for the outbox: `whosaid_draft_new`, `whosaid_draft_write`, `whosaid_draft_verify` (write) and `whosaid_drafts`, `whosaid_draft_stakeholders`, `whosaid_draft_stale` (read-only). No stage or send tool.
+
 ## [1.29.0] - 2026-11-05
 
 ### Added
