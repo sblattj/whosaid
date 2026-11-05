@@ -43,8 +43,10 @@ import json
 import os
 import re
 import shlex
+import shutil
 import subprocess
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -382,8 +384,13 @@ def _norm(name: str) -> str:
 
 
 def git_authors(repo: str, paths: list[str], since: str = "6 months ago") -> dict[str, int]:
-    out = subprocess.run(["git", "-C", repo, "log", f"--since={since}", "--format=%an", "--", *(paths or ["."])],
-                         capture_output=True, text=True, timeout=30)
+    try:
+        out = subprocess.run(["git", "-C", repo, "log", f"--since={since}", "--format=%an", "--", *(paths or ["."])],
+                             capture_output=True, text=True, timeout=30)
+    except subprocess.TimeoutExpired:
+        raise DraftsError(f"git log in {repo} took over 30s; narrow --path or leave out --repo") from None
+    except OSError as exc:
+        raise DraftsError(f"git log in {repo} could not run: {exc}") from None
     if out.returncode != 0:
         raise DraftsError(f"git log failed in {repo}: {out.stderr.strip()[:200]}")
     counts: dict[str, int] = {}
@@ -497,27 +504,51 @@ def _lock_path() -> Path:
 
 
 def acquire_lock(what: str) -> Path:
+    """mkdir is the lock. A stale one (dead pid) is moved aside with one rename, so two processes
+    reclaiming it at once can't both win: the loser's rename or mkdir fails and it reports the lock."""
     lk = _lock_path()
     try:
         lk.mkdir()
     except FileExistsError:
-        holder = _read_json(lk / "owner.json", {}) or {}
-        if alive(holder.get("pid")):
+        holder = _held_by(lk)
+        if holder is not None:
             raise DraftsError(f"outbox locked by pid {holder.get('pid')} ({holder.get('what')}) since {holder.get('at')}")
-        for f in lk.iterdir():
-            f.unlink()
-        lk.rmdir()
-        lk.mkdir()
+        aside = lk.with_name(f".outbox.lock.stale-{os.getpid()}-{os.urandom(3).hex()}")
+        try:
+            lk.rename(aside)
+            lk.mkdir()
+        except (FileNotFoundError, FileExistsError, OSError):
+            raise DraftsError("outbox lock was just taken by another stage; try again") from None
+        shutil.rmtree(aside, ignore_errors=True)
     (lk / "owner.json").write_text(json.dumps({"pid": os.getpid(), "at": now(), "what": what}))
     return lk
 
 
+def _held_by(lk: Path) -> dict | None:
+    """The live holder of an existing lock, or None when it is stale. A lock without owner.json is
+    taken as held for 10 seconds: its creator may not have written the file yet."""
+    try:
+        holder = _read_json(lk / "owner.json", None)
+    except (OSError, ValueError):
+        holder = None
+    if holder is None:
+        try:
+            young = time.time() - lk.stat().st_mtime < 10
+        except FileNotFoundError:
+            return None
+        return {"pid": "?", "what": "starting", "at": "just now"} if young else None
+    return holder if alive(holder.get("pid")) else None
+
+
 def release_lock() -> None:
+    """Remove the lock only if this process holds it."""
     lk = _lock_path()
-    if lk.exists():
-        for f in lk.iterdir():
-            f.unlink()
-        lk.rmdir()
+    try:
+        holder = _read_json(lk / "owner.json", {}) or {}
+    except (OSError, ValueError):
+        return
+    if holder.get("pid") == os.getpid():
+        shutil.rmtree(lk, ignore_errors=True)
 
 
 def stager() -> list[str]:

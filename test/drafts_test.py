@@ -6,6 +6,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -163,6 +164,30 @@ class OutboxTest(DraftsBase):
         dead.wait()
         (lk / "owner.json").write_text(json.dumps({"pid": dead.pid, "at": "then", "what": "old"}))
         self.assertEqual(len(drafts.stage([did])["staged"]), 1)
+
+    def test_lock_without_owner_file_is_held_while_young(self):
+        did = self.ready()
+        lk = drafts.root() / ".outbox.lock"
+        lk.mkdir()
+        with self.assertRaises(drafts.DraftsError):
+            drafts.stage([did])
+        old = time.time() - 60
+        os.utime(lk, (old, old))
+        self.assertEqual(len(drafts.stage([did])["staged"]), 1)
+        self.assertEqual([p.name for p in drafts.root().iterdir() if p.name.startswith(".outbox")], [])
+
+    def test_release_leaves_someone_elses_lock(self):
+        lk = drafts.root() / ".outbox.lock"
+        lk.mkdir()
+        (lk / "owner.json").write_text(json.dumps({"pid": os.getpid() + 999999, "at": "x", "what": "other"}))
+        drafts.release_lock()
+        self.assertTrue(lk.exists())
+
+    def test_git_timeout_is_a_drafts_error(self):
+        with patch.object(drafts.subprocess, "run", side_effect=subprocess.TimeoutExpired("git", 30)):
+            with self.assertRaises(drafts.DraftsError) as e:
+                drafts.git_authors(str(self.root), [])
+        self.assertIn("over 30s", str(e.exception))
 
     def test_stage_all_does_one_per_run(self):
         a = self.ready(to="Person One")
