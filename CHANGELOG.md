@@ -6,6 +6,15 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ## [Unreleased]
 
+## [1.29.0] - 2026-11-05
+
+### Added
+- `whosaid autorecord install` and `setup` take `--env KEY=VALUE` (repeatable) and `--offline` (`HF_HUB_OFFLINE=1`), like `watch install`. Values passed with `--env` are kept on reinstall.
+
+### Fixed
+- autorecord on a network with TLS interception: `install` now copies the certificate variables (`SSL_CERT_FILE`, `SSL_CERT_DIR`, `REQUESTS_CA_BUNDLE`, `CURL_CA_BUNDLE`, `UV_SYSTEM_CERTS`, `UV_NATIVE_TLS`) from the installing shell into the LaunchAgent. Before, the plist carried only `PATH`, so the `--live` transcriber died at startup when uv could not verify PyPI (`UnknownIssuer`) (#164).
+- A `--live` transcriber that dies mid-call is no longer silent. autorecord logs `live transcript failed (exit N)`, restarts it up to 3 times with backoff (5s, 15s, 45s), and `autorecord status` (and `--json`: `live_state`, `live_exit`, `live_restarts`) shows the failure. `app-state` warns while a call is being recorded. Before, status showed an active session with 0 lines (#162, #164).
+
 ## [1.28.2] - 2026-11-05
 
 ### Fixed
