@@ -158,6 +158,8 @@ def compose(ar: dict, w: dict, lv: dict) -> dict:
         if (ar.get("last_error") or {}).get("kind") == "permission":
             return {"state": "warn", "headline": "autorecord has no Screen & System Audio Recording permission"}
         return {"state": "warn", "headline": f"autorecord: the recorder keeps failing (exit {(ar.get('last_error') or {}).get('rc')})"}
+    if ar.get("state") in ("recording", "saving") and ar.get("live_state") in ("failed", "restarting"):
+        return {"state": "warn", "headline": f"the live transcript died (exit {ar.get('live_exit')}); see autorecord's live.log"}
     # the watcher runs on demand (WatchPaths + StartInterval): between runs it is loaded,
     # not running and exited 0. Only a failed last run needs a look.
     last = w.get("last_exit_status")
