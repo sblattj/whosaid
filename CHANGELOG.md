@@ -6,6 +6,8 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ## [Unreleased]
 
+## [1.28.2] - 2026-11-05
+
 ### Fixed
 - Live transcript: a cached Whisper model now loads from the local cache with no network call, and a model that isn't cached is downloaded with retries. mlx_whisper asked the Hub for repo info on every load, so a dropped connection at the first chunk (`ReadError: Broken pipe`) killed `whosaid live run` and the call's live transcript stayed empty, even with the model on disk.
 
