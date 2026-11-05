@@ -51,6 +51,7 @@ class DraftsBase(unittest.TestCase):
             "WHOSAID_DRAFTS_STAGER": f"{sys.executable} {stager}",
             "CLAUDE_CODE_SESSION_ID": "sess-1111",
             "WHOSAID_DRAFTS_NO_HISTORY": "1",
+            "WHOSAID_TEAMS_CACHE": "off",
         })
         self.env.start()
         (self.root / "sessions").mkdir()

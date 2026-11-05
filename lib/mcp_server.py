@@ -212,7 +212,7 @@ Commitment tracking: kind distinguishes explicit promises, requests, standing di
 
 Not exposed here: `enroll` and `record` are interactive microphone operations that need a live terminal. Run them from the `whosaid` CLI. The first transcribe downloads ~1.5 GB of models; run whosaid_doctor to check readiness. Full flag/env/long-audio reference: read the whosaid://guide resource.
 
-Meeting workspace (search across many transcripts): point the server at a workspace directory by launching it with WHOSAID_WORKSPACE=<dir>, or pass `workspace` on each call; there is no cwd fallback. Flow: whosaid_search (turn-level hits with meeting folder + timestamp) -> whosaid_context (the verbatim minute around one hit; do not read whole transcripts) -> whosaid_items / whosaid_item / whosaid_person for action items and per-person commitments; whosaid_worklist for one person's ranked P1/P2/P3 worklist across both corpora. whosaid_meetings, whosaid_prs and whosaid_speakers list what the graph knows; whosaid_workspace_status says whether the index exists. The index (_search.db, _WIKI.md) is built by `whosaid index <ws>` from the CLI or the watcher, never from here: every workspace tool is read-only except whosaid_set_status, which appends one status event to the tracking ledger (_tracking.json) when the user marks an item, and whosaid_name_voice_group, which names one unnamed voice across all its meetings (groups come from whosaid_voice_groups) and then rebuilds the index. Drafts outbox (not workspace files): whosaid_draft_new, whosaid_draft_write, whosaid_draft_verify, whosaid_draft_close and whosaid_draft_sent_check write chat drafts to ~/.drafts for the user to stage (one open draft per recipient: new joins it); whosaid_drafts, whosaid_draft_stakeholders and whosaid_draft_stale read. Resources: whosaid://workspace/wiki, whosaid://workspace/action-items, whosaid://workspace/index, whosaid://workspace/meeting/{folder}/transcript and whosaid://workspace/meeting/{folder}/action-items. Everything stays local (SQLite FTS5 plus optional embeddings from a localhost Ollama)."""
+Meeting workspace (search across many transcripts): point the server at a workspace directory by launching it with WHOSAID_WORKSPACE=<dir>, or pass `workspace` on each call; there is no cwd fallback. Flow: whosaid_search (turn-level hits with meeting folder + timestamp) -> whosaid_context (the verbatim minute around one hit; do not read whole transcripts) -> whosaid_items / whosaid_item / whosaid_person for action items and per-person commitments; whosaid_worklist for one person's ranked P1/P2/P3 worklist across both corpora. whosaid_meetings, whosaid_prs and whosaid_speakers list what the graph knows; whosaid_workspace_status says whether the index exists. The index (_search.db, _WIKI.md) is built by `whosaid index <ws>` from the CLI or the watcher, never from here: every workspace tool is read-only except whosaid_set_status, which appends one status event to the tracking ledger (_tracking.json) when the user marks an item, and whosaid_name_voice_group, which names one unnamed voice across all its meetings (groups come from whosaid_voice_groups) and then rebuilds the index. Drafts outbox (not workspace files): whosaid_draft_new, whosaid_draft_write, whosaid_draft_verify, whosaid_draft_close and whosaid_draft_sent_check write chat drafts to ~/.drafts for the user to stage (one open draft per recipient: new joins it); whosaid_drafts, whosaid_draft_stakeholders and whosaid_draft_stale read. Live Teams chats: whosaid_teams_live reads the newest messages (or chats) straight from the Teams desktop app's local cache, read-only and offline, for what was said in the last minutes or hours before it is ingested. Resources: whosaid://workspace/wiki, whosaid://workspace/action-items, whosaid://workspace/index, whosaid://workspace/meeting/{folder}/transcript and whosaid://workspace/meeting/{folder}/action-items. Everything stays local (SQLite FTS5 plus optional embeddings from a localhost Ollama)."""
 
 
 try:
@@ -3355,6 +3355,48 @@ def whosaid_draft_stale(id: Optional[str] = None, workspace: Optional[str] = Non
         return err
     import drafts
     return _drafts_call(drafts.stale_check, ws, id)
+
+
+# ---- live Teams chats from the desktop app's local cache ------------------------------
+
+_DESC_TEAMS_LIVE = (
+    "Read Microsoft Teams chat messages live from the Teams desktop app's own local cache on this "
+    "Mac (no network call, no Graph permission, no browser, nothing to rate-limit; messages show "
+    "up seconds after they arrive). It holds only what the app has synced: recent chats and the "
+    "ones opened lately, not full history; search older chats with whosaid_search. "
+    "action='messages' (default): the newest messages, oldest first, optionally of one chat; chat "
+    "is a case-insensitive substring of the chat name (or an exact chat id), since_minutes bounds "
+    "the window (default 240; 20160 = 14 days), limit caps the rows (default 50, newest kept). "
+    "Returns {ok, self, newest_message_at, read_at, cached, total, count, chats, messages: [{chat, "
+    "chat_id, author, self, at, epoch_ms, message_id, text}]}. action='chats': conversations with a "
+    "message in the window, newest first: {ok, chats: [{chat, chat_id, kind, messages, members, "
+    "last_at, last_from, last_text}]}. With a workspace (argument or WHOSAID_WORKSPACE), chats keep "
+    "the names their ingested folders use. A first read takes a few seconds; repeats while Teams "
+    "has written nothing new are instant. Read-only: `whosaid teams sync` (or the watcher with "
+    "[teams] live_cache = true) is what writes these into the workspace."
+)
+
+
+@mcp.tool(name="whosaid_teams_live", description=_DESC_TEAMS_LIVE,
+          annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False))
+def whosaid_teams_live(action: Literal["messages", "chats"] = "messages", chat: Optional[str] = None,
+                       since_minutes: int = 240, limit: int = 50, workspace: Optional[str] = None) -> dict:
+    """Newest Teams chat messages (or chats) from the local Teams cache."""
+    import teams_cache
+    ws = None
+    if (workspace or "").strip() or os.environ.get("WHOSAID_WORKSPACE", "").strip():
+        ws, err = _resolve_ws(workspace)
+        if err:
+            return err
+    since_ms = int((time.time() - max(1, int(since_minutes)) * 60) * 1000)
+    try:
+        if action == "chats":
+            return teams_cache.chats(since_ms, ws)
+        return teams_cache.messages(chat, since_ms, max(1, min(int(limit), 500)), ws)
+    except teams_cache.CacheError as exc:
+        return _ws_error(str(exc), "install and sign in to the new Teams desktop app on this Mac, or set "
+                         "WHOSAID_TEAMS_CACHE to its IndexedDB directory; `whosaid teams cache-status` checks",
+                         category="teams_cache")
 
 
 @mcp.tool(name="whosaid_draft_sent_check", description=_DESC_DRAFT_SENT_CHECK, annotations=_DRAFT_WRITE_ANN)

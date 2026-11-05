@@ -381,8 +381,29 @@ def seed(ws: Path, source: Path, dry: bool) -> int:
     return 0
 
 
+def teams_live_sync(ws: Path, cfg: dict, dry: bool) -> int:
+    """[teams] live_cache = true: fold new chat messages from the Teams desktop app's local
+    cache into the workspace (whosaid teams sync). Returns how many landed; never raises."""
+    tcfg = cfg.get("teams") or {}
+    if not tcfg.get("live_cache"):
+        return 0
+    try:
+        import teams_cache
+        since = teams_cache.parse_since(str(tcfg.get("live_cache_since") or "14d"))
+        res = teams_cache.sync(ws, since_ms=since, dry_run=dry)
+    except Exception as e:  # noqa: BLE001 - a Teams cache problem must not stop recordings
+        tlog(f"teams cache: skipped ({e})")
+        return 0
+    n = res.get("new_messages", 0)
+    if n:
+        verb = "would write" if dry else "wrote"
+        tlog(f"teams cache: {n} new chat message(s); {verb} {len(res.get('folders') or [])} chat-day folder(s)")
+    return 0 if dry else n
+
+
 def watch_pass(ws: Path, source: Path, cfg: dict, whosaid: str, engine: str | None,
                accurate: bool, offline: bool, dry: bool) -> int:
+    chats_new = teams_live_sync(ws, cfg, dry)
     wcfg = cfg.get("watch") or {}
     stable_seconds = float(wcfg.get("stable_seconds", 120))
     max_wait = float(wcfg.get("max_wait_seconds", 900))
@@ -407,6 +428,8 @@ def watch_pass(ws: Path, source: Path, cfg: dict, whosaid: str, engine: str | No
     if not new:
         tlog("no new recordings." if not pending
              else f"no stable recordings yet ({len(pending)} still syncing).")
+        if chats_new:
+            refresh(ws, whosaid, child_env(offline))
         return 0
     tlog(f"{len(new)} new recording(s): " + ", ".join(n for _, _, n in new))
     if dry:
@@ -429,7 +452,7 @@ def watch_pass(ws: Path, source: Path, cfg: dict, whosaid: str, engine: str | No
             tlog(f"  ok ingested {name}")
         else:
             tlog(f"  ! whosaid exited {rc} on {name}; will retry next trigger.")
-    if done:
+    if done or chats_new:
         refresh(ws, whosaid, env)
     tlog(f"done: {done}/{len(new)} ingested.")
     return 0

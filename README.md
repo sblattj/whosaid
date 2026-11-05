@@ -548,6 +548,47 @@ from the voice registry's role for the same name. `--self NAME` overrides both. 
 overlapping export is safe: messages are deduplicated on `epoch_ms` and merged into the existing
 folder, and `--dry-run` shows what would be written.
 
+### `whosaid teams live`: Teams chats live from the desktop app's cache
+
+The new Teams desktop app keeps recent chats in a local Chromium IndexedDB store. whosaid reads a
+copy of it, so messages show up seconds after they arrive. There is no network call (nothing to
+throttle or rate-limit), no Graph permission and no browser automation. The store only holds what
+the app has synced (recent chats and the ones you opened lately), so `teams ingest` of a scraper
+export stays the backfill path.
+
+```sh
+whosaid teams live                         # newest messages from every chat, last 2 hours
+whosaid teams live --chat "release" --since 3d --limit 20
+whosaid teams chats --since 7d             # conversations, newest first, with the last message
+whosaid teams sync ~/meetings --dry-run    # what would land in the workspace
+whosaid teams sync ~/meetings              # write cache messages the workspace lacks
+whosaid teams cache-status                 # where the cache is, when Teams last wrote it
+```
+
+`--json` on each gives machine output; `--since` takes `90m`, `2h`, `3d`, `1w` or an ISO time.
+`sync` writes the same chat-day folders as `teams ingest` (scraper `teams-local-cache@1`) and
+passes only message ids the workspace does not have, so folders an earlier scrape wrote are
+merged into, not duplicated. Chat names come from the folders already in the workspace (matched
+by message id), else `[teams.chat_names]`, else the Teams left-rail name (topic, the other person
+for a 1:1, or the members' first names):
+
+```toml
+[teams]
+live_cache = true          # the watcher syncs on every pass, then refreshes the index
+live_cache_since = "14d"   # how far back each pass looks (default 14d)
+
+[teams.chat_names]
+"19:0123abcd@thread.v2" = "Release room"
+```
+
+The first read takes a few seconds (the store is copied, then decoded with the vendored MIT
+`ccl_chromium_reader`, see `lib/vendor/README.md`); the decoded result is cached in
+`~/.cache/whosaid/teams-live.json` (mode 600) until Teams writes again. `WHOSAID_TEAMS_CACHE`
+points at a different IndexedDB directory (`off` disables the cache in `whosaid drafts`). Over MCP,
+`whosaid_teams_live` reads the same data. `whosaid drafts stage` and `mark-sent --check` also look
+at the cache, so a message you sent minutes ago counts before it is ingested. It is your own
+data on your own disk, but check your organization's policy before syncing chats into files.
+
 ### `whosaid teams ingest-transcript`: Microsoft Teams meeting transcripts, no audio
 
 When Teams has already transcribed a meeting, the Recap page's Transcript panel names every
@@ -1150,6 +1191,7 @@ Add it to your MCP client config:
 | `whosaid_record_browser` | Records a browser meeting tab over the DevTools port. `action` is `start`, `stop` or `status`. Not read-only. Needs a browser started with `--remote-debugging-port`; no Screen Recording permission. Auto-stops when the call ends. |
 | `whosaid_draft_new`, `whosaid_draft_write`, `whosaid_draft_verify`, `whosaid_draft_close`, `whosaid_draft_sent_check` | Write a chat draft into the [drafts outbox](#a-drafts-outbox-for-agent-written-chat-messages-whosaid-drafts) with its claims, stakeholders and pages, then check the gates; `new` joins the recipient's open draft; `sent_check` marks staged drafts sent from the ingested chat. Not read-only. Local files only; never stages or sends. |
 | `whosaid_drafts`, `whosaid_draft_stakeholders`, `whosaid_draft_stale` | List, show or diff drafts and their revisions; rank who spoke about a topic; find drafts whose stakeholders said something new since verify. Read-only. |
+| `whosaid_teams_live` | The newest Teams chat messages (or chats, `action="chats"`) read from the Teams desktop app's local cache: offline, nothing to rate-limit, only what the app has synced. Read-only. See [`whosaid teams live`](#whosaid-teams-live-teams-chats-live-from-the-desktop-apps-cache). |
 
 `enroll` and mic/app `record` stay CLI-only. They need an interactive terminal and
 Microphone permission. The first `whosaid_transcribe` call downloads ~1.5 GB of models; call
@@ -1253,6 +1295,7 @@ the absolute path to the `whosaid` script for `command` if it is not on the clie
 | `WHOSAID_OLLAMA` | Ollama base URL for embeddings and the built-in summarizer (default: `http://127.0.0.1:11434`). Localhost is the only supported destination. |
 | `WHOSAID_SUMMARIZER_MODEL` | Ollama model for `--engine ollama` (default: `qwen2.5:14b`); overrides `[summarizer] model`. |
 | `WHOSAID_CLAUDE_BIN` | The `claude` binary for `--engine claude` when `[summarizer] claude_bin` is unset (default: `claude` on `PATH`, else `~/.local/bin/claude`). |
+| `WHOSAID_TEAMS_CACHE` | The Teams IndexedDB directory `whosaid teams live/chats/sync` and `whosaid_teams_live` read (default: the new Teams desktop app's on macOS); `off` keeps `whosaid drafts` from reading it. |
 | `WHOSAID_BIN` | The `whosaid` command the watcher runs (default: the script that launched `whosaid watch`). |
 | `WHOSAID_COMMITMENTS_HOOK` | Default hook for dev-commitments extraction (`ingest --commitments`), overridden per-run by `--hook`. Receives the transcript on stdin plus `WHOSAID_SPEAKERS`/`WHOSAID_ROLES`. |
 | `HF_HOME` | Hugging Face cache location (where the Whisper model lands). |

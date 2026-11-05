@@ -16,6 +16,7 @@
 #   whosaid <audio> [...]         Transcribe (and, by default, diarize) audio file(s).
 #   whosaid ingest <a...> --into D  Transcribe into a dated meeting workspace.
 #   whosaid teams ingest <export.json> --into D  Ingest a Teams chat export as a source-tagged corpus.
+#   whosaid teams live|chats|sync|cache-status  Read Teams chats live from the desktop app's local cache.
 #   whosaid outlook ingest <export.json> --into D  Ingest an Outlook mail export the same way.
 #   whosaid roll-up <dir>           Rebuild the meeting-workspace index and audit.
 #   whosaid reprocess <ws> [M...]   Re-diarize meetings an older diarizer got wrong; keep labels and edits.
@@ -291,6 +292,24 @@ USAGE
                                         from the meeting start, plus a sidecar
                                         tagged source.kind = "teams-transcript".
                                         Idempotent on the transcript id.
+  whosaid teams live [--chat NAME] [--since 2h|3d|ISO] [--limit N] [--ws DIR] [--json]
+                                        Newest chat messages read from the Teams
+                                        desktop app's own local cache (no network,
+                                        no Graph, nothing to rate-limit; only what
+                                        the app has synced). --chat matches a name
+                                        substring or chat id. WHOSAID_TEAMS_CACHE
+                                        points at another IndexedDB dir.
+  whosaid teams chats [--since 7d] [--ws DIR] [--json]
+                                        Conversations in the cache, newest first.
+  whosaid teams sync [DIR] [--since 14d] [--dry-run] [--json]
+                                        Write cache messages the workspace lacks
+                                        (by message id) into its chat-day folders,
+                                        same layout as `teams ingest`. The watcher
+                                        runs it each pass with [teams] live_cache
+                                        = true. Names: the folder name already in
+                                        use, else [teams.chat_names] "<id>" = "N",
+                                        else the Teams left-rail name.
+  whosaid teams cache-status [--json]   Where the cache is and how fresh.
   whosaid ingest <audio> [<audio> ...] --into DIR [--folder-by created|mtime]
                                         [--tz ZONE] [--action-items] [--commitments]
                                         [--min-words N] [--hook CMD] [flags]
@@ -2215,10 +2234,15 @@ cmd_teams() {
   if [[ $# -eq 0 ]]; then
     log "teams: usage: whosaid teams ingest <export.json> --into DIR [--tz ZONE] [--self NAME] [--dry-run]"
     log "       whosaid teams ingest-transcript <transcript.json> --into DIR [--start ISO] [--title T] [--tz ZONE] [--self NAME] [--dry-run]"
+    log "       whosaid teams live|chats|sync|cache-status [...]   (local Teams cache; --help on each)"
     exit 1
   fi
   if [[ "$1" == "ingest-transcript" ]]; then
     "$WHOSAID_PY" "$REPO_DIR/lib/teams_transcript.py" "$@"
+  elif [[ "$1" == live || "$1" == chats || "$1" == sync ]]; then
+    "$WHOSAID_PY" "$REPO_DIR/lib/teams_cache.py" "$@"
+  elif [[ "$1" == cache-status ]]; then
+    "$WHOSAID_PY" "$REPO_DIR/lib/teams_cache.py" status "${@:2}"
   else
     "$WHOSAID_PY" "$REPO_DIR/lib/teams_chat.py" "$@"
   fi

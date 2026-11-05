@@ -6,6 +6,12 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ## [Unreleased]
 
+### Added
+- `whosaid teams live|chats|sync|cache-status`: read Teams chats live from the Teams desktop app's own local cache (Chromium IndexedDB), with no network call, no Graph permission and no browser. `sync` writes new messages into the workspace's chat-day folders (only message ids it lacks; names reuse the existing folders, `[teams.chat_names]` overrides). Decoded with the vendored MIT `ccl_chromium_reader` (`lib/vendor/`); the result is cached until Teams writes again.
+- MCP `whosaid_teams_live` (read-only): the newest messages of one chat or all chats, or the chat list, from that cache.
+- Watcher: `[teams] live_cache = true` syncs the cache on every pass and refreshes the index when chat messages landed (`live_cache_since`, default 14d).
+- `whosaid drafts stage` and `mark-sent --check` also read the cache, so a message sent minutes ago counts before it is ingested (`WHOSAID_TEAMS_CACHE=off` turns that off).
+
 ## [1.31.0] - 2026-11-05
 
 ### Added

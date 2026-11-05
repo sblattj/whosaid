@@ -559,7 +559,25 @@ def chat_messages(ws: Path, chat: str, since_ms: int | None = None, days: int = 
                         "speaker": seg.get("speaker"), "self": seg.get("speaker") in mine,
                         "text": seg.get("text") or "", "mid": seg.get("mid") or seg.get("message_id"),
                         "folder": f.name})
+    out.extend(_live_chat_messages(ws, chat, floor_ms, {str(m["mid"]) for m in out if m.get("mid")}))
     return sorted(out, key=lambda x: x["epoch_ms"])
+
+
+def _live_chat_messages(ws: Path, chat: str, floor_ms: int, seen: set) -> list[dict]:
+    """Messages of the chat still only in the Teams desktop app's local cache (not ingested yet).
+    Empty when there is no cache; WHOSAID_TEAMS_CACHE=off turns it off."""
+    if (os.environ.get("WHOSAID_TEAMS_CACHE") or "").strip().lower() in ("off", "0", "none"):
+        return []
+    try:
+        import teams_cache
+        if not teams_cache._leveldb(teams_cache.cache_dir()).is_dir():
+            return []
+        res = teams_cache.messages(chat, floor_ms, None, Path(ws), exact=True)
+    except Exception:  # noqa: BLE001 - the cache is a bonus, never a reason to fail
+        return []
+    return [{"epoch_ms": m["epoch_ms"], "at": m["at"], "speaker": m["author"].replace(" ", "_"),
+             "self": m["self"], "text": m["text"], "mid": m["message_id"], "folder": "(teams cache)"}
+            for m in res.get("messages") or [] if m["message_id"] not in seen]
 
 
 def _ms(iso: str | None) -> int | None:

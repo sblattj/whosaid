@@ -99,6 +99,7 @@ def main() -> None:
         "whosaid_draft_stakeholders",
         "whosaid_draft_stale",
         "whosaid_draft_sent_check",
+        "whosaid_teams_live",
     } | workspace_tools
 
     # --- tool-name set + prefix ---
@@ -348,6 +349,16 @@ def main() -> None:
     check(set(dumps["whosaid_draft_stakeholders"]["inputSchema"].get("required") or []) == {"topics"},
           "draft_stakeholders requires topics")
     check(all("\u2014" not in (by_name[n].description or "") for n in by_name if "draft" in n), "drafts: no em dash")
+
+    # --- live Teams cache: read-only, offline, named in the instructions ---
+    tl = dumps["whosaid_teams_live"]
+    check((tl.get("annotations") or {}).get("readOnlyHint") is True
+          and (tl.get("annotations") or {}).get("openWorldHint") is False, f"teams_live annotations: {tl.get('annotations')}")
+    check(not (tl["inputSchema"].get("required") or []), "teams_live: every param optional")
+    d_tl = by_name["whosaid_teams_live"].description or ""
+    check(all(x in d_tl for x in ("no network call", "not full history", "Read-only")) and "\u2014" not in d_tl,
+          "teams_live desc: offline, partial history, read-only, no em dash")
+    check("whosaid_teams_live" in mcp_server.SERVER_INSTRUCTIONS, "instructions name whosaid_teams_live")
 
     # --- voice groups: list read-only, naming writes ---
     vg = dumps["whosaid_voice_groups"]
