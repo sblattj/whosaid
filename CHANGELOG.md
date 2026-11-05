@@ -6,6 +6,8 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ## [Unreleased]
 
+## [1.31.0] - 2026-11-05
+
 ### Added
 - `whosaid drafts` follow-ups from #165 (folded in from #166):
   - One open draft per recipient: `new` to someone with an open draft joins it as a contributor instead of making a rival; `--new` (MCP `separate=true`) makes a separate draft.
