@@ -212,7 +212,7 @@ Commitment tracking: kind distinguishes explicit promises, requests, standing di
 
 Not exposed here: `enroll` and `record` are interactive microphone operations that need a live terminal. Run them from the `whosaid` CLI. The first transcribe downloads ~1.5 GB of models; run whosaid_doctor to check readiness. Full flag/env/long-audio reference: read the whosaid://guide resource.
 
-Meeting workspace (search across many transcripts): point the server at a workspace directory by launching it with WHOSAID_WORKSPACE=<dir>, or pass `workspace` on each call; there is no cwd fallback. Flow: whosaid_search (turn-level hits with meeting folder + timestamp) -> whosaid_context (the verbatim minute around one hit; do not read whole transcripts) -> whosaid_items / whosaid_item / whosaid_person for action items and per-person commitments; whosaid_worklist for one person's ranked P1/P2/P3 worklist across both corpora. whosaid_meetings, whosaid_prs and whosaid_speakers list what the graph knows; whosaid_workspace_status says whether the index exists. The index (_search.db, _WIKI.md) is built by `whosaid index <ws>` from the CLI or the watcher, never from here: every workspace tool is read-only except whosaid_set_status, which appends one status event to the tracking ledger (_tracking.json) when the user marks an item, and whosaid_name_voice_group, which names one unnamed voice across all its meetings (groups come from whosaid_voice_groups) and then rebuilds the index. Drafts outbox (not workspace files): whosaid_draft_new, whosaid_draft_write and whosaid_draft_verify write chat drafts to ~/.drafts for the user to stage; whosaid_drafts, whosaid_draft_stakeholders and whosaid_draft_stale read. Resources: whosaid://workspace/wiki, whosaid://workspace/action-items, whosaid://workspace/index, whosaid://workspace/meeting/{folder}/transcript and whosaid://workspace/meeting/{folder}/action-items. Everything stays local (SQLite FTS5 plus optional embeddings from a localhost Ollama)."""
+Meeting workspace (search across many transcripts): point the server at a workspace directory by launching it with WHOSAID_WORKSPACE=<dir>, or pass `workspace` on each call; there is no cwd fallback. Flow: whosaid_search (turn-level hits with meeting folder + timestamp) -> whosaid_context (the verbatim minute around one hit; do not read whole transcripts) -> whosaid_items / whosaid_item / whosaid_person for action items and per-person commitments; whosaid_worklist for one person's ranked P1/P2/P3 worklist across both corpora. whosaid_meetings, whosaid_prs and whosaid_speakers list what the graph knows; whosaid_workspace_status says whether the index exists. The index (_search.db, _WIKI.md) is built by `whosaid index <ws>` from the CLI or the watcher, never from here: every workspace tool is read-only except whosaid_set_status, which appends one status event to the tracking ledger (_tracking.json) when the user marks an item, and whosaid_name_voice_group, which names one unnamed voice across all its meetings (groups come from whosaid_voice_groups) and then rebuilds the index. Drafts outbox (not workspace files): whosaid_draft_new, whosaid_draft_write, whosaid_draft_verify and whosaid_draft_close write chat drafts to ~/.drafts for the user to stage; whosaid_drafts, whosaid_draft_stakeholders and whosaid_draft_stale read. Resources: whosaid://workspace/wiki, whosaid://workspace/action-items, whosaid://workspace/index, whosaid://workspace/meeting/{folder}/transcript and whosaid://workspace/meeting/{folder}/action-items. Everything stays local (SQLite FTS5 plus optional embeddings from a localhost Ollama)."""
 
 
 try:
@@ -3200,10 +3200,10 @@ _DESC_DRAFT_WRITE = (
     "Write parts of an outbox draft. text = the message (markdown), replaced whole. claims = "
     "[{key, text, kind: code|tech|people|status, verdict: confirmed|refuted|unverified, evidence, "
     "dropped}], stakeholders = [{name, speaker, why, searched: [topics], found}], docs = [{url, "
-    "what}], each replaced whole when passed. pages = absolute page paths to add. Write the claims "
+    "what}], each replaced whole when passed. pages = absolute page paths to add, remove_pages = ones to detach. Write the claims "
     "first and check each one before the text: a refuted claim must be marked dropped and left out "
     "of the text. Returns {ok, id, state, gate}; gate lists what verify would still refuse. Any "
-    "write after a verify makes the draft stale until verified again."
+    "write after a verify makes the draft stale until verified again. A draft owned by another live session is refused unless force=true; ask that session instead."
 )
 
 _DESC_DRAFT_VERIFY = (
@@ -3266,18 +3266,36 @@ def whosaid_draft_new(to: str, topic: str, pages: Optional[list[str]] = None, su
 @mcp.tool(name="whosaid_draft_write", description=_DESC_DRAFT_WRITE, annotations=_DRAFT_WRITE_ANN)
 def whosaid_draft_write(id: str, text: Optional[str] = None, claims: Optional[list[dict]] = None,
                         stakeholders: Optional[list[dict]] = None, docs: Optional[list[dict]] = None,
-                        pages: Optional[list[str]] = None) -> dict:
+                        pages: Optional[list[str]] = None, remove_pages: Optional[list[str]] = None,
+                        force: bool = False) -> dict:
     """Replace the passed parts of one draft; returns its state and open gates."""
     import drafts
     return _drafts_call(drafts.write, id, text=text, claims=claims, stakeholders=stakeholders, docs=docs,
-                        pages=pages)
+                        pages=pages, remove_pages=remove_pages, force=force)
 
 
 @mcp.tool(name="whosaid_draft_verify", description=_DESC_DRAFT_VERIFY, annotations=_DRAFT_WRITE_ANN)
-def whosaid_draft_verify(id: str) -> dict:
+def whosaid_draft_verify(id: str, force: bool = False) -> dict:
     """Run the gates and stamp the content hash."""
     import drafts
-    return _drafts_call(drafts.verify, id)
+    return _drafts_call(drafts.verify, id, force=force)
+
+
+_DESC_DRAFT_CLOSE = (
+    "Close an outbox draft: status=dropped when it is no longer needed (its premise was refuted, the "
+    "question got answered, it was merged into another draft), status=sent once the user says it went "
+    "out. A soft delete: the folder and history stay, whosaid_drafts(all=true) still shows it, and a "
+    "closed draft can't be edited or staged. reason is recorded. Another live session's draft is "
+    "refused unless force=true. Returns {ok, id, status}."
+)
+
+
+@mcp.tool(name="whosaid_draft_close", description=_DESC_DRAFT_CLOSE, annotations=_DRAFT_WRITE_ANN)
+def whosaid_draft_close(id: str, status: Literal["dropped", "sent"], reason: Optional[str] = None,
+                        force: bool = False) -> dict:
+    """Mark one draft dropped or sent."""
+    import drafts
+    return _drafts_call(drafts.close, id, status, reason, force)
 
 
 @mcp.tool(name="whosaid_drafts", description=_DESC_DRAFTS,

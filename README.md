@@ -301,11 +301,14 @@ whosaid drafts stage <id>                       # you run this; nothing is sent
   open draft to the same person, then runs `WHOSAID_DRAFTS_STAGER` (your command that pastes into
   the chat) with `--chat NAME --md FILE [--attach PAGE ...]`, plus `--replace
   --only-these-attachments` on a restage, and `TEAMS_OUTBOX_LOCK` set. One draft per run with
-  `--all`. `mark-sent` and `drop` close a draft.
+  `--all`. `mark-sent` and `drop` close a draft (a soft delete: `list --all` still shows it).
+- **One owner at a time.** Changing a draft another live session owns is refused without
+  `--force` (or `force=true` over MCP): ask that session instead. A draft whose session is gone
+  is adopted by whoever changes it next.
 
 Agents use the same outbox over MCP: `whosaid_draft_new`, `whosaid_draft_write`,
-`whosaid_draft_verify`, `whosaid_drafts`, `whosaid_draft_stakeholders`, `whosaid_draft_stale`.
-There is no stage or send tool.
+`whosaid_draft_verify`, `whosaid_draft_close`, `whosaid_drafts`, `whosaid_draft_stakeholders`,
+`whosaid_draft_stale`: create, read, update and close. There is no stage or send tool.
 
 ### Enroll from an existing recording
 
@@ -1132,7 +1135,7 @@ Add it to your MCP client config:
 | `whosaid_samples` | Exports one short representative WAV per speaker cluster (longest segment, clamped to `seconds`) so you can listen and confirm an identity before trusting a label. |
 | `whosaid_reprocess` | Re-diarizes older meetings in a workspace (wraps `whosaid reprocess`, reusing the existing ASR). Mutating, but `dry_run` defaults to true: it reports the plan and changes nothing until you pass `dry_run=false`. |
 | `whosaid_record_browser` | Records a browser meeting tab over the DevTools port. `action` is `start`, `stop` or `status`. Not read-only. Needs a browser started with `--remote-debugging-port`; no Screen Recording permission. Auto-stops when the call ends. |
-| `whosaid_draft_new`, `whosaid_draft_write`, `whosaid_draft_verify` | Write a chat draft into the [drafts outbox](#a-drafts-outbox-for-agent-written-chat-messages-whosaid-drafts) with its claims, stakeholders and pages, then check the gates. Not read-only. Local files only; never stages or sends. |
+| `whosaid_draft_new`, `whosaid_draft_write`, `whosaid_draft_verify`, `whosaid_draft_close` | Write a chat draft into the [drafts outbox](#a-drafts-outbox-for-agent-written-chat-messages-whosaid-drafts) with its claims, stakeholders and pages, then check the gates. Not read-only. Local files only; never stages or sends. |
 | `whosaid_drafts`, `whosaid_draft_stakeholders`, `whosaid_draft_stale` | List or show drafts; rank who spoke about a topic; find drafts whose stakeholders said something new since verify. Read-only. |
 
 `enroll` and mic/app `record` stay CLI-only. They need an interactive terminal and

@@ -94,6 +94,7 @@ def main() -> None:
         "whosaid_draft_new",
         "whosaid_draft_write",
         "whosaid_draft_verify",
+        "whosaid_draft_close",
         "whosaid_drafts",
         "whosaid_draft_stakeholders",
         "whosaid_draft_stale",
@@ -332,7 +333,7 @@ def main() -> None:
     check("whosaid_set_status" in mcp_server.SERVER_INSTRUCTIONS, "instructions name the one writing workspace tool")
 
     # --- drafts outbox (#165): three writers, three readers, no stage or send over MCP ---
-    for name in ("whosaid_draft_new", "whosaid_draft_write", "whosaid_draft_verify"):
+    for name in ("whosaid_draft_new", "whosaid_draft_write", "whosaid_draft_verify", "whosaid_draft_close"):
         ann = dumps[name].get("annotations") or {}
         check(ann.get("readOnlyHint") is False and ann.get("destructiveHint") is False
               and ann.get("openWorldHint") is False, f"{name} annotations: {ann}")

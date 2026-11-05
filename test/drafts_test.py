@@ -187,6 +187,50 @@ class OutboxTest(DraftsBase):
         self.assertIn("stager exit 4", r["failed"][0]["why"])
         self.assertEqual(drafts.load(did)["status"], "verified")
 
+    def test_detach_page(self):
+        did = self.ready()
+        drafts.write(did, remove_pages=[str(self.page)])
+        self.assertEqual(drafts.load(did)["pages"], [])
+        self.assertTrue(drafts.state(drafts.load(did)).startswith("stale"))
+        with self.assertRaises(drafts.DraftsError):
+            drafts.write(did, remove_pages=[str(self.page)])
+
+    def test_other_live_session_refused_without_force(self):
+        did = self.ready()
+        with patch.dict(os.environ, {"CLAUDE_CODE_SESSION_ID": "sess-2222"}):
+            for fn in (lambda **k: drafts.write(did, text="hijack", **k), lambda **k: drafts.verify(did, **k),
+                       lambda **k: drafts.close(did, "dropped", **k)):
+                with self.assertRaises(drafts.DraftsError) as e:
+                    fn()
+                self.assertIn("belongs to live session", str(e.exception))
+            drafts.write(did, text="forced", force=True)
+        self.assertEqual(drafts.load(did)["owner"]["sessionId"], "sess-1111", "force keeps the live owner")
+        with patch.dict(os.environ, {"CLAUDE_CODE_SESSION_ID": ""}):
+            drafts.write(did, text="the user at a terminal")
+
+    def test_gone_owner_is_adopted(self):
+        did = self.ready()
+        dead = subprocess.Popen([sys.executable, "-c", "pass"])
+        dead.wait()
+        m = drafts.load(did)
+        m["owner"]["pid"] = dead.pid
+        drafts.save(m)
+        with patch.dict(os.environ, {"CLAUDE_CODE_SESSION_ID": "sess-3333"}):
+            drafts.write(did, text="picked up")
+        m = drafts.load(did)
+        self.assertEqual(m["owner"]["sessionId"], "sess-3333")
+        self.assertIn("adopted", [h["event"] for h in m["history"]])
+
+    def test_close_is_soft_and_final(self):
+        did = self.ready()
+        drafts.close(did, "sent")
+        self.assertEqual(drafts.listing(), [])
+        self.assertEqual([d["state"] for d in drafts.listing(include_closed=True)], ["sent"])
+        for fn in (lambda: drafts.write(did, text="x"), lambda: drafts.close(did, "dropped"),
+                   lambda: drafts.close(drafts.new("A B", "t")["id"], "deleted")):
+            with self.assertRaises(drafts.DraftsError):
+                fn()
+
     def test_bad_ids_refused(self):
         for bad in ("../x", ".outbox.lock", ""):
             with self.assertRaises(drafts.DraftsError):

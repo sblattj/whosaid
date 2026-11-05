@@ -7,7 +7,7 @@ when the user stages them.
     whosaid drafts new --to "First Last" --topic <slug> [--page /abs/page.html ...] [--supersedes ID] [--new-chat]
     whosaid drafts text ID (--file draft.md | -)          write the message
     whosaid drafts claims ID --file claims.json           write {claims, stakeholders, docs}
-    whosaid drafts attach ID /abs/page.html
+    whosaid drafts attach|detach ID /abs/page.html
     whosaid drafts verify ID                              check the gates, stamp a content hash
     whosaid drafts list [--all] [--mine] [--json]
     whosaid drafts show ID [--json]
@@ -15,6 +15,9 @@ when the user stages them.
     whosaid drafts stale-check [WS] [ID] [--json]         new statements since each draft was verified
     whosaid drafts stage ID|--all [--dry-run] [--tab TARGET]
     whosaid drafts mark-sent ID | drop ID [--reason R]
+
+Changes to another live session's draft are refused without --force (ask that session instead);
+a draft whose session is gone is adopted by whoever changes it. Closing is a soft delete.
 
 A draft is a folder, ~/.drafts/<id>/ (WHOSAID_DRAFTS_DIR overrides): draft.md, claims.json,
 draft.json. Pages stay where they were written and are referenced by absolute path.
@@ -250,13 +253,37 @@ def new(to: str, topic: str, pages: list[str] | None = None, supersedes: str | N
     return out
 
 
+def guard(m: dict, force: bool = False) -> None:
+    """Refuse a change to another live session's draft unless forced.
+
+    No session in the environment means the user at a terminal: allowed. A draft whose owner is gone
+    is adopted by the session changing it, so `show` points at the session that can still be resumed.
+    """
+    me = os.environ.get("CLAUDE_CODE_SESSION_ID")
+    o = m.get("owner") or {}
+    if not me or o.get("sessionId") in (None, me):
+        return
+    if alive(o.get("pid")) and not force:
+        raise DraftsError(f"{m['id']} belongs to live session {owner_line(o)}; ask it to make the change "
+                          f"(SendMessage to {o.get('name') or o.get('sessionId')}), or pass force")
+    if not alive(o.get("pid")):
+        _event(m, "adopted", by=me, previous=o.get("sessionId"))
+        m["owner"] = owner()
+
+
 def write(draft_id: str, text: str | None = None, claims: list | None = None, stakeholders: list | None = None,
-          docs: list | None = None, pages: list[str] | None = None) -> dict:
-    """Replace the message text and/or the claims parts that are passed; add pages."""
+          docs: list | None = None, pages: list[str] | None = None, remove_pages: list[str] | None = None,
+          force: bool = False) -> dict:
+    """Replace the message text and/or the claims parts that are passed; add or remove pages."""
     m = load(draft_id)
     if m["status"] not in OPEN:
         raise DraftsError(f"{draft_id} is {m['status']}")
+    guard(m, force)
     d = ddir(draft_id)
+    for p in remove_pages or []:
+        if p not in m["pages"]:
+            raise DraftsError(f"not attached: {p} (attached: {', '.join(m['pages']) or 'none'})")
+        m["pages"].remove(p)
     if text is not None:
         (d / "draft.md").write_text(text if text.endswith("\n") else text + "\n")
     if claims is not None or stakeholders is not None or docs is not None:
@@ -277,10 +304,11 @@ def write(draft_id: str, text: str | None = None, claims: list | None = None, st
     return {"id": draft_id, "state": state(m), "gate": gate(m)}
 
 
-def verify(draft_id: str) -> dict:
+def verify(draft_id: str, force: bool = False) -> dict:
     m = load(draft_id)
     if m["status"] not in OPEN:
         raise DraftsError(f"{draft_id} is {m['status']}")
+    guard(m, force)
     errs = gate(m)
     if errs:
         raise DraftsError("not verified:\n  - " + "\n  - ".join(errs))
@@ -318,8 +346,14 @@ def show(draft_id: str) -> dict:
             "gate": gate(m), "history": m.get("history", [])}
 
 
-def close(draft_id: str, status: str, reason: str | None = None) -> dict:
+def close(draft_id: str, status: str, reason: str | None = None, force: bool = False) -> dict:
+    """Soft delete: sent or dropped. The folder and its history stay; list --all still shows it."""
+    if status not in ("sent", "dropped"):
+        raise DraftsError("status must be sent or dropped")
     m = load(draft_id)
+    if m["status"] not in OPEN:
+        raise DraftsError(f"{draft_id} is already {m['status']}")
+    guard(m, force)
     m["status"] = status
     _event(m, status, reason=reason)
     save(m)
@@ -597,17 +631,24 @@ def build_parser() -> argparse.ArgumentParser:
     a.add_argument("--page", action="append", default=[])
     a.add_argument("--supersedes")
     a.add_argument("--new-chat", action="store_true")
+    force = "change a draft another live session owns"
     a = sub.add_parser("text")
     a.add_argument("id")
     a.add_argument("--file", required=True, help="markdown file, or - for stdin")
+    a.add_argument("--force", action="store_true", help=force)
     a = sub.add_parser("claims")
     a.add_argument("id")
     a.add_argument("--file", required=True, help="JSON {claims, stakeholders, docs}, or - for stdin")
-    a = sub.add_parser("attach")
+    a.add_argument("--force", action="store_true", help=force)
+    for name in ("attach", "detach"):
+        a = sub.add_parser(name)
+        a.add_argument("id")
+        a.add_argument("page")
+        a.add_argument("--force", action="store_true", help=force)
+    a = sub.add_parser("verify")
     a.add_argument("id")
-    a.add_argument("page")
-    for name in ("verify", "path"):
-        sub.add_parser(name).add_argument("id")
+    a.add_argument("--force", action="store_true", help=force)
+    sub.add_parser("path").add_argument("id")
     a = sub.add_parser("list")
     a.add_argument("--all", action="store_true")
     a.add_argument("--mine", action="store_true")
@@ -638,6 +679,7 @@ def build_parser() -> argparse.ArgumentParser:
         a = sub.add_parser(name)
         a.add_argument("id")
         a.add_argument("--reason")
+        a.add_argument("--force", action="store_true", help=force)
     return p
 
 
@@ -655,17 +697,20 @@ def main(argv: list[str] | None = None) -> int:
             if r.get("note"):
                 print(f"note: {r['note']}", file=sys.stderr)
         elif c == "text":
-            r = write(args.id, text=_read_arg_file(args.file))
+            r = write(args.id, text=_read_arg_file(args.file), force=args.force)
             print(f"{r['id']}: {r['state']}")
         elif c == "claims":
             data = json.loads(_read_arg_file(args.file))
             r = write(args.id, claims=data.get("claims", []), stakeholders=data.get("stakeholders", []),
-                      docs=data.get("docs", []))
+                      docs=data.get("docs", []), force=args.force)
             print(f"{r['id']}: {r['state']}; gate: {len(r['gate'])} open")
-        elif c == "attach":
-            print("\n".join(write(args.id, pages=[args.page]) and load(args.id)["pages"]))
+        elif c in ("attach", "detach"):
+            page = os.path.abspath(os.path.expanduser(args.page))
+            key = "pages" if c == "attach" else "remove_pages"
+            write(args.id, force=args.force, **{key: [page]})
+            print("\n".join(load(args.id)["pages"]) or "(no pages)")
         elif c == "verify":
-            r = verify(args.id)
+            r = verify(args.id, force=args.force)
             print(f"verified {r['id']}: {r['confirmed']} confirmed, {r['unverified']} unverified, "
                   f"{r['refuted']} refuted and dropped, {r['stakeholders']} stakeholder(s)")
         elif c == "path":
@@ -726,7 +771,7 @@ def main(argv: list[str] | None = None) -> int:
                 print(r["note"])
             return 1 if r["failed"] else 0
         elif c in ("mark-sent", "drop"):
-            r = close(args.id, "sent" if c == "mark-sent" else "dropped", args.reason)
+            r = close(args.id, "sent" if c == "mark-sent" else "dropped", args.reason, force=args.force)
             print(f"{r['id']}: {r['status']}")
     except DraftsError as e:
         print(f"whosaid drafts: {e}", file=sys.stderr)

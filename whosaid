@@ -767,7 +767,7 @@ TOPICS
 
 DRAFTS
   whosaid drafts new --to "First Last" --topic T [--page /abs/page.html] [--supersedes ID] [--new-chat]
-  whosaid drafts text ID --file draft.md | claims ID --file claims.json | attach ID PAGE
+  whosaid drafts text ID --file draft.md | claims ID --file claims.json | attach|detach ID PAGE
   whosaid drafts verify ID | list [--all] [--mine] [--json] | mine | show ID [--json] | path ID
   whosaid drafts stakeholders [WS] --topic T [--topic T2] [--repo DIR --path P] [--exclude NAME] [--json]
   whosaid drafts stale-check [WS] [ID] [--json]
@@ -783,6 +783,8 @@ DRAFTS
   only step that drives a browser: it takes ~/.drafts/.outbox.lock, refuses stale
   drafts and rival drafts to the same person, then runs WHOSAID_DRAFTS_STAGER with
   --chat NAME --md FILE [--attach PAGE] and TEAMS_OUTBOX_LOCK set. Nothing is sent.
+  Changing another live session's draft needs --force; a gone session's draft is
+  adopted by whoever changes it. mark-sent and drop are soft deletes (list --all).
 
 APP STATE
   whosaid app-state [--json] [--workspace WS] [--into DIR]
