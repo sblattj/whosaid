@@ -89,12 +89,26 @@ class Args(unittest.TestCase):
         ds.check_args(self.args(), env={"TEAMS_OUTBOX_LOCK": self.lock})
         ds.check_args(self.args("--bypass-outbox"), env={})
 
-    def test_wave2_flags_not_implemented(self):
-        for flag in (["--mention", "Bob"], ["--new-chat"], ["--only-these-attachments"]):
-            with self.assertRaises(ds.StagerError) as e:
-                ds.check_args(self.args(*flag), env={"TEAMS_OUTBOX_LOCK": self.lock})
-            self.assertEqual(e.exception.code, 2)
-            self.assertIn("not implemented yet", str(e.exception))
+    def test_only_these_attachments_needs_replace(self):
+        env = {"TEAMS_OUTBOX_LOCK": self.lock}
+        with self.assertRaises(ds.StagerError) as e:
+            ds.check_args(self.args("--only-these-attachments"), env=env)
+        self.assertEqual(e.exception.code, 2)
+        self.assertIn("requires --replace", str(e.exception))
+        ds.check_args(self.args("--only-these-attachments", "--replace"), env=env)
+        ds.check_args(self.args("--mention", "Bob", "--new-chat"), env=env)
+
+    def test_send_guard_is_narrow(self):
+        attach = {"data-tid": "sendMessageCommands-FilePicker", "aria-label": "Attach files"}
+        self.assertFalse(css_matches(ds.SEND_GUARD, attach))
+        for attrs in ({"data-tid": "sendMessageCommands-send"}, {"data-tid": "send-button"},
+                      {"aria-label": "Send"}, {"aria-label": "Send (Ctrl+Enter)"}, {"aria-label": "Send message"}):
+            self.assertTrue(css_matches(ds.SEND_GUARD, attrs), attrs)
+        self.assertFalse(css_matches(ds.SEND_GUARD, {"aria-label": "Sender info"}))
+
+    def test_strip_mention_literals(self):
+        self.assertEqual(ds.strip_mention_literals("Hi @Bob Ray, see @Bob Rays and a@Bob Ray", ["Bob Ray"]),
+                         "Hi , see @Bob Rays and a@Bob Ray")
 
     def test_bad_inputs_are_usage_errors(self):
         env = {"TEAMS_OUTBOX_LOCK": self.lock}
@@ -113,18 +127,44 @@ class Args(unittest.TestCase):
         self.assertFalse(ds._is_enter({"key": "Escape", "code": "Escape", "windowsVirtualKeyCode": 27}))
 
 
+def css_matches(selector: str, attrs: dict) -> bool:
+    """A tiny CSS matcher for comma lists of [attr], [attr=v], [attr^=v], [attr*=v] with an optional ` i`."""
+    for part in selector.split(","):
+        m = re.fullmatch(r'\[([\w-]+)(?:([\^*]?=)"([^"]*)"( i)?)?\]', part.strip())
+        assert m, f"selector the fake can't read: {part}"
+        attr, op_, val, ci = m.groups()
+        have = attrs.get(attr)
+        if have is None:
+            continue
+        if op_ is None:
+            return True
+        h, v = (have.lower(), val.lower()) if ci else (have, val)
+        if (op_ == "=" and h == v) or (op_ == "^=" and h.startswith(v)) or (op_ == "*=" and v in h):
+            return True
+    return False
+
+
 class FakeTeams:
     """One fake browser: http discovery + websocket CDP over a tiny Teams DOM."""
 
-    def __init__(self, rail=(), search=(), compose="", teams_tab=True):
+    def __init__(self, rail=(), search=(), compose="", teams_tab=True, old_chips=(), people=(), mention_dir=()):
         from websockets.sync.server import serve
         self.rail, self.search_dir, self.compose = list(rail), list(search), compose
+        self.people_dir, self.mention_dir = list(people), list(mention_dir)
+        self.newchat_open = self.picker_focus = self.compose_focused = False
+        self.picker_typed = self.mention_typed = ""
+        self.to_chips: list[str] = []
+        self.mentions: list[str] = []
+        # elements with attributes, for the hit test: (x, y) -> attrs
+        self.elements = {SEND_XY: {"data-tid": "sendMessageCommands-send", "aria-label": "Send"},
+                         self.ATTACH_XY: {"data-tid": "sendMessageCommands-FilePicker",
+                                          "aria-label": "Attach files"}}
         self.chat = None
         self.title = "Chat | Microsoft Teams"
         self.typed = ""
         self.search_open = False
         self.selected = False
-        self.chips: list[str] = []
+        self.chips: list[str] = list(old_chips)
         self.menu_open = False
         self.calls: list[tuple[str, dict]] = []
         self.ops: list[str] = []
@@ -163,10 +203,45 @@ class FakeTeams:
         return (300, 200 + 40 * i)
 
     SEARCH_XY, ATTACH_XY, MENU_XY = (200, 20), (500, 880), (520, 840)
+    NEWCHAT_XY, PICKER_XY = (30, 20), (250, 60)
+
+    def person_xy(self, i):
+        return (300, 400 + 40 * i)
+
+    def mention_xy(self, i):
+        return (350, 600 + 40 * i)
+
+    def remover_xy(self, i):
+        return (600, 700 + 40 * i)
+
+    def people_options(self):
+        return [n for n in self.people_dir if self.newchat_open and self.picker_typed and self.picker_typed in n]
+
+    def mention_options(self):
+        t = self.mention_typed
+        return [n for n in self.mention_dir if t.startswith("@") and t[1:] in n]
 
     def click(self, x, y):
         self.clicks.append((x, y))
         near = lambda p: abs(p[0] - x) < 5 and abs(p[1] - y) < 5  # noqa: E731
+        self.compose_focused = False
+        if near(self.NEWCHAT_XY):
+            self.newchat_open = True
+        if near(self.PICKER_XY) and self.newchat_open:
+            self.picker_focus = True
+        for i, n in enumerate(self.people_options()):
+            if self.picker_focus and near(self.person_xy(i)):
+                self.to_chips.append(n)
+                self.chat, self.picker_focus = n, False  # title stays "Chat | Microsoft Teams"
+        for i, n in enumerate(self.mention_options()):
+            if near(self.mention_xy(i)):
+                self.mentions.append(n)
+                self.compose = self.compose[:len(self.compose) - len(self.mention_typed)] + n  # element replaces "@typed"
+                self.mention_typed = ""
+        for i in range(len(self.chips)):
+            if near(self.remover_xy(i)) and self.chips[i].startswith("old"):
+                del self.chips[i]
+                break
         for i, n in enumerate(self.rail):
             if near(self.rail_xy(i)):
                 self.chat, self.title = n, f"Chat | {n} | Microsoft Teams"
@@ -202,8 +277,32 @@ class FakeTeams:
         if name == "editor_select":
             self.selected = True
             return None
+        if name in ("editor_focus", "caret_end"):
+            self.compose_focused = True
+            return None
+        if name == "chip_removers":
+            return [{"x": self.remover_xy(i)[0], "y": self.remover_xy(i)[1]}
+                    for i, n in enumerate(self.chips) if n.startswith("old")]
+        if name == "chip_count":
+            return len(self.chips)
+        if name == "new_chat_btn":
+            return {"x": self.NEWCHAT_XY[0], "y": self.NEWCHAT_XY[1]}
+        if name == "people_picker":
+            return {"x": self.PICKER_XY[0], "y": self.PICKER_XY[1]} if self.newchat_open else None
+        if name == "people_find":
+            opts = self.people_options()
+            return {"total": len(opts), "matches": [{"x": self.person_xy(i)[0], "y": self.person_xy(i)[1]}
+                                                    for i, n in enumerate(opts) if n == args["name"]]}
+        if name == "to_chip":
+            return args["name"] in self.to_chips
+        if name == "mention_count":
+            return len(self.mentions)
+        if name == "mention_find":
+            opts = self.mention_options()
+            return {"total": len(opts), "matches": [{"x": self.mention_xy(i)[0], "y": self.mention_xy(i)[1]}
+                                                    for i, n in enumerate(opts) if n == args["name"]]}
         if name == "paste":
-            self.compose = args["plain"]
+            self.compose += args["plain"]  # at the caret, which is at the end
             self.pasted_html = args["html"]
             return {"len": len(self.compose.strip()), "links": args["html"].count("<a ")}
         if name == "search_box":
@@ -213,7 +312,10 @@ class FakeTeams:
             return {"total": len(opts), "matches": [{"x": self.opt_xy(i)[0], "y": self.opt_xy(i)[1]}
                                                     for i, n in enumerate(opts) if n == args["name"]]}
         if name == "hit_test":
-            return abs(args["x"] - SEND_XY[0]) < 20 and abs(args["y"] - SEND_XY[1]) < 20
+            for xy, attrs in self.elements.items():
+                if abs(args["x"] - xy[0]) < 20 and abs(args["y"] - xy[1]) < 20 and css_matches(args["sel"], attrs):
+                    return True
+            return False
         if name == "attach_btn":
             return {"x": self.ATTACH_XY[0], "y": self.ATTACH_XY[1]}
         if name == "menu_upload":
@@ -258,8 +360,17 @@ class FakeTeams:
             elif method == "Input.dispatchKeyEvent":
                 if params.get("key") == "Backspace" and params["type"] == "keyDown" and self.selected:
                     self.compose, self.selected = "", False
+                    self.mention_typed, self.mentions = "", []
             elif method == "Input.insertText":
-                self.typed += params["text"]
+                t = params["text"]
+                if self.picker_focus:
+                    self.picker_typed += t
+                elif self.compose_focused:
+                    if t.startswith("@"):
+                        self.mention_typed = t
+                    self.compose += t  # the typed text is in the box until a suggestion replaces it
+                else:
+                    self.typed += t
             elif method == "DOM.getDocument":
                 result = {"root": {"nodeId": 1}}
             elif method == "DOM.querySelector":
@@ -419,6 +530,114 @@ class EndToEnd(unittest.TestCase):
         r = self.run_stager(f)
         self.assertEqual(r.returncode, 1)
         self.assertIn("never sends", r.stderr)
+        f.never_sent(self)
+
+    def test_attach_button_with_send_in_its_tid_still_works(self):
+        f = self.fake(rail=["Ann Lee"])
+        self.assertEqual(f.elements[f.ATTACH_XY]["data-tid"], "sendMessageCommands-FilePicker")
+        r = self.run_stager(f, "--attach", str(self.page))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn(f.ATTACH_XY, f.clicks)
+        self.assertEqual(f.chips, ["page.html"])
+        f.never_sent(self)
+
+    def test_only_these_attachments_removes_old_chips(self):
+        f = self.fake(rail=["Ann Lee"], compose="old text", old_chips=["old1.html", "old2.html"])
+        r = self.run_stager(f, "--replace", "--only-these-attachments", "--attach", str(self.page))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(f.chips, ["page.html"])
+        self.assertEqual(json.loads(r.stdout.strip().splitlines()[-1])["attachments"], 1)
+        self.assertLess(f.ops.index("editor_select"), f.ops.index("chip_removers"))
+        self.assertLess(f.ops.index("chip_count"), f.ops.index("paste"))
+        f.never_sent(self)
+
+    def test_old_chips_stay_without_the_flag(self):
+        f = self.fake(rail=["Ann Lee"], old_chips=["old1.html"])
+        r = self.run_stager(f, "--attach", str(self.page))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(f.chips, ["old1.html", "page.html"])
+        f.never_sent(self)
+
+    def test_only_these_attachments_fails_when_a_chip_will_not_go(self):
+        f = self.fake(rail=["Ann Lee"], old_chips=["old1.html", "stuck.html"])  # no remover for "stuck"
+        r = self.run_stager(f, "--replace", "--only-these-attachments")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("couldn't remove the old attachments", r.stderr)
+        self.assertNotIn("paste", f.ops)
+        f.never_sent(self)
+
+    def test_only_these_attachments_without_replace_is_usage_error(self):
+        f = self.fake(rail=["Ann Lee"])
+        r = self.run_stager(f, "--only-these-attachments")
+        self.assertEqual(r.returncode, 2)
+        self.assertEqual(f.calls, [])
+
+    def test_new_chat(self):
+        f = self.fake(people=["Ann Leeson", "Ann Lee"])
+        r = self.run_stager(f, "--new-chat")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(f.to_chips, ["Ann Lee"])
+        self.assertEqual(f.title, "Chat | Microsoft Teams")  # no NAME in the title: the To chip is the check
+        self.assertIn("to_chip", f.ops)
+        self.assertNotIn("rail_find", f.ops)
+        self.assertEqual(json.loads(r.stdout.strip().splitlines()[-1])["chat"], "Ann Lee")
+        self.assertTrue(f.compose.startswith("Hi **Ann**"))
+        f.never_sent(self)
+
+    def test_new_chat_no_such_person(self):
+        f = self.fake(people=["Ann Leeson"])
+        r = self.run_stager(f, "--new-chat")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("no person named Ann Lee", r.stderr)
+        self.assertNotIn("paste", f.ops)
+        f.never_sent(self)
+
+    def test_new_chat_ambiguous(self):
+        f = self.fake(people=["Ann Lee", "Ann Lee"])
+        r = self.run_stager(f, "--new-chat")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("ambiguous: 2 people named Ann Lee", r.stderr)
+        self.assertEqual(f.to_chips, [])
+        self.assertNotIn("paste", f.ops)
+        f.never_sent(self)
+
+    def test_two_mentions_in_order_then_body(self):
+        f = self.fake(rail=["Ann Lee"], compose="old", mention_dir=["Bob Ray", "Bob Rayne", "Cy Dee"])
+        r = self.run_stager(f, "--replace", "--mention", "Cy Dee", "--mention", "Bob Ray")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(f.mentions, ["Cy Dee", "Bob Ray"])
+        self.assertTrue(f.compose.startswith("Cy Dee Bob Ray Hi **Ann**"), f.compose)
+        self.assertEqual(json.loads(r.stdout.strip().splitlines()[-1])["mentions"], 2)
+        self.assertLess(f.ops.index("editor_select"), f.ops.index("mention_find"))
+        self.assertLess(len(f.ops) - 1 - f.ops[::-1].index("mention_find"), f.ops.index("paste"))
+        f.never_sent(self)
+
+    def test_literal_at_name_is_stripped_from_the_body(self):
+        f = self.fake(rail=["Ann Lee"], mention_dir=["Bob Ray"])
+        self.md.write_text("Hey @Bob Ray please look at [this](https://example.com/d).\n")
+        r = self.run_stager(f, "--mention", "Bob Ray")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(f.compose, "Bob Ray Hey please look at [this](https://example.com/d).\n")
+        self.assertNotIn("@Bob Ray", f.pasted_html)
+        self.assertEqual(f.mentions, ["Bob Ray"])
+        f.never_sent(self)
+
+    def test_mention_without_suggestion_refused(self):
+        f = self.fake(rail=["Ann Lee"], mention_dir=["Someone Else"])
+        r = self.run_stager(f, "--mention", "Bob Ray")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("no mention suggestion for Bob Ray", r.stderr)
+        self.assertNotIn("paste", f.ops)
+        self.assertEqual((f.compose, f.mention_typed), ("", ""))  # the half-typed @ was cleaned up
+        f.never_sent(self)
+
+    def test_ambiguous_mention_refused(self):
+        f = self.fake(rail=["Ann Lee"], mention_dir=["Bob Ray", "Bob Ray"])
+        r = self.run_stager(f, "--mention", "Bob Ray")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("ambiguous: 2 mention suggestions named Bob Ray", r.stderr)
+        self.assertEqual(f.mentions, [])
+        self.assertNotIn("paste", f.ops)
         f.never_sent(self)
 
 

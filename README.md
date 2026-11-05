@@ -300,10 +300,19 @@ whosaid drafts html                             # review page of every open draf
   90-day recency half-life (unnamed `SPEAKER_NN` voices skipped), plus who changed `--path` in
   `--repo` over the last six months. Read what the top people said before claiming what they want.
 - **Staging last.** `stage` takes `~/.drafts/.outbox.lock`, refuses stale drafts and a second
-  open draft to the same person, then runs `WHOSAID_DRAFTS_STAGER` (your command that pastes into
-  the chat) with `--chat NAME --md FILE [--attach PAGE ...]`, plus `--replace
+  open draft to the same person, then runs the stager (the built-in one, or `WHOSAID_DRAFTS_STAGER`,
+  see below) with `--chat NAME --md FILE [--attach PAGE ...]`, plus `--replace
   --only-these-attachments` on a restage, and `TEAMS_OUTBOX_LOCK` set. One draft per run with
   `--all`. `mark-sent` and `drop` close a draft (a soft delete: `list --all` still shows it).
+- **The built-in stager.** When `WHOSAID_DRAFTS_STAGER` is unset, `stage` uses `lib/drafts_stager.py`.
+  It needs a Chromium browser started with `--remote-debugging-port` (the port comes from
+  `--cdp-port` / `WHOSAID_CDP_PORT`, default 9222) with Teams web signed in. It opens the chat by
+  exact name (left rail, else search; `--new-chat` starts one via the To picker), pastes the draft
+  as rich text, attaches the pages, and with `--replace` clears the box (`--only-these-attachments`
+  also removes the attachments already there). Each `--mention NAME` becomes a real @mention at the
+  start of the message, in order, before the body; a literal `@NAME` in the text is dropped so it is
+  not doubled. It never sends (no Enter, no click on Send), prints a JSON line and leaves the chat
+  focused. Set `WHOSAID_DRAFTS_STAGER` to your own command to stage into another chat app.
 - **One owner at a time.** Changing a draft another live session owns is refused without
   `--force` (or `force=true` over MCP): ask that session instead. A draft whose session is gone
   is adopted by whoever changes it next.
