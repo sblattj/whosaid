@@ -205,9 +205,8 @@ class OutboxTest(DraftsBase):
     def test_no_stager_configured(self):
         did = self.ready()
         with patch.dict(os.environ, {"WHOSAID_DRAFTS_STAGER": ""}):
-            with self.assertRaises(drafts.DraftsError) as e:
-                drafts.stage([did])
-        self.assertIn("WHOSAID_DRAFTS_STAGER", str(e.exception))
+            r = drafts.stage([did], dry_run=True)  # unset: the built-in stager (#168)
+        self.assertIn("drafts_stager.py", r["would_run"][0]["argv"][6])
 
     def test_stager_failure_is_recorded_not_staged(self):
         did = self.ready()

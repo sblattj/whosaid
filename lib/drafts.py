@@ -38,7 +38,8 @@ claims and pages; any later edit reads as stale until verified again.
 
 Staging is the only step that drives a browser. It holds ~/.drafts/.outbox.lock, refuses stale
 drafts and rival open drafts to the same recipient, then runs the stager command from
-WHOSAID_DRAFTS_STAGER (argv: --chat NAME --md FILE [--attach PAGE ...] [--mention NAME ...]
+WHOSAID_DRAFTS_STAGER, or the built-in Teams web stager (lib/drafts_stager.py, a browser on the
+DevTools port) when that is unset (argv: --chat NAME --md FILE [--attach PAGE ...] [--mention NAME ...]
 [--replace --only-these-attachments] [--new-chat] [--tab ID]) with TEAMS_OUTBOX_LOCK set.
 Turning --mention names into real @mentions is the stager's job. Nothing is sent.
 
@@ -862,10 +863,11 @@ def release_lock() -> None:
 
 
 def stager() -> list[str]:
+    """WHOSAID_DRAFTS_STAGER when set (any chat app), else the built-in Teams web stager."""
     cmd = os.environ.get("WHOSAID_DRAFTS_STAGER", "").strip()
     if not cmd:
-        raise DraftsError("set WHOSAID_DRAFTS_STAGER to the command that pastes a draft into a Teams chat "
-                          "(it gets --chat NAME --md FILE [--attach PAGE ...])")
+        return ["uv", "run", "--quiet", "--with", "websockets", "python",
+                str(Path(__file__).resolve().parent / "drafts_stager.py")]
     return shlex.split(cmd)
 
 
@@ -888,7 +890,7 @@ def stage(ids: list[str] | None = None, all_ready: bool = False, dry_run: bool =
     ids = ids or []
     if not ids:
         return {"staged": [], "skipped": [], "failed": [], "note": "nothing verified and unstaged"}
-    cmd = stager() if not dry_run else (shlex.split(os.environ.get("WHOSAID_DRAFTS_STAGER", "")) or ["<stager>"])
+    cmd = stager()
     wsp = _stage_ws(ws)
     if not dry_run:
         acquire_lock(" ".join(["stage", *ids]))
