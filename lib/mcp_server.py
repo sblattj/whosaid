@@ -212,7 +212,7 @@ Commitment tracking: kind distinguishes explicit promises, requests, standing di
 
 Not exposed here: `enroll` and `record` are interactive microphone operations that need a live terminal. Run them from the `whosaid` CLI. The first transcribe downloads ~1.5 GB of models; run whosaid_doctor to check readiness. Full flag/env/long-audio reference: read the whosaid://guide resource.
 
-Meeting workspace (search across many transcripts): point the server at a workspace directory by launching it with WHOSAID_WORKSPACE=<dir>, or pass `workspace` on each call; there is no cwd fallback. Flow: whosaid_search (turn-level hits with meeting folder + timestamp) -> whosaid_context (the verbatim minute around one hit; do not read whole transcripts) -> whosaid_items / whosaid_item / whosaid_person for action items and per-person commitments; whosaid_worklist for one person's ranked P1/P2/P3 worklist across both corpora. whosaid_meetings, whosaid_prs and whosaid_speakers list what the graph knows; whosaid_workspace_status says whether the index exists. The index (_search.db, _WIKI.md) is built by `whosaid index <ws>` from the CLI or the watcher, never from here: every workspace tool is read-only except whosaid_set_status, which appends one status event to the tracking ledger (_tracking.json) when the user marks an item, and whosaid_name_voice_group, which names one unnamed voice across all its meetings (groups come from whosaid_voice_groups) and then rebuilds the index. Drafts outbox (not workspace files): whosaid_draft_new, whosaid_draft_write, whosaid_draft_verify and whosaid_draft_close write chat drafts to ~/.drafts for the user to stage; whosaid_drafts, whosaid_draft_stakeholders and whosaid_draft_stale read. Resources: whosaid://workspace/wiki, whosaid://workspace/action-items, whosaid://workspace/index, whosaid://workspace/meeting/{folder}/transcript and whosaid://workspace/meeting/{folder}/action-items. Everything stays local (SQLite FTS5 plus optional embeddings from a localhost Ollama)."""
+Meeting workspace (search across many transcripts): point the server at a workspace directory by launching it with WHOSAID_WORKSPACE=<dir>, or pass `workspace` on each call; there is no cwd fallback. Flow: whosaid_search (turn-level hits with meeting folder + timestamp) -> whosaid_context (the verbatim minute around one hit; do not read whole transcripts) -> whosaid_items / whosaid_item / whosaid_person for action items and per-person commitments; whosaid_worklist for one person's ranked P1/P2/P3 worklist across both corpora. whosaid_meetings, whosaid_prs and whosaid_speakers list what the graph knows; whosaid_workspace_status says whether the index exists. The index (_search.db, _WIKI.md) is built by `whosaid index <ws>` from the CLI or the watcher, never from here: every workspace tool is read-only except whosaid_set_status, which appends one status event to the tracking ledger (_tracking.json) when the user marks an item, and whosaid_name_voice_group, which names one unnamed voice across all its meetings (groups come from whosaid_voice_groups) and then rebuilds the index. Drafts outbox (not workspace files): whosaid_draft_new, whosaid_draft_write, whosaid_draft_verify, whosaid_draft_close and whosaid_draft_sent_check write chat drafts to ~/.drafts for the user to stage (one open draft per recipient: new joins it); whosaid_drafts, whosaid_draft_stakeholders and whosaid_draft_stale read. Resources: whosaid://workspace/wiki, whosaid://workspace/action-items, whosaid://workspace/index, whosaid://workspace/meeting/{folder}/transcript and whosaid://workspace/meeting/{folder}/action-items. Everything stays local (SQLite FTS5 plus optional embeddings from a localhost Ollama)."""
 
 
 try:
@@ -3191,8 +3191,11 @@ _DESC_DRAFT_NEW = (
     "overrides) instead of typing into a chat app. Records the agent session that is writing it "
     "(Claude Code session id, name, cwd and a resume command), so the user knows which session to "
     "go back to. to = the recipient exactly as the chat list shows the name. pages = absolute paths "
-    "of pages to attach. supersedes = an older draft this one replaces. Returns {ok, id, path, note}; "
-    "note warns when another open draft to the same person exists. Then: whosaid_draft_stakeholders, "
+    "of pages to attach. mentions = names to @mention when staged. One open draft per recipient: if "
+    "the recipient already has one, you join it (joined=true, same id, you become a contributor who "
+    "may write it, and your text becomes a new revision); read it with whosaid_drafts(action='show') "
+    "and merge your points in. separate=true makes a second draft instead; supersedes = an older "
+    "draft this one replaces. Returns {ok, id, path, joined, note}. Then: whosaid_draft_stakeholders, "
     "check every claim, whosaid_draft_write, whosaid_draft_verify. Never sends or stages anything."
 )
 
@@ -3200,10 +3203,11 @@ _DESC_DRAFT_WRITE = (
     "Write parts of an outbox draft. text = the message (markdown), replaced whole. claims = "
     "[{key, text, kind: code|tech|people|status, verdict: confirmed|refuted|unverified, evidence, "
     "dropped}], stakeholders = [{name, speaker, why, searched: [topics], found}], docs = [{url, "
-    "what}], each replaced whole when passed. pages = absolute page paths to add, remove_pages = ones to detach. Write the claims "
+    "what}], mentions = [names], each replaced whole when passed. A changed text is kept as a new "
+    "revision tagged with your session. pages = absolute page paths to add, remove_pages = ones to detach. Write the claims "
     "first and check each one before the text: a refuted claim must be marked dropped and left out "
     "of the text. Returns {ok, id, state, gate}; gate lists what verify would still refuse. Any "
-    "write after a verify makes the draft stale until verified again. A draft owned by another live session is refused unless force=true; ask that session instead."
+    "write after a verify makes the draft stale until verified again. A draft owned by another live session is refused unless force=true or you joined it with whosaid_draft_new; ask that session instead."
 )
 
 _DESC_DRAFT_VERIFY = (
@@ -3219,8 +3223,21 @@ _DESC_DRAFTS = (
     "Read the drafts outbox. action=list: open drafts (all=true adds sent, dropped, superseded), "
     "each {id, to, state, owner, owner_live, updated_at}; mine=true keeps only this session's. "
     "state is drafting, verified, stale (edited after verify), staged, or verified with changes "
-    "since staged. action=show with id: the text, claims, stakeholders, failed gates and history. "
-    "Use it to find and update your own open drafts as the work moves. Read-only."
+    "since staged. action=show with id: the text, claims, stakeholders, mentions, contributors, "
+    "revision_log, failed gates and history; rev=N shows the text of revision N (1 is the oldest). "
+    "action=diff with id: unified diff of revision from_rev against to_rev (default: the previous "
+    "one against the newest) and who wrote each. Use it to find and update your own open drafts "
+    "as the work moves. Read-only."
+)
+
+_DESC_DRAFT_SENT_CHECK = (
+    "Mark staged outbox drafts sent once they appear in the ingested chat history: for each staged "
+    "draft (or just id), reads the workspace's ingested Teams chat with that recipient since the "
+    "draft was staged and looks for your own message (speaker role self) matching the draft text, "
+    "ignoring markdown and small edits. A match sets status sent with the message time and id. "
+    "Drafts not found stay staged, since the chat may not be ingested yet (whosaid teams ingest). "
+    "Returns {ok, sent: [{id, to, at, mid, folder}], still_staged: [{id, why}], note}. Changes only "
+    "draft status in ~/.drafts; never reads or drives a chat app."
 )
 
 _DESC_DRAFT_STAKEHOLDERS = (
@@ -3257,21 +3274,23 @@ def _drafts_call(fn, *args, **kwargs) -> dict:
 
 @mcp.tool(name="whosaid_draft_new", description=_DESC_DRAFT_NEW, annotations=_DRAFT_WRITE_ANN)
 def whosaid_draft_new(to: str, topic: str, pages: Optional[list[str]] = None, supersedes: Optional[str] = None,
-                      new_chat: bool = False, owner_session: Optional[str] = None) -> dict:
-    """Create ~/.drafts/<id>/ with draft.json and an empty claims.json."""
+                      new_chat: bool = False, owner_session: Optional[str] = None,
+                      mentions: Optional[list[str]] = None, separate: bool = False) -> dict:
+    """Create ~/.drafts/<id>/ with draft.json and an empty claims.json, or join the recipient's open draft."""
     import drafts
-    return _drafts_call(drafts.new, to, topic, pages, supersedes, new_chat, owner_session)
+    return _drafts_call(drafts.new, to, topic, pages, supersedes, new_chat, owner_session,
+                        mentions=mentions, separate=separate)
 
 
 @mcp.tool(name="whosaid_draft_write", description=_DESC_DRAFT_WRITE, annotations=_DRAFT_WRITE_ANN)
 def whosaid_draft_write(id: str, text: Optional[str] = None, claims: Optional[list[dict]] = None,
                         stakeholders: Optional[list[dict]] = None, docs: Optional[list[dict]] = None,
                         pages: Optional[list[str]] = None, remove_pages: Optional[list[str]] = None,
-                        force: bool = False) -> dict:
+                        force: bool = False, mentions: Optional[list[str]] = None) -> dict:
     """Replace the passed parts of one draft; returns its state and open gates."""
     import drafts
     return _drafts_call(drafts.write, id, text=text, claims=claims, stakeholders=stakeholders, docs=docs,
-                        pages=pages, remove_pages=remove_pages, force=force)
+                        pages=pages, remove_pages=remove_pages, force=force, mentions=mentions)
 
 
 @mcp.tool(name="whosaid_draft_verify", description=_DESC_DRAFT_VERIFY, annotations=_DRAFT_WRITE_ANN)
@@ -3300,14 +3319,17 @@ def whosaid_draft_close(id: str, status: Literal["dropped", "sent"], reason: Opt
 
 @mcp.tool(name="whosaid_drafts", description=_DESC_DRAFTS,
           annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False))
-def whosaid_drafts(action: Literal["list", "show"] = "list", id: Optional[str] = None, all: bool = False,
-                   mine: bool = False) -> dict:
-    """list or show outbox drafts."""
+def whosaid_drafts(action: Literal["list", "show", "diff"] = "list", id: Optional[str] = None, all: bool = False,
+                   mine: bool = False, rev: Optional[int] = None, from_rev: Optional[int] = None,
+                   to_rev: Optional[int] = None) -> dict:
+    """list, show or diff outbox drafts."""
     import drafts
-    if action == "show":
+    if action in ("show", "diff"):
         if not id:
-            return _ws_error("show needs id", "pass an id from whosaid_drafts(action='list')")
-        return _drafts_call(drafts.show, id)
+            return _ws_error(f"{action} needs id", "pass an id from whosaid_drafts(action='list')")
+        if action == "diff":
+            return _drafts_call(drafts.diff, id, from_rev, to_rev)
+        return _drafts_call(drafts.show, id, rev)
     return _drafts_call(lambda: {"drafts": drafts.listing(include_closed=all, mine=mine)})
 
 
@@ -3333,6 +3355,16 @@ def whosaid_draft_stale(id: Optional[str] = None, workspace: Optional[str] = Non
         return err
     import drafts
     return _drafts_call(drafts.stale_check, ws, id)
+
+
+@mcp.tool(name="whosaid_draft_sent_check", description=_DESC_DRAFT_SENT_CHECK, annotations=_DRAFT_WRITE_ANN)
+def whosaid_draft_sent_check(id: Optional[str] = None, workspace: Optional[str] = None) -> dict:
+    """Mark staged drafts sent that show up as your message in the ingested chat."""
+    ws, err = _resolve_ws(workspace)
+    if err:
+        return err
+    import drafts
+    return _drafts_call(drafts.sent_check, ws, id)
 
 
 def main() -> None:

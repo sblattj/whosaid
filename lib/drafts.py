@@ -13,11 +13,20 @@ when the user stages them.
     whosaid drafts show ID [--json]
     whosaid drafts stakeholders [WS] --topic T [--topic T2] [--repo DIR --path P ...] [--json]
     whosaid drafts stale-check [WS] [ID] [--json]         new statements since each draft was verified
-    whosaid drafts stage ID|--all [--dry-run] [--tab TARGET]
-    whosaid drafts mark-sent ID | drop ID [--reason R]
+    whosaid drafts stage ID|--all [--dry-run] [--tab TARGET] [--ws WS]
+    whosaid drafts mark-sent ID | mark-sent --check [WS] | drop ID [--reason R]
+    whosaid drafts show ID --rev N | diff ID [--from N --to M]
+    whosaid drafts html [--out PATH] [--all]              one review page of the open drafts
 
-Changes to another live session's draft are refused without --force (ask that session instead);
-a draft whose session is gone is adopted by whoever changes it. Closing is a soft delete.
+One open draft per recipient: `new` to someone who already has an open draft joins that draft
+(the caller becomes a contributor and its text a new revision) unless --new. Every text write
+keeps a revision (revisions/NNN.md) with the session that wrote it. Changes by a live session
+that is neither the owner nor a contributor are refused without --force (ask that session
+instead); a draft whose session is gone is adopted by whoever changes it. Closing is a soft delete.
+
+History (#166): stage reads the newest ingested messages of the target chat (teams ingest) and
+reports them, skipping a draft that already appears there as your message; mark-sent --check
+marks staged drafts sent once they show up in the ingested chat.
 
 A draft is a folder, ~/.drafts/<id>/ (WHOSAID_DRAFTS_DIR overrides): draft.md, claims.json,
 draft.json. Pages stay where they were written and are referenced by absolute path.
@@ -29,8 +38,9 @@ claims and pages; any later edit reads as stale until verified again.
 
 Staging is the only step that drives a browser. It holds ~/.drafts/.outbox.lock, refuses stale
 drafts and rival open drafts to the same recipient, then runs the stager command from
-WHOSAID_DRAFTS_STAGER (argv: --chat NAME --md FILE [--attach PAGE ...] [--replace
---only-these-attachments] [--new-chat] [--tab ID]) with TEAMS_OUTBOX_LOCK set. Nothing is sent.
+WHOSAID_DRAFTS_STAGER (argv: --chat NAME --md FILE [--attach PAGE ...] [--mention NAME ...]
+[--replace --only-these-attachments] [--new-chat] [--tab ID]) with TEAMS_OUTBOX_LOCK set.
+Turning --mention names into real @mentions is the stager's job. Nothing is sent.
 
 Stdlib only; stakeholders and stale-check read the workspace search index (search.py).
 """
@@ -38,7 +48,9 @@ Stdlib only; stakeholders and stale-check read the workspace search index (searc
 from __future__ import annotations
 
 import argparse
+import difflib
 import hashlib
+import html as htmllib
 import json
 import os
 import re
@@ -160,6 +172,9 @@ def content_hash(m: dict) -> str:
     for f in [str(d / "draft.md"), str(d / "claims.json"), *m.get("pages", [])]:
         p = Path(f)
         h.update(f.encode() + b"\0" + (p.read_bytes() if p.exists() else b"MISSING") + b"\0")
+    # Mentions are staged too, so they count; drafts without any hash exactly as before.
+    if m.get("mentions"):
+        h.update(b"mentions\0" + json.dumps(sorted(m["mentions"])).encode() + b"\0")
     return h.hexdigest()[:16]
 
 
@@ -222,8 +237,16 @@ def _event(m: dict, event: str, **kw) -> None:
 
 # ---- operations (CLI and MCP share these) ------------------------------------------
 
+def _who(o: dict) -> dict:
+    return {"sessionId": o.get("sessionId"), "name": o.get("name")}
+
+
 def new(to: str, topic: str, pages: list[str] | None = None, supersedes: str | None = None,
-        new_chat: bool = False, owner_session: str | None = None) -> dict:
+        new_chat: bool = False, owner_session: str | None = None, mentions: list[str] | None = None,
+        separate: bool = False) -> dict:
+    """Start a draft, or join the open draft to the same recipient (one compose box per chat).
+
+    separate=True (CLI --new) or supersedes makes a second draft instead of joining."""
     to, topic = (to or "").strip(), (topic or "").strip()
     if not to:
         raise DraftsError('need the recipient, exactly as the chat list shows the name ("First Last")')
@@ -233,10 +256,13 @@ def new(to: str, topic: str, pages: list[str] | None = None, supersedes: str | N
     for p in pages:
         if not os.path.isabs(p):
             raise DraftsError(f"page needs an absolute path: {p}")
+    mentions = [x.strip() for x in mentions or [] if x and x.strip()]
     if supersedes:
         load(supersedes)
     me = owner(owner_session)
     clash = [d for d in all_drafts() if d["status"] in OPEN and d["to"] == to and d["id"] != supersedes]
+    if clash and not separate and not supersedes:
+        return _join(max(clash, key=lambda d: d.get("updated_at") or ""), me, topic, pages, mentions, new_chat)
     ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M")
     draft_id = f"{ts}-{slug(to)}-{slug(topic)}"
     d = ddir(draft_id)
@@ -244,19 +270,49 @@ def new(to: str, topic: str, pages: list[str] | None = None, supersedes: str | N
         raise DraftsError(f"{draft_id} exists; edit it instead")
     d.mkdir(parents=True, exist_ok=True)
     m = {"id": draft_id, "to": to, "topic": topic, "status": "drafting", "new_chat": bool(new_chat),
-         "pages": pages, "supersedes": supersedes, "owner": me, "created_at": now(), "updated_at": now(),
+         "pages": pages, "mentions": mentions, "supersedes": supersedes, "owner": me, "contributors": [],
+         "revisions": [], "created_at": now(), "updated_at": now(),
          "verified_hash": None, "staged_hash": None, "history": [{"at": now(), "event": "new", "by": me["sessionId"]}]}
     save(m)
     (d / "claims.json").write_text(json.dumps({"claims": [], "stakeholders": [], "docs": []}, indent=2) + "\n")
-    out = {"id": draft_id, "path": str(d), "next": "write claims and stakeholders, verify them, then the text"}
+    out = {"id": draft_id, "path": str(d), "joined": False,
+           "next": "write claims and stakeholders, verify them, then the text"}
     if clash:
         out["note"] = (f"open draft(s) to {to} already: " + ", ".join(f"{c['id']} [{owner_line(c['owner'])}]" for c in clash)
-                       + ". Teams has one compose box per chat: edit that draft, or make this one with supersedes.")
+                       + ". Teams has one compose box per chat: stage refuses both until one is dropped"
+                       + (", or this one supersedes it." if not supersedes else "."))
     return out
 
 
+def _join(m: dict, me: dict, topic: str, pages: list[str], mentions: list[str], new_chat: bool) -> dict:
+    """A second session's `new` to the same recipient: add it as a contributor of the open draft."""
+    sid = me.get("sessionId")
+    o = m.get("owner") or {}
+    contributors = m.setdefault("contributors", [])
+    if sid and sid != o.get("sessionId") and all(c.get("sessionId") != sid for c in contributors):
+        contributors.append({**me, "joined_at": now()})
+    for p in pages:
+        if p not in m["pages"]:
+            m["pages"].append(p)
+    for x in mentions:
+        if x not in m.setdefault("mentions", []):
+            m["mentions"].append(x)
+    m["new_chat"] = bool(m.get("new_chat") or new_chat)
+    _event(m, "joined", by=sid, topic=topic)
+    save(m)
+    return {"id": m["id"], "path": str(ddir(m["id"])), "joined": True, "owner_line": owner_line(o),
+            "note": (f"{m['to']} already has open draft {m['id']} (owner {owner_line(o)}, topic {m.get('topic')}); "
+                     "you joined it. Read it (show), then write: your text becomes a new revision. "
+                     "Pass separate/--new for a second draft instead."),
+            "next": "show the draft, merge your points into its text and claims, write, verify"}
+
+
+def _contributor(m: dict, sid: str) -> bool:
+    return any(c.get("sessionId") == sid for c in m.get("contributors") or [])
+
+
 def guard(m: dict, force: bool = False) -> None:
-    """Refuse a change to another live session's draft unless forced.
+    """Refuse a change by a live session that is neither the owner nor a contributor, unless forced.
 
     No session in the environment means the user at a terminal: allowed. A draft whose owner is gone
     is adopted by the session changing it, so `show` points at the session that can still be resumed.
@@ -264,6 +320,8 @@ def guard(m: dict, force: bool = False) -> None:
     me = os.environ.get("CLAUDE_CODE_SESSION_ID")
     o = m.get("owner") or {}
     if not me or o.get("sessionId") in (None, me):
+        return
+    if _contributor(m, me) and alive(o.get("pid")):
         return
     if alive(o.get("pid")) and not force:
         raise DraftsError(f"{m['id']} belongs to live session {owner_line(o)}; ask it to make the change "
@@ -273,10 +331,62 @@ def guard(m: dict, force: bool = False) -> None:
         m["owner"] = owner()
 
 
+def _rev_path(draft_id: str, n: int) -> Path:
+    return ddir(draft_id) / "revisions" / f"{n:03d}.md"
+
+
+def revisions(m: dict) -> list[dict]:
+    """Revision records, oldest first. A draft written before revisions existed has its current
+    draft.md as revision 1 (virtual until the next write saves it)."""
+    revs = list(m.get("revisions") or [])
+    if not revs and (ddir(m["id"]) / "draft.md").exists():
+        revs = [{"n": 1, "at": m.get("updated_at"), "by": _who(m.get("owner") or {}), "virtual": True}]
+    return revs
+
+
+def revision_text(m: dict, n: int) -> str:
+    revs = revisions(m)
+    if not 1 <= n <= len(revs):
+        raise DraftsError(f"{m['id']} has revisions 1..{len(revs)}" if revs else f"{m['id']} has no text yet")
+    if revs[n - 1].get("virtual"):
+        return (ddir(m["id"]) / "draft.md").read_text()
+    return _rev_path(m["id"], n).read_text()
+
+
+def _save_revision(m: dict, text: str, by: dict, at: str | None = None) -> None:
+    revs = m.setdefault("revisions", [])
+    n = len(revs) + 1
+    p = _rev_path(m["id"], n)
+    p.parent.mkdir(exist_ok=True)
+    p.write_text(text)
+    revs.append({"n": n, "at": at or now(), "by": by, "chars": len(text)})
+
+
+def diff(draft_id: str, a: int | None = None, b: int | None = None) -> dict:
+    """Unified diff between two revisions; default the previous one against the newest."""
+    m = load(draft_id)
+    revs = revisions(m)
+    if not revs:
+        raise DraftsError(f"{draft_id} has no text yet")
+    b = b or len(revs)
+    a = a or max(1, b - 1)
+    ta, tb = revision_text(m, a), revision_text(m, b)
+    ra, rb = revs[a - 1], revs[b - 1]
+
+    def label(n, r):
+        by = r.get("by") or {}
+        return f"rev {n} {(r.get('at') or '')[:16]} {by.get('name') or (by.get('sessionId') or 'user')[:8]}"
+    lines = list(difflib.unified_diff(ta.splitlines(keepends=True), tb.splitlines(keepends=True),
+                                      label(a, ra), label(b, rb)))
+    return {"id": draft_id, "from": a, "to": b, "from_by": ra.get("by"), "to_by": rb.get("by"),
+            "diff": "".join(lines), "same": ta == tb}
+
+
 def write(draft_id: str, text: str | None = None, claims: list | None = None, stakeholders: list | None = None,
           docs: list | None = None, pages: list[str] | None = None, remove_pages: list[str] | None = None,
-          force: bool = False) -> dict:
-    """Replace the message text and/or the claims parts that are passed; add or remove pages."""
+          force: bool = False, mentions: list[str] | None = None) -> dict:
+    """Replace the message text, mentions and/or the claims parts that are passed; add or remove pages.
+    A changed text is kept as a new revision, tagged with the writing session."""
     m = load(draft_id)
     if m["status"] not in OPEN:
         raise DraftsError(f"{draft_id} is {m['status']}")
@@ -286,8 +396,18 @@ def write(draft_id: str, text: str | None = None, claims: list | None = None, st
         if p not in m["pages"]:
             raise DraftsError(f"not attached: {p} (attached: {', '.join(m['pages']) or 'none'})")
         m["pages"].remove(p)
+    if mentions is not None:
+        m["mentions"] = [x.strip() for x in mentions if x and x.strip()]
     if text is not None:
-        (d / "draft.md").write_text(text if text.endswith("\n") else text + "\n")
+        text = text if text.endswith("\n") else text + "\n"
+        md = d / "draft.md"
+        old = md.read_text() if md.exists() else None
+        if old != text:
+            if old is not None and not m.get("revisions"):
+                _save_revision(m, old, _who(m.get("owner") or {}), m.get("updated_at"))
+            md.write_text(text)
+            _save_revision(m, text, _who(owner()) if os.environ.get("CLAUDE_CODE_SESSION_ID")
+                           else {"sessionId": None, "name": "user"})
     if claims is not None or stakeholders is not None or docs is not None:
         c = claims_of(m)
         for key, val in (("claims", claims), ("stakeholders", stakeholders), ("docs", docs)):
@@ -328,7 +448,10 @@ def verify(draft_id: str, force: bool = False) -> dict:
 def summary(m: dict) -> dict:
     return {"id": m["id"], "to": m["to"], "topic": m.get("topic"), "state": state(m), "owner": m["owner"],
             "owner_line": owner_line(m["owner"]), "owner_live": alive(m["owner"].get("pid")),
-            "updated_at": m["updated_at"], "supersedes": m.get("supersedes"), "pages": m.get("pages", [])}
+            "updated_at": m["updated_at"], "supersedes": m.get("supersedes"), "pages": m.get("pages", []),
+            "mentions": m.get("mentions") or [], "revisions": len(revisions(m)),
+            "contributors": [_who(c) for c in m.get("contributors") or []],
+            "sent_message": m.get("sent_message")}
 
 
 def listing(include_closed: bool = False, mine: bool = False, session_id: str | None = None) -> list[dict]:
@@ -341,11 +464,13 @@ def listing(include_closed: bool = False, mine: bool = False, session_id: str | 
     return [summary(m) for m in rows]
 
 
-def show(draft_id: str) -> dict:
+def show(draft_id: str, rev: int | None = None) -> dict:
+    """The draft as it is now; rev=N swaps in the text of revision N (oldest is 1)."""
     m = load(draft_id)
     md = ddir(draft_id) / "draft.md"
-    return {**summary(m), "text": md.read_text() if md.exists() else None, "claims": claims_of(m),
-            "gate": gate(m), "history": m.get("history", [])}
+    text = revision_text(m, rev) if rev else (md.read_text() if md.exists() else None)
+    return {**summary(m), "text": text, "rev": rev or len(revisions(m)) or None,
+            "revision_log": revisions(m), "claims": claims_of(m), "gate": gate(m), "history": m.get("history", [])}
 
 
 def close(draft_id: str, status: str, reason: str | None = None, force: bool = False) -> dict:
@@ -360,6 +485,173 @@ def close(draft_id: str, status: str, reason: str | None = None, force: bool = F
     _event(m, status, reason=reason)
     save(m)
     return {"id": draft_id, "status": status}
+
+
+# ---- chat history: what is already in the chat, and was it sent (#166) -----------------
+
+CHAT_SIDECAR = "teams.diarization.json"
+CHAT_KIND = "teams-chat"
+
+
+def _plain(s: str) -> str:
+    """Markdown or chat text to comparable plain text: link labels kept, markup and case dropped."""
+    s = re.sub(r"!?\[([^\]]*)\]\([^)]*\)", r"\1", s or "")
+    s = re.sub(r"^\s*(?:[-+*]|\d+\.)\s+", "", s, flags=re.M)
+    s = re.sub(r"[*_`>#~]", "", s)
+    s = re.sub(r"https?://\S+", "", s)
+    return re.sub(r"\s+", " ", s).strip().lower()
+
+
+def same_message(draft_text: str, chat_text: str) -> bool:
+    """The chat message is this draft as sent (the user may have fixed a typo or two)."""
+    a, b = _plain(draft_text), _plain(chat_text)
+    if not a or not b:
+        return False
+    if a == b or (len(a) >= 40 and (a[:80] in b or b[:80] in a)):
+        return True
+    return difflib.SequenceMatcher(None, a, b, autojunk=False).ratio() >= 0.85
+
+
+def _self_speakers(sidecar: dict) -> set[str]:
+    roles = sidecar.get("roles") or {}
+    mine = {s for s, r in roles.items() if r == "self"}
+    if not mine:
+        try:
+            import teams_chat
+            mine = {s for s, r in teams_chat.registry_roles().items() if r == "self"}
+        except Exception:  # noqa: BLE001 - no registry: nothing counts as ours
+            mine = set()
+    return mine
+
+
+def chat_messages(ws: Path, chat: str, since_ms: int | None = None, days: int = 14) -> list[dict]:
+    """Ingested messages of one chat (exact chat name, case-insensitive), oldest first.
+
+    Folders are YYYY-MM-DD-HHMM chat-days, so only the last `days` (or since since_ms) are read."""
+    floor_ms = since_ms if since_ms is not None else int((time.time() - days * 86400) * 1000)
+    floor_day = datetime.fromtimestamp(floor_ms / 1000).strftime("%Y-%m-%d")
+    want = chat.strip().lower()
+    out: list[dict] = []
+    try:
+        folders = sorted((p for p in Path(ws).iterdir() if p.is_dir() and re.match(r"\d{4}-\d{2}-\d{2}", p.name)),
+                         reverse=True)
+    except OSError:
+        return []
+    for f in folders:
+        if f.name[:10] < floor_day:
+            break
+        sc = f / CHAT_SIDECAR
+        if not sc.is_file():
+            continue
+        try:
+            data = json.loads(sc.read_text())
+        except (OSError, ValueError):
+            continue
+        src = data.get("source") or {}
+        if src.get("kind") != CHAT_KIND or (src.get("chat_name") or "").strip().lower() != want:
+            continue
+        mine = _self_speakers(data)
+        for seg in data.get("segments") or []:
+            ms = seg.get("epoch_ms")
+            if not isinstance(ms, int) or ms < floor_ms:
+                continue
+            out.append({"epoch_ms": ms, "at": datetime.fromtimestamp(ms / 1000, timezone.utc).isoformat()[:19] + "Z",
+                        "speaker": seg.get("speaker"), "self": seg.get("speaker") in mine,
+                        "text": seg.get("text") or "", "mid": seg.get("mid") or seg.get("message_id"),
+                        "folder": f.name})
+    return sorted(out, key=lambda x: x["epoch_ms"])
+
+
+def _ms(iso: str | None) -> int | None:
+    if not iso:
+        return None
+    try:
+        return int(datetime.fromisoformat(iso.replace("Z", "+00:00")).timestamp() * 1000)
+    except ValueError:
+        return None
+
+
+def _draft_text(m: dict) -> str:
+    md = ddir(m["id"]) / "draft.md"
+    return md.read_text() if md.exists() else ""
+
+
+def chat_context(ws: Path, m: dict, n: int = 5) -> dict:
+    """What the target chat already holds: the newest n ingested messages, our last one, whether
+    they replied since, and whether this draft already appears there as ours (already sent)."""
+    msgs = chat_messages(ws, m["to"])
+    created = _ms(m.get("created_at")) or 0
+    sent = next((x for x in reversed(msgs) if x["self"] and x["epoch_ms"] >= created - 300_000
+                 and same_message(_draft_text(m), x["text"])), None)
+    ours = next((x for x in reversed(msgs) if x["self"]), None)
+    return {"chat": m["to"], "ingested": len(msgs), "newest_at": msgs[-1]["at"] if msgs else None,
+            "recent": [{k: x[k] for k in ("at", "speaker", "self")} | {"text": x["text"][:200]} for x in msgs[-n:]],
+            "ours_last_at": ours["at"] if ours else None,
+            "reply_since_ours": bool(ours and any(not x["self"] for x in msgs if x["epoch_ms"] > ours["epoch_ms"])),
+            "already_sent": {k: sent[k] for k in ("at", "mid", "folder")} if sent else None}
+
+
+def sent_check(ws: Path, draft_id: str | None = None) -> dict:
+    """Mark staged drafts sent once the ingested chat shows them as our message after staging."""
+    todo = [load(draft_id)] if draft_id else [m for m in all_drafts() if m["status"] == "staged"]
+    res: dict = {"sent": [], "still_staged": [],
+                 "note": "a draft stays staged until its chat is ingested again (whosaid teams ingest)"}
+    for m in todo:
+        if m["status"] != "staged":
+            res["still_staged"].append({"id": m["id"], "why": f"is {m['status']}, not staged"})
+            continue
+        since = (_ms(m.get("staged_at")) or _ms(m.get("created_at")) or 0) - 300_000
+        msgs = chat_messages(ws, m["to"], since_ms=since)
+        hit = next((x for x in msgs if x["self"] and same_message(_draft_text(m), x["text"])), None)
+        if not hit:
+            res["still_staged"].append({"id": m["id"], "to": m["to"], "why": f"not in the {len(msgs)} ingested "
+                                        f"message(s) of {m['to']} since staging"})
+            continue
+        m["status"] = "sent"
+        m["sent_message"] = {k: hit[k] for k in ("at", "mid", "folder")}
+        _event(m, "sent", how="check", message=m["sent_message"])
+        save(m)
+        res["sent"].append({"id": m["id"], "to": m["to"], **m["sent_message"]})
+    return res
+
+
+# ---- review page ------------------------------------------------------------------------
+
+def html_page(out: str | None = None, include_closed: bool = False) -> dict:
+    """One self-contained page listing the drafts: recipient, state, owner, last update, text."""
+    rows = [m for m in all_drafts() if include_closed or m["status"] in OPEN]
+    esc = htmllib.escape
+    cards = []
+    for m in sorted(rows, key=lambda d: d.get("updated_at") or "", reverse=True):
+        s = summary(m)
+        pages = "".join(f'<li><a href="file://{esc(p)}">{esc(Path(p).name)}</a></li>' for p in s["pages"])
+        extra = []
+        if s["mentions"]:
+            extra.append("mentions: " + esc(", ".join(s["mentions"])))
+        if s["contributors"]:
+            extra.append("also written by: " + esc(", ".join(c.get("name") or (c.get("sessionId") or "?")[:8]
+                                                              for c in s["contributors"])))
+        cards.append(
+            f'<section class="d"><h2>{esc(s["to"])} <span class="st">{esc(s["state"])}</span></h2>'
+            f'<p class="meta">{esc(s["id"])} &middot; owner {esc(s["owner_line"])} &middot; updated '
+            f'{esc((s["updated_at"] or "")[:16].replace("T", " "))} &middot; rev {s["revisions"]}'
+            + "".join(f" &middot; {x}" for x in extra) + "</p>"
+            f'<pre>{esc(_draft_text(m)) or "(no text yet)"}</pre>'
+            + (f"<ul>{pages}</ul>" if pages else "")
+            + f'<p class="cmd">whosaid drafts show {esc(s["id"])}</p></section>')
+    body = "".join(cards) or "<p>The outbox is empty.</p>"
+    doc = ("<!doctype html><html><head><meta charset=utf-8><title>Drafts outbox: open drafts</title><style>"
+           "body{font:15px/1.45 system-ui,sans-serif;max-width:860px;margin:2em auto;padding:0 1em;color:#222}"
+           ".d{border:1px solid #ddd;border-radius:8px;padding:.6em 1em;margin:1em 0}"
+           "h2{font-size:1.1em;margin:.2em 0}.st{font-weight:normal;font-size:.85em;background:#eef;"
+           "border-radius:4px;padding:1px 6px}.meta,.cmd{color:#666;font-size:.85em}.cmd{font-family:monospace}"
+           "pre{white-space:pre-wrap;background:#fafafa;padding:.6em;border-radius:6px}"
+           f"</style></head><body><h1>Drafts outbox</h1><p class=meta>{len(rows)} draft(s), "
+           f"written {esc(now()[:16].replace('T', ' '))} UTC</p>{body}</body></html>\n")
+    path = Path(out).expanduser() if out else root() / "outbox.html"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(doc)
+    return {"path": str(path), "drafts": len(rows)}
 
 
 # ---- stakeholders and staleness (the whosaid part) ----------------------------------
@@ -559,17 +851,32 @@ def stager() -> list[str]:
     return shlex.split(cmd)
 
 
+def _stage_ws(ws) -> Path | None:
+    """The workspace whose ingested chats stage reads; None (history not checked) when there is none."""
+    if ws:
+        return Path(ws).expanduser()
+    if os.environ.get("WHOSAID_DRAFTS_NO_HISTORY"):
+        return None
+    try:
+        return _ws(None)
+    except SystemExit:
+        return None
+
+
 def stage(ids: list[str] | None = None, all_ready: bool = False, dry_run: bool = False,
-          tab: str | None = None) -> dict:
+          tab: str | None = None, ws: str | os.PathLike | None = None) -> dict:
     if all_ready:
         ids = [m["id"] for m in all_drafts() if m["status"] in OPEN and state(m).startswith("verified")]
     ids = ids or []
     if not ids:
         return {"staged": [], "skipped": [], "failed": [], "note": "nothing verified and unstaged"}
     cmd = stager() if not dry_run else (shlex.split(os.environ.get("WHOSAID_DRAFTS_STAGER", "")) or ["<stager>"])
+    wsp = _stage_ws(ws)
     if not dry_run:
         acquire_lock(" ".join(["stage", *ids]))
-    res: dict = {"staged": [], "skipped": [], "failed": [], "would_run": []}
+    res: dict = {"staged": [], "skipped": [], "failed": [], "would_run": [], "context": {}}
+    if wsp is None:
+        res["history_note"] = "no workspace (WHOSAID_WORKSPACE or --ws): the chat history was not checked"
     try:
         for draft_id in ids:
             m = load(draft_id)
@@ -591,11 +898,21 @@ def stage(ids: list[str] | None = None, all_ready: bool = False, dry_run: bool =
             if rivals:
                 res["failed"].append({"id": draft_id, "why": f"other open draft(s) to {m['to']}: {', '.join(rivals)}"})
                 continue
+            if wsp is not None:
+                ctx = chat_context(wsp, m)
+                res["context"][draft_id] = ctx
+                if ctx["already_sent"]:
+                    res["skipped"].append({"id": draft_id, "why": f"already in {m['to']} as your message at "
+                                           f"{ctx['already_sent']['at']}; run mark-sent --check, or edit "
+                                           "that message in the chat instead"})
+                    continue
             sup = load(m["supersedes"]) if m.get("supersedes") else None
             prev = m["status"] == "staged" or bool(sup and sup["status"] == "staged")
             argv = ["--chat", m["to"], "--md", str(ddir(draft_id) / "draft.md")]
             for p in m.get("pages", []):
                 argv += ["--attach", p]
+            for x in m.get("mentions") or []:
+                argv += ["--mention", x]
             if prev:
                 argv += ["--replace", "--only-these-attachments"]
             if m.get("new_chat"):
@@ -662,6 +979,9 @@ def build_parser() -> argparse.ArgumentParser:
     a.add_argument("--page", action="append", default=[])
     a.add_argument("--supersedes")
     a.add_argument("--new-chat", action="store_true")
+    a.add_argument("--mention", action="append", default=[], help="a name to @mention when staged")
+    a.add_argument("--new", action="store_true", dest="separate",
+                   help="a second draft even if the recipient has an open one (default: join it)")
     force = "change a draft another live session owns"
     a = sub.add_parser("text")
     a.add_argument("id")
@@ -676,6 +996,10 @@ def build_parser() -> argparse.ArgumentParser:
         a.add_argument("id")
         a.add_argument("page")
         a.add_argument("--force", action="store_true", help=force)
+    a = sub.add_parser("mentions", help="set the names to @mention (none clears them)")
+    a.add_argument("id")
+    a.add_argument("names", nargs="*")
+    a.add_argument("--force", action="store_true", help=force)
     a = sub.add_parser("verify")
     a.add_argument("id")
     a.add_argument("--force", action="store_true", help=force)
@@ -688,7 +1012,16 @@ def build_parser() -> argparse.ArgumentParser:
     a.add_argument("--json", action="store_true")
     a = sub.add_parser("show")
     a.add_argument("id")
+    a.add_argument("--rev", type=int, help="the text of revision N (1 is the oldest)")
     a.add_argument("--json", action="store_true")
+    a = sub.add_parser("diff")
+    a.add_argument("id")
+    a.add_argument("--from", type=int, dest="rev_from")
+    a.add_argument("--to", type=int, dest="rev_to")
+    a.add_argument("--json", action="store_true")
+    a = sub.add_parser("html")
+    a.add_argument("--out", help="default: <drafts dir>/outbox.html")
+    a.add_argument("--all", action="store_true", help="include sent, dropped and superseded")
     a = sub.add_parser("stakeholders")
     a.add_argument("ws", nargs="?")
     a.add_argument("--topic", action="append", required=True)
@@ -706,11 +1039,17 @@ def build_parser() -> argparse.ArgumentParser:
     a.add_argument("--all", action="store_true")
     a.add_argument("--dry-run", action="store_true")
     a.add_argument("--tab")
-    for name in ("mark-sent", "drop"):
-        a = sub.add_parser(name)
-        a.add_argument("id")
-        a.add_argument("--reason")
-        a.add_argument("--force", action="store_true", help=force)
+    a.add_argument("--ws", help="workspace with the ingested chats (default WHOSAID_WORKSPACE)")
+    a = sub.add_parser("mark-sent")
+    a.add_argument("id", nargs="?", help="a draft id, or with --check an optional workspace")
+    a.add_argument("--check", action="store_true", help="mark staged drafts sent that show up in the ingested chat")
+    a.add_argument("--ws")
+    a.add_argument("--reason")
+    a.add_argument("--force", action="store_true", help=force)
+    a = sub.add_parser("drop")
+    a.add_argument("id")
+    a.add_argument("--reason")
+    a.add_argument("--force", action="store_true", help=force)
     return p
 
 
@@ -723,7 +1062,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         c = args.cmd
         if c == "new":
-            r = new(args.to, args.topic, args.page, args.supersedes, args.new_chat)
+            r = new(args.to, args.topic, args.page, args.supersedes, args.new_chat,
+                    mentions=args.mention, separate=args.separate)
             print(json.dumps({k: v for k, v in r.items() if k != "note"}, indent=2))
             if r.get("note"):
                 print(f"note: {r['note']}", file=sys.stderr)
@@ -740,6 +1080,9 @@ def main(argv: list[str] | None = None) -> int:
             key = "pages" if c == "attach" else "remove_pages"
             write(args.id, force=args.force, **{key: [page]})
             print("\n".join(load(args.id)["pages"]) or "(no pages)")
+        elif c == "mentions":
+            write(args.id, mentions=args.names, force=args.force)
+            print(", ".join(load(args.id).get("mentions") or []) or "(no mentions)")
         elif c == "verify":
             r = verify(args.id, force=args.force)
             print(f"verified {r['id']}: {r['confirmed']} confirmed, {r['unverified']} unverified, "
@@ -750,12 +1093,19 @@ def main(argv: list[str] | None = None) -> int:
             rows = listing(include_closed=getattr(args, "all", False), mine=c == "mine" or args.mine)
             print(json.dumps(rows, indent=2)) if args.json else _print_rows(rows)
         elif c == "show":
-            s = show(args.id)
+            s = show(args.id, args.rev)
             if args.json:
                 print(json.dumps(s, indent=2))
             else:
                 o = s["owner"]
                 print(f"# {s['id']}\nto: {s['to']}\nstate: {s['state']}\npages: {', '.join(s['pages']) or '(none)'}")
+                if s["mentions"]:
+                    print(f"mentions: {', '.join(s['mentions'])}")
+                for k in s["contributors"]:
+                    print(f"contributor: {k.get('name') or '(unnamed)'} {(k.get('sessionId') or '')[:8]}")
+                if s["revisions"]:
+                    by = (s["revision_log"][(s["rev"] or 1) - 1].get("by") or {})
+                    print(f"revision: {s['rev']} of {s['revisions']} (by {by.get('name') or (by.get('sessionId') or 'user')[:8]})")
                 print(f"owner: {s['owner_line']}\n  cwd: {o.get('cwd')}\n  resume: {o.get('resume') or '(not made from Claude Code)'}")
                 if o.get("name"):
                     print(f'  from another Claude session: SendMessage to "{o["name"]}"')
@@ -766,6 +1116,15 @@ def main(argv: list[str] | None = None) -> int:
                     print(f"  stakeholder {st.get('name')}: {st.get('why') or ''}; searched: {' | '.join(st.get('searched') or [])}")
                 if s["gate"]:
                     print("--- gate\n  - " + "\n  - ".join(s["gate"]))
+        elif c == "diff":
+            r = diff(args.id, args.rev_from, args.rev_to)
+            if args.json:
+                print(json.dumps(r, indent=2))
+            else:
+                print(r["diff"] or f"rev {r['from']} and rev {r['to']} are the same")
+        elif c == "html":
+            r = html_page(args.out, args.all)
+            print(f"{r['path']} ({r['drafts']} draft(s))")
         elif c == "stakeholders":
             r = stakeholders(_ws(args.ws), args.topic, args.repo, args.path, args.k, args.exclude)
             if args.json:
@@ -789,7 +1148,16 @@ def main(argv: list[str] | None = None) -> int:
         elif c == "stage":
             if not args.all and not args.id:
                 raise DraftsError("need an id or --all")
-            r = stage([args.id] if args.id else None, args.all, args.dry_run, args.tab)
+            r = stage([args.id] if args.id else None, args.all, args.dry_run, args.tab, args.ws)
+            for did, ctx in r.get("context", {}).items():
+                print(f"{did}: {ctx['chat']} has {ctx['ingested']} ingested message(s) in 14 days"
+                      + (f", newest {ctx['newest_at'][:16]}" if ctx["newest_at"] else ""))
+                for x in ctx["recent"]:
+                    print(f"   {x['at'][5:16]} {'you' if x['self'] else x['speaker']}: {x['text'][:100]}")
+                if ctx["reply_since_ours"]:
+                    print("   they replied after your last message")
+            if r.get("history_note"):
+                print(r["history_note"], file=sys.stderr)
             for s in r.get("would_run", []):
                 print(f"{s['id']}: would run {' '.join(shlex.quote(x) for x in s['argv'])}")
             for s in r["staged"]:
@@ -801,7 +1169,19 @@ def main(argv: list[str] | None = None) -> int:
             if r.get("note"):
                 print(r["note"])
             return 1 if r["failed"] else 0
+        elif c == "mark-sent" and args.check:
+            r = sent_check(_ws(args.ws or args.id))
+            for s in r["sent"]:
+                print(f"{s['id']}: sent at {s['at']} (found in {s['folder']})")
+            for s in r["still_staged"]:
+                print(f"{s['id']}: still staged, {s['why']}")
+            if not r["sent"] and not r["still_staged"]:
+                print("no staged drafts")
+            elif r["still_staged"]:
+                print(r["note"])
         elif c in ("mark-sent", "drop"):
+            if not args.id:
+                raise DraftsError("need a draft id (or mark-sent --check)")
             r = close(args.id, "sent" if c == "mark-sent" else "dropped", args.reason, force=args.force)
             print(f"{r['id']}: {r['status']}")
     except DraftsError as e:

@@ -766,12 +766,13 @@ TOPICS
   macOS app's Topics page reads the file and can rebuild it.
 
 DRAFTS
-  whosaid drafts new --to "First Last" --topic T [--page /abs/page.html] [--supersedes ID] [--new-chat]
-  whosaid drafts text ID --file draft.md | claims ID --file claims.json | attach|detach ID PAGE
-  whosaid drafts verify ID | list [--all] [--mine] [--json] | mine | show ID [--json] | path ID
+  whosaid drafts new --to "First Last" --topic T [--page /abs/page.html] [--mention NAME] [--supersedes ID] [--new-chat] [--new]
+  whosaid drafts text ID --file draft.md | claims ID --file claims.json | attach|detach ID PAGE | mentions ID [NAME ...]
+  whosaid drafts verify ID | list [--all] [--mine] [--json] | mine | show ID [--rev N] [--json] | path ID
+  whosaid drafts diff ID [--from N --to M] | html [--out PATH] [--all]
   whosaid drafts stakeholders [WS] --topic T [--topic T2] [--repo DIR --path P] [--exclude NAME] [--json]
   whosaid drafts stale-check [WS] [ID] [--json]
-  whosaid drafts stage ID|--all [--dry-run] [--tab TARGET] | mark-sent ID | drop ID [--reason R]
+  whosaid drafts stage ID|--all [--dry-run] [--tab TARGET] [--ws WS] | mark-sent ID | mark-sent --check [WS] | drop ID [--reason R]
   An offline outbox for chat drafts an agent writes for you, one folder per draft in
   ~/.drafts/<id>/ (WHOSAID_DRAFTS_DIR overrides): draft.md, claims.json, draft.json.
   Each draft records the agent session that wrote it (and how to resume it). verify
@@ -785,6 +786,12 @@ DRAFTS
   --chat NAME --md FILE [--attach PAGE] and TEAMS_OUTBOX_LOCK set. Nothing is sent.
   Changing another live session's draft needs --force; a gone session's draft is
   adopted by whoever changes it. mark-sent and drop are soft deletes (list --all).
+  One open draft per recipient: new to someone who has one joins it (you become a
+  contributor and your text a new revision); --new makes a separate draft. Every
+  text change is kept: show --rev N, diff --from N --to M. stage reads the ingested
+  chat with that person, prints the last messages, and skips a draft already sent;
+  mark-sent --check marks staged drafts sent once your message shows up there.
+  html writes a review page of open drafts (default <drafts dir>/outbox.html).
 
 APP STATE
   whosaid app-state [--json] [--workspace WS] [--into DIR]

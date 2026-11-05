@@ -285,6 +285,8 @@ whosaid drafts verify <id>
 whosaid drafts list                             # state and the session that wrote each one
 whosaid drafts stale-check ~/meetings           # stakeholders said something new since verify?
 whosaid drafts stage <id>                       # you run this; nothing is sent
+whosaid drafts mark-sent --check ~/meetings     # staged drafts you have since sent
+whosaid drafts html                             # review page of every open draft
 ```
 
 - **Who wrote it.** `new` records the Claude Code session (`CLAUDE_CODE_SESSION_ID`, joined to
@@ -305,10 +307,21 @@ whosaid drafts stage <id>                       # you run this; nothing is sent
 - **One owner at a time.** Changing a draft another live session owns is refused without
   `--force` (or `force=true` over MCP): ask that session instead. A draft whose session is gone
   is adopted by whoever changes it next.
+- **One draft per person.** `new` to someone who already has an open draft joins it: same id,
+  you become a contributor who may write it, and your text becomes a new revision. Merge your
+  points in instead of starting a rival message. `--new` makes a separate draft anyway.
+  `--mention NAME` records who to @mention; it is passed to the stager as `--mention`.
+- **Every revision kept.** Each text change is saved under `revisions/` with who wrote it.
+  `show <id> --rev N` prints one, `diff <id> [--from N --to M]` compares two.
+- **Reads the chat first.** With a workspace of ingested chats (`whosaid teams ingest`),
+  `stage` prints the last messages with that person and skips a draft that already appears
+  there as your message. `mark-sent --check` marks staged drafts sent the same way, so the
+  outbox closes itself after you send.
 
 Agents use the same outbox over MCP: `whosaid_draft_new`, `whosaid_draft_write`,
 `whosaid_draft_verify`, `whosaid_draft_close`, `whosaid_drafts`, `whosaid_draft_stakeholders`,
-`whosaid_draft_stale`: create, read, update and close. There is no stage or send tool.
+`whosaid_draft_stale`, `whosaid_draft_sent_check`: create, read (with `rev` and `diff`),
+update and close. There is no stage or send tool.
 
 ### Enroll from an existing recording
 
@@ -1135,8 +1148,8 @@ Add it to your MCP client config:
 | `whosaid_samples` | Exports one short representative WAV per speaker cluster (longest segment, clamped to `seconds`) so you can listen and confirm an identity before trusting a label. |
 | `whosaid_reprocess` | Re-diarizes older meetings in a workspace (wraps `whosaid reprocess`, reusing the existing ASR). Mutating, but `dry_run` defaults to true: it reports the plan and changes nothing until you pass `dry_run=false`. |
 | `whosaid_record_browser` | Records a browser meeting tab over the DevTools port. `action` is `start`, `stop` or `status`. Not read-only. Needs a browser started with `--remote-debugging-port`; no Screen Recording permission. Auto-stops when the call ends. |
-| `whosaid_draft_new`, `whosaid_draft_write`, `whosaid_draft_verify`, `whosaid_draft_close` | Write a chat draft into the [drafts outbox](#a-drafts-outbox-for-agent-written-chat-messages-whosaid-drafts) with its claims, stakeholders and pages, then check the gates. Not read-only. Local files only; never stages or sends. |
-| `whosaid_drafts`, `whosaid_draft_stakeholders`, `whosaid_draft_stale` | List or show drafts; rank who spoke about a topic; find drafts whose stakeholders said something new since verify. Read-only. |
+| `whosaid_draft_new`, `whosaid_draft_write`, `whosaid_draft_verify`, `whosaid_draft_close`, `whosaid_draft_sent_check` | Write a chat draft into the [drafts outbox](#a-drafts-outbox-for-agent-written-chat-messages-whosaid-drafts) with its claims, stakeholders and pages, then check the gates; `new` joins the recipient's open draft; `sent_check` marks staged drafts sent from the ingested chat. Not read-only. Local files only; never stages or sends. |
+| `whosaid_drafts`, `whosaid_draft_stakeholders`, `whosaid_draft_stale` | List, show or diff drafts and their revisions; rank who spoke about a topic; find drafts whose stakeholders said something new since verify. Read-only. |
 
 `enroll` and mic/app `record` stay CLI-only. They need an interactive terminal and
 Microphone permission. The first `whosaid_transcribe` call downloads ~1.5 GB of models; call

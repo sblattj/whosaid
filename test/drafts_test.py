@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-"""Offline tests for lib/drafts.py, the drafts outbox (GitHub issue #165)."""
+"""Offline tests for lib/drafts.py, the drafts outbox (GitHub issues #165 and #166)."""
 
+import hashlib
 import json
 import os
 import subprocess
@@ -49,6 +50,7 @@ class DraftsBase(unittest.TestCase):
             "WHOSAID_SESSIONS_DIR": str(self.root / "sessions"),
             "WHOSAID_DRAFTS_STAGER": f"{sys.executable} {stager}",
             "CLAUDE_CODE_SESSION_ID": "sess-1111",
+            "WHOSAID_DRAFTS_NO_HISTORY": "1",
         })
         self.env.start()
         (self.root / "sessions").mkdir()
@@ -120,8 +122,9 @@ class OutboxTest(DraftsBase):
 
     def test_rival_draft_blocks_stage_until_dropped(self):
         did = self.ready()
-        other = drafts.new("Test Person", "other")
+        other = drafts.new("Test Person", "other", separate=True)
         self.assertIn("open draft(s) to Test Person", other["note"])
+        self.assertNotEqual(other["id"], did)
         self.assertIn("other open draft", drafts.stage([did], dry_run=True)["failed"][0]["why"])
         drafts.close(other["id"], "dropped", "dup")
         self.assertEqual(len(drafts.stage([did], dry_run=True)["would_run"]), 1)
@@ -322,6 +325,166 @@ class StakeholdersTest(DraftsBase):
         hit = drafts.stale_check(self.ws)["maybe_stale"]
         self.assertEqual(hit[0]["id"], did)
         self.assertEqual(hit[0]["new_statements"][0]["speaker"], "Test_Person")
+
+
+class ExtrasTest(DraftsBase):
+    """#166: revisions, one draft per recipient, mentions, review page."""
+
+    def session(self, sid, name, pid=None):
+        (self.root / "sessions" / f"{sid}.json").write_text(json.dumps(
+            {"sessionId": sid, "name": name, "pid": pid or os.getpid(), "cwd": f"/repo/{name}"}))
+
+    def test_second_session_joins_the_open_draft_and_writes_a_revision(self):
+        did = self.ready()
+        self.session("sess-2222", "worker-b")
+        with patch.dict(os.environ, {"CLAUDE_CODE_SESSION_ID": "sess-2222"}):
+            r = drafts.new("Test Person", "dns follow-up")
+            self.assertTrue(r["joined"])
+            self.assertEqual(r["id"], did)
+            drafts.write(did, text="Hi, can you add the two DNS records today?")
+        m = drafts.load(did)
+        self.assertEqual(m["owner"]["sessionId"], "sess-1111", "the first writer stays the owner")
+        self.assertEqual([c["name"] for c in m["contributors"]], ["worker-b"])
+        self.assertEqual([r["by"]["name"] for r in m["revisions"]], ["worker-a", "worker-b"])
+        self.assertTrue(drafts.state(m).startswith("stale"))
+        self.assertEqual(len([d for d in drafts.all_drafts() if d["status"] in drafts.OPEN]), 1)
+        with patch.dict(os.environ, {"CLAUDE_CODE_SESSION_ID": "sess-3333"}):
+            with self.assertRaises(drafts.DraftsError):
+                drafts.write(did, text="not joined")
+
+    def test_new_flag_makes_a_second_draft(self):
+        did = self.ready()
+        r = drafts.new("Test Person", "other", separate=True)
+        self.assertFalse(r["joined"])
+        self.assertNotEqual(r["id"], did)
+
+    def test_revisions_show_and_diff(self):
+        did = drafts.new("Test Person", "t")["id"]
+        for t in ("one\n", "one\ntwo\n", "one\ntwo\n", "one\nthree\n"):
+            drafts.write(did, text=t)
+        m = drafts.load(did)
+        self.assertEqual(len(m["revisions"]), 3, "an unchanged write keeps no revision")
+        self.assertEqual(drafts.show(did, rev=1)["text"], "one\n")
+        d = drafts.diff(did)
+        self.assertEqual((d["from"], d["to"]), (2, 3))
+        self.assertIn("-two", d["diff"])
+        self.assertIn("+three", d["diff"])
+        self.assertIn("+two", drafts.diff(did, 1, 2)["diff"])
+        with self.assertRaises(drafts.DraftsError):
+            drafts.show(did, rev=9)
+
+    def test_draft_from_before_revisions_gets_rev_1(self):
+        did = drafts.new("Test Person", "t")["id"]
+        (drafts.ddir(did) / "draft.md").write_text("old text\n")
+        m = drafts.load(did)
+        m.pop("revisions")
+        drafts.save(m)
+        self.assertEqual(drafts.summary(drafts.load(did))["revisions"], 1)
+        self.assertEqual(drafts.show(did, rev=1)["text"], "old text\n")
+        drafts.write(did, text="new text\n")
+        m = drafts.load(did)
+        self.assertEqual(len(m["revisions"]), 2)
+        self.assertIn("-old text", drafts.diff(did)["diff"])
+
+    def test_hash_without_mentions_matches_the_prototype(self):
+        did = self.ready()
+        m = drafts.load(did)
+        h = hashlib.sha256()
+        d = drafts.ddir(did)
+        for f in [str(d / "draft.md"), str(d / "claims.json"), *m["pages"]]:
+            h.update(f.encode() + b"\0" + Path(f).read_bytes() + b"\0")
+        self.assertEqual(drafts.content_hash(m), h.hexdigest()[:16])
+
+    def test_mentions_are_staged_and_count_as_content(self):
+        did = self.ready()
+        drafts.write(did, mentions=["Other Person"])
+        self.assertTrue(drafts.state(drafts.load(did)).startswith("stale"), "a mention change needs re-verify")
+        drafts.verify(did)
+        argv = drafts.stage([did], dry_run=True)["would_run"][0]["argv"]
+        self.assertEqual(argv[argv.index("--mention") + 1], "Other Person")
+
+    def test_html_review_page(self):
+        did = self.ready()
+        drafts.write(did, text="Hi <b>there</b>, records?")
+        r = drafts.html_page(str(self.root / "out" / "review.html"))
+        page = Path(r["path"]).read_text()
+        self.assertEqual(r["drafts"], 1)
+        self.assertIn("Test Person", page)
+        self.assertIn("&lt;b&gt;there", page, "draft text is escaped")
+        self.assertIn("worker-a", page)
+        self.assertNotIn("\u2014", page)
+
+
+class ChatHistoryTest(DraftsBase):
+    """#166: stage reads the ingested chat first; mark-sent --check finds the sent message."""
+
+    def setUp(self):
+        super().setUp()
+        self.ws = self.root / "ws"
+        self.ws.mkdir()
+
+    def chat(self, messages, chat="Test Person", when=None):
+        when = when or datetime.now()
+        folder = self.ws / when.strftime("%Y-%m-%d-%H%M")
+        folder.mkdir(exist_ok=True)
+        segs = [{"start": 0, "end": 0, "speaker": spk, "epoch_ms": int(t.timestamp() * 1000), "mid": f"m{i}",
+                 "text": text} for i, (t, spk, text) in enumerate(messages)]
+        (folder / "teams.diarization.json").write_text(json.dumps({
+            "base": "teams", "source": {"kind": "teams-chat", "chat_name": chat, "day": when.strftime("%Y-%m-%d")},
+            "names": {}, "roles": {"Me_Self": "self"}, "segments": segs}))
+
+    def test_stage_reports_the_chat_and_skips_a_draft_already_sent(self):
+        did = self.ready()
+        later = datetime.now() + timedelta(seconds=5)
+        self.chat([(later - timedelta(minutes=3), "Test_Person", "morning, any news on dns?")])
+        r = drafts.stage([did], ws=self.ws)
+        ctx = r["context"][did]
+        self.assertEqual(ctx["ingested"], 1)
+        self.assertFalse(ctx["recent"][0]["self"])
+        self.assertIsNone(ctx["already_sent"])
+        self.assertEqual(len(r["staged"]), 1)
+        drafts.write(did, text="Hi, can you add the two DNS records? Thanks")
+        drafts.verify(did)
+        self.chat([(later, "Me_Self", "Hi, can you add the two **DNS records**? thanks"),
+                   (later + timedelta(seconds=30), "Test_Person", "sure")])
+        r = drafts.stage([did], ws=self.ws)
+        self.assertIn("already in Test Person", r["skipped"][0]["why"])
+        self.assertTrue(r["context"][did]["reply_since_ours"])
+        self.assertEqual(len(self.stager_calls()), 1, "no second paste of a sent message")
+
+    def test_sent_check_marks_only_what_appears(self):
+        did = self.ready()
+        other = self.ready(to="Second Person", topic="other")
+        drafts.stage([did], ws=self.ws)
+        drafts.stage([other], ws=self.ws)
+        r = drafts.sent_check(self.ws)
+        self.assertEqual(r["sent"], [])
+        self.assertEqual(len(r["still_staged"]), 2)
+        self.chat([(datetime.now() + timedelta(seconds=5), "Me_Self", "Hi, can you add the two DNS records?")])
+        self.chat([(datetime.now() + timedelta(seconds=5), "Me_Self", "an unrelated note")], chat="Second Person",
+                  when=datetime.now() + timedelta(minutes=1))
+        r = drafts.sent_check(self.ws)
+        self.assertEqual([s["id"] for s in r["sent"]], [did])
+        self.assertEqual(drafts.load(did)["status"], "sent")
+        self.assertEqual(drafts.load(did)["sent_message"]["mid"], "m0")
+        self.assertEqual(drafts.load(other)["status"], "staged")
+
+    def test_their_message_is_not_ours(self):
+        did = self.ready()
+        drafts.stage([did], ws=self.ws)
+        self.chat([(datetime.now() + timedelta(seconds=5), "Test_Person", "Hi, can you add the two DNS records?")])
+        self.assertEqual(drafts.sent_check(self.ws)["sent"], [])
+
+    def test_cli_mark_sent_check_and_diff(self):
+        did = self.ready()
+        drafts.stage([did], ws=self.ws)
+        self.chat([(datetime.now() + timedelta(seconds=5), "Me_Self", "Hi, can you add the two DNS records?")])
+        lib = Path(__file__).resolve().parents[1] / "lib" / "drafts.py"
+        out = subprocess.run([sys.executable, str(lib), "mark-sent", "--check", str(self.ws)],
+                             capture_output=True, text=True, env=os.environ)
+        self.assertIn(f"{did}: sent at", out.stdout, out.stderr)
+        out = subprocess.run([sys.executable, str(lib), "diff", did], capture_output=True, text=True, env=os.environ)
+        self.assertEqual(out.returncode, 0, out.stderr)
 
 
 if __name__ == "__main__":

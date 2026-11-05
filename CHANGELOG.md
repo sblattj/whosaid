@@ -6,6 +6,14 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ## [Unreleased]
 
+### Added
+- `whosaid drafts` follow-ups from #165 (folded in from #166):
+  - One open draft per recipient: `new` to someone with an open draft joins it as a contributor instead of making a rival; `--new` (MCP `separate=true`) makes a separate draft.
+  - Revision history: every text change is kept under `revisions/` with who wrote it; `show --rev N` and `diff --from N --to M` (MCP `whosaid_drafts` `rev`, `action=diff`).
+  - `stage` reads the ingested chat with the recipient, prints the last messages and skips a draft that already shows up as your message. `--mention NAME` is recorded and passed to the stager.
+  - `mark-sent --check [WS]` and MCP `whosaid_draft_sent_check` mark staged drafts sent once your matching message is in the ingested chat.
+  - `whosaid drafts html` writes a review page of open drafts.
+
 ## [1.30.0] - 2026-11-05
 
 ### Added
