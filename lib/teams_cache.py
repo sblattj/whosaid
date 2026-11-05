@@ -459,16 +459,35 @@ def name_chats(data: dict, ws: Path | None) -> dict[str, str]:
         if n:
             v = votes.setdefault(m["chat_id"], {})
             v[n] = v.get(n, 0) + 1
-    out = {}
+    out: dict[str, str] = {}
+    pinned = set()  # names set by an override or a folder that records this chat id
     for cid, c in data["chats"].items():
         if cid in overrides:
             out[cid] = overrides[cid]
+            pinned.add(cid)
         elif cid in by_cid:
             out[cid] = by_cid[cid]
+            pinned.add(cid)
         elif votes.get(cid):
             out[cid] = max(votes[cid].items(), key=lambda kv: kv[1])[0]
         else:
             out[cid] = c.get("name") or cid
+    # Two chats with one name (two people called the same, a meeting chat titled like a 1:1) would
+    # land in each other's name-only folders. The chat that owns the name keeps it: pinned, else the
+    # one whose messages the workspace already files under it, else the most recent. The others get
+    # a short, stable suffix ("Name (chat 1a2b3c)").
+    by_name: dict[str, list[str]] = {}
+    for cid, n in out.items():
+        by_name.setdefault(n, []).append(cid)
+    for n, cids in by_name.items():
+        if len(cids) < 2:
+            continue
+        owner = max(cids, key=lambda k: (k in pinned, votes.get(k, {}).get(n, 0),
+                                         data["chats"][k].get("last_ms", 0)))
+        for cid in cids:
+            if cid != owner and cid not in pinned:
+                kind = (data["chats"][cid].get("kind") or "chat").lower()
+                out[cid] = f"{n} ({kind} {hashlib.sha1(cid.encode()).hexdigest()[:6]})"
     return out
 
 

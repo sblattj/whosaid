@@ -2230,6 +2230,10 @@ cmd_ab() {
 # Non-audio adapters (issue #49): chats in lib/teams_chat.py, meeting transcripts in
 # lib/teams_transcript.py (both stdlib-only).
 cmd_teams() {
+  case "${1:-}" in
+    live|chats|sync) exec "$WHOSAID_PY" "$REPO_DIR/lib/teams_cache.py" "$@" ;;
+    cache-status) exec "$WHOSAID_PY" "$REPO_DIR/lib/teams_cache.py" status "${@:2}" ;;
+  esac
   if want_help "$@"; then cmd_help; exit 0; fi
   if [[ $# -eq 0 ]]; then
     log "teams: usage: whosaid teams ingest <export.json> --into DIR [--tz ZONE] [--self NAME] [--dry-run]"
@@ -2239,10 +2243,6 @@ cmd_teams() {
   fi
   if [[ "$1" == "ingest-transcript" ]]; then
     "$WHOSAID_PY" "$REPO_DIR/lib/teams_transcript.py" "$@"
-  elif [[ "$1" == live || "$1" == chats || "$1" == sync ]]; then
-    "$WHOSAID_PY" "$REPO_DIR/lib/teams_cache.py" "$@"
-  elif [[ "$1" == cache-status ]]; then
-    "$WHOSAID_PY" "$REPO_DIR/lib/teams_cache.py" status "${@:2}"
   else
     "$WHOSAID_PY" "$REPO_DIR/lib/teams_chat.py" "$@"
   fi

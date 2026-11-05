@@ -181,6 +181,52 @@ class WithWorkspace(unittest.TestCase):
             self.assertEqual(sc["source"]["scraper"], tc.SCRAPER)
             self.assertEqual(tc.sync(self.ws, None, tz="UTC")["new_messages"], 0)
 
+    def test_same_name_chats_do_not_share_a_folder(self):
+        # a second 1:1 with someone else also called "Bob Builder", same day as DM
+        dm2 = "19:aaaaaaaa-0000-0000-0000-000000000001_dddddddd-0000-0000-0000-000000000004@unq.gbl.spaces"
+        raw = raw_fixture()
+        raw["profiles"].append({"mri": "8:orgid:dddddddd-0000-0000-0000-000000000004", "displayName": "Bob Builder"})
+        raw["conversations"].append({"id": dm2, "type": "Chat"})
+        dm_first = next(m for m in raw["replychains"][0]["messageMap"].values() if m["creator"] == BOB)
+        raw["replychains"].append({"conversationId": dm2, "messageMap": {
+            "a": msg(dm2, dm_first["originalArrivalTime"] + 500, "8:orgid:dddddddd-0000-0000-0000-000000000004",
+                     "other bob here")}})
+        self.data = tc.decode(raw)
+        # a scraper folder (no chat id) already holds one DM message under the shared name
+        self.sidecar("2020-01-01-0000", "Bob Builder", [dm_first["id"]])
+        sc = self.ws / "2020-01-01-0000" / "teams.diarization.json"
+        d = json.loads(sc.read_text())
+        day = tc.datetime.fromtimestamp(dm_first["originalArrivalTime"] / 1000, tc.timezone.utc).strftime("%Y-%m-%d")
+        d["source"]["day"] = day
+        sc.write_text(json.dumps(d))
+        names = tc.name_chats(self.data, self.ws)
+        self.assertEqual(names[DM], "Bob Builder")
+        self.assertTrue(names[dm2].startswith("Bob Builder (chat "), names[dm2])
+        tc.sync(self.ws, None, tz="UTC")
+        merged = json.loads(sc.read_text())
+        self.assertNotIn("other bob here", [x["text"] for x in merged["segments"]])
+        other = [json.loads(p.read_text()) for p in self.ws.glob("*/teams.diarization.json")
+                 if json.loads(p.read_text())["source"].get("chat_id") == dm2]
+        self.assertEqual(len(other), 1)
+
+    def test_drafts_history_merges_unseen_cache_messages(self):
+        import drafts
+        dm_msgs = [m for m in self.data["messages"] if m["chat_id"] == DM]
+        self.sidecar("2099-01-01-0000", "Bob Builder", [dm_msgs[0]["message_id"]])
+        sc = self.ws / "2099-01-01-0000" / "teams.diarization.json"
+        d = json.loads(sc.read_text())
+        d["segments"][0]["epoch_ms"] = dm_msgs[0]["epoch_ms"]
+        sc.write_text(json.dumps(d))
+        with patch.dict(os.environ, {"WHOSAID_TEAMS_CACHE": ""}), \
+                patch.object(tc, "_leveldb", lambda d: Path(self.tmp.name)):
+            got = drafts.chat_messages(self.ws, "Bob Builder", since_ms=0)
+        self.assertEqual([g["mid"] for g in got], [m["message_id"] for m in dm_msgs])
+        self.assertEqual(got[0]["folder"], "2099-01-01-0000")
+        self.assertEqual({g["folder"] for g in got[1:]}, {"(teams cache)"})
+        self.assertTrue(next(g for g in got if g["text"].startswith("on it"))["self"])
+        with patch.dict(os.environ, {"WHOSAID_TEAMS_CACHE": "off"}):
+            self.assertEqual(len(drafts.chat_messages(self.ws, "Bob Builder", since_ms=0)), 1)
+
     def test_dry_run_writes_nothing(self):
         r = tc.sync(self.ws, None, dry_run=True, tz="UTC")
         self.assertEqual(r["new_messages"], 7)
