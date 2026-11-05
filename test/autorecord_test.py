@@ -395,4 +395,38 @@ echo "no running app matches" >&2; exit 2
                                    "--into", str(rec)], capture_output=True, text=True, timeout=30, env=env).stdout)
     check(s["live"] is True, f"status --json reports live from the last loop: {s}")
 
+# #164: the LaunchAgent carries certificate env, --env, --offline; reinstall keeps user values.
+_saved = {k: os.environ.pop(k, None) for k in ar.CERTIFICATE_ENV}
+try:
+    base = ["install", "--browser", "--into", "/r", "--whosaid", "/w"]
+    penv = ar.build_plist(ar.parse_args(base), None)["EnvironmentVariables"]
+    check(list(penv) == ["PATH"], f"no cert env in the shell -> PATH only: {penv}")
+    os.environ["SSL_CERT_FILE"], os.environ["UV_SYSTEM_CERTS"] = "/tmp/x.pem", "true"
+    penv = ar.build_plist(ar.parse_args(base), None)["EnvironmentVariables"]
+    check(penv.get("SSL_CERT_FILE") == "/tmp/x.pem" and penv.get("UV_SYSTEM_CERTS") == "true"
+          and penv.get("PATH") == ar.AGENT_PATH, f"cert env carried into the plist: {penv}")
+    check("HF_HUB_OFFLINE" not in penv and "FOO" not in penv, "offline and --env are opt-in")
+    pa = ar.parse_args(base + ["--env", "FOO=bar", "--env", "B=x=y", "--offline"])
+    penv = ar.build_plist(pa, None)["EnvironmentVariables"]
+    check(penv.get("FOO") == "bar" and penv.get("B") == "x=y" and penv.get("HF_HUB_OFFLINE") == "1",
+          f"--env and --offline reach the plist: {penv}")
+    penv = ar.build_plist(ar.parse_args(base + ["--env", "PATH=/evil"]), None)["EnvironmentVariables"]
+    check(penv["PATH"] == "/evil", "an explicit --env wins over the carried default")
+    prev = {"FOO": "kept", "PATH": "/stale", "HF_HUB_OFFLINE": "1", "SSL_CERT_FILE": "/old.pem"}
+    penv = ar.build_plist(ar.parse_args(base), None, prev)["EnvironmentVariables"]
+    check(penv.get("FOO") == "kept" and penv["PATH"] == ar.AGENT_PATH and "HF_HUB_OFFLINE" not in penv
+          and penv["SSL_CERT_FILE"] == "/tmp/x.pem", f"reinstall keeps user env, refreshes PATH/offline/certs: {penv}")
+    try:
+        ar.build_plist(ar.parse_args(base + ["--env", "nope"]), None)
+        check(False, "a malformed --env must exit")
+    except SystemExit as e:
+        check("KEY=VALUE" in str(e), f"malformed --env refused: {e}")
+    st = ar.parse_args(["setup", "--workspace", "/w", "--browser", "--offline", "--env", "A=b"])
+    check(st.offline and st.env == ["A=b"], "setup accepts --env/--offline")
+finally:
+    for k in ar.CERTIFICATE_ENV:
+        os.environ.pop(k, None)
+        if _saved[k] is not None:
+            os.environ[k] = _saved[k]
+
 print(f"PASS: autorecord_test ({CHECKS} checks)")

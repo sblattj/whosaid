@@ -58,6 +58,9 @@ import threading
 import time
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from watch import CERTIFICATE_ENV, OFFLINE_ENV, parse_env_pairs  # noqa: E402  (shared with the watch agent)
+
 LABEL = "com.whosaid.autorecord"
 LAUNCH_AGENTS = Path.home() / "Library" / "LaunchAgents"
 APP_NAME = "Whosaid Call Recorder"
@@ -483,7 +486,35 @@ def run_args(a: argparse.Namespace) -> list[str]:
     return args
 
 
-def build_plist(a: argparse.Namespace, app: Path | None) -> dict:
+def agent_env(a: argparse.Namespace, preserved: dict | None = None) -> dict[str, str]:
+    """EnvironmentVariables for the LaunchAgent (#164). launchd starts jobs with a bare
+    environment, so a corporate-CA setup (SSL_CERT_FILE, UV_SYSTEM_CERTS...) exported in the
+    installing shell would otherwise be lost and the live child could not fetch its wheels.
+    Order, later wins: prior user values, this shell's WHOSAID_ACTION_ITEMS_HOOK, WHOSAID_BIN and certificate vars, --offline, --env.
+    PATH defaults to ours; an explicit --env PATH=... wins."""
+    env = {k: v for k, v in (preserved or {}).items()
+           if isinstance(k, str) and isinstance(v, str) and k != "PATH" and k not in OFFLINE_ENV}
+    env["PATH"] = AGENT_PATH
+    for key in ("WHOSAID_ACTION_ITEMS_HOOK", "WHOSAID_BIN", *CERTIFICATE_ENV):
+        if os.environ.get(key):
+            env[key] = os.environ[key]
+    if getattr(a, "offline", False):
+        env.update(OFFLINE_ENV)
+    env.update(parse_env_pairs(getattr(a, "env", None)))
+    return env
+
+
+def installed_env() -> dict:
+    """EnvironmentVariables of the installed plist ({} when absent or unreadable)."""
+    try:
+        with open(plist_path(), "rb") as fh:
+            env = plistlib.load(fh).get("EnvironmentVariables")
+    except (OSError, plistlib.InvalidFileException, ValueError):
+        return {}
+    return env if isinstance(env, dict) else {}
+
+
+def build_plist(a: argparse.Namespace, app: Path | None, preserved_env: dict | None = None) -> dict:
     into = Path(a.into).expanduser()
     if app is not None:
         # open -W keeps this job alive as long as the app runs, so KeepAlive can
@@ -494,7 +525,7 @@ def build_plist(a: argparse.Namespace, app: Path | None) -> dict:
     return {
         "Label": LABEL,
         "ProgramArguments": program,
-        "EnvironmentVariables": {"PATH": AGENT_PATH},
+        "EnvironmentVariables": agent_env(a, preserved_env),
         "RunAtLoad": True,
         "KeepAlive": {"SuccessfulExit": False},
         "ThrottleInterval": 60,
@@ -527,7 +558,7 @@ def cmd_install(a: argparse.Namespace) -> int:
     rebuilt = False
     if a.app:
         app, rebuilt = ensure_launcher_app(a.dry_run)
-    data = build_plist(a, app)
+    data = build_plist(a, app, installed_env())
     if a.dry_run:
         log("== DRY RUN: nothing written, nothing loaded ==")
         log(f"mode      -> {'app ' + a.app if a.app else 'browser, CDP port ' + str(a.cdp_port)}")
@@ -627,6 +658,10 @@ def cmd_setup(a: argparse.Namespace) -> int:
     if a.owner:
         write_owner(ws, a.owner, a.dry_run)
     watch = [whosaid, "watch", "install", "--into", str(ws), "--source", str(into), "--no-fda"]
+    if a.offline:
+        watch.append("--offline")
+    for pair in a.env or []:
+        watch += ["--env", pair]
     if a.dry_run and ws.is_dir():
         watch.append("--dry-run")
     rc = step("3/3 transcribe each saved call", watch, a.dry_run)
@@ -866,6 +901,14 @@ def add_mode_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--whosaid", default=default_whosaid())
 
 
+def add_env_args(p: argparse.ArgumentParser) -> None:
+    p.add_argument("--env", action="append", metavar="KEY=VALUE",
+                   help="extra EnvironmentVariables for the LaunchAgent (repeatable). Certificate "
+                        "variables (SSL_CERT_FILE, UV_SYSTEM_CERTS...) are carried over from this shell")
+    p.add_argument("--offline", action="store_true",
+                   help="bake the HF offline env vars (HF_HUB_OFFLINE=1...) into the LaunchAgent")
+
+
 def parse_args(argv: list[str] | None) -> argparse.Namespace:
     p = argparse.ArgumentParser(prog="whosaid autorecord")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -873,12 +916,14 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
     add_mode_args(r)
     i = sub.add_parser("install")
     add_mode_args(i)
+    add_env_args(i)
     i.add_argument("--no-open", action="store_true")
     i.add_argument("--dry-run", action="store_true")
     u = sub.add_parser("uninstall")
     u.add_argument("--purge", action="store_true")
     st = sub.add_parser("setup")
     add_mode_args(st)
+    add_env_args(st)
     st.add_argument("--workspace", required=True, help="meeting workspace the transcripts go into")
     st.add_argument("--owner", help="workspace owner label for a new whosaid.toml, e.g. Alice_Example")
     st.add_argument("--skip-deps", action="store_true", help="skip `whosaid setup` (deps, models)")
