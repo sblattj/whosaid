@@ -91,6 +91,7 @@ WAIT_RETRY = {2: 30.0, 6: 10.0}  # app not running / bad flag; CDP target race
 EXIT_PERMISSION = 5               # Screen & System Audio Recording missing or revoked
 BACKOFF_START, BACKOFF_MAX = 30.0, 300.0
 LIVE_LOG = f"{CONTROL_DIR}/live.log"
+LIVE_RETRY_DELAYS = (5.0, 15.0, 45.0)  # a dead live child is restarted at most this many times per capture
 LIVE_STOP_WAIT = 30.0  # `live` transcribes the last chunk after SIGTERM, then marks the call ended
 
 
@@ -187,7 +188,8 @@ class State:
                      "mode": "app" if a.app else "browser", "app": a.app, "label": a.label,
                      "into": str(into), "state": "waiting", "since": iso(), "child_pid": None,
                      "paused_until": None, "last_saved": None, "last_error": None,
-                     "live": bool(getattr(a, "live", False)), "live_pid": None}
+                     "live": bool(getattr(a, "live", False)), "live_pid": None,
+                     "live_state": None, "live_exit": None, "live_restarts": 0}
 
     def set(self, **kw) -> None:
         with self.lock:
@@ -269,11 +271,15 @@ def cmd_run(a: argparse.Namespace) -> int:
 
     # --live: one `whosaid live --once` per capture, started when the capture starts
     # and stopped (SIGTERM, then a final chunk) when the record child exits.
-    live = {"proc": None}
+    # live_state: None (no capture), running, restarting (after a death, waiting out the
+    # backoff), failed (died and out of retries, or the last capture's death).
+    live = {"proc": None, "active": False, "restarts": 0, "retry_at": None, "failed": False}
+    live_lock = threading.RLock()  # the pump thread starts it, the monitor and main thread reap it
 
-    def start_live() -> None:
-        if not a.live or (live["proc"] and live["proc"].poll() is None):
-            return
+    def retry_delay(n: int) -> float:
+        return LIVE_RETRY_DELAYS[n] * float(os.environ.get("WHOSAID_AUTORECORD_DELAY_SCALE") or 1)
+
+    def spawn_live() -> bool:
         try:
             (into / CONTROL_DIR).mkdir(exist_ok=True)
             out = open(into / LIVE_LOG, "a")
@@ -283,16 +289,69 @@ def cmd_run(a: argparse.Namespace) -> int:
             out.close()
         except OSError as e:
             tee.line(f"autorecord: could not start the live transcript: {e}")
+            return False
+        st.set(live_pid=live["proc"].pid, live_state="running")
+        return True
+
+    def start_live() -> None:
+        if not a.live:
             return
-        st.set(live_pid=live["proc"].pid)
-        tee.line(f"autorecord: live transcript started (log {into / LIVE_LOG})")
+        with live_lock:
+            if live["proc"] and live["proc"].poll() is None:
+                return
+            live.update(active=True, restarts=0, retry_at=None, failed=False)
+            st.set(live_exit=None, live_restarts=0)
+            if spawn_live():
+                tee.line(f"autorecord: live transcript started (log {into / LIVE_LOG})")
+
+    def reap_live() -> None:
+        """If the live child died while its capture is still on, say so and schedule a
+        bounded restart (backoff, never a hot loop). Caller holds live_lock."""
+        p = live["proc"]
+        if p is None or p.poll() is None:
+            return
+        rc = p.returncode
+        live["proc"] = None
+        live["failed"] = True
+        tee.line(f"autorecord: live transcript failed (exit {rc}), see {into / LIVE_LOG}")
+        n = live["restarts"]
+        if n < len(LIVE_RETRY_DELAYS):
+            live["retry_at"] = time.monotonic() + retry_delay(n)
+            st.set(live_pid=None, live_state="restarting", live_exit=rc)
+            tee.line(f"autorecord: restarting the live transcript in {retry_delay(n):.0f}s "
+                     f"(retry {n + 1} of {len(LIVE_RETRY_DELAYS)})")
+        else:
+            live["retry_at"] = None
+            st.set(live_pid=None, live_state="failed", live_exit=rc)
+            tee.line(f"autorecord: giving up on the live transcript after {n} restarts; "
+                     "the recording itself is unaffected")
+
+    def watch_live() -> None:
+        with live_lock:
+            if not live["active"]:
+                return
+            reap_live()
+            if live["proc"] is None and live["retry_at"] is not None and time.monotonic() >= live["retry_at"]:
+                live["retry_at"] = None
+                live["restarts"] += 1
+                st.set(live_restarts=live["restarts"])
+                if spawn_live():
+                    live["failed"] = False  # a running child clears the failure
+                    tee.line(f"autorecord: live transcript restarted (retry {live['restarts']} of "
+                             f"{len(LIVE_RETRY_DELAYS)}, log {into / LIVE_LOG})")
+                elif live["restarts"] < len(LIVE_RETRY_DELAYS):  # Popen itself failed: keep the bound
+                    live["retry_at"] = time.monotonic() + retry_delay(live["restarts"])
+                else:
+                    st.set(live_state="failed")
 
     def stop_live() -> None:
-        p = live["proc"]
-        if p is None:
-            return
-        live["proc"] = None
-        if p.poll() is None:
+        with live_lock:
+            live["active"] = False
+            live["retry_at"] = None
+            reap_live()  # it died just before the capture ended: still report it
+            p, live["proc"] = live["proc"], None
+            failed = live["failed"]
+        if p is not None and p.poll() is None:
             try:
                 os.killpg(p.pid, signal.SIGTERM)
                 p.wait(timeout=LIVE_STOP_WAIT)
@@ -301,8 +360,20 @@ def cmd_run(a: argparse.Namespace) -> int:
                 p.wait()
             except OSError:
                 pass
-        st.set(live_pid=None)
-        tee.line("autorecord: live transcript stopped")
+        if p is None and not failed:
+            return
+        # a death stays visible in status until the next capture starts
+        st.set(live_pid=None, live_state="failed" if failed else None)
+        if p is not None:
+            tee.line("autorecord: live transcript stopped")
+
+    def live_monitor() -> None:
+        while not state["stop"]:
+            watch_live()
+            time.sleep(CONTROL_POLL)
+
+    if a.live:
+        threading.Thread(target=live_monitor, daemon=True).start()
 
     def controls() -> None:
         """Poll the pause and stop-now files while the loop runs."""
@@ -671,7 +742,8 @@ LOG_STATE_LINE = re.compile(r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}) (.*)$")
 def state_from_log(lines: list[str]) -> dict:
     """Best-effort state for a loop that writes no state file (an older install):
     the last saved file, the last failed exit, and whether a capture is open."""
-    out = {"state": "waiting", "since": None, "last_saved": None, "last_error": None}
+    out = {"state": "waiting", "since": None, "last_saved": None, "last_error": None,
+           "live_state": None, "live_exit": None}
     for line in lines:
         m = LOG_STATE_LINE.match(line)
         if not m:
@@ -680,6 +752,12 @@ def state_from_log(lines: list[str]) -> dict:
         msg = m.group(2)
         if msg.startswith("autorecord: saved "):
             out.update(state="waiting", since=at, last_saved={"path": msg[len("autorecord: saved "):], "at": at})
+        elif (lm := re.match(r"autorecord: live transcript failed \(exit (-?\d+)\)", msg)):
+            out.update(live_state="failed", live_exit=int(lm.group(1)))
+        elif msg.startswith(("autorecord: live transcript started", "autorecord: live transcript restarted")):
+            out.update(live_state="running")
+        elif msg.startswith("autorecord: live transcript stopped"):
+            out.update(live_state="failed" if out["live_state"] == "failed" else None)
         elif msg.startswith("autorecord: stopped"):
             out.update(state="stopped", since=at)
         elif msg.startswith("autorecord: no Screen & System Audio Recording permission"):
@@ -757,7 +835,8 @@ def status(into_arg: str | None = None) -> dict:
     running = owner_alive or (into.is_dir() and (into / LOCK_NAME).exists() and lock_held(into))
     live_file = owner_alive
     if live_file:
-        src = {k: data.get(k) for k in ("state", "since", "last_saved", "last_error", "paused_until")}
+        src = {k: data.get(k) for k in ("state", "since", "last_saved", "last_error", "paused_until",
+                                        "live_state", "live_exit", "live_restarts")}
     else:
         logf = into / LOG_NAME
         lines = logf.read_text(errors="replace").splitlines()[-400:] if logf.exists() else []
@@ -765,6 +844,8 @@ def status(into_arg: str | None = None) -> dict:
         if not running:
             src["state"] = "stopped" if (cfg or lines) else "not-installed"
         src["paused_until"] = None
+        if not running:
+            src["live_state"] = None  # no loop, no child
     until = paused_until(into)
     if until and live_file and src["state"] not in ("recording", "saving"):
         src["state"] = "paused"
@@ -846,6 +927,9 @@ def cmd_status(a: argparse.Namespace) -> int:
     if logf.exists():
         lines = logf.read_text(errors="replace").splitlines()[-a.lines:]
         print("\n".join(lines))
+    ls = status(str(into))
+    if ls.get("live_state") in ("failed", "restarting"):
+        print(f"autorecord: live transcript {ls['live_state']} (exit {ls.get('live_exit')}), see {into / LIVE_LOG}")
     return 0 if running else 3
 
 

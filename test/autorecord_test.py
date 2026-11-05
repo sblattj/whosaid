@@ -395,4 +395,82 @@ echo "no running app matches" >&2; exit 2
                                    "--into", str(rec)], capture_output=True, text=True, timeout=30, env=env).stdout)
     check(s["live"] is True, f"status --json reports live from the last loop: {s}")
 
+# ---- --live watchdog: a live child that dies mid-call is reported, restarted (bounded), shown in status ----
+def live_watchdog_case(d: Path, live_body: str, hold_until: str):
+    rec = d / "rec"
+    fake = d / "whosaid"
+    fake.write_text(f"""#!/bin/bash
+if [[ $1 == live ]]; then
+  echo x >> {d}/live.starts
+  {live_body}
+fi
+echo "record-app: Example opened the mic; starting the capture." >&2
+for i in $(seq 1 100); do [[ -f {d}/{hold_until} ]] && break; sleep 0.1; done
+echo "record-app: capture ended; saving the recording" >&2
+echo "{rec}/20261029T160000Z-call.m4a"; exit 0
+""")
+    fake.chmod(0o755)
+    env = dict(os.environ, HOME=str(d / "home"), WHOSAID_AUTORECORD_MAX_LOOPS="1",
+               WHOSAID_AUTORECORD_DELAY_SCALE="0.02")
+    loop = subprocess.Popen([sys.executable, str(ROOT / "lib" / "autorecord.py"), "run", "--app", "com.example.app",
+                             "--into", str(rec), "--whosaid", str(fake), "--live"],
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=env)
+    return rec, loop, env
+
+
+def status_json(rec, env):
+    return json.loads(subprocess.run([sys.executable, str(ROOT / "lib" / "autorecord.py"), "status", "--json",
+                                      "--into", str(rec)], capture_output=True, text=True, timeout=30, env=env).stdout)
+
+
+def wait_for(fn, secs):
+    end = time.monotonic() + secs
+    while time.monotonic() < end:
+        v = fn()
+        if v:
+            return v
+        time.sleep(0.1)
+    return None
+
+
+with tempfile.TemporaryDirectory() as d:  # failure: live exits 1 after a moment, every time
+    d = Path(d)
+    rec, loop, env = live_watchdog_case(d, "sleep 0.3; exit 1", "release")
+    logf = rec / ar.LOG_NAME
+    gave_up = wait_for(lambda: logf.exists() and "giving up on the live transcript" in logf.read_text(), 30)
+    check(bool(gave_up), "a live child that keeps dying is given up on")
+    s = status_json(rec, env)
+    check(s["state"] == "recording" and s["live_state"] == "failed" and s["live_exit"] == 1,
+          f"status --json shows the dead live child during the call: {s}")
+    check(s["live_restarts"] == len(ar.LIVE_RETRY_DELAYS), f"restarts are counted: {s}")
+    (d / "release").write_text("")
+    loop.wait(timeout=30)
+    txt = logf.read_text()
+    check(loop.returncode == 0 and "autorecord: saved " in txt, f"the capture still saves: {loop.returncode}")
+    check(txt.count("live transcript failed (exit 1), see " + str(rec / ar.LIVE_LOG)) == 1 + len(ar.LIVE_RETRY_DELAYS),
+          f"every death is logged with its exit code: {txt}")
+    starts = len((d / "live.starts").read_text().split())
+    check(starts == 1 + len(ar.LIVE_RETRY_DELAYS), f"restarts are bounded (1 start + {len(ar.LIVE_RETRY_DELAYS)} retries): {starts}")
+    sj = status_json(rec, env)
+    check(sj["live_state"] is None and sj["state"] == "stopped", f"a stopped loop shows no live child: {sj}")
+    from_log = ar.state_from_log(txt.splitlines())
+    check(from_log["live_state"] == "failed" and from_log["live_exit"] == 1, f"state_from_log reads the failure: {from_log}")
+    check(not subprocess.run(["pgrep", "-f", f"{d}/whosaid live"], capture_output=True).stdout, "no live child outlives the loop")
+
+with tempfile.TemporaryDirectory() as d:  # control: live keeps running
+    d = Path(d)
+    rec, loop, env = live_watchdog_case(d, "trap 'exit 0' TERM; while true; do sleep 0.1; done", "release")
+    logf = rec / ar.LOG_NAME
+    wait_for(lambda: logf.exists() and "live transcript started" in logf.read_text(), 30)
+    time.sleep(2.0)  # several monitor polls
+    s = status_json(rec, env)
+    check(s["state"] == "recording" and s["live_state"] == "running" and s["live_exit"] is None,
+          f"a healthy live child shows running: {s}")
+    (d / "release").write_text("")
+    loop.wait(timeout=30)
+    txt = logf.read_text()
+    check("live transcript failed" not in txt and "restarting" not in txt, f"no failure line for a healthy child: {txt}")
+    check(len((d / "live.starts").read_text().split()) == 1, "a healthy child is started once")
+    check(status_json(rec, env)["live_state"] is None, "after a clean stop live_state clears")
+
 print(f"PASS: autorecord_test ({CHECKS} checks)")

@@ -65,6 +65,10 @@ check("2026-10-29T16:00" in app_state.compose(next(c[1] for c in cases if c[0] =
 check("percent" not in json.dumps([app_state.compose(*c[1:]) for c in cases]), "no ingest percent anywhere")
 check(app_state.compose({**ar_wait, "state": "recording"}, {**idle_w, "state": "ingesting"}, no_live)["state"]
       == "recording", "recording outranks ingesting")
+dead = app_state.compose({**ar_wait, "state": "recording", "live_state": "failed", "live_exit": 1}, idle_w, no_live)
+check(dead["state"] == "warn" and "exit 1" in dead["headline"], f"a dead live child while recording is a warn: {dead}")
+check(app_state.compose({**ar_wait, "state": "waiting", "live_state": "failed"}, idle_w, no_live)["state"] != "warn",
+      "an old live failure does not warn between calls")
 
 with tempfile.TemporaryDirectory() as d:
     d = Path(d)
