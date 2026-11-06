@@ -6,6 +6,8 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ## [Unreleased]
 
+## [1.34.0] - 2026-11-06
+
 ### Added
 - `whosaid drafts edit-sent ID` fixes a message you already sent (#176). Write the corrected text (`drafts text`), then edit-sent finds your message in the chat (the ingested history, or `--match-file`), opens Teams' Edit on it and loads the new text. Like `stage` it never saves: no Enter, and in edit mode a click on a Done/Save control is refused. It refuses when no message of yours matches, when several do, when the text is unchanged, or when draft.md is much longer than what was sent (the edit replaces the whole message; `--allow-longer` overrides). `--dry-run` shows which message it would edit. A verified draft found sent this way is marked sent.
 - `lib/voice_lint.py` scores a message draft against a JSON voice profile with plain rules and no model calls: word and paragraph limits, an opening greeting, closing phrases, ask phrases, banned words and characters. Every rule is off unless the profile sets it; the score is the number of rules hit.
