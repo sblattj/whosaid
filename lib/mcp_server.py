@@ -3206,7 +3206,9 @@ _DESC_DRAFT_WRITE = (
     "what}], mentions = [names], each replaced whole when passed. A changed text is kept as a new "
     "revision tagged with your session. pages = absolute page paths to add, remove_pages = ones to detach. Write the claims "
     "first and check each one before the text: a refuted claim must be marked dropped and left out "
-    "of the text. Returns {ok, id, state, gate}; gate lists what verify would still refuse. Any "
+    "of the text. Returns {ok, id, state, gate}; gate lists the claim and page gates verify would "
+    "still refuse. verify also runs the voice lint on the text (one short paragraph, no greeting or "
+    "closer line; whosaid_drafts(action='lint') shows it before you verify). Any "
     "write after a verify makes the draft stale until verified again. A draft owned by another live session is refused unless force=true or you joined it with whosaid_draft_new; ask that session instead."
 )
 

@@ -354,6 +354,7 @@ def main() -> None:
           f"draft_verify: voice override params: {sorted(vprops)}")
     check(set(dumps["whosaid_draft_verify"]["inputSchema"].get("required") or []) == {"id"}, "draft_verify requires id only")
     check("voice lint" in (by_name["whosaid_draft_verify"].description or ""), "draft_verify desc names the voice lint")
+    check("voice lint" in (by_name["whosaid_draft_write"].description or ""), "draft_write desc names the voice lint")
     check("lint" in str(dumps["whosaid_drafts"]["inputSchema"]["properties"]["action"]), "drafts action has lint")
 
     # --- live Teams cache: read-only, offline, named in the instructions ---
