@@ -6,6 +6,11 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ## [Unreleased]
 
+## [1.33.1] - 2026-11-06
+
+### Fixed
+- `drafts stage` with `--new-chat`: the built-in stager now presses Teams's "New message" control. It looked for "New chat", which Teams web no longer shows, so a new-chat draft exited 1 with "no New chat control found". The stager's selectors were checked on a signed-in Teams web tab: editor, Attach, Send, the compose area and the search box each match one element (#168).
+
 ## [1.33.0] - 2026-11-05
 
 ### Added
