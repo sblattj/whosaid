@@ -6,6 +6,11 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ## [Unreleased]
 
+## [1.33.0] - 2026-11-05
+
+### Added
+- `whosaid drafts stage` works with `WHOSAID_DRAFTS_STAGER` unset: a built-in stager (`lib/drafts_stager.py`) drives Teams web in a Chromium browser on the DevTools port (`WHOSAID_CDP_PORT`, default 9222). It opens the chat by exact name from the left rail or the search box (`--new-chat` starts one), pastes the draft as rich text, attaches pages, and turns `--mention` names into real @mentions at the start of the message. On a restage it clears the compose box and only the attachment chips inside it. It never sends: Enter keys and clicks on the send button are refused at one choke point, and the last output line is `{"sent": false, ...}`. It refuses to run outside `drafts stage` (no `TEAMS_OUTBOX_LOCK`) unless `--bypass-outbox` is passed, and gives up after 270s, naming the step. `WHOSAID_DRAFTS_STAGER` stays as an override for other chat apps (#168).
+
 ## [1.32.0] - 2026-11-05
 
 ### Added
