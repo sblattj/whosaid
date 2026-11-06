@@ -34,6 +34,13 @@ option whose first line is NAME exactly (none: exit 1 "no mention suggestion for
 exit 1 ambiguous; never Enter), then check the compose box gained one mention element. Mentions are
 inserted after any --replace clearing and before the paste.
 
+--edit-sent --match-file F (#176): edit one of YOUR messages already in the chat instead of composing.
+Finds the own message whose text matches F (same rule as `drafts mark-sent --check`; none: exit 1, several:
+exit 1 ambiguous), hovers it, clicks its "More options", then the "Edit" menu item, waits for the edit box
+(an editor that is not the compose box), clears it and pastes --md. It never saves: no Enter, and in this
+mode a click on a Done/Save control is refused too. Not combinable with --attach/--mention/--replace/
+--new-chat (exit 2). Output: {"sent": false, "saved": false, "edit": true, "chat", "chars", "links"}.
+
 Output: the last stdout line is {"sent": false, "chat": <title>, "chars": n, "links": n,
 "attachments": n, "mentions": n}. Errors go to stderr, exit 1; usage errors exit 2.
 Runtime dep: websockets (`uv run --with websockets`). Poll intervals scale by
@@ -71,6 +78,15 @@ Wave 2 ops:
   to_chip      {name}             bool, the To field shows a recipient chip with that name
   mention_count {}                int, mention elements in the compose box
   mention_find {name}             {"total": n, "matches": [{x,y}]} like people_find, for the @ list
+Wave 3 ops (--edit-sent):
+  own_msgs     {}                 [{text}] your messages rendered in the chat, oldest first
+  msg_more     {key}              null when none of your messages starts with key, else scrolls it into view and
+                                  returns {"at": {x,y} of its body, "more": {x,y} of its "More options" or null}
+  menu_item    {label}            {x,y} of the menu item whose first line is label, or null
+  edit_ready   {}                 {"editors": n edit boxes (editors outside the compose root), "text": str}
+  edit_len     {}                 int, trimmed text length of the one edit box (-1 when not exactly one)
+  edit_select  {}                 null, selects the edit box contents with a range
+  edit_paste   {html, plain}      {"len": int, "links": int} after a synthetic paste into the edit box
 (caret_end also means: the compose box has focus with the caret at its end.)
 Other CDP calls: Target.getTargets, setDiscoverTargets, createTarget, attachToTarget,
 activateTarget, Page.enable/bringToFront/setInterceptFileChooserDialog, DOM.enable/getDocument/
@@ -112,6 +128,13 @@ ATTACH_SEL = '[data-tid=sendMessageCommands-FilePicker],[data-tid=newMessageComm
 CHIP_PROVEN = '[data-tid="file-well"] > [role="group"]'
 CHIP_SEL = CHIP_PROVEN + ',[data-tid*="attachment" i],[data-tid*="file-card" i],[data-tid*="file-chip" i]'
 CHIP_REMOVE_SEL = 'button[aria-label^="Remove" i],button[aria-label^="Dismiss" i],[data-tid*="remove" i]'
+# Your own sent messages, the "More options" control on one, and the Edit menu item (UNVERIFIED:
+# Teams web renders own messages with Fluent's ChatMyMessage; the toolbar shows on hover).
+OWN_MSG_SEL = '.fui-ChatMyMessage,[data-tid="chat-pane-message"][data-is-mine="true"]'
+OWN_BODY_SEL = '[data-tid="chat-pane-message"],.fui-ChatMyMessage__body'
+MORE_SEL = 'button[aria-label="More options" i],button[aria-label^="More message options" i]'
+# Saving an edit. Refused as a click target in --edit-sent mode (UNVERIFIED names).
+SAVE_GUARD = '[aria-label="Done" i],[aria-label^="Save" i],[aria-label="Update" i],[data-tid*="save" i]'
 # The search box. CHECKED: data-tid AUTOSUGGEST_INPUT, a combobox input.
 SEARCH_SEL = ('[data-tid="AUTOSUGGEST_INPUT"],input[role=combobox][aria-label*="Search" i],[role=combobox][aria-label*="Search" i],'
               'input[type=search]')
@@ -278,6 +301,7 @@ def op(_op: str, _body: str, **args) -> str:
 class CDP:
     def __init__(self, ws):
         self.ws = ws
+        self.edit_mode = False
         self.seq = 0
         self.pending: dict[int, asyncio.Future] = {}
         self.events: list[dict] = []
@@ -342,6 +366,9 @@ class CDP:
         if await self.ev(op("hit_test", "return !!document.elementFromPoint(A.x,A.y)?.closest(A.sel)",
                             x=x, y=y, sel=SEND_GUARD)):
             raise StagerError("refusing to click a send button: this stager never sends", 1)
+        if self.edit_mode and await self.ev(op("hit_test", "return !!document.elementFromPoint(A.x,A.y)?.closest(A.sel)",
+                                               x=x, y=y, sel=SAVE_GUARD)):
+            raise StagerError("refusing to click a save control: edit-sent never saves the edit", 1)
         for typ in ("mousePressed", "mouseReleased"):
             await self.s("Input.dispatchMouseEvent", {"type": typ, "x": x, "y": y, "button": "left",
                                                        "clickCount": 1})
@@ -396,6 +423,27 @@ JS_TO_CHIP = (f"return [...document.querySelectorAll({json.dumps(TO_CHIP_SEL)})]
               ".some(e=>e.innerText.trim().split('\\n')[0].trim()===A.name)")
 JS_MENTION_COUNT = f"return (ED()?.querySelectorAll({json.dumps(MENTION_SEL)}).length)||0"
 JS_MENTION_FIND = _XY + _OPTS
+_OWN = (f"const own=()=>[...document.querySelectorAll({json.dumps(OWN_MSG_SEL)})];"
+        f"const body=m=>m.querySelector({json.dumps(OWN_BODY_SEL)})||m;"
+        "const norm=t=>(t||'').replace(/\\s+/g,' ').trim();")
+# Edit boxes: editors that are not the compose box (no Attach button around them).
+_EDITS = (f"const EDS=()=>[...document.querySelectorAll({json.dumps(EDITOR_SEL)})].filter(e=>{{let n=e.parentElement;"
+          f"while(n&&n!==document.documentElement){{if(n.querySelector({json.dumps(ATTACH_SEL)}))return false;"
+          "n=n.parentElement}return true});const EE=()=>{const l=EDS();return l.length===1?l[0]:null};")
+JS_OWN_MSGS = _OWN + "return own().map(m=>({text:body(m).innerText}))"
+JS_MSG_MORE = (_XY + _OWN + "const m=own().find(m=>norm(body(m).innerText).startsWith(A.key));if(!m)return null;"
+               f"const s=m.closest('[data-tid=\"chat-pane-item\"]')||m.parentElement||m;"
+               "body(m).scrollIntoView({block:'center'});"
+               f"const b=s.querySelector({json.dumps(MORE_SEL)});return {{at:xy(body(m)),more:b?xy(b):null}}")
+JS_MENU_ITEM = (_XY + "const m=[...document.querySelectorAll('[role=menuitem]')]"
+                ".find(e=>e.innerText.trim().split('\\n')[0].trim()===A.label);return m?xy(m):null")
+JS_EDIT_READY = _EDITS + "const l=EDS();return {editors:l.length,text:l.length===1?l[0].innerText:''}"
+JS_EDIT_LEN = _EDITS + "const e=EE();return e?e.innerText.trim().length:-1"
+JS_EDIT_SELECT = (_EDITS + "const e=EE();e.focus();const r=document.createRange();r.selectNodeContents(e);"
+                  "const s=getSelection();s.removeAllRanges();s.addRange(r);return null")
+JS_EDIT_PASTE = (_EDITS + "const e=EE();e.focus();const dt=new DataTransfer();dt.setData('text/html',A.html);"
+                 "dt.setData('text/plain',A.plain);e.dispatchEvent(new ClipboardEvent('paste',{clipboardData:dt,"
+                 "bubbles:true,cancelable:true}));return {len:e.innerText.trim().length,links:e.querySelectorAll('a').length}")
 
 
 async def find_tab(c: CDP, want: str | None) -> str:
@@ -657,6 +705,8 @@ async def stage(a) -> dict:
             await bring_to_front(c, tid)
             step("opening the chat")
             title = await (new_chat(c, a.chat) if a.new_chat else open_chat(c, a.chat))
+            if a.edit_sent:
+                return await edit_sent(c, a, title, html, plain)
 
             step("waiting for the compose box")
             for _ in range(20):
@@ -708,6 +758,77 @@ async def stage(a) -> dict:
                     "attachments": measured, "mentions": len(a.mention)}
         finally:
             c.reader.cancel()
+
+
+def _norm_text(t: str) -> str:
+    return re.sub(r"\s+", " ", t or "").strip()
+
+
+async def edit_sent(c: CDP, a, title: str, html: str, plain: str) -> dict:
+    """Load the new text into Teams' Edit box on our matching sent message. Never saves."""
+    from drafts import same_message  # the outbox's own "this chat message is that draft" rule
+    c.edit_mode = True
+    want = open(a.match_file, encoding="utf-8").read()
+    step("finding your message")
+    hits: list[dict] = []
+    for _ in range(20):
+        msgs = await c.ev(op("own_msgs", JS_OWN_MSGS)) or []
+        hits = [m for m in msgs if same_message(want, m.get("text") or "")]
+        if hits:
+            break
+        await nap(0.5)
+    if not hits:
+        raise StagerError(f"no message of yours in {a.chat} matches the sent text (is it loaded in the chat?)")
+    if len(hits) > 1:
+        raise StagerError(f"ambiguous: {len(hits)} of your messages in {a.chat} match the sent text")
+    key = _norm_text(hits[0]["text"])[:60]
+    step("opening Edit on it")
+    more = None
+    for _ in range(10):
+        got = await c.ev(op("msg_more", JS_MSG_MORE, key=key))
+        if not got or not got.get("at"):
+            raise StagerError("that message left the chat view; rerun")
+        more = got.get("more")
+        if more:
+            break
+        await c.s("Input.dispatchMouseEvent", {"type": "mouseMoved", "x": got["at"]["x"], "y": got["at"]["y"]})
+        await nap(0.3)
+    if not more:
+        raise StagerError("no More options control on that message")
+    await c.click(more["x"], more["y"])
+    item = None
+    for _ in range(10):
+        await nap(0.3)
+        item = await c.ev(op("menu_item", JS_MENU_ITEM, label="Edit"))
+        if item:
+            break
+    if not item:
+        raise StagerError("no Edit item in that message's menu (only your own messages can be edited)")
+    await c.click(item["x"], item["y"])
+    step("waiting for the edit box")
+    ready = {"editors": 0, "text": ""}
+    for _ in range(20):
+        ready = await c.ev(op("edit_ready", JS_EDIT_READY))
+        if ready["editors"] == 1:
+            break
+        await nap(0.3)
+    if ready["editors"] != 1:
+        raise StagerError(f"expected one edit box after Edit, found {ready['editors']}")
+    if not _norm_text(ready["text"]).startswith(key[:40]):
+        raise StagerError("the edit box doesn't hold the message we picked; stopping (press Esc in Teams)")
+    step("replacing the text")
+    for _ in range(3):
+        if await c.ev(op("edit_len", JS_EDIT_LEN)) <= 0:
+            break
+        await c.ev(op("edit_select", JS_EDIT_SELECT))
+        await c.key("Backspace", "Backspace", 8)
+        await nap(0.4)
+    if await c.ev(op("edit_len", JS_EDIT_LEN)) != 0:
+        raise StagerError("couldn't clear the edit box; press Esc in Teams to cancel the edit")
+    res = await c.ev(op("edit_paste", JS_EDIT_PASTE, html=html, plain=plain))
+    if not res or not res.get("len"):
+        raise StagerError("paste left the edit box empty; press Esc in Teams to cancel the edit")
+    return {"sent": False, "saved": False, "edit": True, "chat": title, "chars": res["len"], "links": res["links"]}
 
 
 async def bring_to_front(c: CDP, tid: str):
@@ -806,6 +927,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     p.add_argument("--tab")
     p.add_argument("--cdp-port", type=int, default=None)
     p.add_argument("--bypass-outbox", action="store_true")
+    p.add_argument("--edit-sent", action="store_true", help="edit your sent message matching --match-file")
+    p.add_argument("--match-file", help="text of the sent message to edit (--edit-sent)")
     a = p.parse_args(argv)  # argparse exits 2 on usage errors
     if a.cdp_port is None:  # only read the env var when the flag is absent
         raw = os.environ.get("WHOSAID_CDP_PORT") or "9222"
@@ -837,6 +960,13 @@ def check_args(a: argparse.Namespace, env=os.environ) -> None:
     if not a.bypass_outbox and not (lock and os.path.exists(lock)):
         raise StagerError("refusing to run outside the outbox: TEAMS_OUTBOX_LOCK is unset or missing "
                           "(use `whosaid drafts stage`, or --bypass-outbox)", 2)
+    if a.edit_sent:
+        if not a.match_file or not os.path.isfile(a.match_file):
+            raise StagerError("--edit-sent needs --match-file with the sent message's text", 2)
+        if a.attach or a.mention or a.replace or a.new_chat:
+            raise StagerError("--edit-sent can't be combined with --attach/--mention/--replace/--new-chat", 2)
+    elif a.match_file:
+        raise StagerError("--match-file only goes with --edit-sent", 2)
     if a.only_these_attachments and not a.replace:
         raise StagerError("--only-these-attachments requires --replace", 2)
 

@@ -791,7 +791,7 @@ DRAFTS
   whosaid drafts diff ID [--from N --to M] | html [--out PATH] [--all]
   whosaid drafts stakeholders [WS] --topic T [--topic T2] [--repo DIR --path P] [--exclude NAME] [--json]
   whosaid drafts stale-check [WS] [ID] [--json]
-  whosaid drafts stage ID|--all [--dry-run] [--tab TARGET] [--ws WS] | mark-sent ID | mark-sent --check [WS] | drop ID [--reason R]
+  whosaid drafts stage ID|--all [--dry-run] [--tab TARGET] [--ws WS] | edit-sent ID [--dry-run] [--match-file F] [--allow-longer] | mark-sent ID | mark-sent --check [WS] | drop ID [--reason R]
   An offline outbox for chat drafts an agent writes for you, one folder per draft in
   ~/.drafts/<id>/ (WHOSAID_DRAFTS_DIR overrides): draft.md, claims.json, draft.json.
   Each draft records the agent session that wrote it (and how to resume it). verify
@@ -810,6 +810,9 @@ DRAFTS
   text change is kept: show --rev N, diff --from N --to M. stage reads the ingested
   chat with that person, prints the last messages, and skips a draft already sent;
   mark-sent --check marks staged drafts sent once your message shows up there.
+  edit-sent fixes a message already sent: write the corrected text (drafts text), then
+  edit-sent finds your message in the chat, opens Teams' Edit on it and loads the new
+  text. Like stage it never saves: you check it and save it in Teams.
   html writes a review page of open drafts (default <drafts dir>/outbox.html).
 
 APP STATE

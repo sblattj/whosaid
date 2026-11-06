@@ -389,8 +389,12 @@ def write(draft_id: str, text: str | None = None, claims: list | None = None, st
     """Replace the message text, mentions and/or the claims parts that are passed; add or remove pages.
     A changed text is kept as a new revision, tagged with the writing session."""
     m = load(draft_id)
-    if m["status"] not in OPEN:
-        raise DraftsError(f"{draft_id} is {m['status']}")
+    # a sent draft takes a corrected text (for edit-sent), nothing else
+    text_only = text is not None and not any(x is not None for x in (claims, stakeholders, docs, mentions)) \
+        and not pages and not remove_pages
+    if m["status"] not in OPEN and not (m["status"] == "sent" and text_only):
+        raise DraftsError(f"{draft_id} is {m['status']}" + (" (a sent draft only takes a new text, for edit-sent)"
+                                                            if m["status"] == "sent" else ""))
     guard(m, force)
     d = ddir(draft_id)
     for p in remove_pages or []:
@@ -974,6 +978,96 @@ def stage(ids: list[str] | None = None, all_ready: bool = False, dry_run: bool =
     return res
 
 
+def edit_match(text: str, chat_text: str, ratio: float = 0.75) -> bool:
+    """Looser than same_message, for a corrected text: the chat message is the draft, or one paragraph
+    of it, give or take the correction."""
+    if same_message(text, chat_text):
+        return True
+    b = _plain(chat_text)
+    if len(b) < 20:
+        return False
+    parts = [text] + [p for p in re.split(r"\n\s*\n", text) if p.strip()]
+    return any(difflib.SequenceMatcher(None, _plain(p), b, autojunk=False).ratio() >= ratio for p in parts)
+
+
+def sent_text(ws: Path | None, m: dict) -> dict | None:
+    """Our message in the chat that is this draft as sent: matched against every revision, newest message first."""
+    if ws is None:
+        return None
+    since = (_ms(m.get("staged_at")) or _ms(m.get("created_at")) or 0) - 300_000
+    texts = [revision_text(m, r["n"]) for r in revisions(m)] or [_draft_text(m)]
+    for x in reversed(chat_messages(ws, m["to"], since_ms=since)):
+        if x["self"] and any(edit_match(t, x["text"]) for t in texts if t.strip()):
+            return x
+    return None
+
+
+def edit_sent(draft_id: str, dry_run: bool = False, tab: str | None = None, ws: str | os.PathLike | None = None,
+              match_file: str | None = None, allow_longer: bool = False) -> dict:
+    """Load the current draft.md into Teams' Edit box on the message this draft was sent as (#176).
+    The stager never saves the edit: the user checks it and presses save in Teams."""
+    m = load(draft_id)
+    if m["status"] in ("dropped", "superseded"):
+        raise DraftsError(f"{draft_id} is {m['status']}")
+    new = _draft_text(m).strip()
+    if not new:
+        raise DraftsError(f"{draft_id} has no text")
+    if match_file:
+        old, where = Path(match_file).expanduser().read_text(), {"from": "--match-file"}
+    else:
+        hit = sent_text(_stage_ws(ws), m)
+        if not hit:
+            raise DraftsError(f"no message of yours in the ingested {m['to']} chat matches {draft_id} (ingest the "
+                              "chat again, or pass --match-file with the sent text)")
+        old, where = hit["text"], {k: hit[k] for k in ("at", "mid", "folder")}
+    if _plain(old) == _plain(new):
+        raise DraftsError("draft.md is the same as the sent message; write the corrected text first")
+    # The edit replaces the whole message: a draft of which only a part was sent would add the rest.
+    if not allow_longer and len(_plain(new)) > 1.5 * len(_plain(old)) + 40:
+        raise DraftsError(f"draft.md ({len(_plain(new))} chars) is much longer than the sent message "
+                          f"({len(_plain(old))} chars), and the edit replaces the whole message; write only the "
+                          "corrected message (drafts text), or pass --allow-longer")
+    matchf = ddir(draft_id) / ".edit-match.txt"
+    matchf.write_text(old)
+    argv = [*stager_builtin(), "--chat", m["to"], "--md", str(ddir(draft_id) / "draft.md"),
+            "--edit-sent", "--match-file", str(matchf)] + (["--tab", tab] if tab else [])
+    res: dict = {"id": draft_id, "to": m["to"], "sent_message": where}
+    if dry_run:
+        return res | {"would_run": argv}
+    acquire_lock(f"edit-sent {draft_id}")
+    try:
+        env = {**os.environ, "TEAMS_OUTBOX_LOCK": str(_lock_path())}
+        try:
+            r = subprocess.run(argv, capture_output=True, text=True, env=env, timeout=300)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            r = subprocess.CompletedProcess(argv, 1, "", str(exc))
+    finally:
+        release_lock()
+    if r.returncode != 0:
+        msg = ((r.stderr or "") + (r.stdout or "")).strip()[:500]
+        _event(m, "edit-failed", err=msg)
+        save(m)
+        raise DraftsError(f"stager exit {r.returncode}: {msg}")
+    if m["status"] != "sent":  # found in the chat as ours: it was sent
+        m["status"] = "sent"
+        m.setdefault("sent_message", where if "at" in where else None)
+    m["edit_staged_at"] = now()
+    _event(m, "edit-staged", message=where, out=(r.stdout or "")[-300:])
+    save(m)
+    return res | {"stager": ((r.stdout or "").strip().splitlines() or [""])[-1],
+                  "note": "the new text is in the Edit box; check it and save it in Teams"}
+
+
+def stager_builtin() -> list[str]:
+    """Edit-sent uses the built-in Teams web stager (WHOSAID_DRAFTS_STAGER has no edit mode);
+    WHOSAID_DRAFTS_EDIT_STAGER overrides it (tests, other chat apps)."""
+    cmd = os.environ.get("WHOSAID_DRAFTS_EDIT_STAGER", "").strip()
+    if cmd:
+        return shlex.split(cmd)
+    return ["uv", "run", "--quiet", "--with", "websockets", "python",
+            str(Path(__file__).resolve().parent / "drafts_stager.py")]
+
+
 # ---- CLI ---------------------------------------------------------------------------
 
 def _ws(arg: str | None) -> Path:
@@ -1060,6 +1154,13 @@ def build_parser() -> argparse.ArgumentParser:
     a.add_argument("--dry-run", action="store_true")
     a.add_argument("--tab")
     a.add_argument("--ws", help="workspace with the ingested chats (default WHOSAID_WORKSPACE)")
+    a = sub.add_parser("edit-sent", help="load the corrected draft.md into Teams' Edit box on the sent message")
+    a.add_argument("id")
+    a.add_argument("--dry-run", action="store_true")
+    a.add_argument("--tab")
+    a.add_argument("--ws", help="workspace with the ingested chats (default WHOSAID_WORKSPACE)")
+    a.add_argument("--match-file", help="text of the sent message, when it isn't ingested yet")
+    a.add_argument("--allow-longer", action="store_true", help="the new text may be much longer than the sent one")
     a = sub.add_parser("mark-sent")
     a.add_argument("id", nargs="?", help="a draft id, or with --check an optional workspace")
     a.add_argument("--check", action="store_true", help="mark staged drafts sent that show up in the ingested chat")
@@ -1165,6 +1266,13 @@ def main(argv: list[str] | None = None) -> int:
                     print(f"{d['id']} (to {d['to']}, owner {d['owner_line']}), verified {d['verified_at'][:16]}")
                     for f in d["new_statements"]:
                         print(f"   {f['meeting']} {f['t_str']} {f['speaker']} on '{f['topic']}': {f['text'][:100]}")
+        elif c == "edit-sent":
+            r = edit_sent(args.id, args.dry_run, args.tab, args.ws, args.match_file, args.allow_longer)
+            if "would_run" in r:
+                print(f"{r['id']}: would edit your message in {r['to']} ({r['sent_message']}): "
+                      + " ".join(shlex.quote(x) for x in r["would_run"]))
+            else:
+                print(f"{r['id']}: {r['note']}. {r['stager']}")
         elif c == "stage":
             if not args.all and not args.id:
                 raise DraftsError("need an id or --all")

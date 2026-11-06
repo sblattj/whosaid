@@ -6,6 +6,12 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ## [Unreleased]
 
+### Added
+- `whosaid drafts edit-sent ID` fixes a message you already sent (#176). Write the corrected text (`drafts text`), then edit-sent finds your message in the chat (the ingested history, or `--match-file`), opens Teams' Edit on it and loads the new text. Like `stage` it never saves: no Enter, and in edit mode a click on a Done/Save control is refused. It refuses when no message of yours matches, when several do, when the text is unchanged, or when draft.md is much longer than what was sent (the edit replaces the whole message; `--allow-longer` overrides). `--dry-run` shows which message it would edit. A verified draft found sent this way is marked sent.
+
+### Changed
+- A sent draft now takes a new text (`drafts text`, for edit-sent); every other change is still refused.
+
 ## [1.33.2] - 2026-11-06
 
 ### Fixed

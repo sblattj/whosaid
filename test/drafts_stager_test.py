@@ -252,7 +252,7 @@ class FakeTeams:
 
     def __init__(self, rail=(), search=(), compose="", teams_tab=True, old_chips=(), people=(), mention_dir=(),
                  history=(), no_root=False, remover_noop=False, drop_uploads=False, focus_miss=False,
-                 fail_set_files=False, root_flicker=0, hidden=False):
+                 fail_set_files=False, root_flicker=0, hidden=False, own=(), no_edit_item=False):
         from websockets.sync.server import serve
         self.rail, self.search_dir, self.compose = list(rail), list(search), compose
         self.people_dir, self.mention_dir = list(people), list(mention_dir)
@@ -264,6 +264,10 @@ class FakeTeams:
         self.root_flicker, self.root_gone = root_flicker, 0
         # a background tab (document.hidden): clicks do nothing until the tab is activated
         self.hidden = hidden
+        # --edit-sent (#176): our sent messages, hover/menu/edit state
+        self.own, self.no_edit_item = list(own), no_edit_item
+        self.hovered = self.more_menu = self.editing = None
+        self.edit_text, self.edit_selected, self.edit_saved = "", False, False
         self.newchat_open = self.picker_focus = self.compose_focused = False
         self.picker_typed = self.mention_typed = ""
         self.to_chips: list[str] = []
@@ -271,7 +275,8 @@ class FakeTeams:
         # elements with attributes, for the hit test: (x, y) -> attrs
         self.elements = {SEND_XY: {"data-tid": "sendMessageCommands-send", "aria-label": "Send"},
                          self.ATTACH_XY: {"data-tid": "sendMessageCommands-FilePicker",
-                                          "aria-label": "Attach files"}}
+                                          "aria-label": "Attach files"},
+                         self.DONE_XY: {"aria-label": "Done"}}
         self.chat = None
         self.title = "Chat | Microsoft Teams"
         self.typed = ""
@@ -317,6 +322,13 @@ class FakeTeams:
         return (300, 200 + 40 * i)
 
     SEARCH_XY, ATTACH_XY, MENU_XY = (200, 20), (500, 880), (520, 840)
+    EDIT_ITEM_XY, DONE_XY = (740, 500), (760, 560)
+
+    def own_xy(self, i):
+        return (650, 100 + 40 * i)
+
+    def more_xy(self, i):
+        return (720, 100 + 40 * i)
     NEWCHAT_XY, PICKER_XY = (30, 20), (250, 60)
 
     def person_xy(self, i):
@@ -345,6 +357,13 @@ class FakeTeams:
     def click(self, x, y):
         self.clicks.append((x, y))
         near = lambda p: abs(p[0] - x) < 5 and abs(p[1] - y) < 5  # noqa: E731
+        for i in range(len(self.own)):
+            if near(self.more_xy(i)) and self.hovered == i:
+                self.more_menu = i
+        if near(self.EDIT_ITEM_XY) and self.more_menu is not None:
+            self.editing, self.edit_text, self.more_menu = self.more_menu, self.own[self.more_menu], None
+        if near(self.DONE_XY):
+            self.edit_saved = True
         self.compose_focused = False
         if near(self.NEWCHAT_XY):
             self.newchat_open = True
@@ -396,6 +415,29 @@ class FakeTeams:
             return {"total": len(self.rail), "matches": hits}
         if name == "title":
             return self.title
+        if name == "own_msgs":
+            return [{"text": t} for t in self.own] if self.chat else []
+        if name == "msg_more":
+            norm = lambda t: " ".join(t.split())  # noqa: E731
+            i = next((i for i, t in enumerate(self.own) if norm(t).startswith(args["key"])), None)
+            if i is None:
+                return None
+            at = {"x": self.own_xy(i)[0], "y": self.own_xy(i)[1]}
+            return {"at": at, "more": {"x": self.more_xy(i)[0], "y": self.more_xy(i)[1]} if self.hovered == i else None}
+        if name == "menu_item":
+            if self.more_menu is not None and args["label"] == "Edit" and not self.no_edit_item:
+                return {"x": self.EDIT_ITEM_XY[0], "y": self.EDIT_ITEM_XY[1]}
+            return None
+        if name == "edit_ready":
+            return {"editors": 1 if self.editing is not None else 0, "text": self.edit_text}
+        if name == "edit_len":
+            return len(self.edit_text.strip()) if self.editing is not None else -1
+        if name == "edit_select":
+            self.edit_selected = True
+            return None
+        if name == "edit_paste":
+            self.edit_text += args["plain"]
+            return {"len": len(self.edit_text.strip()), "links": args["html"].count("<a ")}
         if name == "editor_ready":
             return self.chat is not None
         if name == "compose_len":
@@ -493,6 +535,9 @@ class FakeTeams:
             elif method in ("Target.activateTarget", "Page.bringToFront"):
                 self.hidden = False
             elif method == "Input.dispatchMouseEvent":
+                if params["type"] == "mouseMoved":
+                    self.hovered = next((i for i in range(len(self.own)) if abs(self.own_xy(i)[0] - params["x"]) < 5
+                                         and abs(self.own_xy(i)[1] - params["y"]) < 5), self.hovered)
                 if params["type"] == "mousePressed" and not self.hidden:
                     self.click(params["x"], params["y"])
                     if self.pending_chooser:
@@ -500,6 +545,8 @@ class FakeTeams:
                         ws.send(json.dumps({"method": "Page.fileChooserOpened", "sessionId": "S1",
                                             "params": {"backendNodeId": 77, "mode": "selectMultiple"}}))
             elif method == "Input.dispatchKeyEvent":
+                if params.get("key") == "Backspace" and params["type"] == "keyDown" and self.edit_selected:
+                    self.edit_text, self.edit_selected = "", False
                 if params.get("key") == "Backspace" and params["type"] == "keyDown" and self.selected:
                     self.compose, self.selected = "", False
                     self.root_gone = self.root_flicker
@@ -923,6 +970,77 @@ class EndToEnd(unittest.TestCase):
         self.assertLess(methods.index("Target.activateTarget"), methods.index("Input.dispatchMouseEvent"))
         self.assertEqual(f.chips, ["page.html"])
         f.never_sent(self)
+
+    # ---- --edit-sent (#176) ----
+    OWN = ["morning, the build is green again", "so I'll file a follow-up to run the migration once per env",
+           "thanks, that works"]
+
+    def edit_run(self, f, sent_text, *extra):
+        m = self.d / "match.txt"
+        m.write_text(sent_text)
+        self.md.write_text("so I filed a follow-up to run the migration once per env\n")
+        return self.run_stager(f, "--edit-sent", "--match-file", str(m), *extra)
+
+    def test_edit_sent_loads_new_text_into_that_message_only(self):
+        f = self.fake(rail=["Ann Lee"], own=self.OWN)
+        r = self.edit_run(f, self.OWN[1])
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(f.editing, 1)
+        self.assertEqual(f.edit_text.strip(), "so I filed a follow-up to run the migration once per env")
+        self.assertFalse(f.edit_saved)
+        self.assertEqual(f.compose, "")  # the compose box is never touched
+        self.assertNotIn("paste", f.ops)
+        out = json.loads(r.stdout.strip().splitlines()[-1])
+        self.assertEqual((out["sent"], out["saved"], out["edit"]), (False, False, True))
+        f.never_sent(self)
+
+    def test_edit_sent_matches_a_lightly_edited_send(self):
+        f = self.fake(rail=["Ann Lee"], own=self.OWN)
+        r = self.edit_run(f, "so I'll file a follow up to run the migration once per env.")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(f.editing, 1)
+
+    def test_edit_sent_no_matching_message(self):
+        f = self.fake(rail=["Ann Lee"], own=self.OWN)
+        r = self.edit_run(f, "a message that was never sent in this chat at all, nothing like the others")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("no message of yours", r.stderr)
+        self.assertIsNone(f.editing)
+
+    def test_edit_sent_ambiguous(self):
+        f = self.fake(rail=["Ann Lee"], own=[self.OWN[1], "x", self.OWN[1]])
+        r = self.edit_run(f, self.OWN[1])
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("ambiguous", r.stderr)
+        self.assertIsNone(f.editing)
+
+    def test_edit_sent_without_edit_item_stops(self):
+        f = self.fake(rail=["Ann Lee"], own=self.OWN, no_edit_item=True)
+        r = self.edit_run(f, self.OWN[1])
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("no Edit item", r.stderr)
+
+    def test_edit_sent_refuses_to_click_a_save_control(self):
+        """The click guard in edit mode covers Done/Save, so a bad coordinate can't save the edit."""
+        f = self.fake(rail=["Ann Lee"], own=self.OWN)
+        orig = f.evaluate
+        f.evaluate = (lambda e: {"x": f.DONE_XY[0], "y": f.DONE_XY[1]} if "op:menu_item" in e else orig(e))
+        r = self.edit_run(f, self.OWN[1])
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("refusing to click a save control", r.stderr)
+        self.assertFalse(f.edit_saved)
+
+    def test_edit_sent_usage_errors(self):
+        f = self.fake(rail=["Ann Lee"], own=self.OWN)
+        r = self.run_stager(f, "--edit-sent")
+        self.assertEqual(r.returncode, 2)
+        m = self.d / "match.txt"
+        m.write_text("x")
+        r = self.run_stager(f, "--edit-sent", "--match-file", str(m), "--attach", str(self.page))
+        self.assertEqual(r.returncode, 2)
+        r = self.run_stager(f, "--match-file", str(m))
+        self.assertEqual(r.returncode, 2)
+        self.assertEqual(f.calls, [])
 
     def test_restage_chip_check_ignores_history(self):
         """M2: the file name is already in the chat history and the upload silently does nothing: exit 1."""
