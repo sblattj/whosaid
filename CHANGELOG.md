@@ -7,6 +7,7 @@ All notable changes to whosaid are documented here. This project adheres to
 ## [Unreleased]
 
 ### Fixed
+- `drafts stage` brings the Teams tab to the front before opening the chat. A background tab ignored the left-rail click, so the stage stopped with "title is ..., not <chat>" (#174).
 - `drafts stage --replace --only-these-attachments` no longer fails while Teams re-renders the compose area after the clear or the paste. The compose root was read once, and a momentary miss was fatal ("couldn't find the compose area ..."); it is now re-read for about 3s first. If the attachment step still fails after the paste, the error says the draft text is already in the box (#172).
 - `drafts stage` finds attachment chips with the markup checked on real Teams (each chip is a `role=group` under `data-tid=file-well`), so `--only-these-attachments` and the measured `attachments` count see them.
 - `drafts stage`: a left-rail click is made only once the row stops moving, and a click that opened the wrong chat is retried once. A click once landed on the next chat while the rail was still scrolling.

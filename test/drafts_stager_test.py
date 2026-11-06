@@ -252,7 +252,7 @@ class FakeTeams:
 
     def __init__(self, rail=(), search=(), compose="", teams_tab=True, old_chips=(), people=(), mention_dir=(),
                  history=(), no_root=False, remover_noop=False, drop_uploads=False, focus_miss=False,
-                 fail_set_files=False, root_flicker=0):
+                 fail_set_files=False, root_flicker=0, hidden=False):
         from websockets.sync.server import serve
         self.rail, self.search_dir, self.compose = list(rail), list(search), compose
         self.people_dir, self.mention_dir = list(people), list(mention_dir)
@@ -262,6 +262,8 @@ class FakeTeams:
         self.focus_miss, self.fail_set_files = focus_miss, fail_set_files
         # after a clear (Backspace) or a paste, the compose root is missing for this many reads (#172)
         self.root_flicker, self.root_gone = root_flicker, 0
+        # a background tab (document.hidden): clicks do nothing until the tab is activated
+        self.hidden = hidden
         self.newchat_open = self.picker_focus = self.compose_focused = False
         self.picker_typed = self.mention_typed = ""
         self.to_chips: list[str] = []
@@ -488,8 +490,10 @@ class FakeTeams:
                 result = {"sessionId": "S1"}
             elif method == "Runtime.evaluate":
                 result = {"result": {"type": "object", "value": self.evaluate(params["expression"])}}
+            elif method in ("Target.activateTarget", "Page.bringToFront"):
+                self.hidden = False
             elif method == "Input.dispatchMouseEvent":
-                if params["type"] == "mousePressed":
+                if params["type"] == "mousePressed" and not self.hidden:
                     self.click(params["x"], params["y"])
                     if self.pending_chooser:
                         self.pending_chooser = False
@@ -908,6 +912,16 @@ class EndToEnd(unittest.TestCase):
         self.assertEqual(r.returncode, 1)
         self.assertIn("couldn't find the compose area to check the attachments", r.stderr)
         self.assertIn("already in the compose box", r.stderr)
+        f.never_sent(self)
+
+    def test_background_tab_is_brought_to_front_before_the_rail_click(self):
+        """A hidden tab ignores rail clicks; the stager activates it before opening the chat."""
+        f = self.fake(rail=["Ann Lee"], hidden=True)
+        r = self.run_stager(f, "--attach", str(self.page))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        methods = [m for m, _ in f.calls]
+        self.assertLess(methods.index("Target.activateTarget"), methods.index("Input.dispatchMouseEvent"))
+        self.assertEqual(f.chips, ["page.html"])
         f.never_sent(self)
 
     def test_restage_chip_check_ignores_history(self):

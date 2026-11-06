@@ -653,6 +653,8 @@ async def stage(a) -> dict:
             step("finding the Teams tab")
             tid = await find_tab(c, a.tab)
             c.session = (await c.send("Target.attachToTarget", {"targetId": tid, "flatten": True}))["sessionId"]
+            step("bringing the tab to the front")  # a background tab (document.hidden) ignores rail clicks
+            await bring_to_front(c, tid)
             step("opening the chat")
             title = await (new_chat(c, a.chat) if a.new_chat else open_chat(c, a.chat))
 
@@ -698,11 +700,7 @@ async def stage(a) -> dict:
                                       f"attachment; rerun the stage to replace it)") from None
 
             step("focusing the tab")
-            await c.send("Target.activateTarget", {"targetId": tid})
-            try:
-                await c.s("Page.bringToFront")
-            except StagerError:
-                pass
+            await bring_to_front(c, tid)
             await c.ev(op("caret_end", JS_CARET))
             fin = await c.ev(op("final", JS_FINAL))
             measured = len(await chip_names(c) or [])  # chips actually in the compose box, not what was asked
@@ -710,6 +708,14 @@ async def stage(a) -> dict:
                     "attachments": measured, "mentions": len(a.mention)}
         finally:
             c.reader.cancel()
+
+
+async def bring_to_front(c: CDP, tid: str):
+    await c.send("Target.activateTarget", {"targetId": tid})
+    try:
+        await c.s("Page.bringToFront")
+    except StagerError:
+        pass
 
 
 async def stage_with_deadline(a) -> dict:
