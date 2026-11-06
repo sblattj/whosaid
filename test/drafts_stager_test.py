@@ -47,6 +47,17 @@ class MdToHtml(unittest.TestCase):
         self.assertIn("&lt;script&gt;", h)
         self.assertNotIn("<a ", h)
 
+    def test_link_schemes_allowlist(self):
+        for bad in ("\x01javascript:alert(1)", "JaVaScRiPt:alert(1)", "data:text/html,x", "vbscript:x",
+                    "file:///etc/passwd", "foo:bar"):
+            h = ds.md_to_html(f"[label]({bad})")
+            self.assertNotIn("<a ", h, bad)
+            self.assertNotIn("href", h, bad)
+            self.assertIn("label", h, bad)
+        for good in ("https://ok", "http://ok/a?b=1", "mailto:a@b.co", "/relative/path", "#anchor", "page.html"):
+            self.assertIn('<a href="', ds.md_to_html(f"[label]({good})"), good)
+        self.assertIn('<a href="https://ok">label</a>', ds.md_to_html("[label](https://ok)"))
+
     def test_lists_headings_fences(self):
         h = ds.md_to_html("# Title\n\n- a\n- b *i*\n\n1. one\n2. two\n\n```\nx < y\n**no**\n```\nafter")
         self.assertIn("<h1>Title</h1>", h)
@@ -119,6 +130,85 @@ class Args(unittest.TestCase):
         with self.assertRaises(ds.StagerError):
             ds.check_args(a, env=env)
 
+    def test_mentions_validated_before_the_browser(self):
+        env = {"TEAMS_OUTBOX_LOCK": self.lock}
+        for bad in ("", "   ", "Bob\nRay", "Bob\rRay"):
+            with self.assertRaises(ds.StagerError, msg=repr(bad)) as e:
+                ds.check_args(self.args("--mention", bad), env=env)
+            self.assertEqual(e.exception.code, 2)
+        ds.check_args(self.args("--mention", "Bob Ray"), env=env)
+
+    def test_non_utf8_md_is_a_usage_error(self):
+        Path(self.md).write_bytes(b"caf\xe9 \xff\xfe")
+        with self.assertRaises(ds.StagerError) as e:
+            ds.check_args(self.args(), env={"TEAMS_OUTBOX_LOCK": self.lock})
+        self.assertEqual(e.exception.code, 2)
+        self.assertIn("UTF-8", str(e.exception))
+
+    def test_enter_guard_covers_every_way_to_commit(self):
+        for p in ({"type": "keyDown", "commands": ["insertNewline"]}, {"type": "rawKeyDown", "commands": []},
+                  {"key": "x", "nativeVirtualKeyCode": 36}, {"key": "x", "nativeVirtualKeyCode": 76},
+                  {"key": "x", "unmodifiedText": "\r"}, {"key": "x", "unmodifiedText": "a\n"},
+                  {"key": "x", "text": "\r"}):
+            self.assertTrue(ds._is_enter(p), p)
+
+    def test_choke_point_writes_nothing_to_the_socket(self):
+        """Drive CDP.send itself with a stub websocket: refusal must happen BEFORE any byte is written."""
+        import asyncio
+
+        class StubWS:
+            def __init__(self):
+                self.sent = []
+                self.replies = asyncio.Queue()
+
+            async def send(self, data):
+                self.sent.append(data)
+                self.replies.put_nowait(json.dumps({"id": json.loads(data)["id"], "result": {}}))
+
+            def __aiter__(self):
+                return self
+
+            async def __anext__(self):
+                return await self.replies.get()
+
+        async def go():
+            ws = StubWS()
+            c = ds.CDP(ws)
+            refused = [("Input.dispatchKeyEvent", {"type": "keyDown", "key": "Enter"}),
+                       ("Input.dispatchKeyEvent", {"type": "keyDown", "key": "a", "commands": ["insertNewline"]}),
+                       ("Input.dispatchKeyEvent", {"type": "keyDown", "key": "a", "nativeVirtualKeyCode": 36}),
+                       ("Input.dispatchKeyEvent", {"type": "keyDown", "key": "a", "nativeVirtualKeyCode": 76}),
+                       ("Input.dispatchKeyEvent", {"type": "keyDown", "key": "a", "unmodifiedText": "\n"}),
+                       ("Input.dispatchKeyEvent", {"type": "char", "key": "a", "text": "\r"}),
+                       ("Input.dispatchKeyEvent", {"type": "keyDown", "key": "a", "windowsVirtualKeyCode": 13}),
+                       ("Input.insertText", {"text": "a\nb"})]
+            try:
+                for method, params in refused:
+                    with self.assertRaises(ds.StagerError, msg=str((method, params))):
+                        await c.send(method, params)
+                self.assertEqual(ws.sent, [], "something reached the socket")
+            finally:
+                c.reader.cancel()
+
+        asyncio.run(go())
+
+    def test_bad_port_env_is_exit_2_not_a_traceback(self):
+        env = {k: v for k, v in os.environ.items() if k != "TEAMS_OUTBOX_LOCK"}
+        env["WHOSAID_CDP_PORT"] = "not-a-port"
+        r = subprocess.run([sys.executable, SCRIPT, "--chat", "Ann Lee", "--md", self.md, "--bypass-outbox"],
+                           capture_output=True, text=True, env=env, timeout=30)
+        self.assertEqual(r.returncode, 2, r.stderr)
+        self.assertIn("WHOSAID_CDP_PORT", r.stderr)
+        self.assertNotIn("Traceback", r.stderr)
+
+    def test_non_utf8_md_via_cli_is_exit_2_not_a_traceback(self):
+        Path(self.md).write_bytes(b"\xff\xfe bad")
+        env = {k: v for k, v in os.environ.items() if k != "TEAMS_OUTBOX_LOCK"}
+        r = subprocess.run([sys.executable, SCRIPT, "--chat", "Ann Lee", "--md", self.md, "--bypass-outbox"],
+                           capture_output=True, text=True, env=env, timeout=30)
+        self.assertEqual(r.returncode, 2, r.stderr)
+        self.assertNotIn("Traceback", r.stderr)
+
     def test_enter_is_refused_at_the_choke_point(self):
         for p in ({"key": "Enter"}, {"key": "x", "code": "Enter"}, {"key": "Return"},
                   {"key": "x", "windowsVirtualKeyCode": 13}, {"key": "x", "text": "a\n"}):
@@ -147,10 +237,16 @@ def css_matches(selector: str, attrs: dict) -> bool:
 class FakeTeams:
     """One fake browser: http discovery + websocket CDP over a tiny Teams DOM."""
 
-    def __init__(self, rail=(), search=(), compose="", teams_tab=True, old_chips=(), people=(), mention_dir=()):
+    def __init__(self, rail=(), search=(), compose="", teams_tab=True, old_chips=(), people=(), mention_dir=(),
+                 history=(), no_root=False, remover_noop=False, drop_uploads=False, focus_miss=False,
+                 fail_set_files=False):
         from websockets.sync.server import serve
         self.rail, self.search_dir, self.compose = list(rail), list(search), compose
         self.people_dir, self.mention_dir = list(people), list(mention_dir)
+        # attachment cards in the chat HISTORY, outside the compose root, each with a Remove/Delete control
+        self.history = list(history)
+        self.no_root, self.remover_noop, self.drop_uploads = no_root, remover_noop, drop_uploads
+        self.focus_miss, self.fail_set_files = focus_miss, fail_set_files
         self.newchat_open = self.picker_focus = self.compose_focused = False
         self.picker_typed = self.mention_typed = ""
         self.to_chips: list[str] = []
@@ -169,6 +265,7 @@ class FakeTeams:
         self.calls: list[tuple[str, dict]] = []
         self.ops: list[str] = []
         self.clicks: list[tuple[float, float]] = []
+        self.history_clicked: list[str] = []
         self.teams_tab = teams_tab
         self.srv = serve(self.handler, "127.0.0.1", 0)
         self.ws_port = self.srv.socket.getsockname()[1]
@@ -214,6 +311,13 @@ class FakeTeams:
     def remover_xy(self, i):
         return (600, 700 + 40 * i)
 
+    def history_xy(self, i):
+        return (800, 300 + 40 * i)  # the history card's Remove/Delete control, outside the compose root
+
+    def near_history(self, x, y):
+        return any(abs(self.history_xy(i)[0] - x) < 20 and abs(self.history_xy(i)[1] - y) < 20
+                   for i in range(len(self.history)))
+
     def people_options(self):
         return [n for n in self.people_dir if self.newchat_open and self.picker_typed and self.picker_typed in n]
 
@@ -239,8 +343,13 @@ class FakeTeams:
                 self.compose = self.compose[:len(self.compose) - len(self.mention_typed)] + n  # element replaces "@typed"
                 self.mention_typed = ""
         for i in range(len(self.chips)):
-            if near(self.remover_xy(i)) and self.chips[i].startswith("old"):
+            if near(self.remover_xy(i)) and self.chips[i].startswith("old") and not self.remover_noop:
                 del self.chips[i]
+                break
+        for i in range(len(self.history)):
+            if near(self.history_xy(i)):
+                self.history_clicked.append(self.history[i])
+                del self.history[i]
                 break
         for i, n in enumerate(self.rail):
             if near(self.rail_xy(i)):
@@ -280,11 +389,21 @@ class FakeTeams:
         if name in ("editor_focus", "caret_end"):
             self.compose_focused = True
             return None
-        if name == "chip_removers":
+        if name == "chip_removers":  # LEGACY page-wide query (the old over-broad one): chips AND history
+            return ([{"x": self.history_xy(i)[0], "y": self.history_xy(i)[1]} for i in range(len(self.history))]
+                    + [{"x": self.remover_xy(i)[0], "y": self.remover_xy(i)[1]}
+                       for i, n in enumerate(self.chips) if n.startswith("old")])  # history is above in the DOM
+        if name == "root_chip_removers":
             return [{"x": self.remover_xy(i)[0], "y": self.remover_xy(i)[1]}
                     for i, n in enumerate(self.chips) if n.startswith("old")]
-        if name == "chip_count":
-            return len(self.chips)
+        if name == "root_chip_names":
+            return None if self.no_root else list(self.chips)
+        if name == "in_root":
+            return not self.no_root and not self.near_history(args["x"], args["y"])
+        if name == "focus_is":
+            if self.focus_miss:
+                return False
+            return self.search_open if args["sel"] == ds.SEARCH_SEL else self.picker_focus
         if name == "new_chat_btn":
             return {"x": self.NEWCHAT_XY[0], "y": self.NEWCHAT_XY[1]}
         if name == "people_picker":
@@ -320,8 +439,8 @@ class FakeTeams:
             return {"x": self.ATTACH_XY[0], "y": self.ATTACH_XY[1]}
         if name == "menu_upload":
             return {"x": self.MENU_XY[0], "y": self.MENU_XY[1]} if self.menu_open else None
-        if name == "chip_seen":
-            return args["name"] in self.chips
+        if name == "chip_seen":  # LEGACY page-wide check: the name anywhere, history included
+            return args["name"] in self.chips or args["name"] in self.history
         if name == "final":
             return {"len": len(self.compose.strip()), "links": getattr(self, "pasted_html", "").count("<a ")}
         return None  # editor_focus, caret_end
@@ -376,12 +495,19 @@ class FakeTeams:
             elif method == "DOM.querySelector":
                 result = {"nodeId": 0}
             elif method == "DOM.setFileInputFiles":
-                self.chips += [os.path.basename(f) for f in params["files"]]
+                if self.fail_set_files:
+                    ws.send(json.dumps({"id": msg["id"], "error": {"message": "boom"}}))
+                    continue
+                if not self.drop_uploads:
+                    self.chips += [os.path.basename(f) for f in params["files"]]
             ws.send(json.dumps({"method": "Runtime.consoleAPICalled", "params": {}}))  # event noise
             ws.send(json.dumps({"id": msg["id"], "result": result}))
 
     # assertions every case shares
     def never_sent(self, tc: unittest.TestCase):
+        tc.assertFalse([p for m, p in self.calls if "commands" in p], "an editing command was sent")
+        tc.assertFalse([p for m, p in self.calls if m == "Input.insertText" and re.search("[\r\n]", p["text"])],
+                       "inserted text holds a newline")
         keys = [p for m, p in self.calls if m == "Input.dispatchKeyEvent"]
         tc.assertFalse([k for k in keys if str(k.get("key", "")).lower() in ("enter", "return")
                         or str(k.get("code", "")).lower() == "enter" or k.get("windowsVirtualKeyCode") == 13],
@@ -412,9 +538,10 @@ class EndToEnd(unittest.TestCase):
         self.fakes.append(f)
         return f
 
-    def run_stager(self, fake, *extra, lock=True, chat="Ann Lee"):
+    def run_stager(self, fake, *extra, lock=True, chat="Ann Lee", env_extra=None):
         env = {k: v for k, v in os.environ.items() if k != "TEAMS_OUTBOX_LOCK"}
         env["WHOSAID_STAGER_TIME_SCALE"] = "0.01"
+        env.update(env_extra or {})
         if lock:
             env["TEAMS_OUTBOX_LOCK"] = str(self.lock)
         return subprocess.run([sys.executable, SCRIPT, "--chat", chat, "--md", str(self.md),
@@ -487,14 +614,13 @@ class EndToEnd(unittest.TestCase):
         self.assertEqual(json.loads(r.stdout.strip().splitlines()[-1])["attachments"], 1)
         self.assertEqual(f.chips, ["page.html"])
         self.assertIn(("Page.setInterceptFileChooserDialog", {"enabled": True}), f.calls)
-        self.assertIn("chip_seen", f.ops)
+        self.assertIn("root_chip_names", f.ops)
         f.never_sent(self)
 
     def test_attach_chip_never_shows(self):
         f = self.fake(rail=["Ann Lee"])
-        f.chips_hidden = True
         orig = f.evaluate
-        f.evaluate = lambda e: False if "op:chip_seen" in e else orig(e)
+        f.evaluate = lambda e: [] if "op:root_chip_names" in e else orig(e)
         r = self.run_stager(f, "--attach", str(self.page))
         self.assertEqual(r.returncode, 1)
         self.assertIn("never showed up", r.stderr)
@@ -547,8 +673,9 @@ class EndToEnd(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(f.chips, ["page.html"])
         self.assertEqual(json.loads(r.stdout.strip().splitlines()[-1])["attachments"], 1)
-        self.assertLess(f.ops.index("editor_select"), f.ops.index("chip_removers"))
-        self.assertLess(f.ops.index("chip_count"), f.ops.index("paste"))
+        self.assertLess(f.ops.index("editor_select"), f.ops.index("root_chip_removers"))
+        self.assertLess(f.ops.index("root_chip_names"), f.ops.index("paste"))
+        self.assertIn("in_root", f.ops)
         f.never_sent(self)
 
     def test_old_chips_stay_without_the_flag(self):
@@ -639,6 +766,140 @@ class EndToEnd(unittest.TestCase):
         self.assertEqual(f.mentions, [])
         self.assertNotIn("paste", f.ops)
         f.never_sent(self)
+
+    # ---- review fixes -------------------------------------------------------------------------
+
+    def test_restage_never_touches_history_attachments(self):
+        """M1: history cards (outside the compose root) have Remove/Delete controls; none may be clicked."""
+        f = self.fake(rail=["Ann Lee"], compose="old text", old_chips=["old1.html", "old2.html"],
+                      history=["hist1.html", "hist2.html"])
+        r = self.run_stager(f, "--replace", "--only-these-attachments", "--attach", str(self.page))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(f.chips, ["page.html"])
+        self.assertEqual(f.history_clicked, [])
+        self.assertEqual(f.history, ["hist1.html", "hist2.html"])
+        self.assertFalse([c for c in f.clicks if f.near_history(*c)], f.clicks)
+        f.never_sent(self)
+
+    def test_remover_outside_the_root_is_never_clicked(self):
+        """M1: even if the remover query returned a point outside the root, the hit test refuses it."""
+        f = self.fake(rail=["Ann Lee"], old_chips=["old1.html"], history=["hist1.html"])
+        orig = f.evaluate
+        hx, hy = f.history_xy(0)
+        f.evaluate = lambda e: [{"x": hx, "y": hy}] if "op:root_chip_removers" in e else orig(e)
+        r = self.run_stager(f, "--replace", "--only-these-attachments")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("outside the compose box", r.stderr)
+        self.assertEqual(f.history_clicked, [])
+        self.assertNotIn("paste", f.ops)
+
+    def test_remove_click_that_does_nothing_fails_after_one_click(self):
+        """M1: the count must drop after a click, else exit 1 without clicking again."""
+        f = self.fake(rail=["Ann Lee"], old_chips=["old1.html", "old2.html"], remover_noop=True)
+        r = self.run_stager(f, "--replace", "--only-these-attachments")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("didn't remove it", r.stderr)
+        self.assertEqual(len([c for c in f.clicks if abs(c[0] - 600) < 5 and c[1] >= 700]), 1, f.clicks)
+        self.assertNotIn("paste", f.ops)
+
+    def test_no_compose_root_text_only_restage_warns_and_goes_on(self):
+        """M1: root not found, no pages: skip chip removal with a warning, stage the text."""
+        f = self.fake(rail=["Ann Lee"], compose="old", no_root=True, history=["hist1.html"])
+        r = self.run_stager(f, "--replace", "--only-these-attachments")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("warning", r.stderr)
+        self.assertEqual(f.history_clicked, [])
+        self.assertTrue(f.compose.startswith("Hi **Ann**"))
+        f.never_sent(self)
+
+    def test_no_compose_root_with_pages_fails(self):
+        f = self.fake(rail=["Ann Lee"], compose="old", no_root=True)
+        r = self.run_stager(f, "--replace", "--only-these-attachments", "--attach", str(self.page))
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("couldn't find the compose area", r.stderr)
+        self.assertNotIn("paste", f.ops)
+        f.never_sent(self)
+
+    def test_restage_chip_check_ignores_history(self):
+        """M2: the file name is already in the chat history and the upload silently does nothing: exit 1."""
+        f = self.fake(rail=["Ann Lee"], history=["page.html"], drop_uploads=True)
+        r = self.run_stager(f, "--attach", str(self.page))
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("never showed up", r.stderr)
+        f.never_sent(self)
+
+    def test_attachments_reported_is_the_measured_chip_count(self):
+        f = self.fake(rail=["Ann Lee"], old_chips=["old1.html"])
+        r = self.run_stager(f, "--attach", str(self.page))  # old chip stays: 2 in the box
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(json.loads(r.stdout.strip().splitlines()[-1])["attachments"], 2)
+
+    def test_hang_hits_the_global_deadline_naming_the_step(self):
+        """M3: one op never answers; the run ends with exit 1 and says which step it was in."""
+        import time
+        f = self.fake(rail=["Ann Lee"])
+        orig = f.evaluate
+
+        def slow(e):
+            if "op:paste" in e:
+                time.sleep(4)
+            return orig(e)
+
+        f.evaluate = slow
+        r = self.run_stager(f, env_extra={"WHOSAID_STAGER_DEADLINE": "1.5"})
+        self.assertEqual(r.returncode, 1, r.stderr)
+        self.assertIn("timed out during pasting the draft", r.stderr)
+        self.assertNotIn("Traceback", r.stderr)
+
+    def test_file_chooser_intercept_is_switched_off_after_a_failed_attach(self):
+        f = self.fake(rail=["Ann Lee"], fail_set_files=True)
+        r = self.run_stager(f, "--attach", str(self.page))
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("boom", r.stderr)
+        states = [p["enabled"] for m, p in f.calls if m == "Page.setInterceptFileChooserDialog"]
+        self.assertEqual(states, [True, False])
+        f.never_sent(self)
+
+    def test_fast_rail_poll_does_not_fall_back_to_search_early(self):
+        """m4: the rail shows other rows first; the exact row appears a few polls later."""
+        f = self.fake(rail=["Zed", "Ann Lee"], search=["Ann Lee"])
+        orig = f.evaluate
+        seen = {"n": 0}
+
+        def late(e):
+            if "op:rail_find" in e:
+                seen["n"] += 1
+                if seen["n"] < 4:
+                    return {"total": 1, "matches": []}
+            return orig(e)
+
+        f.evaluate = late
+        r = self.run_stager(f)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertNotIn("search_box", f.ops)
+        f.never_sent(self)
+
+    def test_search_box_focus_miss_types_nothing(self):
+        f = self.fake(rail=["Zed"], search=["Ann Lee"], focus_miss=True)
+        r = self.run_stager(f)
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("couldn't focus the search box", r.stderr)
+        self.assertEqual([p for m, p in f.calls if m == "Input.insertText"], [])
+        self.assertNotIn("paste", f.ops)
+
+    def test_to_field_focus_miss_types_nothing(self):
+        f = self.fake(people=["Ann Lee"], focus_miss=True)
+        r = self.run_stager(f, "--new-chat")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("couldn't focus the To field", r.stderr)
+        self.assertEqual([p for m, p in f.calls if m == "Input.insertText"], [])
+
+    def test_bad_mention_exits_2_before_any_browser_call(self):
+        f = self.fake(rail=["Ann Lee"], compose="precious")
+        r = self.run_stager(f, "--replace", "--mention", "Bob\nRay")
+        self.assertEqual(r.returncode, 2)
+        self.assertEqual(f.calls, [])
+        self.assertEqual(f.compose, "precious")
 
 
 class BuiltInStager(unittest.TestCase):
