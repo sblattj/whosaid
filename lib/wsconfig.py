@@ -44,6 +44,13 @@ Per-workspace config is an optional TOML file, <workspace>/whosaid.toml:
   max_speakers = 8               # also speakers / min_speakers / expected_speakers;
                                  # skipped when the command passes its own speaker flags
 
+  [drafts]
+  voice_lint = "warn"            # enforce | warn | off: enforce makes `drafts verify` refuse a
+                                 # message with more than one paragraph, a greeting opener or an
+                                 # "attached page" / "Thanks!" closer; warn only reports
+  [drafts.voice]                 # optional lib/voice_lint.py profile keys over the default,
+  banned_words = ["synergy"]     # e.g. max_words = 60
+
 Environment overrides: WHOSAID_WORKSPACE, WHOSAID_OWNER, WHOSAID_OLLAMA,
 WHOSAID_SUMMARIZER_MODEL. Unknown keys are kept, so callers can add their own.
 """
@@ -77,6 +84,7 @@ DEFAULTS: dict = {
     # an open item whose newest meeting is older than this, with no tracking event, reads as
     # stale: old backlog stays visible without crowding today's open items (a view, not a status)
     "tracking": {"stale_after_days": 14},
+    "drafts": {"voice_lint": "warn"},
 }
 
 # diarize_sherpa.py renders "[HH:MM:SS] Name: text"; "Name (MM:SS): text" is the

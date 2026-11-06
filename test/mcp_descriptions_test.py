@@ -349,6 +349,12 @@ def main() -> None:
     check(set(dumps["whosaid_draft_stakeholders"]["inputSchema"].get("required") or []) == {"topics"},
           "draft_stakeholders requires topics")
     check(all("\u2014" not in (by_name[n].description or "") for n in by_name if "draft" in n), "drafts: no em dash")
+    vprops = dumps["whosaid_draft_verify"]["inputSchema"]["properties"]
+    check({"voice", "reason", "workspace"} <= set(vprops) and "clear" in str(vprops["voice"]),
+          f"draft_verify: voice override params: {sorted(vprops)}")
+    check(set(dumps["whosaid_draft_verify"]["inputSchema"].get("required") or []) == {"id"}, "draft_verify requires id only")
+    check("voice lint" in (by_name["whosaid_draft_verify"].description or ""), "draft_verify desc names the voice lint")
+    check("lint" in str(dumps["whosaid_drafts"]["inputSchema"]["properties"]["action"]), "drafts action has lint")
 
     # --- live Teams cache: read-only, offline, named in the instructions ---
     tl = dumps["whosaid_teams_live"]

@@ -8,7 +8,9 @@ when the user stages them.
     whosaid drafts text ID (--file draft.md | -)          write the message
     whosaid drafts claims ID --file claims.json           write {claims, stakeholders, docs}
     whosaid drafts attach|detach ID /abs/page.html
-    whosaid drafts verify ID                              check the gates, stamp a content hash
+    whosaid drafts verify ID [--voice warn|off|enforce|clear --reason R] [--ws WS]
+                                                          check the gates and voice lint, stamp a content hash
+    whosaid drafts lint [ID|--all] [--ws WS] [--json]     the voice lint alone, read-only
     whosaid drafts list [--all] [--mine] [--json]
     whosaid drafts show ID [--json]
     whosaid drafts stakeholders [WS] --topic T [--topic T2] [--repo DIR --path P ...] [--json]
@@ -35,6 +37,15 @@ Verify gates: draft.md exists with no em dash; every claim has a verdict (confir
 unverified); a refuted claim is marked dropped; a confirmed claim has evidence and a tech claim
 cites a URL; at least one stakeholder, each with the topics searched. Verify hashes the message,
 claims and pages; any later edit reads as stale until verified again.
+
+Voice lint (lib/voice_lint.py, DEFAULT_PROFILE): verify also checks the message shape. Group B
+(more than one paragraph, a greeting opener like "Hi Sam", an "attached page" or "Thanks!"
+closer) fails verify when the workspace's whosaid.toml sets [drafts] voice_lint = "enforce";
+group A (over the word limit, "want me to" asks, banned words and characters) only warns.
+"warn" (the default, also with no workspace) reports every hit as a warning; "off" skips it.
+[drafts.voice] in whosaid.toml merges over the default profile. The workspace is --ws, else
+WHOSAID_WORKSPACE (never the cwd). A real exception gets a per-draft override with a reason:
+`verify ID --voice warn --reason R` (kept in draft.json and its history; --voice clear drops it).
 
 Staging is the only step that drives a browser. It holds ~/.drafts/.outbox.lock, refuses stale
 drafts and rival open drafts to the same recipient, then runs the stager command from
@@ -68,6 +79,7 @@ VERDICTS = ("confirmed", "refuted", "unverified")
 KINDS = ("code", "tech", "people", "status")
 UNNAMED = re.compile(r"^SPEAKER_\d+$")
 EM_DASH = "\u2014"
+VOICE_MODES = ("enforce", "warn", "off")
 
 
 class DraftsError(Exception):
@@ -431,23 +443,122 @@ def write(draft_id: str, text: str | None = None, claims: list | None = None, st
     return {"id": draft_id, "state": state(m), "gate": gate(m)}
 
 
-def verify(draft_id: str, force: bool = False) -> dict:
+# ---- voice lint: the message shape, from lib/voice_lint.py ----------------------------
+
+def _voice_ws(ws=None) -> Path | None:
+    """--ws, else WHOSAID_WORKSPACE; never the cwd. None: no workspace, the defaults apply."""
+    raw = str(ws or "").strip() or os.environ.get("WHOSAID_WORKSPACE", "").strip()
+    return Path(raw).expanduser() if raw else None
+
+
+def voice_settings(ws=None) -> dict:
+    """{mode, profile, source}: [drafts] voice_lint and [drafts.voice] of the workspace's whosaid.toml."""
+    import voice_lint
+    wsp = _voice_ws(ws)
+    mode, over, source = "warn", {}, "default"
+    if wsp is not None and (wsp / "whosaid.toml").is_file():
+        from wsconfig import load_config
+        d = load_config(wsp).get("drafts") or {}
+        mode = str(d.get("voice_lint") or "warn").strip().lower()
+        over = d.get("voice") or {}
+        source = str(wsp / "whosaid.toml")
+    if mode not in VOICE_MODES:
+        raise DraftsError(f"{source}: [drafts] voice_lint = {mode!r}; use one of {', '.join(VOICE_MODES)}")
+    if not isinstance(over, dict):
+        raise DraftsError(f"{source}: [drafts.voice] must be a table")
+    unknown = set(over) - set(voice_lint.RULES) - {"groups"}
+    if unknown:
+        raise DraftsError(f"{source}: unknown [drafts.voice] keys: {', '.join(sorted(unknown))}")
+    profile = {**voice_lint.DEFAULT_PROFILE, **over,
+               "groups": {**voice_lint.DEFAULT_PROFILE["groups"], **(over.get("groups") or {})}}
+    return {"mode": mode, "profile": profile, "source": source}
+
+
+def _hit_text(hit) -> str:
+    return ", ".join(f'"{x}"' for x in hit) if isinstance(hit, list) else str(hit)
+
+
+def voice_check(m: dict, ws=None) -> dict:
+    """Lint draft.md. errors: group B hits under enforce (verify refuses); warnings: the rest."""
+    import voice_lint
+    cfg = voice_settings(ws)
+    ov = m.get("voice_lint") or {}
+    mode = ov.get("mode") or cfg["mode"]
+    out = {"mode": mode, "source": "draft override" if ov.get("mode") else cfg["source"],
+           "override": ov or None, "errors": [], "warnings": [], "hits": {}}
+    md = ddir(m["id"]) / "draft.md"
+    if mode == "off" or not md.exists():
+        return out
+    r = voice_lint.lint(md.read_text(), cfg["profile"])
+    out["hits"] = r["hits"]
+    groups = cfg["profile"].get("groups") or {}
+    for rule, hit in r["hits"].items():
+        g = groups.get(rule) or "A"
+        line = r["where"].get(rule)
+        what = {"greeting": "opens with a greeting", "closers": f"closer {_hit_text(hit)}"}.get(rule, _hit_text(hit))
+        at = "second paragraph starts" if rule == "max_paragraphs" else "at"
+        msg = f"voice {g} {rule}: {what}" + (f', {at} "{line}"' if line else "")
+        (out["errors"] if g == "B" and mode == "enforce" else out["warnings"]).append(msg)
+    return out
+
+
+def lint(draft_id: str | None = None, all_open: bool = False, ws=None) -> dict:
+    """The voice lint alone, for one draft or every open one; reads only, stamps nothing."""
+    if not draft_id and not all_open:
+        raise DraftsError("lint needs an id or --all")
+    rows = [load(draft_id)] if draft_id else [m for m in all_drafts() if m["status"] in OPEN]
+    out = []
+    for m in rows:
+        v = voice_check(m, ws)
+        out.append({"id": m["id"], "to": m["to"], "state": state(m), "would_fail": bool(v["errors"]),
+                    **{k: v[k] for k in ("mode", "source", "override", "errors", "warnings")}})
+    return {"drafts": out, "would_fail": sum(1 for r in out if r["would_fail"])}
+
+
+def set_voice_override(m: dict, mode: str, reason: str | None) -> None:
+    """Per-draft voice lint mode for a real exception; a reason is required, clear drops it."""
+    if mode == "clear":
+        if m.pop("voice_lint", None) is not None:
+            _event(m, "voice_lint", mode="clear", by=os.environ.get("CLAUDE_CODE_SESSION_ID"))
+        return
+    if mode not in VOICE_MODES:
+        raise DraftsError(f"--voice {mode!r}: use one of {', '.join(VOICE_MODES)} or clear")
+    if not (reason or "").strip():
+        raise DraftsError("a voice lint override needs --reason: why this draft is an exception")
+    m["voice_lint"] = {"mode": mode, "reason": reason.strip(), "at": now(),
+                       "by": os.environ.get("CLAUDE_CODE_SESSION_ID")}
+    _event(m, "voice_lint", mode=mode, reason=reason.strip(), by=os.environ.get("CLAUDE_CODE_SESSION_ID"))
+
+
+def verify(draft_id: str, force: bool = False, voice: str | None = None, reason: str | None = None,
+           ws=None) -> dict:
     m = load(draft_id)
     if m["status"] not in OPEN:
         raise DraftsError(f"{draft_id} is {m['status']}")
     guard(m, force)
+    if voice:
+        set_voice_override(m, voice, reason)
+        save(m)
     errs = gate(m)
-    if errs:
-        raise DraftsError("not verified:\n  - " + "\n  - ".join(errs))
+    v = voice_check(m, ws)
+    if errs or v["errors"]:
+        msg = "not verified:\n  - " + "\n  - ".join(errs + v["errors"])
+        if v["errors"]:
+            msg += (f"\n  voice lint is enforced ({v['source']}): rewrite as one short paragraph with no "
+                    f"greeting or closer line, or for a real exception: whosaid drafts verify {draft_id} "
+                    "--voice warn --reason R")
+        raise DraftsError(msg)
     m["verified_hash"] = content_hash(m)
     m["verified_at"] = now()
     if m["status"] == "drafting":
         m["status"] = "verified"
-    _event(m, "verified", hash=m["verified_hash"], by=os.environ.get("CLAUDE_CODE_SESSION_ID"))
+    _event(m, "verified", hash=m["verified_hash"], by=os.environ.get("CLAUDE_CODE_SESSION_ID"),
+           voice_lint=v["mode"], voice_warnings=len(v["warnings"]))
     save(m)
     c = claims_of(m)
-    n = {v: sum(1 for k in c["claims"] if k.get("verdict") == v) for v in VERDICTS}
-    return {"id": draft_id, "state": "verified", **n, "stakeholders": len(c.get("stakeholders") or [])}
+    n = {v_: sum(1 for k in c["claims"] if k.get("verdict") == v_) for v_ in VERDICTS}
+    return {"id": draft_id, "state": "verified", **n, "stakeholders": len(c.get("stakeholders") or []),
+            "voice_lint": v["mode"], "voice_warnings": v["warnings"]}
 
 
 def summary(m: dict) -> dict:
@@ -1117,6 +1228,15 @@ def build_parser() -> argparse.ArgumentParser:
     a = sub.add_parser("verify")
     a.add_argument("id")
     a.add_argument("--force", action="store_true", help=force)
+    a.add_argument("--voice", choices=(*VOICE_MODES, "clear"),
+                   help="per-draft voice lint mode for a real exception (needs --reason); clear drops it")
+    a.add_argument("--reason", help="why this draft is an exception to the voice lint")
+    a.add_argument("--ws", help="workspace whose whosaid.toml [drafts] voice_lint applies (default WHOSAID_WORKSPACE)")
+    a = sub.add_parser("lint", help="the voice lint alone, read-only")
+    a.add_argument("id", nargs="?")
+    a.add_argument("--all", action="store_true", help="every open draft")
+    a.add_argument("--ws", help="workspace whose whosaid.toml [drafts] voice_lint applies (default WHOSAID_WORKSPACE)")
+    a.add_argument("--json", action="store_true")
     sub.add_parser("path").add_argument("id")
     a = sub.add_parser("list")
     a.add_argument("--all", action="store_true")
@@ -1205,9 +1325,23 @@ def main(argv: list[str] | None = None) -> int:
             write(args.id, mentions=args.names, force=args.force)
             print(", ".join(load(args.id).get("mentions") or []) or "(no mentions)")
         elif c == "verify":
-            r = verify(args.id, force=args.force)
+            r = verify(args.id, force=args.force, voice=args.voice, reason=args.reason, ws=args.ws)
             print(f"verified {r['id']}: {r['confirmed']} confirmed, {r['unverified']} unverified, "
                   f"{r['refuted']} refuted and dropped, {r['stakeholders']} stakeholder(s)")
+            for w in r["voice_warnings"]:
+                print(f"warning: {w}", file=sys.stderr)
+        elif c == "lint":
+            r = lint(args.id, all_open=args.all, ws=args.ws)
+            if args.json:
+                print(json.dumps(r, indent=2))
+            for d in [] if args.json else r["drafts"]:
+                verdict = "FAIL" if d["would_fail"] else "ok"
+                print(f"{d['id']}  {verdict}  voice lint {d['mode']} ({d['source']})")
+                for e in d["errors"]:
+                    print(f"   error: {e}")
+                for w in d["warnings"]:
+                    print(f"   warning: {w}")
+            return 1 if r["would_fail"] else 0
         elif c == "path":
             print(ddir(load(args.id)["id"]))
         elif c in ("list", "mine"):

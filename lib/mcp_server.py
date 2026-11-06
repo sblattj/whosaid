@@ -3214,9 +3214,15 @@ _DESC_DRAFT_VERIFY = (
     "Check an outbox draft's gates and stamp it verified: message present with no em dash, every "
     "claim has a verdict, refuted claims dropped, confirmed claims carry evidence, confirmed tech "
     "claims cite a doc URL, at least one stakeholder with the topics searched, pages exist. Stamps a "
-    "hash of the message, claims and pages; a later edit reads as stale. Returns {ok, id, confirmed, "
-    "unverified, refuted, stakeholders} or ok=false with every failed gate. Only the user stages a "
-    "verified draft into the chat app, with `whosaid drafts stage ID`."
+    "hash of the message, claims and pages; a later edit reads as stale. Also runs the voice lint: "
+    "with whosaid.toml [drafts] voice_lint = \"enforce\" (workspace argument, else WHOSAID_WORKSPACE) a "
+    "message with more than one paragraph, a greeting opener (Hi Sam,) or an attached-page / Thanks! "
+    "closer fails, naming the rule and line; length and 'want me to' asks only warn (voice_warnings). "
+    "Write the message as one short paragraph of 1 to 3 sentences. For a real exception pass "
+    "voice='warn' (or 'off') with a reason; it is kept on the draft, voice='clear' drops it. Returns "
+    "{ok, id, confirmed, unverified, refuted, stakeholders, voice_lint, voice_warnings} or ok=false "
+    "with every failed gate. Only the user stages a verified draft into the chat app, with "
+    "`whosaid drafts stage ID`."
 )
 
 _DESC_DRAFTS = (
@@ -3226,8 +3232,9 @@ _DESC_DRAFTS = (
     "since staged. action=show with id: the text, claims, stakeholders, mentions, contributors, "
     "revision_log, failed gates and history; rev=N shows the text of revision N (1 is the oldest). "
     "action=diff with id: unified diff of revision from_rev against to_rev (default: the previous "
-    "one against the newest) and who wrote each. Use it to find and update your own open drafts "
-    "as the work moves. Read-only."
+    "one against the newest) and who wrote each. action=lint: the voice lint verify would run, for "
+    "id or every open draft, each {id, mode, would_fail, errors, warnings}. Use it to find and "
+    "update your own open drafts as the work moves. Read-only."
 )
 
 _DESC_DRAFT_SENT_CHECK = (
@@ -3294,10 +3301,11 @@ def whosaid_draft_write(id: str, text: Optional[str] = None, claims: Optional[li
 
 
 @mcp.tool(name="whosaid_draft_verify", description=_DESC_DRAFT_VERIFY, annotations=_DRAFT_WRITE_ANN)
-def whosaid_draft_verify(id: str, force: bool = False) -> dict:
-    """Run the gates and stamp the content hash."""
+def whosaid_draft_verify(id: str, force: bool = False, voice: Optional[Literal["enforce", "warn", "off", "clear"]] = None,
+                         reason: Optional[str] = None, workspace: Optional[str] = None) -> dict:
+    """Run the gates and the voice lint, then stamp the content hash."""
     import drafts
-    return _drafts_call(drafts.verify, id, force=force)
+    return _drafts_call(drafts.verify, id, force=force, voice=voice, reason=reason, ws=workspace)
 
 
 _DESC_DRAFT_CLOSE = (
@@ -3319,11 +3327,13 @@ def whosaid_draft_close(id: str, status: Literal["dropped", "sent"], reason: Opt
 
 @mcp.tool(name="whosaid_drafts", description=_DESC_DRAFTS,
           annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False))
-def whosaid_drafts(action: Literal["list", "show", "diff"] = "list", id: Optional[str] = None, all: bool = False,
+def whosaid_drafts(action: Literal["list", "show", "diff", "lint"] = "list", id: Optional[str] = None, all: bool = False,
                    mine: bool = False, rev: Optional[int] = None, from_rev: Optional[int] = None,
                    to_rev: Optional[int] = None) -> dict:
-    """list, show or diff outbox drafts."""
+    """list, show, diff or voice-lint outbox drafts."""
     import drafts
+    if action == "lint":
+        return _drafts_call(drafts.lint, id, all_open=not id)
     if action in ("show", "diff"):
         if not id:
             return _ws_error(f"{action} needs id", "pass an id from whosaid_drafts(action='list')")

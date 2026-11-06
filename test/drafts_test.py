@@ -52,6 +52,7 @@ class DraftsBase(unittest.TestCase):
             "CLAUDE_CODE_SESSION_ID": "sess-1111",
             "WHOSAID_DRAFTS_NO_HISTORY": "1",
             "WHOSAID_TEAMS_CACHE": "off",
+            "WHOSAID_WORKSPACE": "",
         })
         self.env.start()
         (self.root / "sessions").mkdir()
@@ -72,6 +73,122 @@ class DraftsBase(unittest.TestCase):
         drafts.write(r["id"], text="Hi, can you add the two DNS records?", **GOOD_CLAIMS)
         drafts.verify(r["id"])
         return r["id"]
+
+
+class VoiceLintVerifyTest(DraftsBase):
+    """verify runs lib/voice_lint.py: shape rules (B) fail under enforce, the rest only warn."""
+
+    TEMPLATE = ("Hi Quill, the widget build needs two flags.\n\n"
+                "Steps are in the attached page. Thanks!")
+
+    def ws(self, body: str) -> Path:
+        ws = self.root / "ws"
+        ws.mkdir(exist_ok=True)
+        (ws / "whosaid.toml").write_text(body)
+        os.environ["WHOSAID_WORKSPACE"] = str(ws)
+        return ws
+
+    def draft(self, text: str) -> str:
+        did = drafts.new("Quill Example", "widget flags", [str(self.page)])["id"]
+        drafts.write(did, text=text, **GOOD_CLAIMS)
+        return did
+
+    def test_default_warns_and_verifies(self):
+        did = self.draft(self.TEMPLATE)
+        r = drafts.verify(did)
+        self.assertEqual(r["voice_lint"], "warn")
+        self.assertEqual({w.split(":")[0] for w in r["voice_warnings"]},
+                         {"voice B max_paragraphs", "voice B greeting", "voice B closers"})
+        self.assertEqual(drafts.state(drafts.load(did)), "verified")
+
+    def test_enforce_fails_each_shape_rule_with_its_line(self):
+        self.ws('[drafts]\nvoice_lint = "enforce"\n')
+        did = self.draft(self.TEMPLATE)
+        with self.assertRaises(drafts.DraftsError) as cm:
+            drafts.verify(did)
+        msg = str(cm.exception)
+        self.assertIn('voice B max_paragraphs: 2 paragraphs > 1, second paragraph starts "Steps are in', msg)
+        self.assertIn('voice B greeting: opens with a greeting, at "Hi Quill, the widget', msg)
+        self.assertIn('voice B closers: closer "attached page", "thanks!", at "Steps are in', msg)
+        self.assertIn(f"whosaid drafts verify {did} --voice warn --reason R", msg)
+        self.assertEqual(drafts.state(drafts.load(did)), "drafting")
+
+    def test_enforce_passes_one_paragraph_and_only_warns_on_group_a(self):
+        self.ws('[drafts]\nvoice_lint = "enforce"\n')
+        long = "the widget build needs two flags and " + "a gadget " * 30 + "so want me to file them?"
+        did = self.draft(long)
+        r = drafts.verify(did)
+        self.assertEqual(r["voice_lint"], "enforce")
+        rules = {w.split(":")[0] for w in r["voice_warnings"]}
+        self.assertEqual(rules, {"voice A max_words", "voice A ask_phrases"})
+
+    def test_off_skips_and_bad_mode_is_refused(self):
+        self.ws('[drafts]\nvoice_lint = "off"\n')
+        did = self.draft(self.TEMPLATE)
+        self.assertEqual(drafts.verify(did)["voice_warnings"], [])
+        self.ws('[drafts]\nvoice_lint = "strict"\n')
+        with self.assertRaises(drafts.DraftsError) as cm:
+            drafts.verify(did)
+        self.assertIn("enforce, warn, off", str(cm.exception))
+
+    def test_profile_override_from_toml(self):
+        self.ws('[drafts]\nvoice_lint = "enforce"\n[drafts.voice]\nbanned_words = ["zorp"]\n'
+                'groups = { banned_words = "B" }\n')
+        did = self.draft("please zorp the widget today")
+        with self.assertRaises(drafts.DraftsError) as cm:
+            drafts.verify(did)
+        self.assertIn('voice B banned_words: "zorp", at "please zorp the widget today"', str(cm.exception))
+        self.ws('[drafts.voice]\nmax_wordz = 3\n')
+        with self.assertRaises(drafts.DraftsError) as cm:
+            drafts.verify(did)
+        self.assertIn("unknown [drafts.voice] keys: max_wordz", str(cm.exception))
+
+    def test_per_draft_override_needs_a_reason_and_is_logged(self):
+        self.ws('[drafts]\nvoice_lint = "enforce"\n')
+        did = self.draft(self.TEMPLATE)
+        with self.assertRaises(drafts.DraftsError) as cm:
+            drafts.verify(did, voice="warn")
+        self.assertIn("needs --reason", str(cm.exception))
+        r = drafts.verify(did, voice="warn", reason="a formal note the recipient asked for")
+        self.assertEqual(r["voice_lint"], "warn")
+        m = drafts.load(did)
+        self.assertEqual(m["voice_lint"]["reason"], "a formal note the recipient asked for")
+        self.assertIn("voice_lint", [h["event"] for h in m["history"]])
+        drafts.write(did, text=self.TEMPLATE + " Again.")
+        drafts.verify(did)  # the override stays across edits
+        with self.assertRaises(drafts.DraftsError):  # cleared: the toml's enforce applies again
+            drafts.verify(did, voice="clear")
+        self.assertNotIn("voice_lint", drafts.load(did))
+
+    def test_lint_reads_only(self):
+        self.ws('[drafts]\nvoice_lint = "enforce"\n')
+        bad, good = self.draft(self.TEMPLATE), drafts.new("Wren Example", "gadget")["id"]
+        drafts.write(good, text="can you flip the gadget flag today?", **GOOD_CLAIMS)
+        before = {d: (drafts.ddir(d) / "draft.json").read_bytes() for d in (bad, good)}
+        r = drafts.lint(all_open=True)
+        self.assertEqual(r["would_fail"], 1)
+        self.assertEqual({d["id"]: d["would_fail"] for d in r["drafts"]}, {bad: True, good: False})
+        self.assertEqual(before, {d: (drafts.ddir(d) / "draft.json").read_bytes() for d in (bad, good)})
+        from contextlib import redirect_stdout
+        import io
+        with redirect_stdout(io.StringIO()) as out:
+            self.assertEqual(drafts.main(["lint", good]), 0)
+            self.assertEqual(drafts.main(["lint", "--all"]), 1)
+        self.assertIn(f"{bad}  FAIL  voice lint enforce", out.getvalue())
+
+    def test_cli_verify_prints_warnings_and_takes_override(self):
+        did = self.draft(self.TEMPLATE)
+        from contextlib import redirect_stderr, redirect_stdout
+        import io
+        err = io.StringIO()
+        with redirect_stdout(io.StringIO()), redirect_stderr(err):
+            self.assertEqual(drafts.main(["verify", did]), 0)
+        self.assertIn("warning: voice B greeting", err.getvalue())
+        self.ws('[drafts]\nvoice_lint = "enforce"\n')
+        drafts.write(did, text=self.TEMPLATE + " Again.")
+        with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+            self.assertEqual(drafts.main(["verify", did]), 1)
+            self.assertEqual(drafts.main(["verify", did, "--voice", "off", "--reason", "one-off"]), 0)
 
 
 class OutboxTest(DraftsBase):

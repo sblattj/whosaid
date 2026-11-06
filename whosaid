@@ -787,7 +787,8 @@ TOPICS
 DRAFTS
   whosaid drafts new --to "First Last" --topic T [--page /abs/page.html] [--mention NAME] [--supersedes ID] [--new-chat] [--new]
   whosaid drafts text ID --file draft.md | claims ID --file claims.json | attach|detach ID PAGE | mentions ID [NAME ...]
-  whosaid drafts verify ID | list [--all] [--mine] [--json] | mine | show ID [--rev N] [--json] | path ID
+  whosaid drafts verify ID [--voice warn|off|enforce|clear --reason R] [--ws WS] | lint [ID|--all] [--ws WS] [--json]
+  whosaid drafts list [--all] [--mine] [--json] | mine | show ID [--rev N] [--json] | path ID
   whosaid drafts diff ID [--from N --to M] | html [--out PATH] [--all]
   whosaid drafts stakeholders [WS] --topic T [--topic T2] [--repo DIR --path P] [--exclude NAME] [--json]
   whosaid drafts stale-check [WS] [ID] [--json]
@@ -796,8 +797,12 @@ DRAFTS
   ~/.drafts/<id>/ (WHOSAID_DRAFTS_DIR overrides): draft.md, claims.json, draft.json.
   Each draft records the agent session that wrote it (and how to resume it). verify
   checks the gates (every claim has a verdict, refuted claims dropped, confirmed ones
-  carry evidence, tech claims a doc URL, stakeholders searched, no em dash) and stamps
-  a content hash; a later edit reads as stale. stakeholders ranks who spoke about the
+  carry evidence, tech claims a doc URL, stakeholders searched, no em dash) and the
+  voice lint, and stamps a content hash; a later edit reads as stale. The voice lint's
+  shape rules (more than one paragraph, a greeting opener, an attached-page or Thanks!
+  closer) fail verify when <WS>/whosaid.toml has [drafts] voice_lint = "enforce"; length
+  and ask phrases only warn ("warn", the default, makes every hit a warning; "off").
+  --voice warn --reason R overrides one draft; lint shows the result without stamping. stakeholders ranks who spoke about the
   topics (search rank x recency) plus who changed the files. stale-check flags drafts
   whose stakeholders said something on their topics after the verify. stage is the
   only step that drives a browser: it takes ~/.drafts/.outbox.lock, refuses stale

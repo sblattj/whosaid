@@ -282,6 +282,7 @@ whosaid drafts stakeholders ~/meetings --topic "dns records" --repo ~/code/infra
 whosaid drafts claims <id> --file claims.json   # claims, stakeholders, docs
 whosaid drafts text <id> --file draft.md
 whosaid drafts verify <id>
+whosaid drafts lint --all                       # the voice lint alone, read-only
 whosaid drafts list                             # state and the session that wrote each one
 whosaid drafts stale-check ~/meetings           # stakeholders said something new since verify?
 whosaid drafts stage <id>                       # you run this; nothing is sent
@@ -296,6 +297,22 @@ whosaid drafts html                             # review page of every open draf
   unchecked claim, a refuted claim not marked `dropped`, a confirmed claim without evidence, a
   confirmed tech claim without a doc URL, no stakeholders, a stakeholder with no searched topics,
   or an em dash. It stamps a hash of the message, claims and pages; any later edit reads as stale.
+- **Voice lint.** `verify` also checks the message shape with `lib/voice_lint.py` (plain rules, no
+  model). Shape rules (more than one paragraph, a greeting opener like `Hi Sam,`, an `attached
+  page` or `Thanks!` closer) fail verify when the workspace's `whosaid.toml` says so; the rest
+  (over 47 words, "want me to" asks, banned words and characters) only print warnings. The
+  workspace is `--ws`, else `WHOSAID_WORKSPACE`; with none, the default `warn` applies.
+
+  ```toml
+  [drafts]
+  voice_lint = "enforce"   # enforce | warn (default: every hit is a warning) | off
+  [drafts.voice]           # optional: voice_lint.py profile keys over the default
+  banned_words = ["synergy"]
+  ```
+
+  A real exception gets a per-draft override with a reason, kept in `draft.json` and its history:
+  `whosaid drafts verify <id> --voice warn --reason "..."` (`--voice clear` drops it). `lint
+  [<id>|--all]` prints what verify would say without stamping anything (exit 1 if one would fail).
 - **Who has opinions.** `stakeholders` ranks speakers by search rank on the topics with a
   90-day recency half-life (unnamed `SPEAKER_NN` voices skipped), plus who changed `--path` in
   `--repo` over the last six months. Read what the top people said before claiming what they want.
@@ -330,7 +347,9 @@ whosaid drafts html                             # review page of every open draf
 Agents use the same outbox over MCP: `whosaid_draft_new`, `whosaid_draft_write`,
 `whosaid_draft_verify`, `whosaid_draft_close`, `whosaid_drafts`, `whosaid_draft_stakeholders`,
 `whosaid_draft_stale`, `whosaid_draft_sent_check`: create, read (with `rev` and `diff`),
-update and close. There is no stage or send tool.
+update and close. `whosaid_draft_verify` takes `voice` and `reason` for the override and
+returns `voice_warnings`; `whosaid_drafts(action="lint")` is the read-only lint. There is no
+stage or send tool.
 
 ### Enroll from an existing recording
 

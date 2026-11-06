@@ -11,6 +11,10 @@ A profile is a JSON object; every rule is off unless the profile sets it:
   banned_chars    [str]  hit when any appears anywhere
   groups          {rule: label}  optional labels so callers can score rule groups separately
 
+DEFAULT_PROFILE is what `whosaid drafts verify` uses (whosaid.toml [drafts.voice] merges over it).
+Group B is the message shape (one paragraph, no greeting opener, no "attached page" / "Thanks!"
+closer); group A is advisory (length, "want me to" asks, the em dash). banned_words is empty.
+
 Links are reduced to their labels and bare URLs dropped before counting, so a long
 link does not inflate the word count. The score is the number of rules hit.
 
@@ -20,6 +24,18 @@ prints the result as JSON; exits 1 when the score is above --fail-over (default:
 import argparse, json, re, sys
 
 RULES = ("max_words", "max_paragraphs", "greeting", "closers", "ask_phrases", "banned_words", "banned_chars")
+
+DEFAULT_PROFILE = {
+    "max_paragraphs": 1,
+    "greeting": r"(hi|hey|hello)\s+(all|team|everyone|[A-Z]\w+)",
+    "closers": ["attached page", "thanks!"],
+    "max_words": 47,
+    "ask_phrases": ["want me to", "do you want me to", "would you like me to"],
+    "banned_words": [],
+    "banned_chars": ["\u2014"],
+    "groups": {"max_paragraphs": "B", "greeting": "B", "closers": "B",
+               "max_words": "A", "ask_phrases": "A", "banned_words": "A", "banned_chars": "A"},
+}
 
 
 def normalize(text: str) -> str:
@@ -66,7 +82,34 @@ def lint(text: str, profile: dict) -> dict:
         g = groups.get(rule)
         if g:
             by_group[g] = by_group.get(g, 0) + 1
-    return {"score": len(hits), "hits": hits, "by_group": by_group, "words": words, "paragraphs": len(paras)}
+    return {"score": len(hits), "hits": hits, "where": {r: _where(r, hits[r], paras) for r in hits},
+            "by_group": by_group, "words": words, "paragraphs": len(paras)}
+
+
+def _line_with(paras: list, pred) -> str:
+    for p in paras:
+        for line in p.split("\n"):
+            if pred(line):
+                return line.strip()[:80]
+    return ""
+
+
+def _where(rule: str, hit, paras: list) -> str:
+    """The line a hit points at, so a caller can quote it."""
+    if not paras:
+        return ""
+    if rule == "max_paragraphs":
+        return paras[1].split("\n", 1)[0].strip()[:80]
+    if rule in ("greeting", "max_words"):
+        return paras[0].split("\n", 1)[0].strip()[:80]
+    if rule == "closers":
+        return _line_with(paras[-1:], lambda l: any(c.lower() in l.lower() for c in hit))
+    if rule in ("ask_phrases", "banned_words"):
+        found = _line_with(paras, lambda l: any(_phrase(x).search(l) for x in hit))
+        return found or paras[0].split("\n", 1)[0].strip()[:80]  # a phrase can wrap a line
+    if rule == "banned_chars":
+        return _line_with(paras, lambda l: any(c in l for c in hit))
+    return ""
 
 
 def main(argv=None) -> int:
