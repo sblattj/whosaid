@@ -23,7 +23,7 @@ button; history attachments outside it are never touched. If the root can't be f
 existing chips stay. After an upload the chips inside the root must have grown by the number of files
 and each file name must show inside the root; "attachments" in the output is the measured chip count.
 A global deadline (270s, $WHOSAID_STAGER_DEADLINE) turns a hang into exit 1 "timed out during <step>".
---new-chat: presses "New chat", types NAME in the To picker, picks the suggestion whose first line is
+--new-chat: presses "New message" (formerly "New chat"), types NAME in the To picker, picks the suggestion whose first line is
 NAME exactly (none: exit 1 "no person named"; several: exit 1 ambiguous) and checks the To field now
 shows a chip with NAME (a new chat's title need not contain it), then continues to the compose box.
 --mention NAME (repeatable) makes REAL @mentions. PLACEMENT RULE: mentions go at the START of the
@@ -93,25 +93,27 @@ IS_TEAMS = re.compile(r"^https://teams\.(cloud\.)?microsoft(\.com)?(:\d+)?/", re
 TEAMS_URL = "https://teams.cloud.microsoft/"
 
 
-# ---- selectors that were NOT checked on real Teams (UNVERIFIED): all guesses live here ------
+# ---- selectors: CHECKED = matched on a signed-in Teams web tab (read-only probe, 2026-11-06);
+# UNVERIFIED = still a guess (needs typing or an attachment to appear) ------
 
 # Real send controls only. NOT a substring match: the Attach button is data-tid
-# sendMessageCommands-FilePicker and must stay clickable. The tid names are UNVERIFIED.
+# sendMessageCommands-FilePicker and must stay clickable. CHECKED: the real Send button is
+# data-tid sendMessageCommands-send, aria-label "Send"; the Attach button does not match.
 SEND_TIDS = ("sendMessageCommands-send", "newMessageCommands-send", "send-button")
 SEND_GUARD = ",".join([f'[data-tid="{t}"]' for t in SEND_TIDS]
                       + ['[aria-label="Send" i]', '[aria-label^="Send (" i]', '[aria-label^="Send message" i]'])
-# PROVEN on real Teams (stage.ts): the editor, and the Attach button. The compose root is derived from
+# PROVEN on real Teams (stage.ts) and CHECKED: the editor, and the Attach button. The compose root is derived from
 # these two only: the nearest ancestor of the editor that also contains the Attach button.
 EDITOR_SEL = '[data-tid="ckeditor"], [contenteditable=true][role=textbox]'
 ATTACH_SEL = '[data-tid=sendMessageCommands-FilePicker],[data-tid=newMessageCommands-FilePicker]'
 # One attachment chip, and its remove control inside it. Only ever queried INSIDE the compose root (UNVERIFIED).
 CHIP_SEL = '[data-tid*="attachment" i],[data-tid*="file-card" i],[data-tid*="file-chip" i]'
 CHIP_REMOVE_SEL = 'button[aria-label^="Remove" i],button[aria-label^="Dismiss" i],[data-tid*="remove" i]'
-# The search box (UNVERIFIED).
-SEARCH_SEL = ('input[role=combobox][aria-label*="Search" i],[role=combobox][aria-label*="Search" i],'
+# The search box. CHECKED: data-tid AUTOSUGGEST_INPUT, a combobox input.
+SEARCH_SEL = ('[data-tid="AUTOSUGGEST_INPUT"],input[role=combobox][aria-label*="Search" i],[role=combobox][aria-label*="Search" i],'
               'input[type=search]')
-# The "New chat" control (UNVERIFIED).
-NEW_CHAT_SEL = '[aria-label="New chat" i],[data-tid*="new-chat" i]'
+# The new-chat control. CHECKED: Teams now labels it "New message" (no data-tid); "New chat" matched nothing.
+NEW_CHAT_SEL = '[aria-label="New message" i],[aria-label="New chat" i],[data-tid*="new-chat" i]'
 # The To / people picker input in a new chat, and a chosen recipient chip in it (UNVERIFIED).
 PEOPLE_PICKER_SEL = ('input[aria-label^="To" i],[data-tid*="people-picker" i] input,'
                      '[role=combobox][aria-label*="To:" i]')
