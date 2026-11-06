@@ -88,7 +88,8 @@ import re
 import sys
 import urllib.request
 
-IS_TEAMS = re.compile(r"teams\.(cloud\.)?microsoft(\.com)?/")
+# Anchored to the URL's host: a Teams URL inside another page's path or query must not match.
+IS_TEAMS = re.compile(r"^https://teams\.(cloud\.)?microsoft(\.com)?(:\d+)?/", re.I)
 TEAMS_URL = "https://teams.cloud.microsoft/"
 
 
@@ -578,10 +579,23 @@ async def insert_mentions(c: CDP, names: list[str]):
 
 
 def strip_mention_literals(md: str, names: list[str]) -> str:
-    """Drop a literal @NAME (and one following blank) from the draft text: the real mention replaces it."""
-    for n in names:
-        md = re.sub(r"(?<!\w)@" + re.escape(n) + r"(?!\w)[ \t]?", "", md)
-    return md
+    """Drop a literal @NAME (and one following blank) from the draft text: the real mention replaces it.
+    Fenced code blocks and `inline code` are left alone."""
+    out, fenced = [], False
+    for line in md.split("\n"):
+        if line.lstrip().startswith("```"):
+            fenced = not fenced
+            out.append(line)
+            continue
+        if fenced:
+            out.append(line)
+            continue
+        parts = re.split(r"(`[^`]*`)", line)  # odd indexes are inline code spans
+        for i in range(0, len(parts), 2):
+            for n in names:
+                parts[i] = re.sub(r"(?<!\w)@" + re.escape(n) + r"(?!\w)[ \t]?", "", parts[i])
+        out.append("".join(parts))
+    return "\n".join(out)
 
 
 async def stage(a) -> dict:

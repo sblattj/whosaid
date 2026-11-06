@@ -70,6 +70,19 @@ class MdToHtml(unittest.TestCase):
         h = ds.md_to_html("snake_case_name and 2 * 3 * 4")
         self.assertNotIn("<i>", h)
 
+    def test_teams_tab_regex_is_anchored_to_the_host(self):
+        for u in ("https://teams.cloud.microsoft/v2/", "https://teams.microsoft.com/_#/conversations",
+                  "https://TEAMS.microsoft.com/"):
+            self.assertTrue(ds.IS_TEAMS.search(u), u)
+        for u in ("https://evil.example/?next=https://teams.microsoft.com/", "https://example.com/teams.microsoft.com/",
+                  "https://teams.microsoft.com.evil.example/", "http://teams.microsoft.com/"):
+            self.assertFalse(ds.IS_TEAMS.search(u), u)
+
+    def test_mention_literal_kept_inside_code(self):
+        md = "Hi @Ann Lee look\n`@Ann Lee` stays\n```\n@Ann Lee in a block\n```\nbye @Ann Lee"
+        out = ds.strip_mention_literals(md, ["Ann Lee"])
+        self.assertEqual(out, "Hi look\n`@Ann Lee` stays\n```\n@Ann Lee in a block\n```\nbye ")
+
 
 class Args(unittest.TestCase):
     def setUp(self):
