@@ -106,8 +106,11 @@ SEND_GUARD = ",".join([f'[data-tid="{t}"]' for t in SEND_TIDS]
 # these two only: the nearest ancestor of the editor that also contains the Attach button.
 EDITOR_SEL = '[data-tid="ckeditor"], [contenteditable=true][role=textbox]'
 ATTACH_SEL = '[data-tid=sendMessageCommands-FilePicker],[data-tid=newMessageCommands-FilePicker]'
-# One attachment chip, and its remove control inside it. Only ever queried INSIDE the compose root (UNVERIFIED).
-CHIP_SEL = '[data-tid*="attachment" i],[data-tid*="file-card" i],[data-tid*="file-chip" i]'
+# One attachment chip, and its remove control inside it. Only ever queried INSIDE the compose root.
+# PROVEN on real Teams (2026-11-06): each chip is a role=group (aria-label = file name) directly under
+# data-tid=file-well; its remove control is button[aria-label="Remove attachment"]. The rest are UNVERIFIED guesses.
+CHIP_PROVEN = '[data-tid="file-well"] > [role="group"]'
+CHIP_SEL = CHIP_PROVEN + ',[data-tid*="attachment" i],[data-tid*="file-card" i],[data-tid*="file-chip" i]'
 CHIP_REMOVE_SEL = 'button[aria-label^="Remove" i],button[aria-label^="Dismiss" i],[data-tid*="remove" i]'
 # The search box. CHECKED: data-tid AUTOSUGGEST_INPUT, a combobox input.
 SEARCH_SEL = ('[data-tid="AUTOSUGGEST_INPUT"],input[role=combobox][aria-label*="Search" i],[role=combobox][aria-label*="Search" i],'
@@ -459,16 +462,33 @@ async def open_chat(c: CDP, chat: str) -> str:
             raise StagerError(f"no chat named {chat} (rail or search)")
     if len(matches) > 1:
         raise StagerError(f"ambiguous: {len(matches)} chats named {chat}")
-    await c.click(matches[0]["x"], matches[0]["y"])
     title = ""
-    for _ in range(20):
-        title = await c.ev(op("title", "return document.title"))
-        if chat in title:
+    for attempt in range(2):  # the rail can still be scrolling or re-rendering: a click once landed on the next chat
+        if source == "left rail":
+            matches = await settled_rail_xy(c, chat, matches)
+        await c.click(matches[0]["x"], matches[0]["y"])
+        for _ in range(20):
+            title = await c.ev(op("title", "return document.title"))
+            if chat in title:
+                return title
+            await nap(0.5)
+        if source != "left rail":
             break
-        await nap(0.5)
-    if chat not in title:
-        raise StagerError(f'title is "{title}", not {chat}; stopping ({source})')
-    return title
+    raise StagerError(f'title is "{title}", not {chat}; stopping ({source})')
+
+
+async def settled_rail_xy(c: CDP, chat: str, matches: list[dict]) -> list[dict]:
+    """rail_find scrolls the row into view; read its position again until two reads agree (max ~2s)."""
+    for _ in range(8):
+        await nap(0.25)
+        r = await c.ev(op("rail_find", JS_RAIL, name=chat))
+        now = r["matches"]
+        if len(now) != 1:
+            raise StagerError(f"chat {chat} left the rail while scrolling to it ({len(now)} rows match)")
+        if abs(now[0]["x"] - matches[0]["x"]) < 1 and abs(now[0]["y"] - matches[0]["y"]) < 1:
+            return now
+        matches = now
+    return matches
 
 
 async def pick_exact(c: CDP, opname: str, js: str, name: str, none_msg: str, what: str) -> dict:
@@ -529,10 +549,22 @@ async def chip_names(c: CDP) -> list[str] | None:
     return await c.ev(op("root_chip_names", JS_ROOT_CHIP_NAMES))
 
 
+async def settled_chip_names(c: CDP, tries: int = 12, gap: float = 0.25) -> list[str] | None:
+    """chip_names, but a missing root is re-read for ~3s first: right after a clear or a paste Teams
+    re-renders the compose area and the editor briefly has no ancestor holding the Attach button."""
+    names = await chip_names(c)
+    for _ in range(tries):
+        if names is not None:
+            return names
+        await nap(gap)
+        names = await chip_names(c)
+    return names
+
+
 async def remove_chips(c: CDP, have_pages: bool):
     """Remove every attachment chip inside the compose root (and nothing outside it). No root: skip with a
     warning when no pages are going in, else fail (the check afterwards would be meaningless)."""
-    names = await chip_names(c)
+    names = await settled_chip_names(c)
     if names is None:
         if have_pages:
             raise StagerError("couldn't find the compose area to clear its old attachments")
@@ -554,8 +586,10 @@ async def remove_chips(c: CDP, have_pages: bool):
         for _ in range(10):
             await nap(0.3)
             names = await chip_names(c)
-            if names is None or len(names) < before:
+            if names is not None and len(names) < before:
                 break
+        if names is None:
+            names = await settled_chip_names(c)
         if names is None or len(names) >= before:
             raise StagerError("clicking an attachment's remove control didn't remove it")
     if names:
@@ -657,7 +691,11 @@ async def stage(a) -> dict:
 
             if a.attach:
                 step("attaching pages")
-                await attach(c, a.attach)
+                try:
+                    await attach(c, a.attach)
+                except StagerError as e:  # the paste already happened: say the chat is half-staged
+                    raise StagerError(f"{e} (the draft text is already in the compose box, without the "
+                                      f"attachment; rerun the stage to replace it)") from None
 
             step("focusing the tab")
             await c.send("Target.activateTarget", {"targetId": tid})
@@ -686,7 +724,7 @@ async def stage_with_deadline(a) -> dict:
 async def attach(c: CDP, files: list[str]):
     """Upload the files, then prove it: the chips INSIDE the compose root grew by len(files) and each file
     name shows there. The file-chooser intercept is always switched off again, even on failure."""
-    before = await chip_names(c)
+    before = await settled_chip_names(c)
     if before is None:
         raise StagerError("couldn't find the compose area to check the attachments")
     await c.s("Page.enable")

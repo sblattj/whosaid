@@ -252,7 +252,7 @@ class FakeTeams:
 
     def __init__(self, rail=(), search=(), compose="", teams_tab=True, old_chips=(), people=(), mention_dir=(),
                  history=(), no_root=False, remover_noop=False, drop_uploads=False, focus_miss=False,
-                 fail_set_files=False):
+                 fail_set_files=False, root_flicker=0):
         from websockets.sync.server import serve
         self.rail, self.search_dir, self.compose = list(rail), list(search), compose
         self.people_dir, self.mention_dir = list(people), list(mention_dir)
@@ -260,6 +260,8 @@ class FakeTeams:
         self.history = list(history)
         self.no_root, self.remover_noop, self.drop_uploads = no_root, remover_noop, drop_uploads
         self.focus_miss, self.fail_set_files = focus_miss, fail_set_files
+        # after a clear (Backspace) or a paste, the compose root is missing for this many reads (#172)
+        self.root_flicker, self.root_gone = root_flicker, 0
         self.newchat_open = self.picker_focus = self.compose_focused = False
         self.picker_typed = self.mention_typed = ""
         self.to_chips: list[str] = []
@@ -410,6 +412,9 @@ class FakeTeams:
             return [{"x": self.remover_xy(i)[0], "y": self.remover_xy(i)[1]}
                     for i, n in enumerate(self.chips) if n.startswith("old")]
         if name == "root_chip_names":
+            if self.root_gone > 0:
+                self.root_gone -= 1
+                return None
             return None if self.no_root else list(self.chips)
         if name == "in_root":
             return not self.no_root and not self.near_history(args["x"], args["y"])
@@ -435,6 +440,7 @@ class FakeTeams:
                                                     for i, n in enumerate(opts) if n == args["name"]]}
         if name == "paste":
             self.compose += args["plain"]  # at the caret, which is at the end
+            self.root_gone = self.root_flicker
             self.pasted_html = args["html"]
             return {"len": len(self.compose.strip()), "links": args["html"].count("<a ")}
         if name == "search_box":
@@ -492,6 +498,7 @@ class FakeTeams:
             elif method == "Input.dispatchKeyEvent":
                 if params.get("key") == "Backspace" and params["type"] == "keyDown" and self.selected:
                     self.compose, self.selected = "", False
+                    self.root_gone = self.root_flicker
                     self.mention_typed, self.mentions = "", []
             elif method == "Input.insertText":
                 t = params["text"]
@@ -628,6 +635,59 @@ class EndToEnd(unittest.TestCase):
         self.assertEqual(f.chips, ["page.html"])
         self.assertIn(("Page.setInterceptFileChooserDialog", {"enabled": True}), f.calls)
         self.assertIn("root_chip_names", f.ops)
+        f.never_sent(self)
+
+    def test_chip_selector_matches_real_teams_markup(self):
+        # Seen on real Teams 2026-11-06: <div data-tid="file-well"><div role="group" aria-label="<file>">...
+        # <button aria-label="Remove attachment">. The old guesses matched none of it, so an attached page
+        # read as "never showed up" and the stage failed after the attach had worked.
+        self.assertEqual(ds.CHIP_PROVEN, '[data-tid="file-well"] > [role="group"]')
+        self.assertTrue(ds.CHIP_SEL.startswith(ds.CHIP_PROVEN + ","))
+        self.assertIn(json.dumps(ds.CHIP_SEL), ds.JS_ROOT_CHIP_NAMES)
+        self.assertIn(json.dumps(ds.CHIP_SEL), ds.JS_ROOT_CHIP_REMOVERS)
+        self.assertIn('button[aria-label^="Remove" i]', ds.CHIP_REMOVE_SEL)  # matches "Remove attachment"
+
+    def test_rail_row_still_moving_is_reread_before_click(self):
+        f = self.fake(rail=["Zed", "Ann Lee", "Bob"])
+        orig, seen = f.evaluate, []
+
+        def stale_first(e):
+            r = orig(e)
+            if "op:rail_find" in e and not seen:
+                seen.append(1)
+                return {"total": r["total"], "matches": [{"x": f.rail_xy(0)[0], "y": f.rail_xy(0)[1]}]}  # mid-scroll
+            return r
+        f.evaluate = stale_first
+        r = self.run_stager(f)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("Ann Lee", f.title)
+        self.assertNotIn(f.rail_xy(0), f.clicks)  # never clicked where the row used to be
+        f.never_sent(self)
+
+    def test_click_on_wrong_rail_chat_is_retried_once(self):
+        f = self.fake(rail=["Zed", "Ann Lee", "Bob"])
+        orig, misses = f.click, []
+
+        def first_click_slips(x, y):
+            if (x, y) == f.rail_xy(1) and not misses:
+                misses.append(1)
+                return orig(*f.rail_xy(0))  # the list re-rendered under the pointer
+            return orig(x, y)
+        f.click = first_click_slips
+        r = self.run_stager(f)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("Ann Lee", f.title)
+        self.assertEqual(misses, [1])
+        f.never_sent(self)
+
+    def test_click_on_wrong_rail_chat_twice_stops(self):
+        f = self.fake(rail=["Zed", "Ann Lee", "Bob"])
+        orig = f.click
+        f.click = lambda x, y: orig(*f.rail_xy(0)) if (x, y) == f.rail_xy(1) else orig(x, y)
+        r = self.run_stager(f)
+        self.assertEqual(r.returncode, 1)
+        self.assertIn('not Ann Lee; stopping (left rail)', r.stderr)
+        self.assertNotIn("paste", f.ops)
         f.never_sent(self)
 
     def test_attach_chip_never_shows(self):
@@ -831,6 +891,23 @@ class EndToEnd(unittest.TestCase):
         self.assertEqual(r.returncode, 1)
         self.assertIn("couldn't find the compose area", r.stderr)
         self.assertNotIn("paste", f.ops)
+        f.never_sent(self)
+
+    def test_root_missing_for_a_few_reads_after_clear_and_paste_still_stages(self):
+        """#172: Teams re-renders the compose area after the clear and the paste; the root comes back."""
+        f = self.fake(rail=["Ann Lee"], compose="old", old_chips=["old1.html"], root_flicker=4)
+        r = self.run_stager(f, "--replace", "--only-these-attachments", "--attach", str(self.page))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(f.chips, ["page.html"])
+        self.assertIn('"attachments": 1', r.stdout)
+        f.never_sent(self)
+
+    def test_root_gone_for_good_after_paste_says_text_is_in_the_box(self):
+        f = self.fake(rail=["Ann Lee"], root_flicker=10_000)
+        r = self.run_stager(f, "--attach", str(self.page))
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("couldn't find the compose area to check the attachments", r.stderr)
+        self.assertIn("already in the compose box", r.stderr)
         f.never_sent(self)
 
     def test_restage_chip_check_ignores_history(self):
