@@ -143,7 +143,7 @@ the models as usual.
 | `whosaid wiki <ws> [--stdout] [-o FILE]` | Regenerate `<ws>/_WIKI.md` from the graph. |
 | `whosaid watch run\|install\|uninstall\|status --into <ws>` | Hands-free ingest of new recordings via a launchd agent. See [Hands-free ingest](#hands-free-ingest-whosaid-watch). |
 | `whosaid memos list\|pull\|delete "<title>"\|shortcut-recipe` | Voice Memos helpers that never touch the app's files or database. See [Voice Memos helpers](#voice-memos-helpers-whosaid-memos). |
-| `whosaid doctor` | Read-only environment report, including Ollama reachability and the index status of `$WHOSAID_WORKSPACE`. |
+| `whosaid doctor` | Read-only environment report, including Ollama reachability and the index status of `$WHOSAID_WORKSPACE`, and the default workspace `whosaid mcp` resolves to with its source. |
 | `whosaid version` \| `whosaid --version` \| `whosaid -V` | Print the installed version (plus a `git describe` suffix when run from a git checkout). |
 
 ### Record a browser meeting tab (no permissions)
@@ -1230,7 +1230,9 @@ Microphone permission. The first `whosaid_transcribe` call downloads ~1.5 GB of 
 The [workspace search](#search-your-meetings) layer is exposed too, so an agent can answer "what
 did we decide about the budget" from the transcripts instead of reading them whole. Every tool
 takes an optional `workspace` argument and otherwise uses `WHOSAID_WORKSPACE` from the server's
-environment; there is no current-directory fallback. None of them rebuilds the index: `whosaid
+environment, then the workspace of the only installed `whosaid watch` agent (with several agents the
+error lists them as `candidates`); successful responses carry `workspace_source` (`argument`,
+`WHOSAID_WORKSPACE`, or `watch agent <label>`). There is no current-directory fallback. None of them rebuilds the index: `whosaid
 index` (or the watcher) owns writes, and the tools read the index, corpora, and optional tracking ledger.
 
 | Tool | What it does |
@@ -1248,7 +1250,7 @@ index` (or the watcher) owns writes, and the tools read the index, corpora, and 
 | `whosaid_priorities` | Current or historical priority assertions, optionally filtered to a configured leadership group, retaining evidence and conflicts. |
 | `whosaid_tracking_suggestions` | Bounded local search for later completion evidence. Returns review-required candidates and limitations; never changes status. |
 
-Resources, all reading `WHOSAID_WORKSPACE`: `whosaid://workspace/wiki` (`_WIKI.md`),
+Resources, all reading `WHOSAID_WORKSPACE` (or the single watch agent's workspace): `whosaid://workspace/wiki` (`_WIKI.md`),
 `whosaid://workspace/action-items` (`_ACTION-ITEMS.md`), `whosaid://workspace/index`
 (`_INDEX.md`), and per meeting `whosaid://workspace/meeting/{folder}/transcript` and
 `whosaid://workspace/meeting/{folder}/action-items`.
@@ -1317,7 +1319,7 @@ the absolute path to the `whosaid` script for `command` if it is not on the clie
 | `WHOSAID_REC_DEVICE` | avfoundation input device used by `record` and `enroll`. |
 | `WHOSAID_INSTALL_DIR` | Command install directory used by `whosaid install` (default: `~/.local/bin`). |
 | `WHOSAID_ACTION_ITEMS_HOOK` | Default action-items hook for `ingest --action-items` (transcript on stdin, markdown on stdout), overridden by `--hook`. |
-| `WHOSAID_WORKSPACE` | Default meeting workspace for `index`, `search`, `context`, `graph`, `wiki`, `watch`, for the index-status line in `whosaid doctor`, and for the read-only workspace tools and resources of `whosaid mcp`. |
+| `WHOSAID_WORKSPACE` | Default meeting workspace for `index`, `search`, `context`, `graph`, `wiki`, `watch`, for the index-status line in `whosaid doctor`, and for the read-only workspace tools and resources of `whosaid mcp` (which, when it is unset, use the only installed watch agent's workspace). |
 | `WHOSAID_OWNER` | Whose action items a workspace tracks; overrides `[workspace] owner` in `whosaid.toml`. |
 | `WHOSAID_TODAY` | `YYYY-MM-DD` the worklist treats as today when deciding whether a relative deadline (`today`, `tomorrow`, `by Friday`, …) is overdue (default: the clock). |
 | `WHOSAID_OLLAMA` | Ollama base URL for embeddings and the built-in summarizer (default: `http://127.0.0.1:11434`). Localhost is the only supported destination. |

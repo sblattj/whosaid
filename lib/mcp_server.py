@@ -58,6 +58,7 @@ _LIB_DIR = str(Path(__file__).resolve().parent)
 if _LIB_DIR not in sys.path:
     sys.path.insert(0, _LIB_DIR)
 import wsconfig  # noqa: E402
+import watch as watch_mod  # noqa: E402
 import live as live_mod  # noqa: E402
 import live_insights  # noqa: E402
 
@@ -212,7 +213,7 @@ Commitment tracking: kind distinguishes explicit promises, requests, standing di
 
 Not exposed here: `enroll` and `record` are interactive microphone operations that need a live terminal. Run them from the `whosaid` CLI. The first transcribe downloads ~1.5 GB of models; run whosaid_doctor to check readiness. Full flag/env/long-audio reference: read the whosaid://guide resource.
 
-Meeting workspace (search across many transcripts): point the server at a workspace directory by launching it with WHOSAID_WORKSPACE=<dir>, or pass `workspace` on each call; there is no cwd fallback. Flow: whosaid_search (turn-level hits with meeting folder + timestamp) -> whosaid_context (the verbatim minute around one hit; do not read whole transcripts) -> whosaid_items / whosaid_item / whosaid_person for action items and per-person commitments; whosaid_worklist for one person's ranked P1/P2/P3 worklist across both corpora. whosaid_meetings, whosaid_prs and whosaid_speakers list what the graph knows; whosaid_workspace_status says whether the index exists. The index (_search.db, _WIKI.md) is built by `whosaid index <ws>` from the CLI or the watcher, never from here: every workspace tool is read-only except whosaid_set_status, which appends one status event to the tracking ledger (_tracking.json) when the user marks an item, and whosaid_name_voice_group, which names one unnamed voice across all its meetings (groups come from whosaid_voice_groups) and then rebuilds the index. Drafts outbox (not workspace files): whosaid_draft_new, whosaid_draft_write, whosaid_draft_verify, whosaid_draft_close and whosaid_draft_sent_check write chat drafts to ~/.drafts for the user to stage (one open draft per recipient: new joins it); whosaid_drafts, whosaid_draft_stakeholders and whosaid_draft_stale read. Live Teams chats: whosaid_teams_live reads the newest messages (or chats) straight from the Teams desktop app's local cache, read-only and offline, for what was said in the last minutes or hours before it is ingested. Resources: whosaid://workspace/wiki, whosaid://workspace/action-items, whosaid://workspace/index, whosaid://workspace/meeting/{folder}/transcript and whosaid://workspace/meeting/{folder}/action-items. Everything stays local (SQLite FTS5 plus optional embeddings from a localhost Ollama)."""
+Meeting workspace (search across many transcripts): point the server at a workspace directory by launching it with WHOSAID_WORKSPACE=<dir>, or pass `workspace` on each call; with neither, the workspace of the only installed `whosaid watch` agent is used (the response says so in workspace_source); there is no cwd fallback. Flow: whosaid_search (turn-level hits with meeting folder + timestamp) -> whosaid_context (the verbatim minute around one hit; do not read whole transcripts) -> whosaid_items / whosaid_item / whosaid_person for action items and per-person commitments; whosaid_worklist for one person's ranked P1/P2/P3 worklist across both corpora. whosaid_meetings, whosaid_prs and whosaid_speakers list what the graph knows; whosaid_workspace_status says whether the index exists. The index (_search.db, _WIKI.md) is built by `whosaid index <ws>` from the CLI or the watcher, never from here: every workspace tool is read-only except whosaid_set_status, which appends one status event to the tracking ledger (_tracking.json) when the user marks an item, and whosaid_name_voice_group, which names one unnamed voice across all its meetings (groups come from whosaid_voice_groups) and then rebuilds the index. Drafts outbox (not workspace files): whosaid_draft_new, whosaid_draft_write, whosaid_draft_verify, whosaid_draft_close and whosaid_draft_sent_check write chat drafts to ~/.drafts for the user to stage (one open draft per recipient: new joins it); whosaid_drafts, whosaid_draft_stakeholders and whosaid_draft_stale read. Live Teams chats: whosaid_teams_live reads the newest messages (or chats) straight from the Teams desktop app's local cache, read-only and offline, for what was said in the last minutes or hours before it is ingested. Resources: whosaid://workspace/wiki, whosaid://workspace/action-items, whosaid://workspace/index, whosaid://workspace/meeting/{folder}/transcript and whosaid://workspace/meeting/{folder}/action-items. Everything stays local (SQLite FTS5 plus optional embeddings from a localhost Ollama)."""
 
 
 try:
@@ -220,6 +221,40 @@ try:
     mcp = _Server(name="whosaid", instructions=SERVER_INSTRUCTIONS, version=__version__)
 except TypeError:
     mcp = _Server(name="whosaid", instructions=SERVER_INSTRUCTIONS)
+
+
+_WS_SOURCE: Optional[str] = None  # how the last _resolve_ws call found its workspace
+
+
+def _with_workspace_source(fn):
+    """Wrap a tool so a successful dict response says where its workspace came
+    from ("workspace_source": argument | WHOSAID_WORKSPACE | watch agent <label>).
+    One wrapper at registration reaches every workspace tool (issue #181)."""
+    import functools
+
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        global _WS_SOURCE
+        _WS_SOURCE = None
+        out = fn(*args, **kwargs)
+        if _WS_SOURCE and isinstance(out, dict) and out.get("ok") is True:
+            out.setdefault("workspace_source", _WS_SOURCE)
+        return out
+
+    return wrapper
+
+
+# Every tool registers through the wrapper, so a workspace tool's success dict
+# carries "workspace_source" without touching its ~25 bodies.
+_register_tool = mcp.tool
+
+
+def _tool(*args, **kwargs):
+    deco = _register_tool(*args, **kwargs)
+    return lambda fn: deco(_with_workspace_source(fn))
+
+
+mcp.tool = _tool  # type: ignore[method-assign]
 
 
 # ---------------------------------------------------------------------------
@@ -1184,8 +1219,31 @@ def _last_phase(stderr) -> Optional[str]:
 
 
 def _resolve_ws(workspace: Optional[str]) -> tuple:
-    """(workspace dir, None) or (None, error dict). Argument > $WHOSAID_WORKSPACE; never cwd."""
-    raw = (workspace or "").strip() or os.environ.get("WHOSAID_WORKSPACE", "").strip()
+    """(workspace dir, None) or (None, error dict).
+
+    Argument > $WHOSAID_WORKSPACE > the workspace of the ONLY installed
+    `whosaid watch` agent (GitHub issue #181); never cwd. The source of a
+    resolved workspace is left in _WS_SOURCE for _with_workspace_source.
+    """
+    global _WS_SOURCE
+    _WS_SOURCE = None
+    raw = (workspace or "").strip()
+    source = "argument"
+    if not raw:
+        raw = os.environ.get("WHOSAID_WORKSPACE", "").strip()
+        source = "WHOSAID_WORKSPACE"
+    if not raw:
+        agents = watch_mod.installed_agent_workspaces()
+        if len(agents) == 1:
+            raw, source = str(agents[0][1]), f"watch agent {agents[0][0]}"
+        elif len(agents) > 1:
+            return None, _ws_error(
+                "no workspace given",
+                "several watch agents are installed, so there is no single default: pass "
+                "workspace=<one of candidates> on the call, or launch the server with "
+                "WHOSAID_WORKSPACE=<dir>",
+                candidates=[str(w) for _, w in agents],
+            )
     if not raw:
         return None, _ws_error(
             "no workspace given",
@@ -1199,6 +1257,7 @@ def _resolve_ws(workspace: Optional[str]) -> tuple:
             "pass the directory that holds the meeting folders "
             "(and _search.db once `whosaid index` has run)",
         )
+    _WS_SOURCE = source
     return ws.resolve(), None
 
 
@@ -2890,8 +2949,8 @@ def _resource_ws() -> tuple:
     ws, err = _resolve_ws(None)
     if err:
         return None, (
-            f"whosaid: {err['error']}. Resources read the workspace from WHOSAID_WORKSPACE; "
-            "launch the server with it set (tools also accept a `workspace` argument)."
+            f"whosaid: {err['error']}. Resources read the workspace from WHOSAID_WORKSPACE (or the only installed watch agent); "
+            "launch the server with WHOSAID_WORKSPACE set (tools also accept a `workspace` argument)."
         )
     return ws, None
 

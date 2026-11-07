@@ -573,6 +573,36 @@ def plist_workspace(data: dict | None) -> Path | None:
     return None
 
 
+def installed_agent_workspaces(agents_dir: Path | None = None) -> list[tuple[str, Path]]:
+    """[(label, workspace)] for every installed watch agent whose workspace is an
+    existing directory, sorted by label (GitHub issue #181).
+
+    The LaunchAgents dir is ``agents_dir``, else ``$WHOSAID_LAUNCH_AGENTS_DIR``
+    (tests), else ``~/Library/LaunchAgents``. Read-only: only parses plists.
+    """
+    if agents_dir is None:
+        env = os.environ.get("WHOSAID_LAUNCH_AGENTS_DIR", "").strip()
+        agents_dir = Path(env).expanduser() if env else LAUNCH_AGENTS
+    found: list[tuple[str, Path]] = []
+    try:
+        plists = sorted(agents_dir.glob(f"{LABEL_PREFIX}*.plist"))
+    except OSError:
+        return found
+    for plist in plists:
+        try:
+            with open(plist, "rb") as fh:
+                data = plistlib.load(fh)
+        except (OSError, plistlib.InvalidFileException, ValueError):
+            continue
+        ws = plist_workspace(data if isinstance(data, dict) else None)
+        if ws is None:
+            continue
+        ws = ws.expanduser()
+        if ws.is_dir():
+            found.append((plist.name[:-len(".plist")], ws.resolve()))
+    return found
+
+
 def watcher_source(data: dict | None, ws: Path | None) -> tuple[Path | None, Path]:
     """Resolve a watcher's workspace and source from its installed plist.
 

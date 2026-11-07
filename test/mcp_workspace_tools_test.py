@@ -180,6 +180,81 @@ def test_workspace_resolution(tmp: Path, fake: FakeRunner) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Default workspace from the single watch agent (GitHub issue #181)
+# ---------------------------------------------------------------------------
+def write_agent(agents: Path, name: str, ws: Path) -> str:
+    """A real LaunchAgent plist (plistlib) whose ProgramArguments carry `--into <ws>`."""
+    import plistlib
+    label = f"com.whosaid.watch.{name}"
+    agents.mkdir(parents=True, exist_ok=True)
+    with open(agents / f"{label}.plist", "wb") as fh:
+        plistlib.dump({"Label": label,
+                       "ProgramArguments": ["/bin/whosaid-watch", "run", "--into", str(ws)]}, fh)
+    return label
+
+
+def test_default_agent_workspace(tmp: Path, fake: FakeRunner) -> None:
+    root = tmp / "agent181"
+    agents = root / "LaunchAgents"
+    ws_a = make_workspace(root / "a")
+    ws_b = make_workspace(root / "b")
+    clear_env()
+    prev_agents = os.environ.get("WHOSAID_LAUNCH_AGENTS_DIR")
+    os.environ["WHOSAID_LAUNCH_AGENTS_DIR"] = str(agents)
+    try:
+        # Zero agents: the old error, unchanged.
+        agents.mkdir(parents=True)
+        out = mcp_server.whosaid_search("rollout")
+        check(out["ok"] is False and out["error"] == "no workspace given", f"zero agents: {out}")
+        check("WHOSAID_WORKSPACE" in out["hint"] and "candidates" not in out, f"zero agents hint: {out}")
+
+        # One agent: resolved, and the response names the source.
+        label = write_agent(agents, "one", ws_a)
+        fake.calls.clear()
+        out = mcp_server.whosaid_search("rollout")
+        check(out["ok"] is True, f"one agent must resolve: {out}")
+        check(fake.last()[2] == ws_a.resolve(), f"one agent workspace goes to the runner: {fake.last()}")
+        check(out["workspace"] == str(ws_a.resolve()), f"response names the workspace: {out}")
+        check(out["workspace_source"] == f"watch agent {label}", f"source names the agent: {out}")
+        out = mcp_server.whosaid_meetings()
+        check(out.get("workspace_source") == f"watch agent {label}", f"source on another tool: {out}")
+
+        # Argument and env both win over the agent.
+        out = mcp_server.whosaid_search("rollout", workspace=str(ws_b))
+        check(fake.last()[2] == ws_b.resolve() and out["workspace_source"] == "argument", f"argument wins: {out}")
+        os.environ["WHOSAID_WORKSPACE"] = str(ws_b)
+        out = mcp_server.whosaid_search("rollout")
+        check(fake.last()[2] == ws_b.resolve() and out["workspace_source"] == "WHOSAID_WORKSPACE", f"env wins: {out}")
+        clear_env()
+
+        # Two agents: ambiguous, candidates listed, no runner call.
+        label_b = write_agent(agents, "two", ws_b)
+        fake.calls.clear()
+        out = mcp_server.whosaid_search("rollout")
+        check(out["ok"] is False and out["error"] == "no workspace given", f"two agents: {out}")
+        check(sorted(out["candidates"]) == sorted([str(ws_a.resolve()), str(ws_b.resolve())]),
+              f"both candidates listed: {out}")
+        check("workspace=" in out["hint"], f"hint says to pass one: {out}")
+        check(fake.calls == [], "ambiguous default must not run anything")
+
+        # An agent pointing at a missing dir is ignored: the other one is the only one.
+        (agents / f"{label_b}.plist").unlink()
+        write_agent(agents, "gone", root / "does-not-exist")
+        out = mcp_server.whosaid_search("rollout")
+        check(out["ok"] is True and out["workspace"] == str(ws_a.resolve()), f"missing dir ignored: {out}")
+        # Only a missing-dir agent left: same as zero agents.
+        (agents / f"{label}.plist").unlink()
+        out = mcp_server.whosaid_search("rollout")
+        check(out["ok"] is False and out["error"] == "no workspace given", f"only missing dir: {out}")
+    finally:
+        if prev_agents is None:
+            os.environ.pop("WHOSAID_LAUNCH_AGENTS_DIR", None)
+        else:
+            os.environ["WHOSAID_LAUNCH_AGENTS_DIR"] = prev_agents
+        clear_env()
+
+
+# ---------------------------------------------------------------------------
 # Tools: argv construction, validation, pass-through
 # ---------------------------------------------------------------------------
 def test_search(ws: Path, fake: FakeRunner) -> None:
@@ -1428,7 +1503,9 @@ def main() -> None:
         try:
             fake = FakeRunner()
             mcp_server._run_ws = fake
+            os.environ["WHOSAID_LAUNCH_AGENTS_DIR"] = str(tmp / "no-agents")  # never the real ~/Library/LaunchAgents
             test_workspace_resolution(tmp, fake)
+            test_default_agent_workspace(tmp, fake)
 
             ws = make_workspace(tmp / "tools")
             clear_env()

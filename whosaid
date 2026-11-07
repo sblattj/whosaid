@@ -1119,6 +1119,28 @@ cmd_doctor() {
     echo "  workspace: WHOSAID_WORKSPACE not set; set it to your meeting workspace to see its index status here and to give 'whosaid mcp' a default"
   fi
 
+  # Default workspace for `whosaid mcp` and its source (GitHub issue #181):
+  # $WHOSAID_WORKSPACE, else the only installed watch agent. Read-only.
+  if [[ -n "$WHOSAID_PY" ]] && [[ -f "$WATCH_PY" ]]; then
+    local mcp_ws_line=""
+    mcp_ws_line="$("$WHOSAID_PY" -c '
+import os, sys
+sys.path.insert(0, sys.argv[1])
+import watch
+env = os.environ.get("WHOSAID_WORKSPACE", "").strip()
+agents = watch.installed_agent_workspaces()
+if env:
+    print("%s (WHOSAID_WORKSPACE)" % env)
+elif len(agents) == 1:
+    print("%s (watch agent %s)" % (agents[0][1], agents[0][0]))
+elif agents:
+    print("none: %d watch agents installed (%s); set WHOSAID_WORKSPACE or pass workspace= on each call" % (len(agents), ", ".join(str(w) for _, w in agents)))
+else:
+    print("none: set WHOSAID_WORKSPACE or install a watch agent")
+' "$REPO_DIR/lib" 2>/dev/null)" || mcp_ws_line=""
+    [[ -n "$mcp_ws_line" ]] && echo "  mcp default workspace: $mcp_ws_line"
+  fi
+
   # Menu bar plugin (GitHub issue #24): informational, never fails doctor.
   if [[ -f "$WATCH_PY" ]] && [[ -n "$WHOSAID_PY" ]]; then
     "$WHOSAID_PY" "$WATCH_PY" menubar status 2>/dev/null | sed 's/^/  menu bar: /' || true

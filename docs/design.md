@@ -209,11 +209,13 @@ audio, text, and voice embeddings never leave the machine.
 an agent so it can answer from turns instead of reading whole transcripts: `whosaid_search`,
 `whosaid_context`, `whosaid_items`, `whosaid_item`, `whosaid_person`, `whosaid_meetings`,
 `whosaid_prs`, `whosaid_speakers`, and `whosaid_workspace_status`. Each takes an optional
-`workspace` and otherwise uses `WHOSAID_WORKSPACE` from the server's environment; there is no
+`workspace` and otherwise uses `WHOSAID_WORKSPACE` from the server's environment, then the
+workspace of the only installed `whosaid watch` agent (several agents: the error lists them as
+`candidates`); a successful response carries `workspace_source` saying which one applied. There is no
 current-directory fallback, because an MCP server's cwd is whatever the client chose. Resources
 (`whosaid://workspace/wiki`, `.../action-items`, `.../index`, and
 `.../meeting/{folder}/transcript` and `.../meeting/{folder}/action-items`) read
-`WHOSAID_WORKSPACE` only. The server never builds or rebuilds `_search.db`: writes belong to
+`WHOSAID_WORKSPACE`, then the single watch agent. The server never builds or rebuilds `_search.db`: writes belong to
 `whosaid index`, `ingest --index`, `roll-up --index`, and the watcher, so a tool call can never
 race a rebuild or spend minutes embedding.
 
