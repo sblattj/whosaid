@@ -6,6 +6,11 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ## [Unreleased]
 
+## [1.34.1] - 2026-11-06
+
+### Fixed
+- `whosaid mcp` workspace tools no longer fail with "no workspace given" when exactly one `whosaid watch` agent is installed (#181). With no `workspace` argument and no `WHOSAID_WORKSPACE`, they use that agent's workspace, and every successful response says where its workspace came from in `workspace_source` (`argument`, `WHOSAID_WORKSPACE` or `watch agent <label>`). With several agents installed the error lists them as `candidates`. `whosaid doctor` prints the resolved default MCP workspace.
+
 ## [1.34.0] - 2026-11-06
 
 ### Added
