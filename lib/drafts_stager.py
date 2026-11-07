@@ -29,7 +29,8 @@ shows a chip with NAME (a new chat's title need not contain it), then continues 
 --mention NAME (repeatable) makes REAL @mentions. PLACEMENT RULE: mentions go at the START of the
 message, in the given order, each followed by one space, before the pasted body. A literal `@NAME` in
 the draft text is stripped from the pasted text (html and plain, plus one blank after it) so it isn't
-duplicated. Each mention: type "@NAME" with Input.insertText, wait for the suggestion list, click the
+duplicated. Each mention: type "@NAM" with Input.insertText and the last letter as a real key event (the
+picker only filters on key events, #183), wait for the suggestion list, click the
 option whose first line is NAME exactly (none: exit 1 "no mention suggestion for NAME"; several:
 exit 1 ambiguous; never Enter), then check the compose box gained one mention element. Mentions are
 inserted after any --replace clearing and before the paste.
@@ -356,6 +357,14 @@ class CDP:
             raise StagerError((ex.get("exception") or {}).get("description") or ex.get("text", "script error"))
         return (r.get("result") or {}).get("value")
 
+    async def type_char(self, ch: str):
+        """One printable character as a real keyDown/keyUp pair, so the page's key listeners fire."""
+        plain = ch.isascii() and ch.isalnum()
+        p = {"key": ch, "code": (("Key" if ch.isalpha() else "Digit") + ch.upper()) if plain else "",
+             "windowsVirtualKeyCode": ord(ch.upper()) if plain else 0}
+        await self.s("Input.dispatchKeyEvent", {"type": "keyDown", "text": ch, "unmodifiedText": ch, **p})
+        await self.s("Input.dispatchKeyEvent", {"type": "keyUp", **p})
+
     async def key(self, k: str, code: str, vk: int, mod: int = 0):
         for typ in ("keyDown", "keyUp"):
             await self.s("Input.dispatchKeyEvent", {"type": typ, "key": k, "code": code,
@@ -648,7 +657,9 @@ async def insert_mentions(c: CDP, names: list[str]):
     for name in names:
         before = await c.ev(op("mention_count", JS_MENTION_COUNT))
         await c.ev(op("caret_end", JS_CARET))
-        await c.s("Input.insertText", {"text": "@" + name})
+        # The picker only filters on real key events (#183): insert all but the last letter, then key it.
+        await c.s("Input.insertText", {"text": "@" + name[:-1]})
+        await c.type_char(name[-1])
         m = await pick_exact(c, "mention_find", JS_MENTION_FIND, name,
                              f"no mention suggestion for {name}", "mention suggestions")
         await c.click(m["x"], m["y"])

@@ -270,6 +270,7 @@ class FakeTeams:
         self.edit_text, self.edit_selected, self.edit_saved = "", False, False
         self.newchat_open = self.picker_focus = self.compose_focused = False
         self.picker_typed = self.mention_typed = ""
+        self.mention_keyed = False
         self.to_chips: list[str] = []
         self.mentions: list[str] = []
         # elements with attributes, for the hit test: (x, y) -> attrs
@@ -352,7 +353,7 @@ class FakeTeams:
 
     def mention_options(self):
         t = self.mention_typed
-        return [n for n in self.mention_dir if t.startswith("@") and t[1:] in n]
+        return [n for n in self.mention_dir if self.mention_keyed and t.startswith("@") and t[1:] in n]
 
     def click(self, x, y):
         self.clicks.append((x, y))
@@ -551,13 +552,18 @@ class FakeTeams:
                     self.compose, self.selected = "", False
                     self.root_gone = self.root_flicker
                     self.mention_typed, self.mentions = "", []
+                if params["type"] == "keyDown" and params.get("text") and self.compose_focused:
+                    self.compose += params["text"]
+                    if self.mention_typed:
+                        self.mention_typed += params["text"]
+                        self.mention_keyed = True  # like Teams, the picker filters only after a real key
             elif method == "Input.insertText":
                 t = params["text"]
                 if self.picker_focus:
                     self.picker_typed += t
                 elif self.compose_focused:
                     if t.startswith("@"):
-                        self.mention_typed = t
+                        self.mention_typed, self.mention_keyed = t, False
                     self.compose += t  # the typed text is in the box until a suggestion replaces it
                 else:
                     self.typed += t
@@ -870,6 +876,19 @@ class EndToEnd(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(f.compose, "Bob Ray Hey please look at [this](https://example.com/d).\n")
         self.assertNotIn("@Bob Ray", f.pasted_html)
+        self.assertEqual(f.mentions, ["Bob Ray"])
+        f.never_sent(self)
+
+    def test_mention_last_letter_is_a_real_key_event(self):
+        """#183: the picker ignores a one-shot insertText, so the last letter goes as keyDown/keyUp."""
+        f = self.fake(rail=["Ann Lee"], mention_dir=["Bob Ray"])
+        r = self.run_stager(f, "--mention", "Bob Ray")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        inserted = [p["text"] for m, p in f.calls if m == "Input.insertText"]
+        self.assertIn("@Bob Ra", inserted)
+        self.assertNotIn("@Bob Ray", inserted)
+        keys = [(p["type"], p.get("text")) for m, p in f.calls if m == "Input.dispatchKeyEvent" and p.get("key") == "y"]
+        self.assertEqual(keys, [("keyDown", "y"), ("keyUp", None)])
         self.assertEqual(f.mentions, ["Bob Ray"])
         f.never_sent(self)
 
