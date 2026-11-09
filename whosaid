@@ -765,6 +765,8 @@ LIVE
   whosaid live [run] [--into DIR] [--chunk-seconds N] [--once] [--capture DIR] [--model M]
   whosaid live show  [--into DIR] [--minutes N]
   whosaid live status [--into DIR] [--json]
+  whosaid live follow [--into DIR] [--speaker REGEX ...] [--exclude-self] [--named-only]
+                      [--poll S] [--format text|jsonl] [--once] [--stale-seconds N] [--max-hours N]
   whosaid live insights build --jsonl F [--out F] [--if-stale] [--ws WS]   (--ws: an ended call gets its final AI pass)
   whosaid live insights follow [--into DIR] [--poll S] [--once] [--max-hours N]
   whosaid live ask --question Q [--into DIR] [--ws WS] [--minutes N] [--json]
@@ -777,6 +779,16 @@ LIVE
   show prints the newest live transcript (or its last N minutes). Agents: the
   whosaid_live MCP tool returns the same. status (--json) describes the newest session
   without its text: path, started, updated, active, ended, lines; exit 0.
+  follow prints each new line of the newest session once, as it is written (line-buffered,
+  for an agent's background monitor): the .md and .jsonl are rewritten whole on every
+  update, so never tail them. --speaker matches the live name or role (repeatable,
+  case-insensitive); lines no known voice matched are kept and marked
+  "? (v9, nearest: B 0.71)" unless --named-only, and a voice that keeps sounding like a
+  known one is noted once ("# v9 may be B (0.71)"). A line with a speaker change inside
+  is split, or marked "(mixed, change at HH:MM:SS)". When the call ends (or nothing is
+  written for --stale-seconds, default 900) it prints "ended <session>" and waits for the
+  next call (--once: exits 0). --format jsonl: one object per line (event turn|hint|
+  renamed|ended, with a cursor whosaid_live(since=) takes).
   insights writes <stem>.insights.json next to a session's .jsonl: topics (with
   revisits), a topic/term wordgraph, 5-minute summaries and agreed/suggested next
   steps, all computed locally; follow keeps the newest session's file current
@@ -2832,7 +2844,7 @@ cmd_live() {
     [[ "$1" == insights ]] && shift
     exec "$WHOSAID_PY" "$REPO_DIR/lib/live_insights.py" "$@"
   fi
-  if [[ "${1:-}" == show || "${1:-}" == status ]]; then
+  if [[ "${1:-}" == show || "${1:-}" == status || "${1:-}" == follow ]]; then
     exec "$WHOSAID_PY" "$REPO_DIR/lib/live.py" "$@"
   fi
   # sherpa-onnx: live names from the speaker registry (lib/live_voices.py)

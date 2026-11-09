@@ -71,4 +71,40 @@ with tempfile.TemporaryDirectory() as d:
     check(mcp_server.whosaid_live_ask("  ", recordings=d)["ok"] is False, "empty question refused")
     check(mcp_server.whosaid_live_ask("x", minutes=0, recordings=d)["ok"] is False, "minutes <= 0 refused")
 
+    # ---- whosaid_live(since=cursor) (#187): only newer lines and a new cursor ----
+    def write(ents, ended=False):
+        live.write_session(jl.with_suffix(".md"), jl, now - 600, list(ents), ended)
+
+    ents = [{"t": float(i * 10), "n": i, "who": "them", "voice": "v1", "name": "Alice", "text": f"point {i}",
+             "clock": time.strftime("%H:%M:%S", time.localtime(now - 600 + i * 10))} for i in range(3)]
+    write(ents)
+    first = mcp_server.whosaid_live(recordings=d)
+    check(first["ok"] and first["cursor"] == f"{jl.stem}:n2" and first["lines"] == 3,
+          f"a snapshot carries a cursor: {first.get('cursor')}")
+    ents[0]["name"] = "Alice"  # the rewrite: names move, two new lines (one in the same second)
+    ents += [dict(ents[2], n=3, text="same second", voice="v2", name="Bob"),
+             dict(ents[2], n=4, t=40.0, text="later", voice="v2", name="Bob")]
+    write(ents)
+    nxt = mcp_server.whosaid_live(since=first["cursor"], recordings=d)
+    check([t["text"] for t in nxt["turns"]] == ["same second", "later"] and nxt["lines"] == 2,
+          f"since=cursor: only the newer lines: {nxt}")
+    check(nxt["cursor"] == f"{jl.stem}:n4" and nxt["reset"] is False and "later" in nxt["transcript"]
+          and "point 0" not in nxt["transcript"], f"a new cursor, no overlap: {nxt}")
+    again = mcp_server.whosaid_live(since=nxt["cursor"], recordings=d)
+    check(again["ok"] and again["turns"] == [] and again["cursor"] == nxt["cursor"], f"nothing new: {again}")
+    by_t = mcp_server.whosaid_live(since="20", recordings=d)
+    check([t["text"] for t in by_t["turns"]] == ["later"], f"since=a bare t: lines after it: {by_t['turns']}")
+    bob = mcp_server.whosaid_live(since=first["cursor"], speaker="^bob$", recordings=d)
+    check([t["name"] for t in bob["turns"]] == ["Bob", "Bob"], f"speaker filter with since: {bob['turns']}")
+    al = mcp_server.whosaid_live(since=first["cursor"], speaker="alice", recordings=d)
+    check(al["turns"] == [] and al["cursor"] == nxt["cursor"], "filtered-out lines still move the cursor")
+    bad = mcp_server.whosaid_live(since="what", recordings=d)
+    check(bad["ok"] is False and bad["hint"], f"a bad cursor: ok=false with a hint: {bad}")
+    check(mcp_server.whosaid_live(speaker="(", recordings=d)["ok"] is False, "a bad speaker regex refused")
+    newer = into / live.LIVE_DIR / "20261030T160000.jsonl"
+    live.write_session(newer.with_suffix(".md"), newer, now, [dict(ents[0], n=0, text="new call")], False)
+    nc = mcp_server.whosaid_live(since=nxt["cursor"], recordings=d)
+    check(nc["reset"] is True and [t["text"] for t in nc["turns"]] == ["new call"]
+          and nc["cursor"] == "20261030T160000:n0", f"a cursor from the previous call: all of the new one: {nc}")
+
 print(f"PASS: mcp_live_tools_test ({CHECKS} checks)")
