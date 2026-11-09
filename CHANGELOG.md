@@ -6,6 +6,8 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ## [Unreleased]
 
+## [1.35.0] - 2026-11-08
+
 ### Added
 - `whosaid teams calendar [--from today|2d|ISO] [--to ISO] [--days N] [--q TEXT] [--cancelled] [--free] [--ws DIR] [--json]`: your meetings read from the Teams desktop app's local cache, offline, with no Graph permission. It merges the Outlook calendar the Teams Calendar tab embeds (`owa-offline-data-*`, in its own storage bucket) with the older `Teams:calendar` database, which goes stale once the app uses the Outlook calendar; each event carries `source` and the result lists each store's range in `sources`. Times are converted from the store's UTC; recurring meetings come one row per occurrence, filling attendees and body from the series when an occurrence lacks them; cancelled and Free events are hidden by default and counted. Each result says which weeks the cache covers and when Teams last synced. With a workspace, each event lists the recorded meeting folders made during it. `whosaid teams calendar status` shows what the cache holds.
 - MCP `whosaid_teams_calendar` (read-only): the same events for a window, with `covers`, `synced_at` and `recorded`.
