@@ -6,6 +6,20 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ## [Unreleased]
 
+## [1.36.0] - 2026-11-09
+
+### Added
+- `whosaid live follow [--speaker REGEX ...] [--exclude-self] [--named-only] [--poll S] [--format text|jsonl] [--once] [--stale-seconds N]`: prints each new line of the newest live session exactly once, line-buffered for a pipe or an agent's background monitor, then `ended <session>` when the call is over (#187). The cursor is a per-line sequence number `n`, never the clock string, so whole-file rewrites, same-second lines and midnight are safe. Unnamed voices are kept and marked `? (v9, nearest: B 0.71)` unless `--named-only`, with a one-time `# v9 may be B` hint.
+- MCP `whosaid_live(since=cursor, speaker=...)` returns only the turns after the cursor plus a new `cursor` (#187).
+- Live lines whose segment holds a speaker change are flagged `mixed` with `change_at`. `whosaid live run --split-words` (or `WHOSAID_LIVE_SPLIT_WORDS=1`) asks Whisper for word times and splits them at the change instead. This is off by default because word times cost decode time and switch on the silence-hallucination filter.
+- `whosaid drafts merge INTO FROM [FROM ...] [--text-file F] [--dry-run] [--force]` and MCP `whosaid_draft_merge` fold rival open drafts to one recipient into one (#188):
+  - claims are unioned by key and it refuses on a clash
+  - stakeholders are unioned by speaker
+  - pages, mentions and docs are unioned
+  - each FROM owner becomes a contributor
+  - each FROM is dropped with `merged_into`, and INTO gets `merged_from` and must be verified again
+- `whosaid drafts list` shows a `rivals` count, and the `stage` refusal over a rival draft suggests `drafts merge` (#188).
+
 ## [1.35.1] - 2026-11-08
 
 ### Fixed
