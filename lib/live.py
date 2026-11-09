@@ -9,6 +9,9 @@ live.py: a live transcript of the call being recorded (`whosaid live`, issue #13
          <into>/.live/<start>.md and <start>.jsonl. Keeps following until the
          capture ends, then waits for the next one (--once: exit instead).
   show   Print the newest live transcript, or its last --minutes N.
+  follow Print each new line of the newest live transcript once, as it is written,
+         then `ended` (#187). The files are rewritten whole each update, so it reads
+         the .jsonl with a cursor (see "follow" below), never tails the .md.
 
 Left/right are known, so "me" (your mic) and "them" (the meeting app) need no
 diarization; names come from the normal post-call pipeline, which this does not
@@ -294,16 +297,67 @@ def transcribe_chunks(chunks: dict, transcribe, prior: list[dict], voices=None) 
                 continue
             off = float(seg.get("start") or 0)
             t = start / RATE + (original_time(runs, off) if runs else off)
-            e = {"t": round(t, 2), "who": who, "text": text}
-            if voices is not None and who == "them":
-                end = float(seg.get("end") or off)
-                try:
-                    if (v := voices.place(samples[int(off * RATE):int(end * RATE)])):
-                        e["voice"] = v
-                except Exception as err:  # noqa: BLE001  a name is never worth the transcript
-                    log(f"live names: {err}")
-            out.append(e)
+            if voices is None or who != "them":
+                out.append({"t": round(t, 2), "who": who, "text": text})
+                continue
+            out.extend(placed_lines(seg, text, off, start / RATE, samples, voices))
     return out
+
+
+def split_words(seg: dict, at: float) -> list[tuple[float, float, str]] | None:
+    """The segment's words cut at `at` (seconds, the segment's own clock) into two
+    (start, end, text) parts, or None without word times or when a side has no words."""
+    words = [w for w in (seg.get("words") or []) if (w.get("word") or "").strip()]
+    if len(words) < 2:
+        return None
+    i = next((j for j, w in enumerate(words) if (float(w["start"]) + float(w["end"])) / 2 >= at), len(words))
+    if i in (0, len(words)):
+        return None
+    parts = [(float(ws[0]["start"]), float(ws[-1]["end"]), "".join(w["word"] for w in ws).strip())
+             for ws in (words[:i], words[i:])]
+    return parts if all(sum(c.isalpha() for c in p[2]) >= 2 for p in parts) else None
+
+
+def placed_lines(seg: dict, text: str, off: float, base: float, samples, voices) -> list[dict]:
+    """One "them" segment as line(s) with their running voice (#187). A speaker change
+    inside the segment splits it at the nearest word when Whisper gave word times;
+    without them the line is kept whole, placed on its longer side and marked
+    mixed_why="change" with change_at (seconds since the call start)."""
+    end = float(seg.get("end") or off)
+    seg_samples = samples[int(off * RATE):int(end * RATE)]
+
+    def place(e: dict, part) -> dict:
+        try:
+            if (v := voices.place(part)):
+                e["voice"] = v
+            if getattr(voices, "last_close", False) is True:
+                e["mixed_why"] = "close voices"
+        except Exception as err:  # noqa: BLE001  a name is never worth the transcript
+            log(f"live names: {err}")
+        return e
+
+    cp = None
+    finder = getattr(voices, "change_point", None)
+    if finder is not None:
+        try:
+            cp = finder(seg_samples)
+        except Exception as err:  # noqa: BLE001
+            log(f"live speaker change: {err}")
+    if cp is None:
+        return [place({"t": round(base + off, 2), "who": "them", "text": text}, seg_samples)]
+    parts = split_words(seg, off + cp)
+    if parts:
+        lines = [place({"t": round(base + a, 2), "who": "them", "text": words},
+                       samples[int(a * RATE):int(b * RATE)]) for a, b, words in parts]
+        if lines[0].get("voice") and lines[0].get("voice") == lines[1].get("voice"):
+            return [dict(lines[0], text=text)]  # both sides are one running voice: a false change, keep it whole
+        return lines
+    cut = int(cp * RATE)
+    longer = seg_samples[:cut] if cut >= len(seg_samples) - cut else seg_samples[cut:]
+    e = place({"t": round(base + off, 2), "who": "them", "text": text}, longer)
+    e["mixed_why"] = "change"
+    e["change_at"] = round(base + off + cp, 2)
+    return [e]
 
 
 def db(x) -> float:
@@ -355,7 +409,8 @@ def whisper_transcriber(model: str):
 
     def run(samples) -> list[dict]:
         r = mlx_whisper.transcribe(samples, path_or_hf_repo=path, language="en", verbose=None,
-                                   condition_on_previous_text=False, hallucination_silence_threshold=2.0)
+                                   condition_on_previous_text=False, hallucination_silence_threshold=2.0,
+                                   word_timestamps=True)  # word times: a speaker change can split a segment
         return r.get("segments") or []
     return run
 
@@ -420,6 +475,7 @@ def follow(capture: Path, into: Path, transcribe, chunk_seconds: float = 20.0,
         while (chunks := take_chunks(legs, chunk_seconds, final)) is not None:
             for e in transcribe_chunks(chunks, transcribe, entries, voices):
                 e["clock"] = datetime.fromtimestamp(started + e["t"]).strftime("%H:%M:%S")
+                e["n"] = len(entries)  # the order lines were made in: the follow cursor (#187)
                 entries.append(e)
                 added += 1
         if added and voices is not None:
@@ -461,31 +517,311 @@ def stamp(ts: object) -> str | None:
         return None
 
 
-def latest_session(into: Path, minutes: float | None = None) -> dict:
-    """The newest live transcript: started, active, path, and lines (last N minutes)."""
+def latest_session(into: Path, minutes: float | None = None, since: str | float | None = None,
+                   keep=None) -> dict:
+    """The newest live transcript: started, active, path, lines (last N minutes) and a
+    `cursor`. With `since` (a cursor or a bare t), only the lines after it, plus `turns`
+    (the entries) and `reset` (the cursor was from an earlier call: this is all of the
+    newest). `keep` (turn_filter) filters the lines; the cursor still moves past the
+    ones it drops. Raises ValueError for a malformed `since`."""
     found = sessions(into)
     if not found:  # the same keys as a found session, so readers need no special case
         return {"ok": False, "error": f"no live transcript under {into / LIVE_DIR}",
                 "hint": "start one with `whosaid live` while a call is being recorded",
                 "path": None, "started": None, "active": False, "ended": False, "lines": 0,
-                "updated": None, "jsonl": None}
+                "updated": None, "jsonl": None, "cursor": None}
     jl = found[-1]
+    cur = parse_cursor(since) if since is not None else None
     meta, entries = read_entries(jl)
     active = not meta.get("ended") and time.time() - float(meta.get("updated") or 0) < ACTIVE_WINDOW
-    if minutes and entries:
+    new, cursor, reset = turns_after(entries, jl.stem, cur)
+    picked = [e for e, _ in new] if cur is not None else entries
+    if minutes and picked:
         last = entries[-1]["t"]
-        entries = [e for e in entries if e["t"] >= last - minutes * 60]
-    return {
+        picked = [e for e in picked if e["t"] >= last - minutes * 60]
+    if keep is not None:
+        picked = [e for e in picked if keep(e)]
+    out = {
         "ok": True,
         "path": str(jl.with_suffix(".md")),
         "started": stamp(meta.get("started")),
         "active": active,
         "ended": bool(meta.get("ended")),
-        "lines": len(entries),
+        "lines": len(picked),
         "updated": stamp(meta.get("updated")),
         "jsonl": str(jl),
-        "transcript": "\n".join(fmt_line(e) for e in entries),
+        "cursor": cursor,
     }
+    if cur is None and keep is None:
+        out["transcript"] = "\n".join(fmt_line(e) for e in picked)
+        return out
+    started = meta.get("started")
+    out["transcript"] = "\n".join(follow_line(e, started, marked=keep is not None) for e in picked)
+    out["turns"] = [{k: e[k] for k in TURN_KEYS if k in e} for e in picked]
+    if cur is not None:
+        out["reset"] = reset
+    return out
+
+
+# ---------------------------------------------------------------- follow (#187), stdlib
+#
+# The .md and .jsonl are rewritten whole on every update (write_session), so they cannot
+# be tailed, and voices.annotate can rename earlier lines. A cursor names a place in one
+# session's lines that survives both:
+#   "<stem>:n<N>"      the writer numbers each line in the order it was made ("n"); the
+#                      lines after the cursor are those with n > N. A line a lagging leg
+#                      sorts in before the newest one still has a higher n.
+#   "<stem>:t<T>:<K>"  for a .jsonl written before "n" existed: the lines with t > T, plus
+#                      those at exactly t == T after the first K (same-second lines).
+#   "<T>"              a bare t (seconds since the call started): the lines with t > T.
+# t is seconds since the call started, never the clock string, so a call crossing
+# midnight or two lines in one second need nothing special. A cursor from another
+# session (a new call started) means: everything in the newest one.
+
+TURN_KEYS = ("n", "t", "clock", "who", "name", "role", "voice", "confidence", "nearest", "mixed",
+             "mixed_why", "change_at", "text")
+HINT_MIN = 0.45     # an unnamed voice this close (cosine) to a known one is worth a `v9 may be B`
+HINT_AFTER = 2      # ...once it has said this many lines
+STALE_SECONDS = 900.0  # a session not ended and not written for this long: its writer is gone
+
+
+def parse_cursor(since) -> dict:
+    """{"stem", "n"} | {"stem", "t", "k"} | {"t", "k": None} from a cursor or a bare t."""
+    if isinstance(since, (int, float)) and not isinstance(since, bool):
+        return {"t": float(since), "k": None}
+    s = str(since).strip()
+    try:
+        return {"t": float(s), "k": None}
+    except ValueError:
+        pass
+    stem, sep, rest = s.partition(":")
+    if sep and stem:
+        try:
+            if rest.startswith("n") and rest[1:].removeprefix("-").isdigit():
+                return {"stem": stem, "n": int(rest[1:])}
+            if rest.startswith("t"):
+                t, sep2, k = rest[1:].partition(":")
+                if sep2 and k.isdigit():
+                    return {"stem": stem, "t": float(t), "k": int(k)}
+        except ValueError:
+            pass
+    raise ValueError(f"not a live cursor: {since!r} (want <stem>:n<N>, <stem>:t<T>:<K> or a t value)")
+
+
+def turns_after(entries: list[dict], stem: str, cur: dict | None) -> tuple[list[tuple[dict, str]], str, bool]:
+    """The lines after `cur` in file (time) order, each with the cursor just past it, the
+    cursor past every line, and whether `cur` belonged to another session."""
+    reset = False
+    if cur is not None and cur.get("stem") not in (None, stem):
+        cur, reset = None, True
+    seq = bool(entries) and all(isinstance(e.get("n"), int) for e in entries)
+    if cur is None and not entries:  # `live run` writes an empty session first: start on the sequence
+        return [], f"{stem}:n-1", reset
+    if cur is not None and "n" in cur and entries and not seq:
+        cur, reset = None, True  # a sequence cursor on a file without numbers: start over
+    out: list[tuple[dict, str]] = []
+    if (cur is None and seq) or (cur is not None and "n" in cur):
+        top = run = cur["n"] if cur is not None else -1
+        for e in entries:
+            if e["n"] > top:
+                run = max(run, e["n"])  # past every line emitted so far, even one sorted in earlier
+                out.append((e, f"{stem}:n{run}"))
+        best = max([top] + [e["n"] for e in entries])
+        return out, f"{stem}:n{best}", reset
+    T = cur["t"] if cur is not None else None
+    K = cur["k"] if cur is not None else 0
+    same: dict[float, int] = {}
+    for e in entries:
+        t = float(e["t"])
+        same[t] = same.get(t, 0) + 1
+        if T is None or t > T or (t == T and K is not None and same[t] > K):
+            out.append((e, f"{stem}:t{t!r}:{same[t]}"))
+    if entries:
+        last = float(entries[-1]["t"])
+        end = f"{stem}:t{last!r}:{same[last]}"
+        if T is not None and last < T:
+            end = f"{stem}:t{T!r}:{K if K is not None else 0}"
+    else:
+        end = f"{stem}:t{T!r}:{K if K is not None else 0}" if T is not None else f"{stem}:t-1.0:0"
+    return out, end, reset
+
+
+def _compile(patterns) -> list:
+    import re
+    out = []
+    for p in patterns or []:
+        try:
+            out.append(re.compile(p, re.IGNORECASE))
+        except re.error as err:
+            raise ValueError(f"bad --speaker regex {p!r}: {err}") from None
+    return out
+
+
+def named(e: dict) -> bool:
+    """A line whose speaker is known: your mic, or a "them" line a voice put a name on."""
+    return e.get("who") == "me" or bool(e.get("name"))
+
+
+def turn_filter(speakers=None, exclude_self: bool = False, named_only: bool = False):
+    """A predicate over lines. --speaker REGEX (any of them, case-insensitive) matches
+    the live name or role ("me" for your own lines). Unnamed "them" lines are kept
+    unless named_only: one person can be split over a named and an unnamed voice, and
+    dropping the unnamed one loses what they said. Raises ValueError for a bad regex."""
+    pats = _compile(speakers)
+
+    def keep(e: dict) -> bool:
+        if exclude_self and e.get("who") == "me":
+            return False
+        if not named(e):
+            return not named_only
+        if not pats:
+            return True
+        hay = [e.get("name") or "", e.get("role") or "", "me" if e.get("who") == "me" else ""]
+        return any(p.search(h) for p in pats for h in hay if h)
+    keep.patterns = pats
+    return keep
+
+
+def _clock_at(started, t) -> str:
+    try:
+        return datetime.fromtimestamp(float(started) + float(t)).strftime("%H:%M:%S")
+    except (TypeError, ValueError, OSError):
+        return f"+{float(t):.0f}s"
+
+
+def follow_label(e: dict, started=None, marked: bool = True) -> str:
+    """Who said a line, for follow: the name, "me", or a marked unknown
+    ("? (v9, nearest: B 0.71)"); a mixed line says why."""
+    if e.get("who") == "me":
+        who = "me"
+    elif e.get("name"):
+        who = e["name"]
+    elif e.get("voice") or marked:
+        bits = [e.get("voice") or "them"]
+        if e.get("nearest"):
+            bits[0] += f", nearest: {e['nearest']} {float(e.get('confidence') or 0):.2f}"
+        who = f"? ({bits[0]})"
+    else:
+        who = "them"
+    if e.get("mixed"):
+        why = e.get("mixed_why")
+        if e.get("change_at") is not None:
+            why = f"change at {_clock_at(started, e['change_at'])}"
+        elif not why:
+            why = f"low confidence {float(e.get('confidence') or 0):.2f}"
+        who += f" (mixed, {why})"
+    return who
+
+
+def follow_line(e: dict, started=None, marked: bool = True) -> str:
+    clock = e.get("clock") or _clock_at(started, e["t"])
+    return f"[{clock}] {follow_label(e, started, marked)}: {e['text']}"
+
+
+class Notes:
+    """One-time notes while following a session: `v9 may be B` for an unnamed voice
+    that keeps sounding like a known one, `v9 is now B` when a voice that was shown
+    unnamed gets a name (its earlier lines were already printed as "?")."""
+
+    def __init__(self, keep):
+        self.keep, self.close, self.hinted, self.shown_unnamed, self.renamed = keep, {}, set(), set(), set()
+
+    def _wanted(self, name: str) -> bool:
+        pats = getattr(self.keep, "patterns", None)
+        return not pats or any(p.search(name) for p in pats)
+
+    def scan(self, entries: list[dict]) -> list[dict]:
+        out = []
+        for e in entries:
+            v = e.get("voice")
+            if not v or e.get("who") == "me":
+                continue
+            if e.get("name") and v in self.shown_unnamed and v not in self.renamed and self._wanted(e["name"]):
+                self.renamed.add(v)
+                out.append({"event": "renamed", "voice": v, "name": e["name"]})
+        return out
+
+    def see(self, e: dict, shown: bool = True) -> list[dict]:
+        """Notes due once `e` (just emitted, or filtered out: shown=False) is seen."""
+        v = e.get("voice")
+        if not v or e.get("who") == "me" or e.get("name"):
+            return []
+        if shown:
+            self.shown_unnamed.add(v)
+        near, score = e.get("nearest"), float(e.get("confidence") or 0)
+        if not near or score < HINT_MIN or v in self.hinted:
+            return []
+        self.close[v] = self.close.get(v, 0) + 1
+        if self.close[v] < HINT_AFTER or not self._wanted(near):
+            return []
+        self.hinted.add(v)
+        return [{"event": "hint", "voice": v, "may_be": near, "score": round(score, 2)}]
+
+
+def note_text(n: dict) -> str:
+    if n["event"] == "hint":
+        return f"# {n['voice']} may be {n['may_be']} ({n['score']:.2f})"
+    return f"# {n['voice']} is now {n['name']}"
+
+
+def follow_stream(into: Path, keep, fmt: str = "text", once: bool = False, poll: float = 5.0,
+                  stale_seconds: float = STALE_SECONDS, deadline: float | None = None,
+                  out=None, sleep=time.sleep) -> int:
+    """Print each new line of the newest live session once, as it is written; an `ended`
+    line when the call is over (meta ended, or no write for stale_seconds), then exit
+    (once) or wait for the next session. Returns 0."""
+    out = out or sys.stdout
+
+    def emit(text: str, obj: dict) -> None:
+        print(json.dumps(obj) if fmt == "jsonl" else text, file=out, flush=True)
+
+    stem = cursor = None
+    done = False
+    notes = Notes(keep)
+    while deadline is None or time.monotonic() < deadline:
+        found = sessions(into)
+        jl = found[-1] if found else None
+        if jl is not None and jl.stem != stem:
+            if stem is not None and not done:  # a new call started before the old one said so
+                emit(f"ended {stem} (a newer call started)", {"event": "ended", "session": stem,
+                                                              "cursor": cursor, "superseded": True})
+                if once:
+                    return 0
+            stem, cursor, done, notes = jl.stem, None, False, Notes(keep)
+            log(f"following {jl}")
+        if jl is None or done:
+            sleep(poll)
+            continue
+        try:
+            meta, entries = read_entries(jl)
+            mtime = jl.stat().st_mtime
+        except (OSError, ValueError):  # replaced or removed between listing and reading
+            sleep(poll)
+            continue
+        started = meta.get("started")
+        before = cursor
+        new, cursor, _ = turns_after(entries, stem, parse_cursor(cursor) if cursor else None)
+        for n in notes.scan(entries):  # about lines already printed: resuming from it must not skip the new ones
+            emit(note_text(n), dict(n, session=stem, cursor=before))
+        for e, c in new:
+            shown = keep(e)
+            if shown:
+                obj = {"event": "turn", "session": stem, "cursor": c,
+                       **{k: e[k] for k in TURN_KEYS if k in e}}
+                emit(follow_line(e, started, marked=bool(getattr(keep, "patterns", None))), obj)
+            for n in notes.see(e, shown):
+                emit(note_text(n), dict(n, session=stem, cursor=c))
+        idle = time.time() - max(float(meta.get("updated") or 0), mtime)
+        if meta.get("ended") or idle >= stale_seconds:
+            stale = not meta.get("ended")
+            emit(f"ended {stem}" + (f" (stale: no update for {idle:.0f}s)" if stale else ""),
+                 {"event": "ended", "session": stem, "cursor": cursor, "stale": stale})
+            done = True
+            if once:
+                return 0
+            continue
+        sleep(poll)
+    return 0
 
 
 # ---------------------------------------------------------------- CLI
@@ -536,6 +872,26 @@ def cmd_show(a: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_follow(a: argparse.Namespace) -> int:
+    """`live follow`: the newest session's new lines as they are written (#187)."""
+    try:
+        keep = turn_filter(a.speaker, a.exclude_self, a.named_only)
+    except ValueError as err:
+        print(f"live follow: {err}", file=sys.stderr)
+        return 2
+    if hasattr(sys.stdout, "reconfigure"):
+        try:
+            sys.stdout.reconfigure(line_buffering=True)  # one line at a time into a pipe
+        except (AttributeError, ValueError, OSError):
+            pass
+    deadline = time.monotonic() + a.max_hours * 3600
+    try:
+        return follow_stream(Path(a.into).expanduser(), keep, a.format, a.once, a.poll,
+                             a.stale_seconds, deadline)
+    except (KeyboardInterrupt, BrokenPipeError):
+        return 0
+
+
 def cmd_status(a: argparse.Namespace) -> int:
     """`live status --json`: the newest session without its text; always exit 0."""
     r = latest_session(Path(a.into).expanduser())
@@ -567,10 +923,30 @@ def main(argv: list[str] | None = None) -> int:
     t = sub.add_parser("status")
     t.add_argument("--into", default=str(DEFAULT_INTO))
     t.add_argument("--json", action="store_true")
+    f = sub.add_parser("follow", help="print each new line of the newest live transcript once",
+                       description="Print each new line of the newest live transcript once, as it is "
+                       "written, and an `ended` line when the call is over. Reads the .jsonl with a "
+                       "cursor that survives the file being rewritten; never tail the .md.")
+    f.add_argument("--into", default=str(DEFAULT_INTO), help="recordings folder (default ~/Recordings)")
+    f.add_argument("--speaker", action="append", metavar="REGEX",
+                   help="only lines whose live name or role matches (case-insensitive; repeatable). "
+                   "Unnamed lines are kept and marked '? (v9, nearest: B 0.71)'")
+    f.add_argument("--exclude-self", action="store_true", help="drop your own mic lines")
+    f.add_argument("--named-only", action="store_true", help="drop lines no known voice was matched to")
+    f.add_argument("--poll", type=float, default=5.0, help="seconds between reads (default 5)")
+    f.add_argument("--format", choices=("text", "jsonl"), default="text")
+    f.add_argument("--once", action="store_true", help="exit 0 after the call ends (an `ended` line)")
+    f.add_argument("--stale-seconds", type=float, default=STALE_SECONDS,
+                   help=f"a session not written for this long is over (default {STALE_SECONDS:.0f})")
+    f.add_argument("--max-hours", type=float, default=12.0)
     argv = list(sys.argv[1:] if argv is None else argv)
-    if not argv or argv[0] not in ("run", "show", "status", "-h", "--help"):
+    if not argv or argv[0] not in ("run", "show", "status", "follow", "-h", "--help"):
         argv.insert(0, "run")  # bare `whosaid live [flags]` means run
     a = p.parse_args(argv)
+    if a.cmd == "follow":
+        if a.poll <= 0:
+            p.error("--poll must be > 0")
+        return cmd_follow(a)
     if a.cmd == "show":
         return cmd_show(a)
     if a.cmd == "status":

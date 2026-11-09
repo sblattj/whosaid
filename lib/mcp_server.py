@@ -1949,21 +1949,44 @@ def whosaid_speakers(workspace: Optional[str] = None, limit: Optional[int] = Non
 _DESC_LIVE = (
     "Read the live transcript of the call being recorded right now (`whosaid live`, #131). "
     "Lines look like '[HH:MM:SS] me: ...' (the user's mic) or '[HH:MM:SS] them: ...' (everyone "
-    "on the meeting app's side), rough and without names. `active` is true while the call is "
-    "still going; `ended` once it is over. Pass `minutes` for only the last N minutes. Use it to "
-    "answer questions about the meeting in progress: what was just asked, a catch-up, a reply "
-    "draft. Reads local files only; returns ok=false with a hint when `whosaid live` has not "
-    "written anything. `recordings` defaults to ~/Recordings."
+    "on the meeting app's side), rough; a known voice shows its live name guess instead of "
+    "'them'. `active` is true while the call is still going; `ended` once it is over. Pass "
+    "`minutes` for only the last N minutes. To follow a call cheaply, keep the returned `cursor` "
+    "and pass it back as `since`: you get only the lines after it (plus `turns`, the entries "
+    "with t, who, name, voice, confidence, mixed) and a new cursor, never an overlap; `reset` is "
+    "true when a newer call started (all of its lines). `since` may also be a bare t (seconds "
+    "since the call started). Filters: `speaker` (a case-insensitive regex on the live name or "
+    "role; unnamed lines are kept and marked '? (v9, nearest: B 0.71)' unless `named_only`), "
+    "`exclude_self` (drop the user's mic lines). A line marked mixed may hold two speakers. Use "
+    "it to answer questions about the meeting in progress: what was just asked, a catch-up, a "
+    "reply draft. Read-only; local files only; returns ok=false with a hint when `whosaid live` "
+    "has not written anything. `recordings` defaults to ~/Recordings."
 )
 
 
 @mcp.tool(name="whosaid_live", description=_DESC_LIVE, annotations=_read_only())
-def whosaid_live(minutes: Optional[float] = None, recordings: Optional[str] = None) -> dict:
-    """The newest <recordings>/.live/*.jsonl as text, plus whether the call is live."""
+def whosaid_live(minutes: Optional[float] = None, recordings: Optional[str] = None,
+                 since: Optional[str] = None, speaker: Optional[str] = None,
+                 exclude_self: bool = False, named_only: bool = False) -> dict:
+    """The newest <recordings>/.live/*.jsonl as text, plus whether the call is live and a
+    cursor; with `since`, only the lines after it (#187)."""
     into = Path(recordings).expanduser() if recordings else live_mod.DEFAULT_INTO
     if minutes is not None and minutes <= 0:
         return {"ok": False, "error": "minutes must be > 0", "hint": "omit it for the whole call"}
-    return live_mod.latest_session(into, minutes)
+    keep = None
+    if speaker or exclude_self or named_only:
+        try:
+            keep = live_mod.turn_filter([speaker] if speaker else None, exclude_self, named_only)
+        except ValueError as err:
+            return {"ok": False, "error": str(err).replace("--speaker", "speaker"),
+                    "hint": "speaker is a regular expression, e.g. 'Alice|Bob'"}
+    try:
+        if since is not None and str(since).strip() == "":
+            since = None
+        return live_mod.latest_session(into, minutes, since=since, keep=keep)
+    except ValueError as err:
+        return {"ok": False, "error": str(err),
+                "hint": "pass back the `cursor` an earlier call returned, or a t value in seconds"}
 
 
 

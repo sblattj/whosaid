@@ -151,6 +151,8 @@ with tempfile.TemporaryDirectory() as d:
     meta, entries = live.read_entries(md.with_suffix(".jsonl"))
     check(meta["ended"] is True and all(e["who"] == "me" for e in entries), "jsonl meta + entries")
     check(entries == sorted(entries, key=lambda e: e["t"]), "lines in time order")
+    check(sorted(e["n"] for e in entries) == list(range(len(entries))),
+          f"each line is numbered once, in the order it was made (the follow cursor): {entries}")
     check(list(cap.iterdir()) and (cap / "mic.wav").exists(), "the capture folder is left untouched")
 
     # ---- reader (MCP tool + `live show`) ----
