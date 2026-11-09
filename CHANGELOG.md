@@ -6,6 +6,8 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ## [Unreleased]
 
+## [1.35.1] - 2026-11-08
+
 ### Fixed
 - `whosaid drafts stage --mention NAME` no longer fails with "no mention suggestion" for a chat member (#183). The Teams mention picker filters only on real key events, so the stager now inserts `@` plus all but the last letter and sends the last letter as a keyDown/keyUp pair before it waits for the suggestion. A failed mention is still cleaned up with a real Backspace. Note that a self-chat offers no mention picker at all, so a mention there still fails.
 
