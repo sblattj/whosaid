@@ -6,6 +6,11 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ## [Unreleased]
 
+## [1.36.1] - 2026-11-09
+
+### Fixed
+- `whosaid drafts stage` no longer stops at "compose box already holds N chars; rerun with --replace" with no way to rerun (#190). `drafts stage <id> --replace` now exists and overwrites the compose box and its old attachments. A draft merged from a staged draft (`merged_from_staged`, set by `drafts merge`) now replaces automatically, the same as `supersedes`. The stager's error names the command that works.
+
 ## [1.36.0] - 2026-11-09
 
 ### Added
