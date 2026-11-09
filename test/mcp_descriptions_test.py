@@ -100,6 +100,7 @@ def main() -> None:
         "whosaid_draft_stale",
         "whosaid_draft_sent_check",
         "whosaid_teams_live",
+        "whosaid_teams_calendar",
     } | workspace_tools
 
     # --- tool-name set + prefix ---
@@ -366,6 +367,14 @@ def main() -> None:
     check(all(x in d_tl for x in ("no network call", "not full history", "Read-only")) and "\u2014" not in d_tl,
           "teams_live desc: offline, partial history, read-only, no em dash")
     check("whosaid_teams_live" in mcp_server.SERVER_INSTRUCTIONS, "instructions name whosaid_teams_live")
+    tcal = dumps["whosaid_teams_calendar"]
+    check((tcal.get("annotations") or {}).get("readOnlyHint") is True
+          and (tcal.get("annotations") or {}).get("openWorldHint") is False, f"teams_calendar annotations: {tcal.get('annotations')}")
+    check(not (tcal["inputSchema"].get("required") or []), "teams_calendar: every param optional")
+    d_tc = by_name["whosaid_teams_calendar"].description or ""
+    check(all(x in d_tc for x in ("no network call", "not the whole calendar", "not free", "UTC", "Read-only"))
+          and "\u2014" not in d_tc, "teams_calendar desc: offline, partial window, UTC, read-only, no em dash")
+    check("whosaid_teams_calendar" in mcp_server.SERVER_INSTRUCTIONS, "instructions name whosaid_teams_calendar")
 
     # --- voice groups: list read-only, naming writes ---
     vg = dumps["whosaid_voice_groups"]

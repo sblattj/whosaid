@@ -213,7 +213,7 @@ Commitment tracking: kind distinguishes explicit promises, requests, standing di
 
 Not exposed here: `enroll` and `record` are interactive microphone operations that need a live terminal. Run them from the `whosaid` CLI. The first transcribe downloads ~1.5 GB of models; run whosaid_doctor to check readiness. Full flag/env/long-audio reference: read the whosaid://guide resource.
 
-Meeting workspace (search across many transcripts): point the server at a workspace directory by launching it with WHOSAID_WORKSPACE=<dir>, or pass `workspace` on each call; with neither, the workspace of the only installed `whosaid watch` agent is used (the response says so in workspace_source); there is no cwd fallback. Flow: whosaid_search (turn-level hits with meeting folder + timestamp) -> whosaid_context (the verbatim minute around one hit; do not read whole transcripts) -> whosaid_items / whosaid_item / whosaid_person for action items and per-person commitments; whosaid_worklist for one person's ranked P1/P2/P3 worklist across both corpora. whosaid_meetings, whosaid_prs and whosaid_speakers list what the graph knows; whosaid_workspace_status says whether the index exists. The index (_search.db, _WIKI.md) is built by `whosaid index <ws>` from the CLI or the watcher, never from here: every workspace tool is read-only except whosaid_set_status, which appends one status event to the tracking ledger (_tracking.json) when the user marks an item, and whosaid_name_voice_group, which names one unnamed voice across all its meetings (groups come from whosaid_voice_groups) and then rebuilds the index. Drafts outbox (not workspace files): whosaid_draft_new, whosaid_draft_write, whosaid_draft_verify, whosaid_draft_close and whosaid_draft_sent_check write chat drafts to ~/.drafts for the user to stage (one open draft per recipient: new joins it); whosaid_drafts, whosaid_draft_stakeholders and whosaid_draft_stale read. Live Teams chats: whosaid_teams_live reads the newest messages (or chats) straight from the Teams desktop app's local cache, read-only and offline, for what was said in the last minutes or hours before it is ingested. Resources: whosaid://workspace/wiki, whosaid://workspace/action-items, whosaid://workspace/index, whosaid://workspace/meeting/{folder}/transcript and whosaid://workspace/meeting/{folder}/action-items. Everything stays local (SQLite FTS5 plus optional embeddings from a localhost Ollama)."""
+Meeting workspace (search across many transcripts): point the server at a workspace directory by launching it with WHOSAID_WORKSPACE=<dir>, or pass `workspace` on each call; with neither, the workspace of the only installed `whosaid watch` agent is used (the response says so in workspace_source); there is no cwd fallback. Flow: whosaid_search (turn-level hits with meeting folder + timestamp) -> whosaid_context (the verbatim minute around one hit; do not read whole transcripts) -> whosaid_items / whosaid_item / whosaid_person for action items and per-person commitments; whosaid_worklist for one person's ranked P1/P2/P3 worklist across both corpora. whosaid_meetings, whosaid_prs and whosaid_speakers list what the graph knows; whosaid_workspace_status says whether the index exists. The index (_search.db, _WIKI.md) is built by `whosaid index <ws>` from the CLI or the watcher, never from here: every workspace tool is read-only except whosaid_set_status, which appends one status event to the tracking ledger (_tracking.json) when the user marks an item, and whosaid_name_voice_group, which names one unnamed voice across all its meetings (groups come from whosaid_voice_groups) and then rebuilds the index. Drafts outbox (not workspace files): whosaid_draft_new, whosaid_draft_write, whosaid_draft_verify, whosaid_draft_close and whosaid_draft_sent_check write chat drafts to ~/.drafts for the user to stage (one open draft per recipient: new joins it); whosaid_drafts, whosaid_draft_stakeholders and whosaid_draft_stale read. Live Teams chats: whosaid_teams_live reads the newest messages (or chats) straight from the Teams desktop app's local cache, read-only and offline, for what was said in the last minutes or hours before it is ingested. Calendar: whosaid_teams_calendar reads your meetings from the same cache (the weeks the app has synced), with the recorded meeting folder for each when a workspace is set. Resources: whosaid://workspace/wiki, whosaid://workspace/action-items, whosaid://workspace/index, whosaid://workspace/meeting/{folder}/transcript and whosaid://workspace/meeting/{folder}/action-items. Everything stays local (SQLite FTS5 plus optional embeddings from a localhost Ollama)."""
 
 
 try:
@@ -3468,6 +3468,48 @@ def whosaid_teams_live(action: Literal["messages", "chats"] = "messages", chat: 
         return _ws_error(str(exc), "install and sign in to the new Teams desktop app on this Mac, or set "
                          "WHOSAID_TEAMS_CACHE to its IndexedDB directory; `whosaid teams cache-status` checks",
                          category="teams_cache")
+
+
+_DESC_TEAMS_CALENDAR = (
+    "Read your Microsoft Teams calendar from the Teams desktop app's own local cache on this Mac "
+    "(no network call, no Graph permission, no browser). It is a window, not the whole calendar: "
+    "the weeks the app has synced, reported in covers {first_start, last_start, events} and "
+    "synced_at; an empty result outside that range means unknown, not free (opening the week in "
+    "the Teams Calendar tab pulls it in). Lists events starting in [start, start + days) (default "
+    "start of today, local, and 7 days); start is today, tomorrow, yesterday, now, 3d (3 days ago), "
+    "YYYY-MM-DD or ISO. query is a case-insensitive substring of subject, organizer, location or "
+    "an attendee name. Cancelled events and ones shown as Free are left out (counted in skipped) "
+    "unless include_cancelled / include_free. Recurring meetings come one row per occurrence; an "
+    "occurrence stored without attendees or body takes them from its series (attendees_from = "
+    "'series'). Times: start/end are UTC (...Z), start_local/end_local are this Mac's zone. "
+    "Returns {ok, synced_at, sync_state, covers, window, skipped, total, count, events: [{id, "
+    "subject, start, end, start_local, end_local, minutes, organizer, organizer_address, location, "
+    "online, join_url, response, show_as, cancelled, kind (single|occurrence|exception), series_id, "
+    "attendees: [{name, address, type, response}], body, recorded?}]}. With a workspace (argument, "
+    "WHOSAID_WORKSPACE or the only watch agent's), recorded lists the meeting folders that started from 10 minutes before an "
+    "event to its end. Read-only."
+)
+
+
+@mcp.tool(name="whosaid_teams_calendar", description=_DESC_TEAMS_CALENDAR,
+          annotations=ToolAnnotations(read_only_hint=True, open_world_hint=False))
+def whosaid_teams_calendar(start: str = "today", days: float = 7, query: Optional[str] = None,
+                           include_cancelled: bool = False, include_free: bool = False,
+                           limit: int = 100, workspace: Optional[str] = None) -> dict:
+    """Your Teams meetings in a window, from the local Teams cache."""
+    import teams_calendar
+    ws, err = _resolve_ws(workspace)
+    if err and (workspace or "").strip():
+        return err  # a workspace that was asked for and is wrong; none at all just skips `recorded`
+    try:
+        start_ms = teams_calendar.parse_when(start, teams_calendar.parse_when("today", 0))
+        end_ms = start_ms + int(max(0.01, min(float(days), 366)) * 86400000)
+        return teams_calendar.events(start_ms, end_ms, query, include_cancelled, include_free, ws,
+                                     max(1, min(int(limit), 1000)))
+    except teams_calendar.CacheError as exc:
+        return _ws_error(str(exc), "install and sign in to the new Teams desktop app on this Mac and open its "
+                         "Calendar tab once, or set WHOSAID_TEAMS_CACHE to its IndexedDB directory; "
+                         "`whosaid teams calendar status` checks", category="teams_cache")
 
 
 @mcp.tool(name="whosaid_draft_sent_check", description=_DESC_DRAFT_SENT_CHECK, annotations=_DRAFT_WRITE_ANN)

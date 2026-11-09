@@ -6,6 +6,13 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ## [Unreleased]
 
+### Added
+- `whosaid teams calendar [--from today|2d|ISO] [--to ISO] [--days N] [--q TEXT] [--cancelled] [--free] [--ws DIR] [--json]`: your meetings read from the Teams desktop app's local cache (the `Teams:calendar` IndexedDB database), offline, with no Graph permission. Times are converted from the store's UTC; recurring meetings come one row per occurrence, filling attendees and body from the series when an occurrence lacks them; cancelled and Free events are hidden by default and counted. Each result says which weeks the cache covers and when Teams last synced. With a workspace, each event lists the recorded meeting folders made during it. `whosaid teams calendar status` shows what the cache holds.
+- MCP `whosaid_teams_calendar` (read-only): the same events for a window, with `covers`, `synced_at` and `recorded`.
+
+### Changed
+- `lib/teams_cache.py`: the store copy, retry and database lookup moved into `read_dbs(reader)`, shared by the chat and calendar readers. `read_store` returns the same shape as before.
+
 ## [1.34.1] - 2026-11-06
 
 ### Fixed

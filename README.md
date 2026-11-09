@@ -617,6 +617,31 @@ points at a different IndexedDB directory (`off` disables the cache in `whosaid 
 at the cache, so a message you sent minutes ago counts before it is ingested. It is your own
 data on your own disk, but check your organization's policy before syncing chats into files.
 
+### `whosaid teams calendar`: your Teams calendar from the same cache
+
+The same IndexedDB store holds the calendar weeks the Teams app has synced. `whosaid teams
+calendar` lists your meetings from it: no network call, no Graph permission, no browser.
+
+```sh
+whosaid teams calendar                          # today through 7 days on, local times
+whosaid teams calendar --from tomorrow --days 1
+whosaid teams calendar --from 2026-11-02 --to 2026-11-07 --q "planning"
+whosaid teams calendar --ws ~/meetings --json   # each event lists the recordings made during it
+whosaid teams calendar status                   # which weeks the cache holds, when Teams synced
+```
+
+It is a window, not the whole calendar: every result carries `covers` (first and last event start
+in the cache) and `synced_at`, and an empty day outside that range means unknown, not free. Open
+the week in the Teams Calendar tab to pull it in. Times in the store are UTC and are shown in
+this Mac's zone. Recurring meetings come one row per occurrence; an occurrence the cache stores
+without attendees or body takes them from its series (`attendees_from: "series"`). Cancelled
+events and ones shown as Free are hidden unless `--cancelled` / `--free`, and the header says how
+many were. `--q` matches the subject, organizer, location or an attendee name. With `--ws` (or
+`WHOSAID_WORKSPACE`), `recorded` lists the meeting folders that started from 10 minutes before
+an event to its end, which ties a recording to the invite it belongs to. The decoded result is
+cached in `~/.cache/whosaid/teams-calendar.json` (mode 600) until Teams writes again. Over MCP,
+`whosaid_teams_calendar` reads the same data.
+
 ### `whosaid teams ingest-transcript`: Microsoft Teams meeting transcripts, no audio
 
 When Teams has already transcribed a meeting, the Recap page's Transcript panel names every
@@ -1220,6 +1245,7 @@ Add it to your MCP client config:
 | `whosaid_draft_new`, `whosaid_draft_write`, `whosaid_draft_verify`, `whosaid_draft_close`, `whosaid_draft_sent_check` | Write a chat draft into the [drafts outbox](#a-drafts-outbox-for-agent-written-chat-messages-whosaid-drafts) with its claims, stakeholders and pages, then check the gates; `new` joins the recipient's open draft; `sent_check` marks staged drafts sent from the ingested chat. Not read-only. Local files only; never stages or sends. |
 | `whosaid_drafts`, `whosaid_draft_stakeholders`, `whosaid_draft_stale` | List, show or diff drafts and their revisions; rank who spoke about a topic; find drafts whose stakeholders said something new since verify. Read-only. |
 | `whosaid_teams_live` | The newest Teams chat messages (or chats, `action="chats"`) read from the Teams desktop app's local cache: offline, nothing to rate-limit, only what the app has synced. Read-only. See [`whosaid teams live`](#whosaid-teams-live-teams-chats-live-from-the-desktop-apps-cache). |
+| `whosaid_teams_calendar` | Your Teams meetings in a window (default today plus 7 days) read from the same local cache: subject, times (UTC and local), organizer, attendees, response, join URL, and with a workspace the recordings made during each. Says which weeks the cache covers. Read-only. See [`whosaid teams calendar`](#whosaid-teams-calendar-your-teams-calendar-from-the-same-cache). |
 
 `enroll` and mic/app `record` stay CLI-only. They need an interactive terminal and
 Microphone permission. The first `whosaid_transcribe` call downloads ~1.5 GB of models; call
@@ -1325,7 +1351,7 @@ the absolute path to the `whosaid` script for `command` if it is not on the clie
 | `WHOSAID_OLLAMA` | Ollama base URL for embeddings and the built-in summarizer (default: `http://127.0.0.1:11434`). Localhost is the only supported destination. |
 | `WHOSAID_SUMMARIZER_MODEL` | Ollama model for `--engine ollama` (default: `qwen2.5:14b`); overrides `[summarizer] model`. |
 | `WHOSAID_CLAUDE_BIN` | The `claude` binary for `--engine claude` when `[summarizer] claude_bin` is unset (default: `claude` on `PATH`, else `~/.local/bin/claude`). |
-| `WHOSAID_TEAMS_CACHE` | The Teams IndexedDB directory `whosaid teams live/chats/sync` and `whosaid_teams_live` read (default: the new Teams desktop app's on macOS); `off` keeps `whosaid drafts` from reading it. |
+| `WHOSAID_TEAMS_CACHE` | The Teams IndexedDB directory `whosaid teams live/chats/sync/calendar`, `whosaid_teams_live` and `whosaid_teams_calendar` read (default: the new Teams desktop app's on macOS); `off` keeps `whosaid drafts` from reading it. |
 | `WHOSAID_BIN` | The `whosaid` command the watcher runs (default: the script that launched `whosaid watch`). |
 | `WHOSAID_COMMITMENTS_HOOK` | Default hook for dev-commitments extraction (`ingest --commitments`), overridden per-run by `--hook`. Receives the transcript on stdin plus `WHOSAID_SPEAKERS`/`WHOSAID_ROLES`. |
 | `HF_HOME` | Hugging Face cache location (where the Whisper model lands). |

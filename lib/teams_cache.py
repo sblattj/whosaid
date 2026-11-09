@@ -144,8 +144,13 @@ def _snapshot(d: Path) -> Path:
     return tmp
 
 
-def read_store(path=None) -> dict:
-    """Raw conversations, reply chains and profiles from a copy of the store."""
+def read_dbs(reader, path=None):
+    """Call reader(dbs, rows) on a fresh copy of the store and return what it returns.
+
+    dbs is the set of Teams database names in the store ("replychain-manager", "calendar", ...);
+    rows(db, store) lists one object store's decoded records ([] when the db or store is absent;
+    with keys=True, (key, value) pairs). A torn copy (Teams mid-write) is retried once.
+    """
     d = cache_dir(path)
     if not _leveldb(d).is_dir():
         raise CacheError(f"no Teams cache at {_leveldb(d)} (set WHOSAID_TEAMS_CACHE)")
@@ -162,21 +167,18 @@ def read_store(path=None) -> dict:
                 if len(parts) > 1 and parts[0] == "Teams":
                     dbs.setdefault(parts[1], x.dbid_no)
 
-            def rows(db: str, store: str) -> list:
+            def rows(db: str, store: str, keys: bool = False) -> list:
                 if db not in dbs:
                     return []
                 h = w[dbs[db]]
                 if store not in h.object_store_names:
                     return []
-                return [_plain(r.value) for r in h[store].iterate_records() if r.value is not None]
+                recs = (r for r in h[store].iterate_records() if r.value is not None)
+                if keys:
+                    return [(_plain(r.key.value), _plain(r.value)) for r in recs]
+                return [_plain(r.value) for r in recs]
 
-            if "replychain-manager" not in dbs or "conversation-manager" not in dbs:
-                raise CacheError("the Teams cache has no replychain-manager / conversation-manager database; "
-                                 "this Teams version stores chats differently")
-            return {"conversations": rows("conversation-manager", "conversations"),
-                    "replychains": rows("replychain-manager", "replychains")
-                    + rows("replychain-manager", "replychains-2"),
-                    "profiles": rows("profiles", "profiles")}
+            return reader(set(dbs), rows)
         except CacheError:
             raise
         except Exception as e:  # noqa: BLE001 - a torn copy surfaces as any decode error
@@ -185,6 +187,19 @@ def read_store(path=None) -> dict:
         finally:
             shutil.rmtree(snap, ignore_errors=True)
     raise CacheError(f"could not decode the Teams cache: {last}")
+
+
+def read_store(path=None) -> dict:
+    """Raw conversations, reply chains and profiles from a copy of the store."""
+    def chats(dbs, rows):
+        if "replychain-manager" not in dbs or "conversation-manager" not in dbs:
+            raise CacheError("the Teams cache has no replychain-manager / conversation-manager database; "
+                             "this Teams version stores chats differently")
+        return {"conversations": rows("conversation-manager", "conversations"),
+                "replychains": rows("replychain-manager", "replychains")
+                + rows("replychain-manager", "replychains-2"),
+                "profiles": rows("profiles", "profiles")}
+    return read_dbs(chats, path)
 
 
 # ---- message HTML to text ------------------------------------------------------------
