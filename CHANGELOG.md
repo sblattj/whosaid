@@ -9,6 +9,15 @@ All notable changes to whosaid are documented here. This project adheres to
 ### Fixed
 - `whosaid drafts stage --mention NAME` no longer fails with "no mention suggestion" for a chat member (#183). The Teams mention picker filters only on real key events, so the stager now inserts `@` plus all but the last letter and sends the last letter as a keyDown/keyUp pair before it waits for the suggestion. A failed mention is still cleaned up with a real Backspace. Note that a self-chat offers no mention picker at all, so a mention there still fails.
 
+## [1.35.0] - 2026-11-08
+
+### Added
+- `whosaid teams calendar [--from today|2d|ISO] [--to ISO] [--days N] [--q TEXT] [--cancelled] [--free] [--ws DIR] [--json]`: your meetings read from the Teams desktop app's local cache, offline, with no Graph permission. It merges the Outlook calendar the Teams Calendar tab embeds (`owa-offline-data-*`, in its own storage bucket) with the older `Teams:calendar` database, which goes stale once the app uses the Outlook calendar; each event carries `source` and the result lists each store's range in `sources`. Times are converted from the store's UTC; recurring meetings come one row per occurrence, filling attendees and body from the series when an occurrence lacks them; cancelled and Free events are hidden by default and counted. Each result says which weeks the cache covers and when Teams last synced. With a workspace, each event lists the recorded meeting folders made during it. `whosaid teams calendar status` shows what the cache holds.
+- MCP `whosaid_teams_calendar` (read-only): the same events for a window, with `covers`, `synced_at` and `recorded`.
+
+### Changed
+- `lib/teams_cache.py`: the store copy, retry and database lookup moved into `read_dbs(reader)`, shared by the chat and calendar readers. `read_store` returns the same shape as before.
+
 ## [1.34.1] - 2026-11-06
 
 ### Fixed
