@@ -137,6 +137,12 @@ class Window(unittest.TestCase):
         res = cal.events(utc("2026-11-09T15:45:00"), utc("2026-11-09T16:00:00"))
         self.assertEqual([e["id"] for e in res["events"]], ["O1"])
 
+    def test_empty_window_hints_not_synced(self):
+        res = cal.events(utc("2026-11-16T00:00:00"), utc("2026-11-23T00:00:00"))
+        self.assertEqual(res["count"], 0)
+        self.assertIn("not synced, not free", res["hint"])
+        self.assertIsNone(cal.events(self.lo, self.hi)["hint"])
+
     def test_limit(self):
         res = cal.events(self.lo, self.hi, limit=2)
         self.assertEqual((res["total"], res["count"]), (5, 2))

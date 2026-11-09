@@ -281,7 +281,12 @@ def events(start_ms: int | None = None, end_ms: int | None = None, query: str | 
     if limit:
         rows = rows[:int(limit)]
     starts = [e["start_ms"] for e in data["events"]]
+    hint = None
+    if not total and not any(skipped.values()):
+        hint = ("the cache has no events in this window, which means not synced, not free: open these "
+                "days in the Teams Calendar tab so the app loads them, then ask again")
     return {"ok": True, **{k: data.get(k) for k in ("cache", "read_at", "read_seconds", "cached")},
+            "hint": hint,
             "synced_at": data.get("synced_at"), "sync_state": data.get("sync_state"),
             "covers": {"first_start": _iso(min(starts)) if starts else None,
                        "last_start": _iso(max(starts)) if starts else None, "events": len(starts)},
@@ -307,6 +312,8 @@ def _print_events(res: dict) -> None:
           f"starting {(cov['first_start'] or '?')[:10]} .. {(cov['last_start'] or '?')[:10]}")
     skipped = ", ".join(f"{n} {k}" for k, n in res["skipped"].items() if n)
     print(f"# {res['count']} of {res['total']} event(s)" + (f"; hidden: {skipped}" if skipped else ""))
+    if res.get("hint"):
+        print(f"# {res['hint']}")
     day = None
     for e in res["events"]:
         s = datetime.fromtimestamp(e["start_ms"] / 1000)
