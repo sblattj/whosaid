@@ -83,6 +83,76 @@ def test_no_replay_after_rewrite():
     check(live.parse_cursor("12.5") == {"t": 12.5, "k": None}, "a bare t value is a cursor too")
 
 
+def test_empty_session_starts_on_sequence():
+    """`live run` writes an empty session before its first line (live.follow): the cursor
+    taken then must still be the sequence one, so a late mid-file line is caught."""
+    started = time.time() - 60
+    new, cur, _ = live.turns_after([], "S1", None)
+    check(new == [] and cur == "S1:n-1" and live.parse_cursor(cur) == {"stem": "S1", "n": -1},
+          f"empty session: a sequence cursor: {cur}")
+    ents = [turn(0.0, "them", "a", started, n=0), turn(20.0, "them", "b", started, n=1)]
+    new, cur, _ = live.turns_after(ents, "S1", live.parse_cursor(cur))
+    check([e["text"] for e, _ in new] == ["a", "b"] and cur == "S1:n1", f"first lines: {new} {cur}")
+    ents = [ents[0], turn(12.0, "me", "late", started, n=2), ents[1]]
+    new, cur, _ = live.turns_after(ents, "S1", live.parse_cursor(cur))
+    check([e["text"] for e, _ in new] == ["late"], f"from an empty start, a line sorted in mid-file is caught: {new}")
+    new, cur, reset = live.turns_after([turn(1.0, "them", "old", started)], "S1", live.parse_cursor("S1:n-1"))
+    check(len(new) == 1 and reset and cur.startswith("S1:t"), "an older writer (no n): falls back to t, all lines")
+    with tempfile.TemporaryDirectory() as d:  # through follow_stream, the way it runs beside `live run`
+        md, jl = live.session_paths(Path(d), started)
+        live.write_session(md, jl, started, [], ended=False)
+        rows = []
+
+        def writer():
+            time.sleep(0.1)
+            live.write_session(md, jl, started, [turn(0.0, "them", "a", started, n=0),
+                                                 turn(20.0, "them", "b", started, n=1)], ended=False)
+            time.sleep(0.1)
+            live.write_session(md, jl, started, [turn(0.0, "them", "a", started, n=0),
+                                                 turn(12.0, "me", "late", started, n=2),
+                                                 turn(20.0, "them", "b", started, n=1)], ended=True)
+        th = threading.Thread(target=writer)
+        th.start()
+        buf = io.StringIO()
+        live.follow_stream(Path(d), live.turn_filter(), "jsonl", once=True, poll=0.02, out=buf)
+        th.join()
+        rows = [json.loads(ln) for ln in buf.getvalue().splitlines()]
+        check([r["text"] for r in rows if r["event"] == "turn"] == ["a", "b", "late"] and rows[-1]["event"] == "ended",
+              f"follow from an empty session: every line once, the late one too: {rows}")
+        check(rows[0]["cursor"].startswith(jl.stem + ":n"), f"sequence cursor from the start: {rows[0]}")
+
+
+def test_waits_for_the_next_call():
+    """Without --once: `ended`, then the next call; a call that never said it ended is
+    closed when a newer one starts."""
+    with tempfile.TemporaryDirectory() as d:
+        into = Path(d)
+        s1 = time.time() - 120
+        md1, jl1 = live.session_paths(into, s1)
+        live.write_session(md1, jl1, s1, [turn(1.0, "them", "call one", s1, n=0)], ended=True)
+        s2 = s1 + 30
+        md2, jl2 = live.session_paths(into, s2)
+        s3 = s1 + 60
+        md3, jl3 = live.session_paths(into, s3)
+
+        def writer():
+            time.sleep(0.15)
+            live.write_session(md2, jl2, s2, [turn(1.0, "them", "call two", s2, n=0)], ended=False)
+            time.sleep(0.15)
+            live.write_session(md3, jl3, s3, [turn(1.0, "them", "call three", s3, n=0)], ended=True)
+        th = threading.Thread(target=writer)
+        th.start()
+        buf = io.StringIO()
+        rc = live.follow_stream(into, live.turn_filter(), "text", once=False, poll=0.02,
+                                deadline=time.monotonic() + 0.8, out=buf)
+        th.join()
+        out = buf.getvalue().splitlines()
+        check(rc == 0 and [ln.split(": ", 1)[1] for ln in out if ln.startswith("[")] == ["call one", "call two", "call three"],
+              f"each call in turn: {out}")
+        check(out[1] == f"ended {jl1.stem}" and out[3] == f"ended {jl2.stem} (a newer call started)"
+              and out[5] == f"ended {jl3.stem}", f"an ended line per call: {out}")
+
+
 # ---------------------------------------------------------------- same second, midnight
 def test_same_second_all_emitted():
     started = time.time() - 300
@@ -214,6 +284,36 @@ def test_split_voice_named_only():
         check(not any("may be" in ln for ln in out), "a hint about someone you aren't following is not shown")
 
 
+def test_rename_note_only_for_lines_shown():
+    e = {"t": 1.0, "who": "them", "voice": "v3", "text": "x"}
+    hidden = live.Notes(live.turn_filter(named_only=True))
+    hidden.see(e, shown=False)
+    check(hidden.scan([dict(e, name="Bob")]) == [], "a voice whose lines were filtered out: no `is now` note")
+    seen = live.Notes(live.turn_filter())
+    seen.see(e, shown=True)
+    check(seen.scan([dict(e, name="Bob")]) == [{"event": "renamed", "voice": "v3", "name": "Bob"}],
+          "a voice shown as ? that gets a name: one `v3 is now Bob` note")
+    check(seen.scan([dict(e, name="Bob")]) == [], "...only once")
+    with tempfile.TemporaryDirectory() as d:  # its cursor is the one before the new lines
+        started = time.time() - 60
+        md, jl = live.session_paths(Path(d), started)
+        live.write_session(md, jl, started, [turn(1.0, "them", "x", started, n=0, voice="v3")], ended=False)
+
+        def writer():
+            time.sleep(0.1)
+            live.write_session(md, jl, started, [turn(1.0, "them", "x", started, n=0, voice="v3", name="Bob"),
+                                                 turn(2.0, "them", "y", started, n=1, voice="v3", name="Bob")], True)
+        th = threading.Thread(target=writer)
+        th.start()
+        buf = io.StringIO()
+        live.follow_stream(Path(d), live.turn_filter(), "jsonl", once=True, poll=0.02, out=buf)
+        th.join()
+        rows = [json.loads(ln) for ln in buf.getvalue().splitlines()]
+        ren = [r for r in rows if r["event"] == "renamed"]
+        check(len(ren) == 1 and ren[0]["cursor"] == f"{jl.stem}:n0" and rows.index(ren[0]) == 1,
+              f"the rename note comes before the new line, with the cursor before it: {rows}")
+
+
 # ---------------------------------------------------------------- handoff inside one segment
 def test_handoff_in_one_segment():
     def unit(*xs):
@@ -261,6 +361,16 @@ def test_handoff_in_one_segment():
     got = live.transcribe_chunks({"them": (0, same)}, lambda s: [dict(seg, words=words)], [], v)
     v.annotate(got)
     check(len(got) == 1 and not got[0].get("mixed") and got[0]["name"] == "Alice Ng", f"one voice: one line: {got}")
+
+    # a change the windows see but both halves join the same running voice: kept whole, not mixed
+    class SameVoice(lv.Voices):
+        def change_point(self, samples):
+            return 3.0
+    v = SameVoice(known, embed)
+    got = live.transcribe_chunks({"them": (0, same)}, lambda s: [dict(seg, words=words)], [], v)
+    v.annotate(got)
+    check(len(got) == 1 and got[0]["text"] == seg["text"].strip() and not got[0].get("mixed"),
+          f"a false change (one voice both sides) is merged back: {got}")
 
 
 for name, fn in list(globals().items()):

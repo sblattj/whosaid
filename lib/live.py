@@ -347,8 +347,11 @@ def placed_lines(seg: dict, text: str, off: float, base: float, samples, voices)
         return [place({"t": round(base + off, 2), "who": "them", "text": text}, seg_samples)]
     parts = split_words(seg, off + cp)
     if parts:
-        return [place({"t": round(base + a, 2), "who": "them", "text": words},
-                      samples[int(a * RATE):int(b * RATE)]) for a, b, words in parts]
+        lines = [place({"t": round(base + a, 2), "who": "them", "text": words},
+                       samples[int(a * RATE):int(b * RATE)]) for a, b, words in parts]
+        if lines[0].get("voice") and lines[0].get("voice") == lines[1].get("voice"):
+            return [dict(lines[0], text=text)]  # both sides are one running voice: a false change, keep it whole
+        return lines
     cut = int(cp * RATE)
     longer = seg_samples[:cut] if cut >= len(seg_samples) - cut else seg_samples[cut:]
     e = place({"t": round(base + off, 2), "who": "them", "text": text}, longer)
@@ -594,7 +597,7 @@ def parse_cursor(since) -> dict:
     stem, sep, rest = s.partition(":")
     if sep and stem:
         try:
-            if rest.startswith("n") and rest[1:].isdigit():
+            if rest.startswith("n") and rest[1:].removeprefix("-").isdigit():
                 return {"stem": stem, "n": int(rest[1:])}
             if rest.startswith("t"):
                 t, sep2, k = rest[1:].partition(":")
@@ -612,6 +615,8 @@ def turns_after(entries: list[dict], stem: str, cur: dict | None) -> tuple[list[
     if cur is not None and cur.get("stem") not in (None, stem):
         cur, reset = None, True
     seq = bool(entries) and all(isinstance(e.get("n"), int) for e in entries)
+    if cur is None and not entries:  # `live run` writes an empty session first: start on the sequence
+        return [], f"{stem}:n-1", reset
     if cur is not None and "n" in cur and entries and not seq:
         cur, reset = None, True  # a sequence cursor on a file without numbers: start over
     out: list[tuple[dict, str]] = []
@@ -736,12 +741,13 @@ class Notes:
                 out.append({"event": "renamed", "voice": v, "name": e["name"]})
         return out
 
-    def see(self, e: dict) -> list[dict]:
-        """Notes due once `e` (just emitted, or filtered out) is seen."""
+    def see(self, e: dict, shown: bool = True) -> list[dict]:
+        """Notes due once `e` (just emitted, or filtered out: shown=False) is seen."""
         v = e.get("voice")
         if not v or e.get("who") == "me" or e.get("name"):
             return []
-        self.shown_unnamed.add(v)
+        if shown:
+            self.shown_unnamed.add(v)
         near, score = e.get("nearest"), float(e.get("confidence") or 0)
         if not near or score < HINT_MIN or v in self.hinted:
             return []
@@ -793,15 +799,17 @@ def follow_stream(into: Path, keep, fmt: str = "text", once: bool = False, poll:
             sleep(poll)
             continue
         started = meta.get("started")
+        before = cursor
         new, cursor, _ = turns_after(entries, stem, parse_cursor(cursor) if cursor else None)
-        for n in notes.scan(entries):
-            emit(note_text(n), dict(n, session=stem, cursor=cursor))
+        for n in notes.scan(entries):  # about lines already printed: resuming from it must not skip the new ones
+            emit(note_text(n), dict(n, session=stem, cursor=before))
         for e, c in new:
-            if keep(e):
+            shown = keep(e)
+            if shown:
                 obj = {"event": "turn", "session": stem, "cursor": c,
                        **{k: e[k] for k in TURN_KEYS if k in e}}
                 emit(follow_line(e, started, marked=bool(getattr(keep, "patterns", None))), obj)
-            for n in notes.see(e):
+            for n in notes.see(e, shown):
                 emit(note_text(n), dict(n, session=stem, cursor=c))
         idle = time.time() - max(float(meta.get("updated") or 0), mtime)
         if meta.get("ended") or idle >= stale_seconds:
