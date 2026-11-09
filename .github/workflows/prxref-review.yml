@@ -1,11 +1,13 @@
 name: prxref review
 
-# pull_request_target runs in the BASE repository context, so it has access to
-# secrets and a write token even for fork PRs. This workflow never checks out
-# or executes the pull request's code: prxref fetches the diff over the GitHub
-# API from the PR URL alone, running from PyPI.
+# Runs on pull_request (not pull_request_target): since 2026-11-09 every
+# pull_request_target run in this repo ended in startup_failure, even for a
+# one-line PR. Same-repo PRs get the secrets and the pull-requests: write
+# token; a fork PR gets neither and prxref exits 0 without a review. This
+# workflow never checks out or executes the pull request's code: prxref
+# fetches the diff over the GitHub API from the PR URL alone, from PyPI.
 on:
-  pull_request_target:
+  pull_request:
     types: [opened, synchronize, reopened]
 
 permissions:
