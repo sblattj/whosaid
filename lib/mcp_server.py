@@ -32,7 +32,9 @@ import tempfile
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Literal, Optional
+from typing import Annotated, Literal, Optional
+
+from pydantic import Field
 
 # ---------------------------------------------------------------------------
 # SDK import.
@@ -213,7 +215,7 @@ Commitment tracking: kind distinguishes explicit promises, requests, standing di
 
 Not exposed here: `enroll` and `record` are interactive microphone operations that need a live terminal. Run them from the `whosaid` CLI. The first transcribe downloads ~1.5 GB of models; run whosaid_doctor to check readiness. Full flag/env/long-audio reference: read the whosaid://guide resource.
 
-Meeting workspace (search across many transcripts): point the server at a workspace directory by launching it with WHOSAID_WORKSPACE=<dir>, or pass `workspace` on each call; with neither, the workspace of the only installed `whosaid watch` agent is used (the response says so in workspace_source); there is no cwd fallback. Flow: whosaid_search (turn-level hits with meeting folder + timestamp) -> whosaid_context (the verbatim minute around one hit; do not read whole transcripts) -> whosaid_items / whosaid_item / whosaid_person for action items and per-person commitments; whosaid_worklist for one person's ranked P1/P2/P3 worklist across both corpora. whosaid_meetings, whosaid_prs and whosaid_speakers list what the graph knows; whosaid_workspace_status says whether the index exists. The index (_search.db, _WIKI.md) is built by `whosaid index <ws>` from the CLI or the watcher, never from here: every workspace tool is read-only except whosaid_set_status, which appends one status event to the tracking ledger (_tracking.json) when the user marks an item, and whosaid_name_voice_group, which names one unnamed voice across all its meetings (groups come from whosaid_voice_groups) and then rebuilds the index. Drafts outbox (not workspace files): whosaid_draft_new, whosaid_draft_write, whosaid_draft_verify, whosaid_draft_close and whosaid_draft_sent_check write chat drafts to ~/.drafts for the user to stage (one open draft per recipient: new joins it); whosaid_drafts, whosaid_draft_stakeholders and whosaid_draft_stale read. Live Teams chats: whosaid_teams_live reads the newest messages (or chats) straight from the Teams desktop app's local cache, read-only and offline, for what was said in the last minutes or hours before it is ingested. Calendar: whosaid_teams_calendar reads your meetings from the same cache (the weeks the app has synced), with the recorded meeting folder for each when a workspace is set. Resources: whosaid://workspace/wiki, whosaid://workspace/action-items, whosaid://workspace/index, whosaid://workspace/meeting/{folder}/transcript and whosaid://workspace/meeting/{folder}/action-items. Everything stays local (SQLite FTS5 plus optional embeddings from a localhost Ollama)."""
+Meeting workspace (search across many transcripts): point the server at a workspace directory by launching it with WHOSAID_WORKSPACE=<dir>, or pass `workspace` on each call; with neither, the workspace of the only installed `whosaid watch` agent is used (the response says so in workspace_source); there is no cwd fallback. Flow: whosaid_search (turn-level hits with meeting folder + timestamp) -> whosaid_context (the verbatim minute around one hit; do not read whole transcripts) -> whosaid_items / whosaid_item / whosaid_person for action items and per-person commitments; whosaid_worklist for one person's ranked P1/P2/P3 worklist across both corpora. whosaid_meetings, whosaid_prs and whosaid_speakers list what the graph knows; whosaid_workspace_status says whether the index exists. The index (_search.db, _WIKI.md) is built by `whosaid index <ws>` from the CLI or the watcher, never from here: every workspace tool is read-only except whosaid_set_status, which appends one status event to the tracking ledger (_tracking.json) when the user marks an item, and whosaid_name_voice_group, which names one unnamed voice across all its meetings (groups come from whosaid_voice_groups) and then rebuilds the index. Drafts outbox (not workspace files): whosaid_draft_new, whosaid_draft_write, whosaid_draft_verify, whosaid_draft_close, whosaid_draft_merge and whosaid_draft_sent_check write chat drafts to ~/.drafts for the user to stage (one open draft per recipient: new joins it; whosaid_draft_merge folds rival drafts into one); whosaid_drafts, whosaid_draft_stakeholders and whosaid_draft_stale read. Live Teams chats: whosaid_teams_live reads the newest messages (or chats) straight from the Teams desktop app's local cache, read-only and offline, for what was said in the last minutes or hours before it is ingested. Calendar: whosaid_teams_calendar reads your meetings from the same cache (the weeks the app has synced), with the recorded meeting folder for each when a workspace is set. Resources: whosaid://workspace/wiki, whosaid://workspace/action-items, whosaid://workspace/index, whosaid://workspace/meeting/{folder}/transcript and whosaid://workspace/meeting/{folder}/action-items. Everything stays local (SQLite FTS5 plus optional embeddings from a localhost Ollama)."""
 
 
 try:
@@ -3384,6 +3386,29 @@ def whosaid_draft_close(id: str, status: Literal["dropped", "sent"], reason: Opt
     """Mark one draft dropped or sent."""
     import drafts
     return _drafts_call(drafts.close, id, status, reason, force)
+
+
+_DESC_DRAFT_MERGE = (
+    "Fold open outbox drafts to the same recipient into one, so stage stops refusing them as rivals "
+    "(Teams has one compose box per chat). into = the draft that stays, from = the draft ids folded in. "
+    "All must go to the same recipient. Claims union by key (a key with a different verdict or evidence "
+    "refuses and lists the clashes), stakeholders union by speaker with their searched topics merged, "
+    "pages, mentions and docs union, the owners of the from drafts become contributors of into. text = "
+    "the merged message; without it the texts are joined with a blank line, which the voice lint flags "
+    "as more than one paragraph: rewrite it with whosaid_draft_write, then whosaid_draft_verify. Each from "
+    "draft is closed as dropped with merged_into and a merged history event; into gets merged_from and is "
+    "stale until verified again. A from draft owned by another live session is refused unless force=true. "
+    "dry_run=true returns the merged claims, stakeholders, pages and any clashes and writes nothing. "
+    "Returns {ok, into, from, claims, stakeholders, pages, mentions, docs, clashes, text, state, gate}."
+)
+
+
+@mcp.tool(name="whosaid_draft_merge", description=_DESC_DRAFT_MERGE, annotations=_DRAFT_WRITE_ANN)
+def whosaid_draft_merge(into: str, from_: Annotated[list[str], Field(validation_alias="from")], text: Optional[str] = None,
+                        force: bool = False, dry_run: bool = False) -> dict:
+    """Merge the from drafts into one draft to the same recipient."""
+    import drafts
+    return _drafts_call(drafts.merge, into, from_, text, force=force, dry_run=dry_run)
 
 
 @mcp.tool(name="whosaid_drafts", description=_DESC_DRAFTS,

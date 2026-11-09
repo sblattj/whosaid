@@ -95,6 +95,7 @@ def main() -> None:
         "whosaid_draft_write",
         "whosaid_draft_verify",
         "whosaid_draft_close",
+        "whosaid_draft_merge",
         "whosaid_drafts",
         "whosaid_draft_stakeholders",
         "whosaid_draft_stale",
@@ -337,7 +338,7 @@ def main() -> None:
 
     # --- drafts outbox (#165): three writers, three readers, no stage or send over MCP ---
     for name in ("whosaid_draft_new", "whosaid_draft_write", "whosaid_draft_verify", "whosaid_draft_close",
-                 "whosaid_draft_sent_check"):
+                 "whosaid_draft_merge", "whosaid_draft_sent_check"):
         ann = dumps[name].get("annotations") or {}
         check(ann.get("readOnlyHint") is False and ann.get("destructiveHint") is False
               and ann.get("openWorldHint") is False, f"{name} annotations: {ann}")
@@ -347,6 +348,8 @@ def main() -> None:
     check(not any("stage" in n or "send" in n for n in by_name), "no stage/send tool over MCP")
     check(set(dumps["whosaid_draft_new"]["inputSchema"].get("required") or []) == {"to", "topic"},
           "draft_new requires to + topic")
+    check(set(dumps["whosaid_draft_merge"]["inputSchema"].get("required") or []) == {"into", "from"},
+          f"draft_merge requires into + from: {dumps['whosaid_draft_merge']['inputSchema']}")
     check(set(dumps["whosaid_draft_stakeholders"]["inputSchema"].get("required") or []) == {"topics"},
           "draft_stakeholders requires topics")
     check(all("\u2014" not in (by_name[n].description or "") for n in by_name if "draft" in n), "drafts: no em dash")

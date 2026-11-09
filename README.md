@@ -284,6 +284,7 @@ whosaid drafts text <id> --file draft.md
 whosaid drafts verify <id>
 whosaid drafts lint --all                       # the voice lint alone, read-only
 whosaid drafts list                             # state and the session that wrote each one
+whosaid drafts merge <into> <from> [<from> ...] --text-file merged.md   # fold rival drafts into one
 whosaid drafts stale-check ~/meetings           # stakeholders said something new since verify?
 whosaid drafts stage <id>                       # you run this; nothing is sent
 whosaid drafts mark-sent --check ~/meetings     # staged drafts you have since sent
@@ -321,6 +322,16 @@ whosaid drafts html                             # review page of every open draf
   see below) with `--chat NAME --md FILE [--attach PAGE ...]`, plus `--replace
   --only-these-attachments` on a restage, and `TEAMS_OUTBOX_LOCK` set. One draft per run with
   `--all`. `mark-sent` and `drop` close a draft (a soft delete: `list --all` still shows it).
+- **Merging rivals.** Teams has one compose box per chat, so `stage` refuses a second open draft
+  to the same person (`list` shows a `rivals` count per recipient). `drafts merge INTO FROM [FROM ...]`
+  folds them into one: claims union by `key` (a key with a different verdict or evidence refuses and
+  lists the clashes), stakeholders by `speaker` with their searched topics merged, pages, mentions and
+  docs union, and the FROM owners become contributors of INTO. `--text-file` is the merged message;
+  without it the texts are joined with a blank line and verify flags the extra paragraphs. Each FROM
+  is closed as `dropped` with `merged_into` and a `merged` history event (`list --all` shows it);
+  INTO gets `merged_from` (`show` lists it) and is stale until verified again. A FROM owned by another
+  live session needs `--force`, like `drop`. `--dry-run` prints the result and clashes and writes
+  nothing. MCP: `whosaid_draft_merge(into, from, text?, force?, dry_run?)`.
 - **The built-in stager.** When `WHOSAID_DRAFTS_STAGER` is unset, `stage` uses `lib/drafts_stager.py`.
   It needs a Chromium browser started with `--remote-debugging-port` (the port comes from
   `--cdp-port` / `WHOSAID_CDP_PORT`, default 9222) with Teams web signed in. It opens the chat by

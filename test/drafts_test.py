@@ -672,5 +672,226 @@ class ChatHistoryTest(DraftsBase):
         self.assertEqual(out.returncode, 0, out.stderr)
 
 
+class MergeTest(DraftsBase):
+    """#188: drafts merge folds rival open drafts to one recipient into one."""
+
+    def session(self, sid, name):
+        (self.root / "sessions" / f"{sid}.json").write_text(json.dumps(
+            {"sessionId": sid, "name": name, "pid": os.getpid(), "cwd": f"/repo/{name}"}))
+
+    def make_pair(self):
+        """A (worker-a, verified) and B (worker-b, verified), both to Test Person, sharing claim b."""
+        a = self.ready()
+        self.session("sess-2222", "worker-b")
+        self.page2 = self.root / "page2.html"
+        self.page2.write_text("<html>y</html>")
+        with patch.dict(os.environ, {"CLAUDE_CODE_SESSION_ID": "sess-2222"}):
+            b = drafts.new("Test Person", "wildcards", [str(self.page), str(self.page2)], separate=True,
+                           mentions=["Other Person"])["id"]
+            drafts.write(b, text="Also, wildcards work.", claims=[
+                GOOD_CLAIMS["claims"][1],
+                {"key": "d", "text": "a new claim", "kind": "status", "verdict": "unverified"}],
+                stakeholders=[{"name": "Test Person", "speaker": "Test_Person", "why": "owns dns",
+                               "searched": ["wildcards", "dns records"]},
+                              {"name": "Other Person", "speaker": "Other_Person", "why": "reviews",
+                               "searched": ["review"]}],
+                docs=[{"url": "https://example.com/d", "what": "doc"}])
+            drafts.verify(b)
+        return a, b
+
+    def merge(self, *a, **k):
+        return drafts.merge(*a, **k)
+
+    def test_counts_are_sums_minus_duplicates_and_text_is_kept(self):
+        a, b = self.make_pair()
+        before_a, before_b = drafts.claims_of(drafts.load(a)), drafts.claims_of(drafts.load(b))
+        self.assertEqual((len(before_a["claims"]), len(before_b["claims"])), (3, 2))
+        r = self.merge(a, [b], text="One merged message.", force=True)
+        c = drafts.claims_of(drafts.load(a))
+        self.assertEqual(len(c["claims"]), 3 + 2 - 1)
+        self.assertEqual({k["key"] for k in c["claims"]}, {"a", "b", "c", "d"})
+        self.assertEqual(len(c["stakeholders"]), 1 + 2 - 1)
+        tp = next(x for x in c["stakeholders"] if x["speaker"] == "Test_Person")
+        self.assertEqual(tp["searched"], ["dns records", "wildcards"], "searched lists merge without duplicates")
+        self.assertEqual(len(drafts.load(a)["pages"]), 1 + 2 - 1)
+        self.assertEqual(drafts.load(a)["mentions"], ["Other Person"])
+        self.assertEqual(c["docs"], [{"url": "https://example.com/d", "what": "doc"}])
+        self.assertEqual(drafts.show(a)["text"], "One merged message.\n")
+        self.assertEqual((len(r["claims"]), len(r["stakeholders"]), len(r["pages"])), (4, 2, 2))
+
+    def test_from_owner_becomes_contributor_and_from_is_dropped(self):
+        a, b = self.make_pair()
+        self.merge(a, [b], text="Merged.", force=True)
+        m = drafts.load(a)
+        self.assertEqual([c["sessionId"] for c in m["contributors"]], ["sess-2222"])
+        self.assertEqual(m["merged_from"], [b])
+        self.assertEqual([e["event"] for e in m["history"]][-1], "merged")
+        fb = drafts.load(b)
+        self.assertEqual((fb["status"], fb["merged_into"]), ("dropped", a))
+        self.assertEqual([e["event"] for e in fb["history"]][-2:], ["dropped", "merged"])
+        self.assertEqual(fb["history"][-1]["merged_into"], a)
+
+    def test_from_owned_by_another_live_session_needs_force(self):
+        a, b = self.make_pair()
+        with self.assertRaises(drafts.DraftsError) as e:
+            self.merge(a, [b], text="Merged.")
+        self.assertIn("belongs to live session", str(e.exception))
+        self.assertEqual(drafts.load(b)["status"], "verified", "a refused merge writes nothing")
+        self.assertEqual(drafts.load(a).get("merged_from"), None)
+        self.merge(a, [b], text="Merged.", force=True)
+        self.assertEqual(drafts.load(b)["status"], "dropped")
+        # the same rule as drop: the user at a terminal (no session) needs no force
+        a2, b2 = self.make_pair_again()
+        with patch.dict(os.environ, {"CLAUDE_CODE_SESSION_ID": ""}):
+            self.merge(a2, [b2], text="Merged.")
+        self.assertEqual(drafts.load(b2)["status"], "dropped")
+
+    def make_pair_again(self):
+        for d in drafts.all_drafts():
+            if d["status"] in drafts.OPEN:
+                drafts.close(d["id"], "dropped", force=True)
+        a = self.ready(to="Test Person", topic="again")
+        b = drafts.new("Test Person", "again two", separate=True)["id"]
+        drafts.write(b, text="more", **GOOD_CLAIMS)
+        return a, b
+
+    def test_into_goes_stale_then_stage_works_after_reverify(self):
+        a, b = self.make_pair()
+        self.assertEqual(drafts.state(drafts.load(a)), "verified")
+        self.merge(a, [b], text="One merged message.", force=True)
+        self.assertTrue(drafts.state(drafts.load(a)).startswith("stale"))
+        r = drafts.stage([a])
+        self.assertEqual(r["staged"], [])
+        self.assertIn("stale", r["failed"][0]["why"])
+        drafts.verify(a)
+        r = drafts.stage([a])
+        self.assertEqual([x["id"] for x in r["staged"]], [a], r)
+        self.assertEqual(len(self.stager_calls()), 1)
+
+    def test_into_goes_stale_even_when_nothing_changes(self):
+        a = self.ready()
+        b = drafts.new("Test Person", "same", separate=True)["id"]
+        drafts.write(b, text="x", **GOOD_CLAIMS)
+        drafts.write(b, pages=[str(self.page)])
+        text = drafts.show(a)["text"]
+        self.merge(a, [b], text=text)
+        self.assertTrue(drafts.state(drafts.load(a)).startswith("stale"))
+        drafts.verify(a)
+        self.assertEqual(drafts.state(drafts.load(a)), "verified")
+
+    def test_stage_refusal_suggests_merge_and_list_counts_rivals(self):
+        a, b = self.make_pair()
+        r = drafts.stage([a])
+        self.assertIn(f"whosaid drafts merge {a} {b}", r["failed"][0]["why"])
+        rows = {x["id"]: x for x in drafts.listing()}
+        self.assertEqual((rows[a]["rivals"], rows[b]["rivals"]), (1, 1))
+        other = self.ready(to="Someone Else", topic="solo")
+        self.assertEqual({x["id"]: x for x in drafts.listing()}[other]["rivals"], 0)
+        import io
+        from contextlib import redirect_stdout
+        out = io.StringIO()
+        with redirect_stdout(out):
+            drafts.main(["list"])
+        self.assertIn("rivals: 1", out.getvalue())
+
+    def test_show_lists_merged_from_and_list_all_shows_merged_into(self):
+        import io
+        from contextlib import redirect_stdout
+        a, b = self.make_pair()
+        self.merge(a, [b], text="Merged.", force=True)
+        out = io.StringIO()
+        with redirect_stdout(out):
+            drafts.main(["show", a])
+        self.assertIn(f"merged_from: {b}", out.getvalue())
+        rows = {x["id"]: x for x in drafts.listing(include_closed=True)}
+        self.assertEqual((rows[b]["state"], rows[b]["merged_into"]), ("dropped", a))
+        self.assertNotIn(b, {x["id"] for x in drafts.listing()})
+        out = io.StringIO()
+        with redirect_stdout(out):
+            drafts.main(["list", "--all"])
+        self.assertIn(f"merged_into: {a}", out.getvalue())
+        self.assertEqual(drafts.show(a)["merged_from"], [b])
+
+    def test_clash_on_a_key_refuses_and_lists_it(self):
+        a, b = self.make_pair()
+        c = drafts.claims_of(drafts.load(b))
+        c["claims"][0] = {**c["claims"][0], "evidence": "https://example.com/other"}
+        drafts.write(b, claims=c["claims"], force=True)
+        with self.assertRaises(drafts.DraftsError) as e:
+            self.merge(a, [b], text="Merged.", force=True)
+        self.assertIn("clashes", str(e.exception))
+        self.assertIn("b:", str(e.exception))
+        self.assertIn(drafts.load(b)["status"], drafts.OPEN)
+        self.assertEqual(drafts.load(a).get("merged_from"), None)
+        v = drafts.claims_of(drafts.load(b))
+        v["claims"][0] = {**v["claims"][0], "evidence": GOOD_CLAIMS["claims"][1]["evidence"], "verdict": "unverified"}
+        drafts.write(b, claims=v["claims"], force=True)
+        dry = self.merge(a, [b], force=True, dry_run=True)
+        self.assertEqual([x["key"] for x in dry["clashes"]], ["b"])
+
+    def test_dry_run_writes_nothing(self):
+        a, b = self.make_pair()
+        snap = {p.relative_to(self.root): p.read_bytes() for p in (self.root / "drafts").rglob("*") if p.is_file()}
+        r = self.merge(a, [b], text="x", force=True, dry_run=True)
+        self.assertTrue(r["dry_run"])
+        self.assertEqual((len(r["claims"]), len(r["stakeholders"]), len(r["pages"]), r["clashes"]), (4, 2, 2, []))
+        after = {p.relative_to(self.root): p.read_bytes() for p in (self.root / "drafts").rglob("*") if p.is_file()}
+        self.assertEqual(snap, after)
+        self.assertEqual(drafts.state(drafts.load(a)), "verified")
+        self.assertEqual(drafts.load(b)["status"], "verified")
+
+    def test_without_text_the_texts_are_joined_and_verify_flags_paragraphs(self):
+        a, b = self.make_pair()
+        r = self.merge(a, [b], force=True)
+        self.assertTrue(r["text_joined"])
+        self.assertEqual(drafts.show(a)["text"], "Hi, can you add the two DNS records?\n\nAlso, wildcards work.\n")
+        v = drafts.verify(a)
+        self.assertTrue(any("max_paragraphs" in w for w in v["voice_warnings"]), v["voice_warnings"])
+        self.assertTrue(any("joined" in w for w in v["voice_warnings"]), v["voice_warnings"])
+        d = self.root / "ws"
+        d.mkdir()
+        (d / "whosaid.toml").write_text('[drafts]\nvoice_lint = "enforce"\n')
+        with self.assertRaises(drafts.DraftsError) as e:
+            drafts.verify(a, ws=str(d))
+        self.assertIn("max_paragraphs", str(e.exception))
+        drafts.write(a, text="One short message.")
+        v = drafts.verify(a, ws=str(d))
+        self.assertEqual(v["voice_warnings"], [])
+
+    def test_refusals(self):
+        a, b = self.make_pair()
+        other = self.ready(to="Someone Else", topic="solo")
+        with self.assertRaises(drafts.DraftsError) as e:
+            self.merge(a, [other], force=True)
+        self.assertIn("same recipient", str(e.exception))
+        with self.assertRaises(drafts.DraftsError):
+            self.merge(a, [a])
+        with self.assertRaises(drafts.DraftsError):
+            self.merge(a, [])
+        drafts.close(b, "dropped", force=True)
+        with self.assertRaises(drafts.DraftsError) as e:
+            self.merge(a, [b], force=True)
+        self.assertIn("only open drafts", str(e.exception))
+
+    def test_cli_merge_dry_run_and_real(self):
+        import io
+        from contextlib import redirect_stdout
+        a, b = self.make_pair()
+        tf = self.root / "merged.md"
+        tf.write_text("A merged note.\n")
+        out = io.StringIO()
+        with redirect_stdout(out):
+            rc = drafts.main(["merge", a, b, "--text-file", str(tf), "--dry-run", "--force"])
+        self.assertEqual(rc, 0)
+        self.assertIn("would merge", out.getvalue())
+        self.assertEqual(drafts.load(b)["status"], "verified")
+        out = io.StringIO()
+        with redirect_stdout(out):
+            rc = drafts.main(["merge", a, b, "--text-file", str(tf), "--force"])
+        self.assertEqual(rc, 0, out.getvalue())
+        self.assertIn("4 claim(s), 2 stakeholder(s), 2 page(s)", out.getvalue())
+        self.assertEqual(drafts.show(a)["text"], "A merged note.\n")
+
+
 if __name__ == "__main__":
     unittest.main()

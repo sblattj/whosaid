@@ -802,6 +802,7 @@ DRAFTS
   whosaid drafts stakeholders [WS] --topic T [--topic T2] [--repo DIR --path P] [--exclude NAME] [--json]
   whosaid drafts stale-check [WS] [ID] [--json]
   whosaid drafts stage ID|--all [--dry-run] [--tab TARGET] [--ws WS] | edit-sent ID [--dry-run] [--match-file F] [--allow-longer] | mark-sent ID | mark-sent --check [WS] | drop ID [--reason R]
+  whosaid drafts merge INTO FROM [FROM ...] [--text-file F] [--dry-run] [--force]
   An offline outbox for chat drafts an agent writes for you, one folder per draft in
   ~/.drafts/<id>/ (WHOSAID_DRAFTS_DIR overrides): draft.md, claims.json, draft.json.
   Each draft records the agent session that wrote it (and how to resume it). verify
@@ -828,6 +829,10 @@ DRAFTS
   edit-sent finds your message in the chat, opens Teams' Edit on it and loads the new
   text. Like stage it never saves: you check it and save it in Teams.
   html writes a review page of open drafts (default <drafts dir>/outbox.html).
+  merge folds rival open drafts to one person into INTO: claims union by key (a different verdict or
+  evidence refuses), stakeholders by speaker, pages and mentions union, FROM owners become contributors;
+  FROM drafts are dropped with merged_into, INTO gets merged_from and must be verified again. list shows
+  a rivals count per recipient.
 
 APP STATE
   whosaid app-state [--json] [--workspace WS] [--into DIR]

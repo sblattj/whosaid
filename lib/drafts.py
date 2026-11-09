@@ -16,6 +16,7 @@ when the user stages them.
     whosaid drafts stakeholders [WS] --topic T [--topic T2] [--repo DIR --path P ...] [--json]
     whosaid drafts stale-check [WS] [ID] [--json]         new statements since each draft was verified
     whosaid drafts stage ID|--all [--dry-run] [--tab TARGET] [--ws WS]
+    whosaid drafts merge INTO FROM [FROM ...] [--text-file F] [--dry-run] [--force]   fold rival drafts into one
     whosaid drafts mark-sent ID | mark-sent --check [WS] | drop ID [--reason R]
     whosaid drafts show ID --rev N | diff ID [--from N --to M]
     whosaid drafts html [--out PATH] [--all]              one review page of the open drafts
@@ -292,7 +293,7 @@ def new(to: str, topic: str, pages: list[str] | None = None, supersedes: str | N
            "next": "write claims and stakeholders, verify them, then the text"}
     if clash:
         out["note"] = (f"open draft(s) to {to} already: " + ", ".join(f"{c['id']} [{owner_line(c['owner'])}]" for c in clash)
-                       + ". Teams has one compose box per chat: stage refuses both until one is dropped"
+                       + ". Teams has one compose box per chat: stage refuses both until one is dropped or merged (drafts merge)"
                        + (", or this one supersedes it." if not supersedes else "."))
     return out
 
@@ -425,6 +426,7 @@ def write(draft_id: str, text: str | None = None, claims: list | None = None, st
             md.write_text(text)
             _save_revision(m, text, _who(owner()) if os.environ.get("CLAUDE_CODE_SESSION_ID")
                            else {"sessionId": None, "name": "user"})
+            m.pop("merge_text_joined", None)
     if claims is not None or stakeholders is not None or docs is not None:
         c = claims_of(m)
         for key, val in (("claims", claims), ("stakeholders", stakeholders), ("docs", docs)):
@@ -541,6 +543,8 @@ def verify(draft_id: str, force: bool = False, voice: str | None = None, reason:
         save(m)
     errs = gate(m)
     v = voice_check(m, ws)
+    if m.get("merge_text_joined"):
+        v["warnings"].append("merged text is still the joined drafts: rewrite it as one message (drafts text)")
     if errs or v["errors"]:
         msg = "not verified:\n  - " + "\n  - ".join(errs + v["errors"])
         if v["errors"]:
@@ -567,7 +571,8 @@ def summary(m: dict) -> dict:
             "updated_at": m["updated_at"], "supersedes": m.get("supersedes"), "pages": m.get("pages", []),
             "mentions": m.get("mentions") or [], "revisions": len(revisions(m)),
             "contributors": [_who(c) for c in m.get("contributors") or []],
-            "sent_message": m.get("sent_message")}
+            "sent_message": m.get("sent_message"), "merged_from": m.get("merged_from") or [],
+            "merged_into": m.get("merged_into")}
 
 
 def listing(include_closed: bool = False, mine: bool = False, session_id: str | None = None) -> list[dict]:
@@ -577,7 +582,16 @@ def listing(include_closed: bool = False, mine: bool = False, session_id: str | 
     rows = [m for m in all_drafts() if include_closed or m["status"] in OPEN]
     if mine:
         rows = [m for m in rows if m["owner"].get("sessionId") == sid]
-    return [summary(m) for m in rows]
+    open_to: dict[str, int] = {}
+    for m in all_drafts():
+        if m["status"] in OPEN:
+            open_to[m["to"]] = open_to.get(m["to"], 0) + 1
+    out = []
+    for m in rows:
+        r = summary(m)
+        r["rivals"] = open_to.get(m["to"], 1) - 1 if m["status"] in OPEN else 0
+        out.append(r)
+    return out
 
 
 def show(draft_id: str, rev: int | None = None) -> dict:
@@ -601,6 +615,136 @@ def close(draft_id: str, status: str, reason: str | None = None, force: bool = F
     _event(m, status, reason=reason)
     save(m)
     return {"id": draft_id, "status": status}
+
+
+def _claim_id(k: dict) -> str:
+    return k.get("key") or (k.get("text") or "")[:40]
+
+
+def _same_json(a, b) -> bool:
+    return json.dumps(a, sort_keys=True) == json.dumps(b, sort_keys=True)
+
+
+def _merge_parts(parts: list[dict]) -> tuple[dict, list[dict]]:
+    """Union the claims.json parts of several drafts (first draft wins on fields). Returns the merged
+    {claims, stakeholders, docs} and the claim clashes (same key, different verdict or evidence)."""
+    claims: dict[str, dict] = {}
+    clashes: list[dict] = []
+    stakeholders: dict[str, dict] = {}
+    docs: list = []
+    for part in parts:
+        for k in part.get("claims") or []:
+            kid = _claim_id(k)
+            have = claims.get(kid)
+            if have is None:
+                claims[kid] = k
+            elif have.get("verdict") != k.get("verdict") or not _same_json(have.get("evidence"), k.get("evidence")):
+                clashes.append({"key": kid, "kept": {"verdict": have.get("verdict"), "evidence": have.get("evidence")},
+                                "other": {"verdict": k.get("verdict"), "evidence": k.get("evidence")}})
+        for s in part.get("stakeholders") or []:
+            sid = s.get("speaker") or s.get("name") or ""
+            have = stakeholders.get(sid)
+            if have is None:
+                stakeholders[sid] = {**s, "searched": list(s.get("searched") or [])}
+                continue
+            for t in s.get("searched") or []:
+                if t not in have["searched"]:
+                    have["searched"].append(t)
+            for f, v in s.items():
+                if f != "searched" and not have.get(f) and v:
+                    have[f] = v
+        for d in part.get("docs") or []:
+            if not any(_same_json(d, x) for x in docs):
+                docs.append(d)
+    return {"claims": list(claims.values()), "stakeholders": list(stakeholders.values()), "docs": docs}, clashes
+
+
+def merge(into: str, froms: list[str], text: str | None = None, force: bool = False,
+          dry_run: bool = False) -> dict:
+    """Fold open drafts to the same recipient into INTO (one compose box per chat).
+
+    Claims union by key (a different verdict or evidence on one key refuses), stakeholders by speaker
+    with their searched topics merged, pages, mentions and docs union, the FROM owners become INTO
+    contributors. text is the merged message; without it the texts are joined with a blank line and
+    verify flags the extra paragraphs. Each FROM is closed as dropped with merged_into; INTO gets
+    merged_from and goes stale. dry_run computes the same result and writes nothing."""
+    froms = list(dict.fromkeys(froms or []))
+    if not froms:
+        raise DraftsError("merge needs at least one FROM draft id")
+    if into in froms:
+        raise DraftsError(f"{into} cannot be merged into itself")
+    m = load(into)
+    srcs = [load(f) for f in froms]
+    for d in [m, *srcs]:
+        if d["status"] not in OPEN:
+            raise DraftsError(f"{d['id']} is {d['status']}; only open drafts merge")
+    odd = [d["id"] + " -> " + d["to"] for d in srcs if d["to"] != m["to"]]
+    if odd:
+        raise DraftsError(f"all drafts must go to the same recipient ({into} -> {m['to']}); differs: "
+                          + ", ".join(odd))
+    guard(m, force)
+    for d in srcs:
+        guard(d, force)
+    parts = [claims_of(d) for d in [m, *srcs]]
+    merged, clashes = _merge_parts(parts)
+    pages = list(m.get("pages") or [])
+    mentions = list(m.get("mentions") or [])
+    for d in srcs:
+        pages += [p for p in d.get("pages") or [] if p not in pages]
+        mentions += [x for x in d.get("mentions") or [] if x not in mentions]
+    texts = []
+    for d in [m, *srcs]:
+        f = ddir(d["id"]) / "draft.md"
+        if f.exists() and f.read_text().strip():
+            texts.append(f.read_text().strip())
+    joined = text is None
+    new_text = (text if text is not None else "\n\n".join(texts)).rstrip("\n") + "\n" if (text or texts) else None
+    plan = {"into": into, "from": froms, "to": m["to"], "claims": merged["claims"],
+            "stakeholders": merged["stakeholders"], "docs": merged["docs"], "pages": pages,
+            "mentions": mentions, "clashes": clashes, "text": new_text, "text_joined": joined and len(texts) > 1}
+    if dry_run:
+        return {**plan, "dry_run": True}
+    if clashes:
+        raise DraftsError("claim clashes (same key, different verdict or evidence); fix one draft first:\n  - "
+                          + "\n  - ".join(f"{c['key']}: {c['kept']} vs {c['other']}" for c in clashes))
+    d = ddir(into)
+    was_verified = bool(m.get("verified_hash"))
+    (d / "claims.json").write_text(json.dumps(merged, indent=2) + "\n")
+    m["pages"], m["mentions"] = pages, mentions
+    m["new_chat"] = bool(m.get("new_chat") or any(s.get("new_chat") for s in srcs))
+    if new_text is not None:
+        md = d / "draft.md"
+        old = md.read_text() if md.exists() else None
+        if old != new_text:
+            if old is not None and not m.get("revisions"):
+                _save_revision(m, old, _who(m.get("owner") or {}), m.get("updated_at"))
+            md.write_text(new_text)
+            _save_revision(m, new_text, _who(owner()) if os.environ.get("CLAUDE_CODE_SESSION_ID")
+                           else {"sessionId": None, "name": "user"})
+    if plan["text_joined"]:
+        m["merge_text_joined"] = True
+    else:
+        m.pop("merge_text_joined", None)
+    me = os.environ.get("CLAUDE_CODE_SESSION_ID")
+    o = m.get("owner") or {}
+    contributors = m.setdefault("contributors", [])
+    for s in srcs:
+        so = s.get("owner") or {}
+        sid = so.get("sessionId")
+        if sid and sid != o.get("sessionId") and all(c.get("sessionId") != sid for c in contributors):
+            contributors.append({**so, "joined_at": now()})
+    m["merged_from"] = list(dict.fromkeys([*(m.get("merged_from") or []), *froms]))
+    _event(m, "merged", by=me, merged_from=froms)
+    if was_verified and content_hash(m) == m["verified_hash"]:
+        m["verified_hash"] = "merged"  # nothing changed in the bytes, but the merge must be verified again
+    save(m)
+    for s in srcs:
+        s["status"] = "dropped"
+        s["merged_into"] = into
+        _event(s, "dropped", reason=f"merged into {into}")
+        _event(s, "merged", by=me, merged_into=into)
+        save(s)
+    return {**plan, "dry_run": False, "state": state(load(into)), "gate": gate(load(into))}
 
 
 # ---- chat history: what is already in the chat, and was it sent (#166) -----------------
@@ -1031,7 +1175,8 @@ def stage(ids: list[str] | None = None, all_ready: bool = False, dry_run: bool =
             rivals = [d["id"] for d in all_drafts() if d["id"] != draft_id and d["to"] == m["to"]
                       and d["status"] in OPEN and d["id"] != m.get("supersedes")]
             if rivals:
-                res["failed"].append({"id": draft_id, "why": f"other open draft(s) to {m['to']}: {', '.join(rivals)}"})
+                res["failed"].append({"id": draft_id, "why": f"other open draft(s) to {m['to']}: {', '.join(rivals)}; "
+                                       f"fold them into one: whosaid drafts merge {draft_id} {' '.join(rivals)}"})
                 continue
             if wsp is not None:
                 ctx = chat_context(wsp, m)
@@ -1191,6 +1336,12 @@ def _print_rows(rows: list[dict]) -> None:
         print("outbox empty")
     for r in rows:
         extra = f"   supersedes: {r['supersedes']}" if r.get("supersedes") else ""
+        if r.get("rivals"):
+            extra += f"   rivals: {r['rivals']}"
+        if r.get("merged_into"):
+            extra += f"   merged_into: {r['merged_into']}"
+        if r.get("merged_from"):
+            extra += f"   merged_from: {', '.join(r['merged_from'])}"
         print(f"{r['id']}\n   to: {r['to']}   state: {r['state']}   owner: {r['owner_line']}   "
               f"updated: {r['updated_at'][5:16]}{extra}")
 
@@ -1287,6 +1438,12 @@ def build_parser() -> argparse.ArgumentParser:
     a.add_argument("--ws")
     a.add_argument("--reason")
     a.add_argument("--force", action="store_true", help=force)
+    a = sub.add_parser("merge", help="fold open drafts to the same recipient into one")
+    a.add_argument("into")
+    a.add_argument("from_ids", nargs="+", metavar="from")
+    a.add_argument("--text-file", help="the merged message (markdown, or - for stdin); default: the texts joined")
+    a.add_argument("--dry-run", action="store_true", help="print the merged result and clashes, write nothing")
+    a.add_argument("--force", action="store_true", help=force)
     a = sub.add_parser("drop")
     a.add_argument("id")
     a.add_argument("--reason")
@@ -1356,6 +1513,10 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"# {s['id']}\nto: {s['to']}\nstate: {s['state']}\npages: {', '.join(s['pages']) or '(none)'}")
                 if s["mentions"]:
                     print(f"mentions: {', '.join(s['mentions'])}")
+                if s["merged_from"]:
+                    print(f"merged_from: {', '.join(s['merged_from'])}")
+                if s["merged_into"]:
+                    print(f"merged_into: {s['merged_into']}")
                 for k in s["contributors"]:
                     print(f"contributor: {k.get('name') or '(unnamed)'} {(k.get('sessionId') or '')[:8]}")
                 if s["revisions"]:
@@ -1441,6 +1602,27 @@ def main(argv: list[str] | None = None) -> int:
                 print("no staged drafts")
             elif r["still_staged"]:
                 print(r["note"])
+        elif c == "merge":
+            r = merge(args.into, args.from_ids, _read_arg_file(args.text_file) if args.text_file else None,
+                      force=args.force, dry_run=args.dry_run)
+            verb = "would merge" if r["dry_run"] else "merged"
+            print(f"{verb} {', '.join(r['from'])} into {r['into']} (to {r['to']}): {len(r['claims'])} claim(s), "
+                  f"{len(r['stakeholders'])} stakeholder(s), {len(r['pages'])} page(s), "
+                  f"{len(r['mentions'])} mention(s), {len(r['docs'])} doc(s)")
+            if r["dry_run"]:
+                for k in r["claims"]:
+                    print(f"  claim [{k.get('verdict') or '?'}] {_claim_id(k)}")
+                for st in r["stakeholders"]:
+                    print(f"  stakeholder {st.get('name')}; searched: {' | '.join(st.get('searched') or [])}")
+                for pg in r["pages"]:
+                    print(f"  page {pg}")
+                for cl in r["clashes"]:
+                    print(f"  CLASH {cl['key']}: {cl['kept']} vs {cl['other']}", file=sys.stderr)
+                return 1 if r["clashes"] else 0
+            if r["text_joined"]:
+                print("text: the drafts' texts are joined with blank lines; rewrite them as one message "
+                      "(drafts text), then verify")
+            print(f"{r['into']}: {r['state']}; verify it again before stage")
         elif c in ("mark-sent", "drop"):
             if not args.id:
                 raise DraftsError("need a draft id (or mark-sent --check)")
