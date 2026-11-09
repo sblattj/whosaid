@@ -33,7 +33,8 @@ jobs:
           PRXREF_LLM_BACKEND: http
           PRXREF_LLM_BASE_URL: ${{ vars.PRXREF_LLM_BASE_URL }}
           PRXREF_LLM_API_KEY: ${{ secrets.PRXREF_LLM_API_KEY }}
-          PRXREF_LLM_MODELS: ${{ vars.PRXREF_LLM_MODELS }}
+          # Opus 5.5 on OpenRouter unless the repository variable overrides it.
+          PRXREF_LLM_MODELS: ${{ vars.PRXREF_LLM_MODELS || 'anthropic/claude-opus-5.5' }}
           PRXREF_LLM_REASONING_EFFORT: ${{ vars.PRXREF_LLM_REASONING_EFFORT }}
           # Per-WORKER-CHUNK completion budget, not a per-run one. Needs the
           # literal fallback because an unset repository variable renders as
