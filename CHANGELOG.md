@@ -6,6 +6,11 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ## [Unreleased]
 
+## [1.36.2] - 2026-11-09
+
+### Changed
+- CI: the prxref PR review runs on `pull_request` instead of `pull_request_target`, which had ended every run in `startup_failure` since 2026-11-09 (#192). It now reviews with Opus 5.5 (`anthropic/claude-opus-5.5` on OpenRouter) unless the `PRXREF_LLM_MODELS` repository variable overrides it.
+
 ## [1.36.1] - 2026-11-09
 
 ### Fixed
