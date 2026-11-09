@@ -8,7 +8,7 @@ of it gives your meetings with no network call, no Graph permission and no brows
 window, not the whole calendar: the weeks the app has loaded (open the Calendar tab and
 page to a week to pull it in), so every result says what range the cache covers.
 
-  python3 lib/teams_calendar.py events [--from today|2d|ISO] [--to ISO] [--days N] [--q TEXT]
+  python3 lib/teams_calendar.py events [--from today|next-week|2d|ISO] [--next-week|--this-week] [--to ISO] [--days N] [--q TEXT]
                                        [--cancelled] [--free] [--ws WS] [--json]
   python3 lib/teams_calendar.py status [--json]
 
@@ -415,6 +415,11 @@ def parse_when(s: str | None, default_ms: int, future: bool = False) -> int:
     words = {"today": 0, "tomorrow": 1, "yesterday": -1}
     if low in words:
         return int((midnight + timedelta(days=words[low])).timestamp() * 1000)
+    if low in ("this-week", "next-week", "last-week"):
+        # Monday 00:00 local; built from the date so a DST change in between doesn't shift it an hour
+        monday = midnight.date() - timedelta(days=midnight.weekday())
+        monday += timedelta(days={"this-week": 0, "next-week": 7, "last-week": -7}[low])
+        return int(datetime.combine(monday, datetime.min.time()).astimezone().timestamp() * 1000)
     if low == "now":
         return int(time.time() * 1000)
     m = re.fullmatch(r"(\d+(?:\.\d+)?)\s*([mhdw])", low)
@@ -427,6 +432,12 @@ def parse_when(s: str | None, default_ms: int, future: bool = False) -> int:
         return tc.parse_since(s)
     except CacheError:
         raise CacheError(f"{s!r}: use today, tomorrow, yesterday, now, 3d, 2026-11-09 or an ISO time") from None
+
+
+def _week_end(start_ms: int) -> int:
+    """The local midnight 7 calendar days after start_ms (DST-safe, unlike adding 7 * 24h)."""
+    d = datetime.fromtimestamp(start_ms / 1000).date() + timedelta(days=7)
+    return int(datetime.combine(d, datetime.min.time()).astimezone().timestamp() * 1000)
 
 
 def events(start_ms: int | None = None, end_ms: int | None = None, query: str | None = None,
@@ -533,6 +544,10 @@ def main(argv: list[str] | None = None) -> int:
     pe = sub.add_parser("events", help="meetings in a window (default today + 7 days)")
     pe.add_argument("--from", dest="frm", default=None, help="today (default), tomorrow, yesterday, now, 2d (ago), "
                     "2026-11-09 or ISO")
+    pe.add_argument("--next-week", dest="frm", action="store_const", const="next-week",
+                    help="Monday to Sunday of next week (same as --from next-week)")
+    pe.add_argument("--this-week", dest="frm", action="store_const", const="this-week",
+                    help="Monday to Sunday of this week")
     pe.add_argument("--to", default=None, help="end of the window (same forms; 3d means 3 days ahead)")
     pe.add_argument("--days", type=float, default=None, help="window length in days (default 7)")
     pe.add_argument("--q", default=None, help="subject / organizer / location / attendee substring")
@@ -561,6 +576,8 @@ def main(argv: list[str] | None = None) -> int:
         start = parse_when(a.frm, parse_when("today", 0))
         if a.to:
             end = parse_when(a.to, 0, future=True)
+        elif a.days is None and (a.frm or "").lower() in ("this-week", "next-week", "last-week"):
+            end = _week_end(start)
         else:
             end = start + int((a.days if a.days is not None else 7) * 86400000)
         if end <= start:

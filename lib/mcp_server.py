@@ -3558,7 +3558,8 @@ _DESC_TEAMS_CALENDAR = (
     "the weeks the app has synced, reported in covers {first_start, last_start, events} and "
     "synced_at; an empty result outside that range means unknown, not free (opening the week in "
     "the Teams Calendar tab pulls it in). Lists events starting in [start, start + days) (default "
-    "start of today, local, and 7 days); start is today, tomorrow, yesterday, now, 3d (3 days ago), "
+    "start of today, local, and 7 days); start is today, tomorrow, yesterday, now, this-week, "
+    "next-week or last-week (Monday 00:00 local; with days 7 the window ends the following Monday), 3d (3 days ago), "
     "YYYY-MM-DD or ISO. query is a case-insensitive substring of subject, organizer, location or "
     "an attendee name. Cancelled events and ones shown as Free are left out (counted in skipped) "
     "unless include_cancelled / include_free. Recurring meetings come one row per occurrence; an "
@@ -3585,7 +3586,10 @@ def whosaid_teams_calendar(start: str = "today", days: float = 7, query: Optiona
         return err  # a workspace that was asked for and is wrong; none at all just skips `recorded`
     try:
         start_ms = teams_calendar.parse_when(start, teams_calendar.parse_when("today", 0))
-        end_ms = start_ms + int(max(0.01, min(float(days), 366)) * 86400000)
+        if float(days) == 7:
+            end_ms = teams_calendar._week_end(start_ms)  # 7 calendar days, right across a DST change
+        else:
+            end_ms = start_ms + int(max(0.01, min(float(days), 366)) * 86400000)
         return teams_calendar.events(start_ms, end_ms, query, include_cancelled, include_free, ws,
                                      max(1, min(int(limit), 1000)))
     except teams_calendar.CacheError as exc:

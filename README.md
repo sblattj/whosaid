@@ -677,6 +677,7 @@ event says which one it came from (`source`), and `sources` reports each store's
 
 ```sh
 whosaid teams calendar                          # today through 7 days on, local times
+whosaid teams calendar --next-week              # Monday through Sunday (also --this-week, --from last-week)
 whosaid teams calendar --from tomorrow --days 1
 whosaid teams calendar --from 2026-11-02 --to 2026-11-07 --q "planning"
 whosaid teams calendar --ws ~/meetings --json   # each event lists the recordings made during it

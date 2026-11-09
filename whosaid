@@ -312,7 +312,7 @@ USAGE
                                         use, else [teams.chat_names] "<id>" = "N",
                                         else the Teams left-rail name.
   whosaid teams cache-status [--json]   Where the cache is and how fresh.
-  whosaid teams calendar [--from today|2d|ISO] [--to ISO] [--days 7] [--q TEXT]
+  whosaid teams calendar [--from today|next-week|2d|ISO] [--next-week|--this-week] [--to ISO] [--days 7] [--q TEXT]
                          [--cancelled] [--free] [--ws DIR] [--json]
                                         Your meetings from the same cache (the
                                         weeks the app has synced; output says

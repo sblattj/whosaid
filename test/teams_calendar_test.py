@@ -261,6 +261,44 @@ class ParseWhen(unittest.TestCase):
         with self.assertRaises(cal.CacheError):
             cal.parse_when("someday", 0)
 
+    def test_weeks(self):
+        this, nxt, last = (datetime.fromtimestamp(cal.parse_when(w, 0) / 1000)
+                           for w in ("this-week", "next-week", "Last-Week"))
+        today = datetime.now().date()
+        for d in (this, nxt, last):
+            self.assertEqual((d.weekday(), d.hour, d.minute), (0, 0, 0))
+        self.assertLessEqual(this.date(), today)
+        self.assertGreater(nxt.date(), today)
+        self.assertEqual(((nxt.date() - this.date()).days, (this.date() - last.date()).days), (7, 7))
+
+    def test_week_end_across_dst(self):
+        import time
+        old = os.environ.get("TZ")
+        os.environ["TZ"] = "America/Los_Angeles"
+        time.tzset()
+        try:
+            start = int(datetime(2026, 10, 26).astimezone().timestamp() * 1000)  # DST ends Sun Nov 1
+            end = cal._week_end(start)
+            self.assertEqual(datetime.fromtimestamp(end / 1000), datetime(2026, 11, 2))
+            self.assertEqual(end - start, 7 * 86400000 + 3600000)
+        finally:
+            if old is None:
+                os.environ.pop("TZ", None)
+            else:
+                os.environ["TZ"] = old
+            time.tzset()
+
+    def test_cli_next_week_flag(self):
+        seen = {}
+
+        def fake(start, end, *a, **k):
+            seen.update(start=start, end=end)
+            return {"ok": True}
+        with patch.object(cal, "events", fake), patch.object(cal, "_print_events", lambda r: None):
+            self.assertEqual(cal.main(["--next-week"]), 0)
+        self.assertEqual(seen["start"], cal.parse_when("next-week", 0))
+        self.assertEqual(seen["end"], cal._week_end(seen["start"]))
+
 
 class Missing(unittest.TestCase):
     def test_no_cache_dir(self):
