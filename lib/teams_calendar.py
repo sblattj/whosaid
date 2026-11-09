@@ -42,7 +42,7 @@ sys.path.insert(0, str(_LIB))
 import teams_cache as tc  # noqa: E402
 from teams_cache import CacheError  # noqa: E402
 
-CACHE_VERSION = 1
+CACHE_VERSION = 2
 DB, STORE, INTERNAL = "calendar", "calendar", "calendar-internal-data"
 RECORD_LEAD_MIN = 10
 DATE_DIR_RE = re.compile(r"^(\d{4})-(\d{2})-(\d{2})-(\d{2})(\d{2})(?:-\d+)?$")
@@ -126,6 +126,8 @@ def decode(raw: dict) -> dict:
             inherited = src is not r
         ev = {
             "id": r["objectId"],
+            "source": "teams",
+            "uid": r.get("iCalUID"),
             "subject": (r.get("subject") or "").strip(),
             "start": _iso(start), "end": _iso(end), "start_ms": start, "end_ms": end,
             "start_local": _local(start), "end_local": _local(end),
@@ -159,16 +161,196 @@ def decode(raw: dict) -> dict:
             "sync_state": state if isinstance(state, str) else None}
 
 
+# ---- the new (Outlook-powered) Teams calendar ---------------------------------------------
+# With the M365 calendar on, Teams' Calendar tab is an embedded Outlook web app. It keeps
+# its own IndexedDB in a partitioned bucket under <profile>/WebStorage/<n>/IndexedDB, database
+# owa-offline-data-<mailbox>, object store events (Outlook REST field names).
+
+OWA_HOST = "outlook.office.com"
+OWA_DB = "owa-offline-data-"
+OWA_RESPONSE = {"Accept": "Accepted", "Tentative": "Tentative", "Decline": "Declined",
+                "NoResponseReceived": "NotResponded", "Organizer": "Organizer", "Unknown": None}
+
+
+def owa_stores(path=None) -> list[Path]:
+    """The embedded Outlook's IndexedDB leveldb dirs, from the profile's QuotaManager when readable."""
+    ws = tc.cache_dir(path).parent / "WebStorage"
+    if not ws.is_dir():
+        return []
+    ids = None
+    qm = ws / "QuotaManager"
+    if qm.is_file():
+        import sqlite3
+        try:
+            con = sqlite3.connect(f"file:{qm}?immutable=1", uri=True)
+            try:
+                ids = [str(r[0]) for r in con.execute("select id from buckets where host = ?", (OWA_HOST,))]
+            finally:
+                con.close()
+        except sqlite3.Error:
+            ids = None
+    dirs = [ws / i for i in ids] if ids is not None else sorted(p for p in ws.iterdir() if p.is_dir())
+    return [d / "IndexedDB" / "indexeddb.leveldb" for d in dirs if (d / "IndexedDB" / "indexeddb.leveldb").is_dir()]
+
+
+def _fp_dirs(dirs: list[Path]) -> str:
+    import hashlib
+    h = hashlib.sha256()
+    for d in dirs:
+        for f in sorted(d.iterdir()):
+            if f.is_file() and f.name != "LOCK":
+                st = f.stat()
+                h.update(f"{f}\0{st.st_size}\0{st.st_mtime_ns}\n".encode())
+    return h.hexdigest()
+
+
+def read_owa(ldb: Path) -> list[dict]:
+    """Raw Outlook event rows from a copy of one bucket's IndexedDB ([] when it has none)."""
+    import shutil
+    import tempfile
+    sys.path.insert(0, str(_LIB / "vendor"))
+    from ccl_chromium_reader import ccl_chromium_indexeddb as idb  # vendored, MIT
+    last: Exception | None = None
+    for attempt in range(2):
+        tmp = Path(tempfile.mkdtemp(prefix="whosaid-owa-"))
+        try:
+            shutil.copytree(ldb, tmp / ldb.name, ignore=shutil.ignore_patterns("LOCK"))
+            w = idb.WrappedIndexDB(str(tmp / ldb.name), None)
+            out = []
+            for x in w.database_ids:
+                if not (x.name or "").startswith(OWA_DB):
+                    continue
+                h = w[x.dbid_no]
+                if "events" in h.object_store_names:
+                    out += [tc._plain(r.value) for r in h["events"].iterate_records() if r.value is not None]
+            return out
+        except Exception as e:  # noqa: BLE001 - a torn copy surfaces as any decode error
+            last = e
+            time.sleep(0.5)
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+    raise CacheError(f"could not decode the Outlook calendar cache in {ldb}: {last}")
+
+
+def _mailbox(m) -> tuple[str, str | None]:
+    box = (m or {}).get("Mailbox") if isinstance(m, dict) else None
+    box = box if isinstance(box, dict) else {}
+    return box.get("Name") or box.get("EmailAddress") or "", box.get("EmailAddress")
+
+
+def decode_owa(rows: list[dict]) -> list[dict]:
+    """Outlook event rows -> the same event shape as decode(); partial copies lose to full ones."""
+    best: dict[tuple, dict] = {}
+    for r in rows:
+        if not isinstance(r, dict):
+            continue
+        start, end = _utc_ms(r.get("Start")), _utc_ms(r.get("End"))
+        if start is None:
+            continue
+        key = (r.get("UID") or (r.get("ItemId") or {}).get("Id") or r.get("id"), start)
+        partial = str((r.get("MetaData") or {}).get("isPartialEvent")) == "1"
+        have = best.get(key)
+        if have is None or (have["_partial"] and not partial):
+            best[key] = {"_r": r, "_partial": partial, "_start": start, "_end": end}
+    events = []
+    for b in best.values():
+        r, start, end = b["_r"], b["_start"], b["_end"]
+        end = end if end is not None and end >= start else start
+        org, org_addr = _mailbox(r.get("Organizer"))
+        att = []
+        for kind, lst in (("Required", r.get("RequiredAttendees")), ("Optional", r.get("OptionalAttendees")),
+                          ("Resource", r.get("Resources"))):
+            for a in lst or []:
+                name, addr = _mailbox(a)
+                att.append({"name": name, "address": addr, "type": kind,
+                            "response": OWA_RESPONSE.get(a.get("ResponseType"), a.get("ResponseType"))})
+        online = r.get("OnlineMeeting") if isinstance(r.get("OnlineMeeting"), dict) else {}
+        join = r.get("OnlineMeetingJoinUrl") or online.get("joinUrl")
+        body = r.get("Body") if isinstance(r.get("Body"), dict) else {}
+        text = body.get("Value") if isinstance(body.get("Value"), str) else ""
+        text = tc.html_to_text(text, "Text" if str(body.get("BodyType")).lower() == "text" else "RichText/Html") \
+            if text.strip() else (r.get("Preview") or "").strip()
+        series = r.get("SeriesMasterItemId") if isinstance(r.get("SeriesMasterItemId"), dict) else {}
+        resp = r.get("ResponseType")
+        events.append({
+            "id": (r.get("ItemId") or {}).get("Id") or r.get("id"),
+            "source": "outlook",
+            "uid": r.get("UID"),
+            "subject": (r.get("Subject") or "").strip(),
+            "start": _iso(start), "end": _iso(end), "start_ms": start, "end_ms": end,
+            "start_local": _local(start), "end_local": _local(end),
+            "minutes": round((end - start) / 60000),
+            "organizer": org, "organizer_address": org_addr,
+            "location": (r.get("Location") or "").strip() if isinstance(r.get("Location"), str) else "",
+            "online": bool(r.get("IsOnlineMeeting") or join or r.get("SkypeTeamsProperties")),
+            "join_url": join or None,
+            "response": "Organizer" if r.get("IsOrganizer") else OWA_RESPONSE.get(resp, resp),
+            "show_as": r.get("FreeBusyType"),
+            "cancelled": bool(r.get("IsCancelled")),
+            "all_day": bool(r.get("IsAllDayEvent")),
+            "kind": {"Occurrence": "occurrence", "Exception": "exception"}.get(r.get("CalendarItemType"), "single"),
+            "series_id": series.get("Id") or r.get("SeriesId"),
+            "attendees": att,
+            "body": text,
+            "event_time_zone": r.get("StartTimeZoneId"),
+            "last_modified": r.get("LastModifiedTime"),
+            "partial": b["_partial"],
+        })
+    events.sort(key=lambda e: (e["start_ms"], e["subject"]))
+    return events
+
+
+def _covers(evs: list[dict]) -> dict:
+    starts = [e["start_ms"] for e in evs]
+    return {"first_start": _iso(min(starts)) if starts else None,
+            "last_start": _iso(max(starts)) if starts else None, "events": len(starts)}
+
+
+def merge(teams: list[dict], outlook: list[dict]) -> list[dict]:
+    """Outlook rows win; a Teams-store row is kept only when no Outlook row has its uid and start."""
+    seen = {((e["uid"] or "").lower(), e["start_ms"]) for e in outlook}
+    out = list(outlook) + [e for e in teams if ((e.get("uid") or "").lower(), e["start_ms"]) not in seen]
+    out.sort(key=lambda e: (e["start_ms"], e["subject"]))
+    return out
+
+
 def _cache_file() -> Path:
     return tc._cache_file().with_name("teams-calendar.json")
 
 
+def _read_all(d: Path, owa: list[Path]) -> dict:
+    sources: dict[str, dict] = {}
+    try:
+        legacy = decode(read_calendar(d))
+    except CacheError as e:
+        legacy = {"events": [], "synced_at": None, "sync_state": None, "error": str(e)}
+    sources["teams"] = {"store": str(tc._leveldb(d)), **_covers(legacy["events"]),
+                        "synced_at": legacy.get("synced_at"), "sync_state": legacy.get("sync_state")}
+    if legacy.get("error"):
+        sources["teams"]["error"] = legacy["error"]
+    new: list[dict] = []
+    for ldb in owa:
+        got = decode_owa(read_owa(ldb))
+        newest = max((f.stat().st_mtime for f in ldb.iterdir() if f.is_file()), default=0)
+        sources.setdefault("outlook", {"store": str(ldb), "written_at":
+                                       datetime.fromtimestamp(newest, timezone.utc).isoformat()[:19] + "Z"})
+        new += got
+    if "outlook" in sources:
+        sources["outlook"].update(_covers(new))
+    if not legacy["events"] and not new:
+        raise CacheError(legacy.get("error") or "the Teams cache has no calendar events; open the Calendar tab "
+                         "in the Teams desktop app once so it syncs")
+    return {"events": merge(legacy["events"], new), "sources": sources,
+            "synced_at": legacy.get("synced_at"), "sync_state": legacy.get("sync_state")}
+
+
 def load(path=None, use_cache: bool = True) -> dict:
-    """decode(read_calendar()) with a cache keyed on the store's fingerprint."""
+    """Both calendar stores, merged, with a cache keyed on their files' fingerprints."""
     d = tc.cache_dir(path)
     if not tc._leveldb(d).is_dir():
         raise CacheError(f"no Teams cache at {tc._leveldb(d)} (set WHOSAID_TEAMS_CACHE)")
-    fp = f"{CACHE_VERSION}:{tc.fingerprint(d)}"
+    owa = owa_stores(d)
+    fp = f"{CACHE_VERSION}:{tc.fingerprint(d)}:{_fp_dirs(owa)}"
     cf = _cache_file()
     if use_cache:
         try:
@@ -179,7 +361,7 @@ def load(path=None, use_cache: bool = True) -> dict:
         except (OSError, ValueError, KeyError):
             pass
     t0 = time.time()
-    data = decode(read_calendar(d))
+    data = _read_all(d, owa)
     data.update(read_seconds=round(time.time() - t0, 1), read_at=datetime.now(timezone.utc).isoformat()[:19] + "Z",
                 cache=str(d), cached=False)
     if use_cache:
@@ -288,6 +470,7 @@ def events(start_ms: int | None = None, end_ms: int | None = None, query: str | 
     return {"ok": True, **{k: data.get(k) for k in ("cache", "read_at", "read_seconds", "cached")},
             "hint": hint,
             "synced_at": data.get("synced_at"), "sync_state": data.get("sync_state"),
+            "sources": data.get("sources") or {},
             "covers": {"first_start": _iso(min(starts)) if starts else None,
                        "last_start": _iso(max(starts)) if starts else None, "events": len(starts)},
             "window": {"from": _iso(start_ms), "to": _iso(end_ms)},
@@ -298,18 +481,29 @@ def status(path=None) -> dict:
     data = load(path)
     starts = [e["start_ms"] for e in data["events"]]
     return {"ok": True, "cache": data.get("cache"), "synced_at": data.get("synced_at"),
-            "sync_state": data.get("sync_state"), "events": len(starts),
+            "sync_state": data.get("sync_state"), "sources": data.get("sources") or {}, "events": len(starts),
             "first_start": _iso(min(starts)) if starts else None,
             "last_start": _iso(max(starts)) if starts else None}
 
 
 # ---- CLI ---------------------------------------------------------------------------------
 
+def _sources_line(src: dict) -> str:
+    parts = []
+    for name, label, when in (("outlook", "Outlook calendar", "written_at"), ("teams", "Teams store", "synced_at")):
+        x = src.get(name)
+        if x and x.get("events"):
+            parts.append(f"{label}: {x['events']} ({(x['first_start'] or '?')[:10]} .. {(x['last_start'] or '?')[:10]}, "
+                         f"{'written' if when == 'written_at' else 'synced'} {(x.get(when) or '?')[:16]})")
+    return "; ".join(parts) or "no source has events"
+
+
 def _print_events(res: dict) -> None:
     age = "cached" if res.get("cached") else f"read in {res.get('read_seconds') or 0}s"
     cov = res["covers"]
-    print(f"# Teams calendar cache: synced {res.get('synced_at')}, {age}; holds {cov['events']} event(s) "
-          f"starting {(cov['first_start'] or '?')[:10]} .. {(cov['last_start'] or '?')[:10]}")
+    print(f"# Teams calendar cache ({age}): {cov['events']} event(s) starting "
+          f"{(cov['first_start'] or '?')[:10]} .. {(cov['last_start'] or '?')[:10]}")
+    print(f"#   {_sources_line(res.get('sources') or {})}")
     skipped = ", ".join(f"{n} {k}" for k, n in res["skipped"].items() if n)
     print(f"# {res['count']} of {res['total']} event(s)" + (f"; hidden: {skipped}" if skipped else ""))
     if res.get("hint"):
@@ -361,8 +555,8 @@ def main(argv: list[str] | None = None) -> int:
             if a.json:
                 print(json.dumps(res, indent=2))
             else:
-                print(f"{res['cache']}\n  {res['events']} event(s) starting {res['first_start']} .. {res['last_start']}; "
-                      f"synced {res['synced_at']} ({res['sync_state']})")
+                print(f"{res['cache']}\n  {res['events']} event(s) starting {res['first_start']} .. {res['last_start']}\n"
+                      f"  {_sources_line(res['sources'])}")
             return 0
         start = parse_when(a.frm, parse_when("today", 0))
         if a.to:

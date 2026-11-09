@@ -178,6 +178,77 @@ class Window(unittest.TestCase):
         self.assertIn("hidden: 1 cancelled, 1 free", out.getvalue())
 
 
+def owa(uid, start, end, subject="Sync", partial=False, **kw):
+    return {"id": f"k-{uid}-{start}", "ItemId": {"Id": f"item-{uid}-{start}"}, "UID": uid,
+            "Start": start, "End": end, "Subject": subject, "StartTimeZoneId": "Eastern Standard Time",
+            "Organizer": {"Mailbox": {"Name": "Bob Builder", "EmailAddress": "bob@example.test"}},
+            "ResponseType": "Accept", "FreeBusyType": "Busy", "IsCancelled": False, "IsAllDayEvent": False,
+            "CalendarItemType": "Occurrence", "SeriesMasterItemId": {"Id": "series-1"},
+            "Preview": "preview text", "Body": None, "Location": "Microsoft Teams Meeting",
+            "OnlineMeeting": {"joinUrl": None}, "SkypeTeamsProperties": {"cid": "x"},
+            "MetaData": {"isPartialEvent": 1 if partial else 0}, **kw}
+
+
+class Outlook(unittest.TestCase):
+    def test_decode_fields_and_partial_dedupe(self):
+        rows = [
+            owa("U1", "2026-11-09T15:30:00.000Z", "2026-11-09T16:20:00.000Z", partial=True, Subject="partial copy"),
+            owa("U1", "2026-11-09T15:30:00.000Z", "2026-11-09T16:20:00.000Z", Subject="Sync",
+                RequiredAttendees=[{"Mailbox": {"Name": "Ann Example", "EmailAddress": "ann@example.test"},
+                                    "ResponseType": "Accept"}],
+                OptionalAttendees=[{"Mailbox": {"Name": "Cat Coder"}, "ResponseType": "NoResponseReceived"}]),
+            owa("U2", "2026-11-09T21:00:00.000Z", "2026-11-09T21:55:00.000Z", "Check-in",
+                ResponseType="NoResponseReceived", FreeBusyType="Tentative", CalendarItemType="Single",
+                Body={"BodyType": "HTML", "Value": "<p>agenda <b>here</b></p>"}),
+            owa("U3", "2026-11-10T18:00:00.000Z", "2026-11-10T18:30:00.000Z", "Mine", IsOrganizer=True,
+                OnlineMeetingJoinUrl="https://teams.example.test/join/u3"),
+            {"Start": "bad"}, "not a dict",
+        ]
+        evs = cal.decode_owa(rows)
+        self.assertEqual([e["uid"] for e in evs], ["U1", "U2", "U3"])
+        e1, e2, e3 = evs
+        self.assertEqual((e1["subject"], e1["partial"], e1["source"]), ("Sync", False, "outlook"))
+        self.assertEqual(e1["start"], "2026-11-09T15:30:00Z")
+        self.assertEqual(e1["minutes"], 50)
+        self.assertEqual(e1["response"], "Accepted")
+        self.assertEqual(e1["attendees"], [
+            {"name": "Ann Example", "address": "ann@example.test", "type": "Required", "response": "Accepted"},
+            {"name": "Cat Coder", "address": None, "type": "Optional", "response": "NotResponded"}])
+        self.assertEqual((e1["kind"], e1["series_id"], e1["organizer"]), ("occurrence", "series-1", "Bob Builder"))
+        self.assertEqual(e1["body"], "preview text")
+        self.assertEqual((e2["response"], e2["show_as"], e2["kind"], e2["body"]),
+                         ("NotResponded", "Tentative", "single", "agenda here"))
+        self.assertEqual((e3["response"], e3["join_url"]), ("Organizer", "https://teams.example.test/join/u3"))
+
+    def test_merge_prefers_outlook(self):
+        teams = cal.decode(raw_fixture())["events"]
+        o1 = next(e for e in teams if e["id"] == "O1")
+        o1["uid"] = "SAME"
+        outlook = cal.decode_owa([owa("same", "2026-11-09T15:30:00.000Z", "2026-11-09T16:00:00.000Z", "Standup")])
+        merged = cal.merge(teams, outlook)
+        hits = [e for e in merged if e["start"] == "2026-11-09T15:30:00Z"]
+        self.assertEqual([e["source"] for e in hits], ["outlook"])
+        self.assertEqual(len(merged), len(teams))
+
+    def test_owa_stores_from_quota_manager(self):
+        import sqlite3
+        with tempfile.TemporaryDirectory() as d:
+            prof = Path(d)
+            (prof / "IndexedDB").mkdir()
+            for n in ("2", "3", "4"):
+                (prof / "WebStorage" / n / "IndexedDB" / "indexeddb.leveldb").mkdir(parents=True)
+            con = sqlite3.connect(prof / "WebStorage" / "QuotaManager")
+            con.execute("create table buckets (id integer, storage_key text, host text)")
+            con.executemany("insert into buckets values (?, ?, ?)",
+                            [(2, "a", "outlook.office.com"), (3, "b", "outlook.office.com"), (4, "c", "x.example.test")])
+            con.commit()
+            con.close()
+            got = cal.owa_stores(prof / "IndexedDB")
+            self.assertEqual([p.parts[-3] for p in got], ["2", "3"])
+            (prof / "WebStorage" / "QuotaManager").unlink()
+            self.assertEqual(len(cal.owa_stores(prof / "IndexedDB")), 3)  # no QuotaManager: try every bucket
+
+
 class ParseWhen(unittest.TestCase):
     def test_forms(self):
         midnight = datetime.now().astimezone().replace(hour=0, minute=0, second=0, microsecond=0)

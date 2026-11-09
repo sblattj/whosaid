@@ -619,8 +619,12 @@ data on your own disk, but check your organization's policy before syncing chats
 
 ### `whosaid teams calendar`: your Teams calendar from the same cache
 
-The same IndexedDB store holds the calendar weeks the Teams app has synced. `whosaid teams
-calendar` lists your meetings from it: no network call, no Graph permission, no browser.
+The Teams app keeps the calendar weeks it has shown on disk. `whosaid teams calendar` lists your
+meetings from there: no network call, no Graph permission, no browser. It reads two stores and
+merges them, preferring the first: the Outlook calendar the Teams Calendar tab now embeds (its own
+IndexedDB under `WebStorage/<bucket>/`, found through the profile's `QuotaManager`), and the older
+`Teams:calendar` store, which stops updating once the app switches to the Outlook calendar. Each
+event says which one it came from (`source`), and `sources` reports each store's range.
 
 ```sh
 whosaid teams calendar                          # today through 7 days on, local times
