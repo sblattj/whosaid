@@ -274,6 +274,51 @@ class OutboxTest(DraftsBase):
         self.assertEqual(drafts.load(old)["status"], "superseded")
         self.assertIn("--replace", self.stager_calls()[-1]["argv"])
 
+    def test_replace_flag_passes_replace_for_a_never_staged_draft(self):
+        did = self.ready()
+        plain = drafts.stage([did], dry_run=True)["would_run"][0]["argv"]
+        self.assertNotIn("--replace", plain)
+        self.assertNotIn("--only-these-attachments", plain)
+        argv = drafts.stage([did], dry_run=True, replace=True)["would_run"][0]["argv"]
+        self.assertIn("--replace", argv)
+        self.assertIn("--only-these-attachments", argv)
+        drafts.stage([did], replace=True)
+        self.assertIn("--replace", self.stager_calls()[-1]["argv"])
+
+    def test_cli_stage_accepts_replace(self):
+        did = self.ready()
+        lib = Path(__file__).resolve().parents[1] / "lib" / "drafts.py"
+        out = subprocess.run([sys.executable, str(lib), "stage", did, "--replace"],
+                             capture_output=True, text=True, env=os.environ)
+        self.assertEqual(out.returncode, 0, out.stderr)
+        self.assertNotIn("unrecognized", out.stderr)
+        self.assertIn("--replace", self.stager_calls()[-1]["argv"])
+
+    def test_merged_from_a_staged_draft_replaces_on_stage(self):
+        """#190: old draft staged, folded into a new one and dropped: the compose box still holds its text."""
+        old = self.ready()
+        drafts.stage([old])
+        new = drafts.new("Test Person", "dns again", [str(self.page)], separate=True)["id"]
+        drafts.merge(new, [old], text="Merged message.", force=True)
+        self.assertEqual(drafts.load(old)["status"], "dropped")
+        drafts.write(new, text="Merged message.", **GOOD_CLAIMS)
+        drafts.verify(new)
+        merged = next(e for e in drafts.load(new)["history"] if e["event"] == "merged")
+        self.assertEqual(merged["staged_from"], [old])
+        drafts.stage([new])
+        argv = self.stager_calls()[-1]["argv"]
+        self.assertIn("--replace", argv)
+        self.assertIn("--only-these-attachments", argv)
+
+    def test_merged_from_an_unstaged_draft_does_not_replace(self):
+        old = self.ready()
+        new = drafts.new("Test Person", "dns again", [str(self.page)], separate=True)["id"]
+        drafts.merge(new, [old], text="Merged message.", force=True)
+        drafts.write(new, text="Merged message.", **GOOD_CLAIMS)
+        drafts.verify(new)
+        drafts.stage([new])
+        self.assertNotIn("--replace", self.stager_calls()[-1]["argv"])
+
     def test_live_lock_refuses_and_dead_lock_is_reclaimed(self):
         did = self.ready()
         lk = drafts.root() / ".outbox.lock"

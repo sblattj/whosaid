@@ -734,7 +734,11 @@ def merge(into: str, froms: list[str], text: str | None = None, force: bool = Fa
         if sid and sid != o.get("sessionId") and all(c.get("sessionId") != sid for c in contributors):
             contributors.append({**so, "joined_at": now()})
     m["merged_from"] = list(dict.fromkeys([*(m.get("merged_from") or []), *froms]))
-    _event(m, "merged", by=me, merged_from=froms)
+    # A staged FROM left its text in the compose box and is dropped below: remember it so stage replaces.
+    staged_from = [s["id"] for s in srcs if s["status"] == "staged" or s.get("merged_from_staged")]
+    if staged_from:
+        m["merged_from_staged"] = True
+    _event(m, "merged", by=me, merged_from=froms, staged_from=staged_from)
     if was_verified and content_hash(m) == m["verified_hash"]:
         m["verified_hash"] = "merged"  # nothing changed in the bytes, but the merge must be verified again
     save(m)
@@ -1143,7 +1147,7 @@ def _stage_ws(ws) -> Path | None:
 
 
 def stage(ids: list[str] | None = None, all_ready: bool = False, dry_run: bool = False,
-          tab: str | None = None, ws: str | os.PathLike | None = None) -> dict:
+          tab: str | None = None, ws: str | os.PathLike | None = None, replace: bool = False) -> dict:
     if all_ready:
         ids = [m["id"] for m in all_drafts() if m["status"] in OPEN and state(m).startswith("verified")]
     ids = ids or []
@@ -1187,7 +1191,8 @@ def stage(ids: list[str] | None = None, all_ready: bool = False, dry_run: bool =
                                            "that message in the chat instead"})
                     continue
             sup = load(m["supersedes"]) if m.get("supersedes") else None
-            prev = m["status"] == "staged" or bool(sup and sup["status"] == "staged")
+            prev = (replace or m["status"] == "staged" or bool(sup and sup["status"] == "staged")
+                    or bool(m.get("merged_from_staged")))
             argv = ["--chat", m["to"], "--md", str(ddir(draft_id) / "draft.md")]
             for p in m.get("pages", []):
                 argv += ["--attach", p]
@@ -1424,6 +1429,8 @@ def build_parser() -> argparse.ArgumentParser:
     a.add_argument("--all", action="store_true")
     a.add_argument("--dry-run", action="store_true")
     a.add_argument("--tab")
+    a.add_argument("--replace", action="store_true",
+                   help="overwrite text already in the compose box and drop its old attachments")
     a.add_argument("--ws", help="workspace with the ingested chats (default WHOSAID_WORKSPACE)")
     a = sub.add_parser("edit-sent", help="load the corrected draft.md into Teams' Edit box on the sent message")
     a.add_argument("id")
@@ -1571,7 +1578,7 @@ def main(argv: list[str] | None = None) -> int:
         elif c == "stage":
             if not args.all and not args.id:
                 raise DraftsError("need an id or --all")
-            r = stage([args.id] if args.id else None, args.all, args.dry_run, args.tab, args.ws)
+            r = stage([args.id] if args.id else None, args.all, args.dry_run, args.tab, args.ws, args.replace)
             for did, ctx in r.get("context", {}).items():
                 print(f"{did}: {ctx['chat']} has {ctx['ingested']} ingested message(s) in 14 days"
                       + (f", newest {ctx['newest_at'][:16]}" if ctx["newest_at"] else ""))

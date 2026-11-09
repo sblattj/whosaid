@@ -814,7 +814,7 @@ DRAFTS
   whosaid drafts diff ID [--from N --to M] | html [--out PATH] [--all]
   whosaid drafts stakeholders [WS] --topic T [--topic T2] [--repo DIR --path P] [--exclude NAME] [--json]
   whosaid drafts stale-check [WS] [ID] [--json]
-  whosaid drafts stage ID|--all [--dry-run] [--tab TARGET] [--ws WS] | edit-sent ID [--dry-run] [--match-file F] [--allow-longer] | mark-sent ID | mark-sent --check [WS] | drop ID [--reason R]
+  whosaid drafts stage ID|--all [--dry-run] [--replace] [--tab TARGET] [--ws WS] | edit-sent ID [--dry-run] [--match-file F] [--allow-longer] | mark-sent ID | mark-sent --check [WS] | drop ID [--reason R]
   whosaid drafts merge INTO FROM [FROM ...] [--text-file F] [--dry-run] [--force]
   An offline outbox for chat drafts an agent writes for you, one folder per draft in
   ~/.drafts/<id>/ (WHOSAID_DRAFTS_DIR overrides): draft.md, claims.json, draft.json.

@@ -674,6 +674,8 @@ class EndToEnd(unittest.TestCase):
         r = self.run_stager(f)
         self.assertEqual(r.returncode, 1)
         self.assertIn("already holds", r.stderr)
+        self.assertIn("whosaid drafts stage", r.stderr)
+        self.assertIn("--replace", r.stderr)
         self.assertNotIn("paste", f.ops)
         self.assertEqual(f.compose, "half-written reply")
         f.never_sent(self)

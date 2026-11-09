@@ -727,7 +727,10 @@ async def stage(a) -> dict:
             step("clearing the compose box")
             existing = await c.ev(op("compose_len", JS_LEN))
             if existing > 0 and not a.replace:
-                raise StagerError(f"compose box already holds {existing} chars; rerun with --replace to overwrite")
+                md = getattr(a, "md", None) or ""
+                did = (os.path.basename(os.path.dirname(md)) if os.path.basename(md) == "draft.md" else "") or "<id>"
+                raise StagerError(f"compose box already holds {existing} chars; rerun with "
+                                  f"`whosaid drafts stage {did} --replace` to overwrite")
             await clear_compose(c)
             if await c.ev(op("compose_len", JS_LEN)) > 0:
                 raise StagerError("couldn't clear the compose box; clear it by hand and rerun")
