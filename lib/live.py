@@ -403,14 +403,18 @@ def resolve_model(model: str, download=None, sleep=time.sleep) -> str:
     raise RuntimeError("unreachable")
 
 
-def whisper_transcriber(model: str):
+def whisper_transcriber(model: str, words: bool = False):
+    """words=True asks Whisper for word times so a speaker change can split a segment
+    in two (--split-words / WHOSAID_LIVE_SPLIT_WORDS=1). Off by default: it costs decode
+    time and switches on hallucination_silence_threshold, which changes live output.
+    Without it a segment holding a change is kept whole and flagged mixed."""
     import mlx_whisper
     path = resolve_model(model)
 
     def run(samples) -> list[dict]:
         r = mlx_whisper.transcribe(samples, path_or_hf_repo=path, language="en", verbose=None,
                                    condition_on_previous_text=False, hallucination_silence_threshold=2.0,
-                                   word_timestamps=True)  # word times: a speaker change can split a segment
+                                   word_timestamps=words)
         return r.get("segments") or []
     return run
 
@@ -835,7 +839,7 @@ def cmd_run(a: argparse.Namespace) -> int:
     signal.signal(signal.SIGINT, on_signal)
     signal.signal(signal.SIGTERM, on_signal)
 
-    transcribe = whisper_transcriber(a.model)
+    transcribe = whisper_transcriber(a.model, words=a.split_words)
     import live_voices
     deadline = time.monotonic() + a.max_hours * 3600
     done: set[Path] = set()
@@ -914,6 +918,10 @@ def main(argv: list[str] | None = None) -> int:
         q.add_argument("--into", default=str(DEFAULT_INTO), help="recordings folder (default ~/Recordings)")
     r.add_argument("--model", default=os.environ.get("WHOSAID_LIVE_MODEL") or DEFAULT_MODEL)
     r.add_argument("--chunk-seconds", type=float, default=20.0)
+    r.add_argument("--split-words", action="store_true",
+                   default=os.environ.get("WHOSAID_LIVE_SPLIT_WORDS") == "1",
+                   help="ask Whisper for word times and split a segment at a speaker change "
+                        "(slower; off: the segment is flagged mixed)")
     r.add_argument("--capture", help="follow this recorder temp folder instead of finding it")
     r.add_argument("--once", action="store_true", help="exit after one call")
     r.add_argument("--max-hours", type=float, default=12.0)

@@ -762,7 +762,7 @@ AUTORECORD
   <into>/.autorecord/state.json (this version or later): reinstall an older one.
 
 LIVE
-  whosaid live [run] [--into DIR] [--chunk-seconds N] [--once] [--capture DIR] [--model M]
+  whosaid live [run] [--into DIR] [--chunk-seconds N] [--once] [--capture DIR] [--model M] [--split-words]
   whosaid live show  [--into DIR] [--minutes N]
   whosaid live status [--into DIR] [--json]
   whosaid live follow [--into DIR] [--speaker REGEX ...] [--exclude-self] [--named-only]
@@ -785,7 +785,8 @@ LIVE
   case-insensitive); lines no known voice matched are kept and marked
   "? (v9, nearest: B 0.71)" unless --named-only, and a voice that keeps sounding like a
   known one is noted once ("# v9 may be B (0.71)"). A line with a speaker change inside
-  is split, or marked "(mixed, change at HH:MM:SS)". When the call ends (or nothing is
+  is marked "(mixed, change at HH:MM:SS)", or split in two when run had --split-words
+  (WHOSAID_LIVE_SPLIT_WORDS=1: word times, slower). When the call ends (or nothing is
   written for --stale-seconds, default 900) it prints "ended <session>" and waits for the
   next call (--once: exits 0). --format jsonl: one object per line (event turn|hint|
   renamed|ended, with a cursor whosaid_live(since=) takes).
