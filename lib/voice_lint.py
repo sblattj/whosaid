@@ -12,7 +12,8 @@ A profile is a JSON object; every rule is off unless the profile sets it:
   groups          {rule: label}  optional labels so callers can score rule groups separately
 
 DEFAULT_PROFILE is what `whosaid drafts verify` uses (whosaid.toml [drafts.voice] merges over it).
-Group B is the message shape (one paragraph, no greeting opener (a "heads up" opener counts), no "attached page" / "Thanks!"
+Group B is the message shape (one paragraph, no greeting opener (an implied opener like "heads up",
+"can you review", "FYI", "quick question" or "just wanted to" counts), no "attached page" / "Thanks!"
 closer); group A is advisory (length, "want me to" asks, the em dash). banned_words is empty.
 
 Links are reduced to their labels and bare URLs dropped before counting, so a long
@@ -25,9 +26,16 @@ import argparse, json, re, sys
 
 RULES = ("max_words", "max_paragraphs", "greeting", "closers", "ask_phrases", "banned_words", "banned_chars")
 
+# Openers the message already implies: the message itself is the heads up, the ask to review,
+# the FYI. They hit the greeting rule at the start of the message, also right after a leading
+# addressee ("Sam, FYI ...", "@Sam can you review ..."), so the first sentence is covered too.
+IMPLIED_OPENERS = (r"just\s+a\s+heads[\s-]*up\b|heads[\s-]*up\b|(?:can|could)\s+you\s+(?:review|take\s+a\s+look)\b"
+                   r"|please\s+review\b|fyi\b|quick\s+question\b|just\s+wanted\s+to\b")
+_ADDRESSEE = r"(?:@\w+(?:\s+(?-i:[A-Z])\w*)?[,:]?\s+|(?-i:[A-Z])\w*(?:\s+(?-i:[A-Z])\w*)?[,:]\s+)?"
+
 DEFAULT_PROFILE = {
     "max_paragraphs": 1,
-    "greeting": r"(hi|hey|hello)\s+(all|team|everyone|[A-Z]\w+)|heads[\s-]*up\b",
+    "greeting": r"(hi|hey|hello)\s+(all|team|everyone|[A-Z]\w+)|" + _ADDRESSEE + r"(?:" + IMPLIED_OPENERS + r")",
     "closers": ["attached page", "thanks!"],
     "max_words": 47,
     "ask_phrases": ["want me to", "do you want me to", "would you like me to"],

@@ -56,6 +56,45 @@ class VoiceLint(unittest.TestCase):
         for t in ("the build is red, just a heads up", "headsets up front are fine"):
             self.assertNotIn("greeting", V.lint(t, V.DEFAULT_PROFILE)["hits"], t)
 
+    def _greets(self, t):
+        return "greeting" in V.lint(t, V.DEFAULT_PROFILE)["hits"]
+
+    def test_flags_can_you_review_opener(self):
+        self.assertTrue(self._greets("can you review #12 before standup"))
+
+    def test_flags_could_you_review_opener(self):
+        self.assertTrue(self._greets("Could you review the retry change today"))
+
+    def test_flags_please_review_opener(self):
+        self.assertTrue(self._greets("Please review the retry change"))
+
+    def test_flags_could_you_take_a_look_opener(self):
+        self.assertTrue(self._greets("could you take a look at the flaky test"))
+
+    def test_flags_can_you_take_a_look_opener(self):
+        self.assertTrue(self._greets("Can you take a look at the flaky test"))
+
+    def test_flags_fyi_opener(self):
+        self.assertTrue(self._greets("FYI: the build is red on main"))
+
+    def test_flags_quick_question_opener(self):
+        self.assertTrue(self._greets("Quick question, where do ops tickets go"))
+
+    def test_flags_just_wanted_to_opener(self):
+        self.assertTrue(self._greets("just wanted to say the fix is in"))
+
+    def test_flags_just_a_heads_up_opener(self):
+        self.assertTrue(self._greets("Just a heads up, the build is red"))
+
+    def test_flags_implied_opener_after_an_addressee(self):
+        for t in ("Sam, FYI the build is red", "@Sam can you review #12", "Sam Lee: quick question, where do tickets go"):
+            self.assertTrue(self._greets(t), t)
+
+    def test_review_mid_message_is_not_an_opener(self):
+        for t in ("the retry change is up, can you review it before standup",
+                  "the build is red, fyi", "ok so the review is done", "reviewing it now, quick question later"):
+            self.assertFalse(self._greets(t), t)
+
     def test_cli_fail_over_and_unknown_key(self):
         d = tempfile.mkdtemp()
         prof, msg = os.path.join(d, "p.json"), os.path.join(d, "m.txt")
