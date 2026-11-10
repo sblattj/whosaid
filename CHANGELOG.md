@@ -6,6 +6,13 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ## [Unreleased]
 
+### Added
+- `whosaid drafts unstage ID [--reason R]`: a staged draft goes back to verified (an `unstaged` history event with the reason) after its compose box was cleared by hand, so the next stage starts fresh.
+- Staging into the Microsoft Teams desktop app, now the default for `drafts stage`, `drafts edit-sent` and `whosaid_draft_stage`. The stager attaches to the app's WebView2 DevTools port (9333, `WHOSAID_TEAMS_APP_CDP_PORT`), picks the window that shows the chat rail and brings Teams to the front. `--web` (MCP `web=true`, or `WHOSAID_TEAMS_APP=web`) keeps the Teams web tab on 9222. `whosaid drafts teams-app [--launch]` checks the port, or quits and reopens Teams with it.
+
+### Fixed
+- Stager title check: the desktop window title is `Chat | NAME` with no `| Microsoft Teams`; it matched nothing before.
+
 ## [1.37.3] - 2026-11-10
 
 ### Changed
