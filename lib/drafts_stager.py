@@ -12,7 +12,9 @@ Usage (the contract in lib/drafts.py):
   drafts_stager.py --chat NAME --md FILE [--attach PAGE ...] [--mention NAME ...]
                    [--replace --only-these-attachments] [--new-chat] [--tab ID]
                    [--cdp-port N] [--bypass-outbox]
---cdp-port defaults to $WHOSAID_CDP_PORT, else 9222. Refuses (exit 2) unless $TEAMS_OUTBOX_LOCK
+Port: --cdp-port N, else $WHOSAID_CDP_PORT, else the Teams desktop app's port ($WHOSAID_TEAMS_CDP_PORT,
+default 9333) when it answers as Edg/ (app mode: picks the chat window, never opens a tab), else 9222
+(browser mode). Refuses (exit 2) unless $TEAMS_OUTBOX_LOCK
 names an existing path (`drafts stage` sets it), unless --bypass-outbox.
 --only-these-attachments (needs --replace, else exit 2): after clearing the text, every attachment chip
 already in the COMPOSE ROOT is removed (its remove control, a real click, hit-tested to be inside the
@@ -89,7 +91,7 @@ Wave 3 ops (--edit-sent):
   edit_select  {}                 null, selects the edit box contents with a range
   edit_paste   {html, plain}      {"len": int, "links": int} after a synthetic paste into the edit box
 (caret_end also means: the compose box has focus with the caret at its end.)
-Other CDP calls: Target.getTargets, setDiscoverTargets, createTarget, attachToTarget,
+Other CDP calls: Target.getTargets, setDiscoverTargets, createTarget, attachToTarget, detachFromTarget,
 activateTarget, Page.enable/bringToFront/setInterceptFileChooserDialog, DOM.enable/getDocument/
 querySelector/setFileInputFiles, Input.dispatchMouseEvent/dispatchKeyEvent/insertText.
 """
@@ -461,15 +463,44 @@ JS_EDIT_PASTE = (_EDITS + "const e=EE();e.focus();const dt=new DataTransfer();dt
                  "bubbles:true,cancelable:true}));return {len:e.innerText.trim().length,links:e.querySelectorAll('a').length}")
 
 
-async def find_tab(c: CDP, want: str | None) -> str:
+async def has_search_box(c: CDP, tid: str) -> bool:
+    """Attach to a candidate, look for the stager's search box, detach again."""
+    sid = (await c.send("Target.attachToTarget", {"targetId": tid, "flatten": True}))["sessionId"]
+    try:
+        r = await c.send("Runtime.evaluate", {"expression": op("search_box", JS_SEARCH_BOX), "awaitPromise": True,
+                                              "returnByValue": True}, sid)
+        return bool((r.get("result") or {}).get("value"))
+    except StagerError:
+        return False
+    finally:
+        try:
+            await c.send("Target.detachFromTarget", {"sessionId": sid})
+        except StagerError:
+            pass
+
+
+async def find_tab(c: CDP, want: str | None, chat: str | None = None, app: bool = False) -> str:
+    """--tab wins. App mode (the Teams desktop app's own port): pick the chat window among the Teams pages,
+    never open a tab. Browser mode: the first Teams page, else a new tab."""
     tabs = (await c.send("Target.getTargets")).get("targetInfos", [])
     if want:
         if not any(t["targetId"] == want for t in tabs):
             raise StagerError(f"no tab {want}")
         return want
-    for t in tabs:
-        if t.get("type") == "page" and IS_TEAMS.search(t.get("url", "")):
-            return t["targetId"]
+    pages = [t for t in tabs if t.get("type") == "page" and IS_TEAMS.search(t.get("url", ""))]
+    if app:
+        chats = [t for t in pages if str(t.get("title", "")).startswith("Chat |")]
+        named = [t for t in chats if chat and chat.lower() in str(t.get("title", "")).lower()]
+        if named:
+            return named[0]["targetId"]
+        if chats:
+            return chats[0]["targetId"]
+        for t in pages:
+            if await has_search_box(c, t["targetId"]):
+                return t["targetId"]
+        raise StagerError("Teams app is up but no chat window found", 1)
+    if pages:
+        return pages[0]["targetId"]
     # Vivaldi wedges a tab attached in its first milliseconds: wait for its first
     # Target.targetInfoChanged (capped at 2s) before attaching.
     await c.send("Target.setDiscoverTargets", {"discover": True})
@@ -747,6 +778,7 @@ def strip_mention_literals(md: str, names: list[str]) -> str:
 
 
 async def stage(a) -> dict:
+    app = resolve_port(a)
     plain = strip_mention_literals(open(a.md, encoding="utf-8").read(), a.mention)
     html = md_to_html(plain)
     try:
@@ -763,7 +795,7 @@ async def stage(a) -> dict:
         c = CDP(ws)
         try:
             step("finding the Teams tab")
-            tid = await find_tab(c, a.tab)
+            tid = await find_tab(c, a.tab, a.chat, app)
             c.session = (await c.send("Target.attachToTarget", {"targetId": tid, "flatten": True}))["sessionId"]
             step("bringing the tab to the front")  # a background tab (document.hidden) ignores rail clicks
             await bring_to_front(c, tid)
@@ -997,13 +1029,45 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     p.add_argument("--edit-sent", action="store_true", help="edit your sent message matching --match-file")
     p.add_argument("--match-file", help="text of the sent message to edit (--edit-sent)")
     a = p.parse_args(argv)  # argparse exits 2 on usage errors
-    if a.cdp_port is None:  # only read the env var when the flag is absent
-        raw = os.environ.get("WHOSAID_CDP_PORT") or "9222"
+    a.app_port = None
+    if a.cdp_port is None and os.environ.get("WHOSAID_CDP_PORT"):  # only read the env var when the flag is absent
+        raw = os.environ["WHOSAID_CDP_PORT"]
         try:
             a.cdp_port = int(raw)
         except ValueError:
             raise StagerError(f"WHOSAID_CDP_PORT is not a port number: {raw!r}", 2)
+    if a.cdp_port is None:  # neither set: the app port is probed in resolve_port()
+        raw = os.environ.get("WHOSAID_TEAMS_CDP_PORT") or "9333"
+        try:
+            a.app_port = int(raw)
+        except ValueError:
+            raise StagerError(f"WHOSAID_TEAMS_CDP_PORT is not a port number: {raw!r}", 2)
     return a
+
+
+def probe_browser(port: int, timeout: float = 1.0) -> str | None:
+    """The "Browser" string of /json/version on port, or None when nothing answers."""
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/json/version", timeout=timeout) as r:
+            return str(json.load(r).get("Browser", ""))
+    except Exception:
+        return None
+
+
+def resolve_port(a) -> bool:
+    """Settle a.cdp_port; True when it is the Teams desktop app's port (app mode). An explicit port
+    (flag or WHOSAID_CDP_PORT) is never probed and means browser mode."""
+    if a.cdp_port is not None:
+        return False
+    b = probe_browser(a.app_port)
+    if b is not None and b.startswith("Edg/"):
+        a.cdp_port = a.app_port
+        return True
+    if b is not None:
+        print(f"port {a.app_port} is held by {b or 'an unknown program'}, not the Teams app; using the browser port",
+              file=sys.stderr)
+    a.cdp_port = 9222
+    return False
 
 
 def check_args(a: argparse.Namespace, env=os.environ) -> None:

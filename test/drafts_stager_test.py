@@ -98,10 +98,13 @@ class Args(unittest.TestCase):
         return ds.parse_args(["--chat", "Ann Lee", "--md", self.md, *extra])
 
     def test_defaults_and_port_env(self):
-        with patch.dict(os.environ, {"WHOSAID_CDP_PORT": ""}):
-            self.assertEqual(ds.parse_args(["--chat", "a", "--md", "b"]).cdp_port, 9222)
-        with patch.dict(os.environ, {"WHOSAID_CDP_PORT": "9333"}):
-            self.assertEqual(ds.parse_args(["--chat", "a", "--md", "b"]).cdp_port, 9333)
+        with patch.dict(os.environ, {"WHOSAID_CDP_PORT": "", "WHOSAID_TEAMS_CDP_PORT": ""}):
+            a = ds.parse_args(["--chat", "a", "--md", "b"])
+            self.assertEqual((a.cdp_port, a.app_port), (None, 9333))  # settled later by resolve_port
+        with patch.dict(os.environ, {"WHOSAID_CDP_PORT": "9444"}):
+            self.assertEqual(ds.parse_args(["--chat", "a", "--md", "b"]).cdp_port, 9444)
+        with patch.dict(os.environ, {"WHOSAID_CDP_PORT": "", "WHOSAID_TEAMS_CDP_PORT": "9555"}):
+            self.assertEqual(ds.parse_args(["--chat", "a", "--md", "b"]).app_port, 9555)
 
     def test_outbox_gate(self):
         with self.assertRaises(ds.StagerError) as e:
@@ -214,6 +217,15 @@ class Args(unittest.TestCase):
         self.assertIn("WHOSAID_CDP_PORT", r.stderr)
         self.assertNotIn("Traceback", r.stderr)
 
+    def test_bad_app_port_env_is_exit_2_not_a_traceback(self):
+        env = {k: v for k, v in os.environ.items() if k not in ("TEAMS_OUTBOX_LOCK", "WHOSAID_CDP_PORT")}
+        env["WHOSAID_TEAMS_CDP_PORT"] = "not-a-port"
+        r = subprocess.run([sys.executable, SCRIPT, "--chat", "Ann Lee", "--md", self.md, "--bypass-outbox"],
+                           capture_output=True, text=True, env=env, timeout=30)
+        self.assertEqual(r.returncode, 2, r.stderr)
+        self.assertIn("WHOSAID_TEAMS_CDP_PORT", r.stderr)
+        self.assertNotIn("Traceback", r.stderr)
+
     def test_non_utf8_md_via_cli_is_exit_2_not_a_traceback(self):
         Path(self.md).write_bytes(b"\xff\xfe bad")
         env = {k: v for k, v in os.environ.items() if k != "TEAMS_OUTBOX_LOCK"}
@@ -252,8 +264,9 @@ class FakeTeams:
 
     def __init__(self, rail=(), search=(), compose="", teams_tab=True, old_chips=(), people=(), mention_dir=(),
                  history=(), no_root=False, remover_noop=False, drop_uploads=False, focus_miss=False,
-                 fail_set_files=False, root_flicker=0, hidden=False, own=(), no_edit_item=False, titles=None, mention_lazy=False):
+                 fail_set_files=False, root_flicker=0, hidden=False, own=(), no_edit_item=False, titles=None, mention_lazy=False, targets=None, browser=None):
         from websockets.sync.server import serve
+        self.targets, self.browser = targets, browser  # targets: dicts of id/title/url; browser: /json/version Browser
         self.titles = dict(titles or {})  # rail name -> window title, when it isn't "Chat | <name> | ..."
         self.rail, self.search_dir, self.compose = list(rail), list(search), compose
         self.people_dir, self.mention_dir = list(people), list(mention_dir)
@@ -300,7 +313,10 @@ class FakeTeams:
 
         class H(http.server.BaseHTTPRequestHandler):
             def do_GET(self):
-                body = json.dumps({"webSocketDebuggerUrl": f"ws://127.0.0.1:{fake.ws_port}/devtools/browser/x"}).encode()
+                doc = {"webSocketDebuggerUrl": f"ws://127.0.0.1:{fake.ws_port}/devtools/browser/x"}
+                if fake.browser:
+                    doc["Browser"] = fake.browser
+                body = json.dumps(doc).encode()
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
                 self.end_headers()
@@ -493,6 +509,8 @@ class FakeTeams:
             self.pasted_html = args["html"]
             return {"len": len(self.compose.strip()), "links": args["html"].count("<a ")}
         if name == "search_box":
+            if self.cur_session == "S0":  # the empty host page has no search box
+                return None
             return {"x": self.SEARCH_XY[0], "y": self.SEARCH_XY[1]}
         if name == "search_find":
             opts = self.options()
@@ -522,19 +540,27 @@ class FakeTeams:
 
     def serve_conn(self, ws):
         self.pending_chooser = False
+        self.cur_session = None
         for raw in ws:
             msg = json.loads(raw)
             method, params = msg["method"], msg.get("params", {})
             self.calls.append((method, params))
+            self.cur_session = msg.get("sessionId")
             result: dict = {}
             if method == "Target.getTargets":
-                result = {"targetInfos": [{"targetId": "T1", "type": "page",
-                                           "url": "https://teams.cloud.microsoft/v2/" if self.teams_tab else "https://example.com/"}]}
+                if self.targets is not None:
+                    result = {"targetInfos": [{"targetId": t["id"], "type": "page", "title": t["title"], "url": t["url"]}
+                                              for t in self.targets]}
+                else:
+                    result = {"targetInfos": [{"targetId": "T1", "type": "page",
+                                               "url": "https://teams.cloud.microsoft/v2/" if self.teams_tab else "https://example.com/"}]}
             elif method == "Target.createTarget":
                 result = {"targetId": "T1"}
                 self.teams_tab = True
             elif method == "Target.attachToTarget":
-                result = {"sessionId": "S1"}
+                result = {"sessionId": "S" + params["targetId"][1:]}
+            elif method == "Target.detachFromTarget":
+                pass
             elif method == "Runtime.evaluate":
                 result = {"result": {"type": "object", "value": self.evaluate(params["expression"])}}
             elif method in ("Target.activateTarget", "Page.bringToFront"):
@@ -776,6 +802,123 @@ class EndToEnd(unittest.TestCase):
         r = self.run_stager(f, "--bypass-outbox", lock=False)
         self.assertEqual(r.returncode, 0, r.stderr)
         f.never_sent(self)
+
+    # ---- Teams desktop app (#196): port order and chat-window pick ----
+    T0 = {"id": "T0", "title": "Microsoft Teams", "url": "https://teams.microsoft.com/v2/"}
+    T1 = {"id": "T1", "title": "Chat | Microsoft Teams", "url": "https://teams.microsoft.com/v2/"}
+
+    def run_port(self, *, app_fake=None, app_port=None, browser_fake=None, env=None, extra=()):
+        """Run with no --cdp-port: the Teams app port and/or the browser port point at fakes.
+        The browser default (9222) is swapped for the browser fake by a thin wrapper around resolve_port."""
+        e = {k: v for k, v in os.environ.items() if k not in ("TEAMS_OUTBOX_LOCK", "WHOSAID_CDP_PORT",
+                                                              "WHOSAID_TEAMS_CDP_PORT")}
+        e["WHOSAID_STAGER_TIME_SCALE"] = "0.01"
+        e["TEAMS_OUTBOX_LOCK"] = str(self.lock)
+        if app_fake is not None:
+            e["WHOSAID_TEAMS_CDP_PORT"] = str(app_fake.port)
+        elif app_port is not None:
+            e["WHOSAID_TEAMS_CDP_PORT"] = str(app_port)
+        e.update(env or {})
+        bp = browser_fake.port if browser_fake else 0
+        code = ("import sys,drafts_stager as d\n"
+                "o=d.resolve_port\n"
+                "def w(a):\n"
+                "    r=o(a)\n"
+                f"    if a.cdp_port==9222: a.cdp_port={bp}\n"
+                "    return r\n"
+                "d.resolve_port=w\n"
+                "sys.exit(d.main(sys.argv[1:]))")
+        return subprocess.run([sys.executable, "-c", code, "--chat", "Ann Lee", "--md", str(self.md), *extra],
+                              capture_output=True, text=True, env=e, timeout=40, cwd=str(Path(SCRIPT).parent))
+
+    def test_app_mode_skips_empty_host_page(self):
+        f = self.fake(rail=["Ann Lee"], targets=[self.T0, self.T1], browser="Edg/150.0")
+        r = self.run_port(app_fake=f)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn(("Target.activateTarget", {"targetId": "T1"}), f.calls)
+        self.assertNotIn(("Target.activateTarget", {"targetId": "T0"}), f.calls)
+        self.assertNotIn("Target.createTarget", [m for m, _ in f.calls])
+        f.never_sent(self)
+
+    def test_app_mode_prefers_chat_titled_for_the_requested_name(self):
+        other = {"id": "T2", "title": "Chat | Zed Q | Microsoft Teams", "url": self.T1["url"]}
+        mine = {"id": "T3", "title": "Chat | Ann Lee | Microsoft Teams", "url": self.T1["url"]}
+        f = self.fake(rail=["Ann Lee"], targets=[self.T0, other, mine], browser="Edg/150.0")
+        r = self.run_port(app_fake=f)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn(("Target.activateTarget", {"targetId": "T3"}), f.calls)
+
+    def test_app_mode_probes_untitled_candidates_for_the_search_box(self):
+        win = {"id": "T1", "title": "Microsoft Teams", "url": self.T1["url"]}  # no "Chat |" prefix
+        f = self.fake(rail=["Ann Lee"], targets=[self.T0, win], browser="Edg/150.0")
+        r = self.run_port(app_fake=f)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn(("Target.activateTarget", {"targetId": "T1"}), f.calls)
+        detached = [m for m, _ in f.calls if m == "Target.detachFromTarget"]
+        self.assertGreaterEqual(len(detached), 2, "probe sessions were left attached")
+
+    def test_app_mode_with_only_the_host_page_is_exit_1_and_opens_nothing(self):
+        f = self.fake(rail=["Ann Lee"], targets=[self.T0], browser="Edg/150.0")
+        r = self.run_port(app_fake=f)
+        self.assertEqual(r.returncode, 1, r.stderr)
+        self.assertIn("Teams app is up but no chat window found", r.stderr)
+        self.assertNotIn("Target.createTarget", [m for m, _ in f.calls])
+
+    def test_browser_mode_without_a_teams_page_still_opens_one(self):
+        f = self.fake(rail=["Ann Lee"], teams_tab=False)
+        r = self.run_stager(f)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("Target.createTarget", [m for m, _ in f.calls])
+
+    def test_browser_mode_with_edge_takes_the_first_teams_page_unchanged(self):
+        # an Edg/ browser reached through --cdp-port is NOT app mode: first page wins, no chat-window pick
+        f = self.fake(rail=["Ann Lee"], targets=[self.T0, self.T1], browser="Edg/150.0")
+        r = self.run_stager(f)
+        self.assertNotIn("Teams app is up", r.stderr)
+        self.assertIn(("Target.activateTarget", {"targetId": "T0"}), f.calls)
+        self.assertNotIn("Target.detachFromTarget", [m for m, _ in f.calls])
+
+    def test_port_table_app_port_answers_as_edge(self):
+        app = self.fake(rail=["Ann Lee"], browser="Edg/150.0")
+        br = self.fake(rail=["Ann Lee"])
+        r = self.run_port(app_fake=app, browser_fake=br)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertTrue(app.calls and not br.calls, "app port first")
+
+    def test_port_table_app_port_answers_as_non_edge(self):
+        app = self.fake(rail=["Ann Lee"], browser="Chrome/150.0")
+        br = self.fake(rail=["Ann Lee"])
+        r = self.run_port(app_fake=app, browser_fake=br)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn(f"port {app.port} is held by Chrome/150.0, not the Teams app; using the browser port", r.stderr)
+        self.assertTrue(br.calls and not app.calls, "browser port used")
+
+    def test_port_table_app_port_down(self):
+        app = self.fake(rail=["Ann Lee"], browser="Edg/150.0")
+        dead = app.port
+        app.close()
+        br = self.fake(rail=["Ann Lee"])
+        r = self.run_port(app_port=dead, browser_fake=br)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertTrue(br.calls)
+        self.assertNotIn("is held by", r.stderr)
+
+    def test_port_table_explicit_flag_or_env_is_never_probed(self):
+        # run the real script (no wrapper) with an Edg/ app fake on the app port: it must stay untouched
+        app = self.fake(rail=["Ann Lee"], browser="Edg/150.0", targets=[self.T0])
+        for how in ("flag", "env"):
+            br = self.fake(rail=["Ann Lee"], targets=[self.T1])
+            e = {k: v for k, v in os.environ.items() if k not in ("WHOSAID_CDP_PORT",)}
+            e.update({"WHOSAID_STAGER_TIME_SCALE": "0.01", "TEAMS_OUTBOX_LOCK": str(self.lock),
+                      "WHOSAID_TEAMS_CDP_PORT": str(app.port)})
+            args = ["--cdp-port", str(br.port)] if how == "flag" else []
+            if how == "env":
+                e["WHOSAID_CDP_PORT"] = str(br.port)
+            r = subprocess.run([sys.executable, SCRIPT, "--chat", "Ann Lee", "--md", str(self.md), *args],
+                               capture_output=True, text=True, env=e, timeout=40)
+            self.assertEqual(r.returncode, 0, f"{how}: {r.stderr}")
+            self.assertTrue(br.calls, f"{how}: the explicit port was not used")
+            self.assertFalse(app.calls, f"{how}: the app port was used")
 
     def test_no_browser(self):
         f = self.fake(rail=["Ann Lee"])

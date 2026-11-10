@@ -155,7 +155,7 @@ the models as usual.
 open -a "Google Chrome" --args --remote-debugging-port=9222
 
 whosaid record --browser                      # port 9222, or $WHOSAID_CDP_PORT
-whosaid record --browser --cdp-port 9333 --target teams.microsoft.com
+whosaid record --browser --cdp-port 9222 --target teams.microsoft.com
 ```
 
 - Only that tab is recorded. Left channel is your mic, right channel is the meeting audio. No system sounds, no notifications.
@@ -348,14 +348,36 @@ whosaid drafts html                             # review page of every open draf
   live session needs `--force`, like `drop`. `--dry-run` prints the result and clashes and writes
   nothing. MCP: `whosaid_draft_merge(into, from, text?, force?, dry_run?)`.
 - **The built-in stager.** When `WHOSAID_DRAFTS_STAGER` is unset, `stage` uses `lib/drafts_stager.py`.
-  It needs a Chromium browser started with `--remote-debugging-port` (the port comes from
-  `--cdp-port` / `WHOSAID_CDP_PORT`, default 9222) with Teams web signed in. It opens the chat by
+  It needs either the Teams desktop app or a Chromium browser started with `--remote-debugging-port`
+  with Teams web signed in (port order below). It opens the chat by
   exact name (left rail, else search; `--new-chat` starts one via the To picker), pastes the draft
   as rich text, attaches the pages, and with `--replace` clears the box (`--only-these-attachments`
   also removes the attachments already there). Each `--mention NAME` becomes a real @mention at the
   start of the message, in order, before the body; a literal `@NAME` in the text is dropped so it is
   not doubled. It never sends (no Enter, no click on Send), prints a JSON line and leaves the chat
   focused. Set `WHOSAID_DRAFTS_STAGER` to your own command to stage into another chat app.
+- **Staging into the Teams desktop app.** The app is a WebView2 (Edge) host, and it only speaks CDP
+  when it is started with a debugging port. `whosaid teams launch [--port N] [--check] [--force]
+  [--wait S]` quits Teams and relaunches it with `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=N`
+  (default 9333), and refuses while the mic is open (you may be in a call); `--check` only reports
+  whether the port answers, `--force` skips the mic check, `--wait S` is how long to wait for the port.
+  The same by hand:
+
+  ```bash
+  osascript -e 'quit app "Microsoft Teams"'
+  open -a "Microsoft Teams" --env WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS="--remote-debugging-port=9333"
+  ```
+
+  MCP: `whosaid_teams_launch` (params `port`, `check_only`, `force`). Two ports, so the app and your
+  everyday browser can both be up: `WHOSAID_TEAMS_CDP_PORT` is the app's (default 9333) and
+  `WHOSAID_CDP_PORT` is the browser's (default 9222). The stager picks the port in this order:
+  `--cdp-port N`, else `WHOSAID_CDP_PORT` (either one is used as is, browser mode, nothing probed);
+  else the app port if it answers as `Edg/` (app mode); else 9222. If the app port answers as
+  something else (a browser you started there), it prints `port N is held by <Browser>, not the Teams
+  app; using the browser port` and uses 9222. In app mode the stager picks the chat window among the
+  Teams pages (title `Chat | <name>`, else any `Chat |` window, else the page that has the search box)
+  and never opens a tab; with no chat window it exits 1 "Teams app is up but no chat window found".
+  In browser mode it takes the first Teams page, else opens one, as before.
 - **One owner at a time.** Changing a draft another live session owns is refused without
   `--force` (or `force=true` over MCP): ask that session instead. A draft whose session is gone
   is adopted by whoever changes it next.
