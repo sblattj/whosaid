@@ -103,6 +103,7 @@ def main() -> None:
         "whosaid_draft_stage",
         "whosaid_teams_live",
         "whosaid_teams_calendar",
+        "whosaid_teams_launch",
     } | workspace_tools
 
     # --- tool-name set + prefix ---
@@ -389,6 +390,21 @@ def main() -> None:
     check(all(x in d_tc for x in ("no network call", "not the whole calendar", "not free", "UTC", "Read-only"))
           and "\u2014" not in d_tc, "teams_calendar desc: offline, partial window, UTC, read-only, no em dash")
     check("whosaid_teams_calendar" in mcp_server.SERVER_INSTRUCTIONS, "instructions name whosaid_teams_calendar")
+
+    tla = dumps["whosaid_teams_launch"]
+    tla_ann = tla.get("annotations") or {}
+    check(tla_ann.get("readOnlyHint") is False and tla_ann.get("destructiveHint") is False
+          and tla_ann.get("openWorldHint") is False, f"teams_launch annotations: {tla_ann}")
+    check(not (tla["inputSchema"].get("required") or []), "teams_launch: every param optional")
+    check(set(tla["inputSchema"]["properties"]) == {"port", "check_only", "force"},
+          f"teams_launch params: {sorted(tla['inputSchema']['properties'])}")
+    d_tla = by_name["whosaid_teams_launch"].description or ""
+    check(all(x in d_tla for x in ("9333", "WHOSAID_TEAMS_CDP_PORT", "check_only", "mic", "force")) and "\u2014" not in d_tla,
+          "teams_launch desc: port, check_only, mic gate, force, no em dash")
+    check("whosaid_teams_launch" in mcp_server.SERVER_INSTRUCTIONS, "instructions name whosaid_teams_launch")
+    d_stage = by_name["whosaid_draft_stage"].description or ""
+    check("WHOSAID_TEAMS_CDP_PORT, default 9333" in d_stage and "default 9222" in d_stage
+          and "explicit port skips the probe" in d_stage, "draft_stage desc: Teams app port 9333 first, then 9222")
 
     # --- voice groups: list read-only, naming writes ---
     vg = dumps["whosaid_voice_groups"]

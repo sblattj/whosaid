@@ -215,7 +215,7 @@ Commitment tracking: kind distinguishes explicit promises, requests, standing di
 
 Not exposed here: `enroll` and `record` are interactive microphone operations that need a live terminal. Run them from the `whosaid` CLI. The first transcribe downloads ~1.5 GB of models; run whosaid_doctor to check readiness. Full flag/env/long-audio reference: read the whosaid://guide resource.
 
-Meeting workspace (search across many transcripts): point the server at a workspace directory by launching it with WHOSAID_WORKSPACE=<dir>, or pass `workspace` on each call; with neither, the workspace of the only installed `whosaid watch` agent is used (the response says so in workspace_source); there is no cwd fallback. Flow: whosaid_search (turn-level hits with meeting folder + timestamp) -> whosaid_context (the verbatim minute around one hit; do not read whole transcripts) -> whosaid_items / whosaid_item / whosaid_person for action items and per-person commitments; whosaid_worklist for one person's ranked P1/P2/P3 worklist across both corpora. whosaid_meetings, whosaid_prs and whosaid_speakers list what the graph knows; whosaid_workspace_status says whether the index exists. The index (_search.db, _WIKI.md) is built by `whosaid index <ws>` from the CLI or the watcher, never from here: every workspace tool is read-only except whosaid_set_status, which appends one status event to the tracking ledger (_tracking.json) when the user marks an item, and whosaid_name_voice_group, which names one unnamed voice across all its meetings (groups come from whosaid_voice_groups) and then rebuilds the index. Drafts outbox (not workspace files): whosaid_draft_new, whosaid_draft_write, whosaid_draft_verify, whosaid_draft_close, whosaid_draft_merge and whosaid_draft_sent_check write chat drafts to ~/.drafts; whosaid_draft_stage puts one verified draft into its Teams chat when the user asks (it never sends: the user presses send) (one open draft per recipient: new joins it; whosaid_draft_merge folds rival drafts into one); whosaid_drafts, whosaid_draft_stakeholders and whosaid_draft_stale read. Live Teams chats: whosaid_teams_live reads the newest messages (or chats) straight from the Teams desktop app's local cache, read-only and offline, for what was said in the last minutes or hours before it is ingested. Calendar: whosaid_teams_calendar reads your meetings from the same cache (the weeks the app has synced), with the recorded meeting folder for each when a workspace is set. Resources: whosaid://workspace/wiki, whosaid://workspace/action-items, whosaid://workspace/index, whosaid://workspace/meeting/{folder}/transcript and whosaid://workspace/meeting/{folder}/action-items. Everything stays local (SQLite FTS5 plus optional embeddings from a localhost Ollama)."""
+Meeting workspace (search across many transcripts): point the server at a workspace directory by launching it with WHOSAID_WORKSPACE=<dir>, or pass `workspace` on each call; with neither, the workspace of the only installed `whosaid watch` agent is used (the response says so in workspace_source); there is no cwd fallback. Flow: whosaid_search (turn-level hits with meeting folder + timestamp) -> whosaid_context (the verbatim minute around one hit; do not read whole transcripts) -> whosaid_items / whosaid_item / whosaid_person for action items and per-person commitments; whosaid_worklist for one person's ranked P1/P2/P3 worklist across both corpora. whosaid_meetings, whosaid_prs and whosaid_speakers list what the graph knows; whosaid_workspace_status says whether the index exists. The index (_search.db, _WIKI.md) is built by `whosaid index <ws>` from the CLI or the watcher, never from here: every workspace tool is read-only except whosaid_set_status, which appends one status event to the tracking ledger (_tracking.json) when the user marks an item, and whosaid_name_voice_group, which names one unnamed voice across all its meetings (groups come from whosaid_voice_groups) and then rebuilds the index. Drafts outbox (not workspace files): whosaid_draft_new, whosaid_draft_write, whosaid_draft_verify, whosaid_draft_close, whosaid_draft_merge and whosaid_draft_sent_check write chat drafts to ~/.drafts; whosaid_draft_stage puts one verified draft into its Teams chat when the user asks (it never sends: the user presses send) (one open draft per recipient: new joins it; whosaid_draft_merge folds rival drafts into one); whosaid_drafts, whosaid_draft_stakeholders and whosaid_draft_stale read. Live Teams chats: whosaid_teams_live reads the newest messages (or chats) straight from the Teams desktop app's local cache, read-only and offline, for what was said in the last minutes or hours before it is ingested. Calendar: whosaid_teams_calendar reads your meetings from the same cache (the weeks the app has synced), with the recorded meeting folder for each when a workspace is set. whosaid_teams_launch starts the Teams desktop app with a DevTools port (or checks it) so whosaid_draft_stage can drive the real app; it quits a running Teams only when its mic is idle. Resources: whosaid://workspace/wiki, whosaid://workspace/action-items, whosaid://workspace/index, whosaid://workspace/meeting/{folder}/transcript and whosaid://workspace/meeting/{folder}/action-items. Everything stays local (SQLite FTS5 plus optional embeddings from a localhost Ollama)."""
 
 
 try:
@@ -3326,7 +3326,7 @@ _DESC_DRAFTS = (
 
 _DESC_DRAFT_STAGE = (
     "Stage a verified outbox draft (id) into its Teams chat (the Teams web app in the Chromium browser on "
-    "the CDP port, $WHOSAID_CDP_PORT, default 9222): opens the chat with the recipient, pastes the "
+    "the CDP port; tries the Teams app port (WHOSAID_TEAMS_CDP_PORT, default 9333) first, then the browser port (WHOSAID_CDP_PORT, default 9222); an explicit port skips the probe): opens the chat with the recipient, pastes the "
     "message as rich text, adds the @mentions, attaches the pages and focuses the tab. It NEVER sends: "
     "the stager refuses any Enter key and any click on a send control, so the user reads it in Teams "
     "and presses send. Same gates as `whosaid drafts stage ID`: takes the outbox lock, refuses a "
@@ -3578,6 +3578,49 @@ def whosaid_teams_calendar(start: str = "today", days: float = 7, query: Optiona
         return _ws_error(str(exc), "install and sign in to the new Teams desktop app on this Mac and open its "
                          "Calendar tab once, or set WHOSAID_TEAMS_CACHE to its IndexedDB directory; "
                          "`whosaid teams calendar status` checks", category="teams_cache")
+
+
+_DESC_TEAMS_LAUNCH = (
+    "Start the Microsoft Teams desktop app with a DevTools (CDP) port so whosaid_draft_stage can "
+    "stage drafts in the real app. port defaults to WHOSAID_TEAMS_CDP_PORT, else 9333. "
+    "check_only=true only probes the port and never touches the app. Otherwise: port already "
+    "answering as the Teams app (Edg/...) -> action 'none'; Teams not running -> launched with the "
+    "port; Teams running without it -> quit and relaunched, but only when its mic is idle (a call "
+    "may be live): an in-call or unreadable mic state is refused (action 'refused') unless "
+    "force=true. A port held by another browser is an error, not a launch. Waits up to 30 s for "
+    "the port. Returns {ok, port, up, action: none|launched|relaunched|refused|down, browser, "
+    "pages: [{id, title}], error?}; never message content."
+)
+
+
+@mcp.tool(name="whosaid_teams_launch", description=_DESC_TEAMS_LAUNCH,
+          annotations=ToolAnnotations(read_only_hint=False, destructive_hint=False,
+                                      idempotent_hint=True, open_world_hint=False))
+async def whosaid_teams_launch(port: Optional[int] = None, check_only: bool = False,
+                               force: bool = False) -> dict:
+    """Start (or check) the Teams desktop app with a DevTools port."""
+    import anyio
+    args = ["teams", "launch"]
+    if port is not None:
+        args += ["--port", str(int(port))]
+    if check_only:
+        args.append("--check")
+    if force:
+        args.append("--force")
+    try:
+        proc = await anyio.to_thread.run_sync(lambda: _run_cli(args, timeout=90))
+    except subprocess.TimeoutExpired:
+        return _ws_error("teams launch timed out", "run `whosaid teams launch --check`", category="timeout")
+    try:
+        out = json.loads(proc.stdout.strip().splitlines()[-1])
+    except (ValueError, IndexError):
+        out = None
+    if not isinstance(out, dict):
+        return _ws_error((proc.stderr or "teams launch failed").strip()[:500], "run `whosaid teams launch --check`")
+    out["ok"] = proc.returncode == 0
+    if proc.returncode != 0 and (proc.stderr or "").strip():
+        out["error"] = proc.stderr.strip()[:500]
+    return out
 
 
 @mcp.tool(name="whosaid_draft_stage", description=_DESC_DRAFT_STAGE,

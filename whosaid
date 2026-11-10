@@ -18,6 +18,7 @@
 #   whosaid teams ingest <export.json> --into D  Ingest a Teams chat export as a source-tagged corpus.
 #   whosaid teams live|chats|sync|cache-status  Read Teams chats live from the desktop app's local cache.
 #   whosaid teams calendar [...]   Your Teams calendar from the same local cache.
+#   whosaid teams launch [...]     Start the Teams desktop app with a DevTools port.
 #   whosaid outlook ingest <export.json> --into D  Ingest an Outlook mail export the same way.
 #   whosaid roll-up <dir>           Rebuild the meeting-workspace index and audit.
 #   whosaid reprocess <ws> [M...]   Re-diarize meetings an older diarizer got wrong; keep labels and edits.
@@ -319,6 +320,14 @@ USAGE
                                         one row per occurrence. --ws lists the
                                         recorded meeting folders per event.
                                         `calendar status` shows what it holds.
+  whosaid teams launch [--port N] [--check] [--force] [--wait S]
+                                        Start the Teams desktop app with a DevTools
+                                        port (--port, else WHOSAID_TEAMS_CDP_PORT,
+                                        default 9333) so drafts can be staged in the
+                                        real app. Quits and relaunches a running
+                                        Teams only when its mic is idle (--force
+                                        skips that). --check only probes the port.
+                                        Prints {port, up, action, browser, pages}.
   whosaid ingest <audio> [<audio> ...] --into DIR [--folder-by created|mtime]
                                         [--tz ZONE] [--action-items] [--commitments]
                                         [--min-words N] [--hook CMD] [flags]
@@ -2292,6 +2301,7 @@ cmd_teams() {
     live|chats|sync) exec "$WHOSAID_PY" "$REPO_DIR/lib/teams_cache.py" "$@" ;;
     cache-status) exec "$WHOSAID_PY" "$REPO_DIR/lib/teams_cache.py" status "${@:2}" ;;
     calendar) exec "$WHOSAID_PY" "$REPO_DIR/lib/teams_calendar.py" "${@:2}" ;;
+    launch) WHOSAID_BIN="$REPO_DIR/whosaid" exec "$WHOSAID_PY" "$REPO_DIR/lib/teams_launch.py" "${@:2}" ;;
   esac
   if want_help "$@"; then cmd_help; exit 0; fi
   if [[ $# -eq 0 ]]; then
@@ -2299,6 +2309,7 @@ cmd_teams() {
     log "       whosaid teams ingest-transcript <transcript.json> --into DIR [--start ISO] [--title T] [--tz ZONE] [--self NAME] [--dry-run]"
     log "       whosaid teams live|chats|sync|cache-status [...]   (local Teams cache; --help on each)"
     log "       whosaid teams calendar [--from today] [--days 7] [--q TEXT] [--json]   (calendar from the same cache)"
+    log "       whosaid teams launch [--port N] [--check] [--force] [--wait S]   (start the Teams app with a DevTools port)"
     exit 1
   fi
   if [[ "$1" == "ingest-transcript" ]]; then
