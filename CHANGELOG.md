@@ -6,6 +6,8 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ## [Unreleased]
 
+## [1.37.1] - 2026-11-10
+
 ### Fixed
 - Stager: a 1:1 draft could land in a group chat. The chat-title check was a substring match, so a group window titled "Chat | <Other Person>, <Recipient>" passed for the recipient's 1:1. The title's name or member list must now equal the target; a group's rail name ("Ann and Bo Chen") still matches its member title ("Ann Lee, Bo Chen").
 - Stager `--new-chat`: "no To field in the new chat". The To input is `input[data-tid=people-picker-search]` (the old selector looked for an input inside it), and the recipient check also reads the To label ("To: Ann Lee, Bo Ray"). Verified live.
