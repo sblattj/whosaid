@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Offline test for lib/live_voices.py: running voices on the app leg, naming them from the
-registry (one voice per name, best first, a margin, never the self voice), short lines,
+registry (best first, a split voice shares its sibling's name, a margin, never the self voice), short lines,
 backfill of a name learned later, and the lines, summaries and next steps that show it.
 Embeddings are faked from the samples' value; no model, no audio playback.
 
@@ -63,10 +63,13 @@ names = v.names()
 check(names == {"v1": ("Ada_Lovelace", "boss"), "v2": ("Grace_Hopper", "")},
       f"named by the registry, the unknown voice stays unnamed: {names}")
 
-# one voice per name, best first: a second voice that also looks like Ada stays unnamed
+# a name goes to the best voice; a second voice shares it only if it sounds like that voice
 w = lv.Voices(KNOWN, fake_embed)
 w.sums = [unit(1, 0.02, 0, 0) * 5, unit(1, 0.3, 0, 0) * 5]
-check(w.names() == {"v1": ("Ada_Lovelace", "boss")}, f"each name claims one voice: {w.names()}")
+check(w.names() == {"v1": ("Ada_Lovelace", "boss"), "v2": ("Ada_Lovelace", "boss")},
+      f"one speaker split into two voices: both named: {w.names()}")
+w.sums = [unit(1, 0.02, 0, 0) * 5, unit(1, 0, 1.2, 0) * 5]
+check(w.names() == {"v1": ("Ada_Lovelace", "boss")}, f"a different voice that also looks like Ada: unnamed: {w.names()}")
 # too close to call between two voiceprints: no name
 amb = lv.Voices(KNOWN, fake_embed)
 amb.sums = [unit(1, 1, 0, 0)]

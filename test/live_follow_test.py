@@ -252,7 +252,8 @@ def test_split_voice_named_only():
         return v / np.linalg.norm(v)
     known = [("Bob_Builder", "", unit(1, 0, 0)), ("Alice_Ng", "", unit(0, 1, 0)), ("Me", "self", unit(0, 0, 1))]
     v = lv.Voices(known, lambda s: unit(1, 0, 0), me=("Me", "self"))
-    v.sums = [unit(1, 0.02, 0) * 5, unit(1, 0.9, 0) * 5]  # v2 also sounds like Bob, but v1 owns the name
+    # v2 also sounds like Bob (0.74), but not like v1 (0.67, under SIBLING): v1 owns the name
+    v.sums = [unit(1, -0.1, 0) * 5, unit(1, 0.9, 0) * 5]
     started = time.time() - 120
     ents = [turn(1.0, "them", "Bob opening point", started, n=0, voice="v1"),
             turn(4.0, "them", "the point I care about", started, n=1, voice="v2"),
