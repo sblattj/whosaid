@@ -145,11 +145,28 @@ final class AppModel {
     streamTask?.cancel()
     stream?.stop()
     guard FileManager.default.isExecutableFile(atPath: paths.whosaid) else { return }
-    let s = AppStateStream(paths: paths)
-    stream = s
     streamTask = Task { [weak self] in
-      for await st in s.states() { self?.apply(st) }
+      var backoff: UInt64 = 1
+      while !Task.isCancelled {
+        guard let self else { return }
+        let s = AppStateStream(paths: self.paths)
+        self.stream = s
+        var got = false
+        for await st in s.states() { got = true; self.apply(st) }
+        if Task.isCancelled { return }
+        // The app-state child exited: never keep showing its last snapshot (a frozen "recording").
+        self.clearState()
+        backoff = got ? 1 : min(backoff * 2, 30)
+        try? await Task.sleep(nanoseconds: backoff * 1_000_000_000)
+      }
     }
+  }
+
+  /// No live app-state feed: forget the last snapshot so the menu shows "starting", not stale state.
+  func clearState() {
+    state = nil
+    ticker?.invalidate()
+    ticker = nil
   }
 
   func refreshHealth() async {

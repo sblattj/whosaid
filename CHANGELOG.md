@@ -6,6 +6,9 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ## [Unreleased]
 
+### Fixed
+- Menu bar app: when its `whosaid app-state --watch` child exits, the app now drops the last snapshot and starts a new one (backoff 1s to 30s). Before, nothing restarted it and the menu bar kept showing "Recording a call" with a running timer long after the call was saved.
+
 ## [1.36.2] - 2026-11-09
 
 ### Changed
