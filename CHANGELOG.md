@@ -13,6 +13,7 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ### Fixed
 - `drafts mark-sent --check` and the already-sent check in `stage` missed a message sent in a chat ingested as `<Name> (chat 1a2b3c)` (a second chat with the recipient's name) and reported "not in the 0 ingested message(s)". Both now read that chat too.
+- Menu bar app: when its `whosaid app-state --watch` child exits, the app now drops the last snapshot and starts a new one (backoff 1s to 30s). Before, nothing restarted it and the menu bar kept showing "Recording a call" with a running timer long after the call was saved.
 - Live names: one person whose first few lines started several running voices now gets their name on all of them instead of one, with the rest left as "them" (#193). The best-matching voice still takes the name first; another voice shares it only when it is at least 0.75 cosine-similar (`SIBLING`) to that voice, so a different person who merely resembles the same voiceprint stays unnamed. On a real meeting this had left 213 of 312 "them" lines belonging to one person, split across four voices that were 0.87-0.95 similar to each other while different people stayed under 0.35.
 
 ## [1.36.2] - 2026-11-09
