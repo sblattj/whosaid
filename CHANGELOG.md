@@ -6,6 +6,8 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ## [Unreleased]
 
+## [1.37.3] - 2026-11-10
+
 ### Changed
 - Voice lint: the greeting-opener rule also flags openers the message already implies: "can you review", "could you review", "please review", "can you take a look", "could you take a look", "FYI", "quick question", "just wanted to" and "just a heads up" (any case), at the start of the message or right after a leading addressee ("Sam, FYI ...", "@Sam can you review ..."). The same phrases mid-message are fine.
 
