@@ -252,7 +252,7 @@ class FakeTeams:
 
     def __init__(self, rail=(), search=(), compose="", teams_tab=True, old_chips=(), people=(), mention_dir=(),
                  history=(), no_root=False, remover_noop=False, drop_uploads=False, focus_miss=False,
-                 fail_set_files=False, root_flicker=0, hidden=False, own=(), no_edit_item=False, titles=None):
+                 fail_set_files=False, root_flicker=0, hidden=False, own=(), no_edit_item=False, titles=None, mention_lazy=False):
         from websockets.sync.server import serve
         self.titles = dict(titles or {})  # rail name -> window title, when it isn't "Chat | <name> | ..."
         self.rail, self.search_dir, self.compose = list(rail), list(search), compose
@@ -272,6 +272,8 @@ class FakeTeams:
         self.newchat_open = self.picker_focus = self.compose_focused = False
         self.picker_typed = self.mention_typed = ""
         self.mention_keyed = False
+        # like Teams right after a clear: the first real key after "@..." opens no list (a retype does)
+        self.mention_lazy, self.mention_keys = mention_lazy, 0
         self.to_chips: list[str] = []
         self.mentions: list[str] = []
         # elements with attributes, for the hit test: (x, y) -> attrs
@@ -554,18 +556,23 @@ class FakeTeams:
                     self.compose, self.selected = "", False
                     self.root_gone = self.root_flicker
                     self.mention_typed, self.mentions = "", []
+                elif params.get("key") == "Backspace" and params["type"] == "keyDown" and self.compose_focused:
+                    self.compose = self.compose[:-1]
+                    self.mention_typed = self.mention_typed[:-1]
                 if params["type"] == "keyDown" and params.get("text") and self.compose_focused:
                     self.compose += params["text"]
                     if self.mention_typed:
                         self.mention_typed += params["text"]
-                        self.mention_keyed = True  # like Teams, the picker filters only after a real key
+                        self.mention_keys += 1
+                        # like Teams, the picker filters only after a real key
+                        self.mention_keyed = not self.mention_lazy or self.mention_keys > 1
             elif method == "Input.insertText":
                 t = params["text"]
                 if self.picker_focus:
                     self.picker_typed += t
                 elif self.compose_focused:
                     if t.startswith("@"):
-                        self.mention_typed, self.mention_keyed = t, False
+                        self.mention_typed, self.mention_keyed, self.mention_keys = t, False, 0
                     self.compose += t  # the typed text is in the box until a suggestion replaces it
                 else:
                     self.typed += t
@@ -904,6 +911,16 @@ class EndToEnd(unittest.TestCase):
         self.assertEqual(json.loads(r.stdout.strip().splitlines()[-1])["mentions"], 2)
         self.assertLess(f.ops.index("editor_select"), f.ops.index("mention_find"))
         self.assertLess(len(f.ops) - 1 - f.ops[::-1].index("mention_find"), f.ops.index("paste"))
+        f.never_sent(self)
+
+    def test_mention_list_that_ignores_the_first_key_is_retyped(self):
+        """Live: right after a clear the first key opens no @ list; Backspace and the letter again does."""
+        f = self.fake(rail=["Ann Lee"], compose="old", mention_dir=["Bob Ray"], mention_lazy=True)
+        r = self.run_stager(f, "--replace", "--mention", "Bob Ray")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(f.mentions, ["Bob Ray"])
+        self.assertTrue(f.compose.startswith("Bob Ray Hi **Ann**"), f.compose)
+        self.assertNotIn("@", f.compose)
         f.never_sent(self)
 
     def test_literal_at_name_is_stripped_from_the_body(self):

@@ -6,6 +6,9 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ## [Unreleased]
 
+### Fixed
+- Stager `--mention`: "no mention suggestion for NAME" right after the compose box was cleared (as `--replace` does). Teams often ignores the first key after a clear and opens no @ list; the stager now waits for the list and, when it stays shut, deletes the last letter and types it again (twice at most). Verified live.
+
 ### Changed
 - Voice lint: a draft that opens with "heads up" (also "Heads-up:", "headsup") hits the greeting-opener rule. The whole message is the heads up.
 

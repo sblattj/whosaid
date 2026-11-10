@@ -148,7 +148,8 @@ PEOPLE_PICKER_SEL = ('input[data-tid="people-picker-search"],input[aria-label^="
 # The To label's aria-label lists the picked people: "To: Ann Lee, Bo Ray" (verified live 2026-11-10).
 TO_LABEL_SEL = '[data-tid="people-picker-label-id"]'
 TO_CHIP_SEL = '[data-tid*="people-picker" i] [data-tid*="pill" i],[data-tid*="people-picker" i] [data-tid*="persona" i]'
-# Suggestion rows of any open suggestion list (people picker and @mention) (UNVERIFIED).
+# Suggestion rows of any open suggestion list (people picker and @mention). Verified live 2026-11-10: the
+# @ list is ul#autocomplete-picker-list[role=listbox] > li[role=option], first line the name.
 SUGGEST_SEL = "[role=listbox] [role=option]"
 # A real mention element inside the compose box (UNVERIFIED).
 MENTION_SEL = '[itemtype*="Mention" i],[data-itemtype="mention"],span.mention,[data-mention]'
@@ -688,6 +689,15 @@ async def remove_chips(c: CDP, have_pages: bool):
         raise StagerError("couldn't remove the old attachments")
 
 
+async def mention_list_open(c: CDP, name: str, secs: float = 2.5) -> bool:
+    """True once the @ suggestion list shows any option, within secs."""
+    for _ in range(int(secs / 0.25)):
+        await nap(0.25)
+        if (await c.ev(op("mention_find", JS_MENTION_FIND, name=name)))["total"] > 0:
+            return True
+    return False
+
+
 async def insert_mentions(c: CDP, names: list[str]):
     for name in names:
         before = await c.ev(op("mention_count", JS_MENTION_COUNT))
@@ -695,6 +705,14 @@ async def insert_mentions(c: CDP, names: list[str]):
         # The picker only filters on real key events (#183): insert all but the last letter, then key it.
         await c.s("Input.insertText", {"text": "@" + name[:-1]})
         await c.type_char(name[-1])
+        # Right after a clear Teams often ignores that first key and no list opens (seen live 6 of 6):
+        # Backspace the last letter and key it again, which opens it.
+        for _ in range(2):
+            if await mention_list_open(c, name):
+                break
+            await c.key("Backspace", "Backspace", 8)
+            await nap(0.3)
+            await c.type_char(name[-1])
         m = await pick_exact(c, "mention_find", JS_MENTION_FIND, name,
                              f"no mention suggestion for {name}", "mention suggestions")
         await c.click(m["x"], m["y"])
