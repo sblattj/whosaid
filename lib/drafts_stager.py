@@ -529,7 +529,9 @@ def title_matches(title: str, chat: str) -> bool:
     for Bo Chen and the draft landed in the group). A group's rail name ("Ann and Bo Chen") matches a
     title listing the same members ("Ann Lee, Bo Chen"): same count, each a full name or first name."""
     parts = [p.strip() for p in (title or "").split(" | ")]
-    mid = parts[-2] if len(parts) >= 3 else parts[0]
+    if len(parts) >= 2 and parts[-1].lower() == "microsoft teams":
+        parts = parts[:-1]  # the web tab adds it; the desktop app's window title is just "Chat | <name>"
+    mid = parts[1] if len(parts) >= 2 else parts[0]
     want_s = (chat or "").strip()
     if not want_s:
         return False

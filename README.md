@@ -289,6 +289,7 @@ whosaid drafts list                             # state and the session that wro
 whosaid drafts merge <into> <from> [<from> ...] --text-file merged.md   # fold rival drafts into one
 whosaid drafts stale-check ~/meetings           # stakeholders said something new since verify?
 whosaid drafts stage <id>                       # paste it into the Teams chat; nothing is sent
+whosaid drafts unstage <id> --reason R          # you cleared the compose box by hand: back to verified
 whosaid drafts stage <id> --replace             # the compose box already holds text: overwrite it
 whosaid drafts stage --all --queue              # every verified draft, oldest first, each in its chat
 whosaid drafts mark-sent --check ~/meetings     # staged drafts you have since sent

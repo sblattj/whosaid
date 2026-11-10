@@ -617,6 +617,20 @@ def close(draft_id: str, status: str, reason: str | None = None, force: bool = F
     return {"id": draft_id, "status": status}
 
 
+def unstage(draft_id: str, reason: str | None = None) -> dict:
+    """Back from staged to verified, for a compose box someone cleared by hand: the next stage starts
+    fresh (no --replace). Only the bookkeeping changes; the chat is not touched."""
+    m = load(draft_id)
+    if m["status"] != "staged":
+        raise DraftsError(f"{draft_id} is {state(m)}, not staged")
+    m["status"] = "verified"
+    m.pop("staged_hash", None)
+    m.pop("staged_at", None)
+    _event(m, "unstaged", why=reason, by=os.environ.get("CLAUDE_CODE_SESSION_ID"))
+    save(m)
+    return {"id": draft_id, "status": m["status"], "state": state(m)}
+
+
 def _claim_id(k: dict) -> str:
     return k.get("key") or (k.get("text") or "")[:40]
 
@@ -1466,6 +1480,9 @@ def build_parser() -> argparse.ArgumentParser:
     a.add_argument("--text-file", help="the merged message (markdown, or - for stdin); default: the texts joined")
     a.add_argument("--dry-run", action="store_true", help="print the merged result and clashes, write nothing")
     a.add_argument("--force", action="store_true", help=force)
+    a = sub.add_parser("unstage", help="staged back to verified, after the compose box was cleared by hand")
+    a.add_argument("id")
+    a.add_argument("--reason")
     a = sub.add_parser("drop")
     a.add_argument("id")
     a.add_argument("--reason")
@@ -1648,6 +1665,9 @@ def main(argv: list[str] | None = None) -> int:
                 print("text: the drafts' texts are joined with blank lines; rewrite them as one message "
                       "(drafts text), then verify")
             print(f"{r['into']}: {r['state']}; verify it again before stage")
+        elif c == "unstage":
+            r = unstage(args.id, args.reason)
+            print(f"{r['id']}: {r['state']}")
         elif c in ("mark-sent", "drop"):
             if not args.id:
                 raise DraftsError("need a draft id (or mark-sent --check)")

@@ -26,6 +26,10 @@ import drafts  # noqa: E402
 import drafts_stager as ds  # noqa: E402
 
 SCRIPT = str(ROOT / "lib" / "drafts_stager.py")
+
+# No test may reach a real Teams: the desktop app (9333) or a browser (9222) may be running here.
+# The default app port points at a closed one; tests that want a port set it themselves.
+os.environ["WHOSAID_TEAMS_CDP_PORT"] = "9"
 SEND_XY = (900, 900)
 OP_RE = re.compile(r"^/\*op:(\w+)\*//\*args:(.*?)\*/")
 
@@ -848,6 +852,18 @@ class EndToEnd(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn(("Target.activateTarget", {"targetId": "T3"}), f.calls)
 
+    def test_app_mode_with_the_desktop_title_form(self):
+        """The real app window title is "Chat | NAME", no "| Microsoft Teams" (checked live 2026-11-10)."""
+        other = {"id": "T2", "title": "Chat | Zed Q", "url": self.T1["url"]}
+        mine = {"id": "T3", "title": "Chat | Ann Lee", "url": self.T1["url"]}
+        f = self.fake(rail=["Ann Lee"], targets=[self.T0, other, mine], browser="Edg/150.0",
+                      titles={"Ann Lee": "Chat | Ann Lee"})
+        r = self.run_port(app_fake=f)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn(("Target.activateTarget", {"targetId": "T3"}), f.calls)
+        self.assertIn("paste", f.ops)
+        f.never_sent(self)
+
     def test_app_mode_probes_untitled_candidates_for_the_search_box(self):
         win = {"id": "T1", "title": "Microsoft Teams", "url": self.T1["url"]}  # no "Chat |" prefix
         f = self.fake(rail=["Ann Lee"], targets=[self.T0, win], browser="Edg/150.0")
@@ -1020,6 +1036,9 @@ class EndToEnd(unittest.TestCase):
     def test_title_matches_rules(self):
         tm = ds.title_matches
         self.assertTrue(tm("Chat | Ann Lee | Microsoft Teams", "Ann Lee"))
+        self.assertTrue(tm("Chat | Ann Lee", "Ann Lee"))  # the desktop app's window title
+        self.assertFalse(tm("Chat | Cy Dee, Ann Lee", "Ann Lee"))
+        self.assertTrue(tm("Chat | Cy Dee, Ann Lee", "Cy and Ann Lee"))
         self.assertFalse(tm("Chat | Cy Dee, Ann Lee | Microsoft Teams", "Ann Lee"))
         self.assertTrue(tm("Chat | Cy Dee, Ann Lee | Microsoft Teams", "Cy and Ann Lee"))
         self.assertTrue(tm("Chat | Cy Dee, Ann Lee | Microsoft Teams", "Ann Lee, Cy Dee"))
