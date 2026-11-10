@@ -6,6 +6,8 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ## [Unreleased]
 
+## [1.37.0] - 2026-11-10
+
 ### Added
 - `whosaid_draft_stage` MCP tool: stages a verified outbox draft (id), the oldest verified one (`all`), or every verified one in order (`all` + `queue`) into its Teams chat, through the same gated `drafts stage` (outbox lock, stale/rival/already-sent refusals, `--replace` on a restage). It never sends. It runs off the server's event loop, so a stage of up to minutes doesn't block other calls. Agents can now stage a draft when asked instead of handing over a `whosaid drafts stage` command.
 - `whosaid drafts stage --all --queue`: every verified draft, oldest first, each into its own chat's compose box; stops at the first stager failure.
