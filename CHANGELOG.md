@@ -6,7 +6,6 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ## [Unreleased]
 
-<<<<<<< HEAD
 ## [1.38.0] - 2026-11-10
 
 ### Added
@@ -15,14 +14,6 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ### Changed
 - `drafts stage` port order: `--cdp-port`, then `WHOSAID_CDP_PORT`, then the Teams app port (if it answers as Teams), then 9222. An explicit port (flag or env) skips the app probe and behaves as before.
-=======
-### Added
-- `whosaid drafts unstage ID [--reason R]`: a staged draft goes back to verified (an `unstaged` history event with the reason) after its compose box was cleared by hand, so the next stage starts fresh.
-- Staging into the Microsoft Teams desktop app, now the default for `drafts stage`, `drafts edit-sent` and `whosaid_draft_stage`. The stager attaches to the app's WebView2 DevTools port (9333, `WHOSAID_TEAMS_APP_CDP_PORT`), picks the window that shows the chat rail and brings Teams to the front. `--web` (MCP `web=true`, or `WHOSAID_TEAMS_APP=web`) keeps the Teams web tab on 9222. `whosaid drafts teams-app [--launch]` checks the port, or quits and reopens Teams with it.
-
-### Fixed
-- Stager title check: the desktop window title is `Chat | NAME` with no `| Microsoft Teams`; it matched nothing before.
->>>>>>> 3c89788 (drafts: unstage command; stage into the Teams desktop app by default)
 
 ## [1.37.3] - 2026-11-10
 
