@@ -4,8 +4,10 @@ live_voices.py: names on a live transcript's lines, from the local speaker regis
 The meeting app's leg mixes everyone else on the call, so each "them" line is embedded
 (the same TitaNet model diarization uses) and grouped into running voices: a line joins
 the closest voice when it is close enough, else starts a new one. Each voice is named
-by matching its running centroid against the registry, one voice per name, best first,
-so a name learned later moves back onto that voice's earlier lines. "me" lines get the
+by matching its running centroid against the registry, best first: the best voice takes
+the name, and another voice shares it only when it is at least SIBLING-similar to that
+voice (one person whose first lines started separate voices before their centroid
+settled; voices never merge). A name learned later moves back onto earlier lines. "me" lines get the
 registry's self-roled name. Lines too short to trust join a voice but never start one.
 
 Each "them" line also gets a "confidence": its voice's cosine to the voiceprint that
@@ -30,6 +32,7 @@ import sys
 JOIN = 0.6          # cosine to a running voice's centroid to count as that voice
 NAME_MIN = 0.55     # centroid vs registry voiceprint to put a name on a voice
 MARGIN = 0.05       # ...and at least this far ahead of the next registry voice
+SIBLING = 0.75      # a voice this close to the voice holding a name is the same person, split early
 MIN_SECONDS = 1.5   # a shorter line joins a voice but never starts one or moves it
 LOW_CONFIDENCE = 0.6  # a named line whose voice matches its voiceprint less than this is flagged mixed
 CHANGE_SIM = 0.5    # the two sides of a segment this unlike (cosine) are two people
@@ -88,12 +91,17 @@ class Voices:
             second = float(sims[order[1]]) if len(order) > 1 else -1.0
             if sims[order[0]] >= NAME_MIN and sims[order[0]] - second >= MARGIN:
                 cands.append((float(sims[order[0]]), i, int(order[0])))
-        out, used = {}, set()
+        out, holder = {}, {}
+        unit = lambda s: s / (np.linalg.norm(s) + 1e-9)
         for _, i, k in sorted(cands, reverse=True):
             name, role, _ = self.known[k]
-            if name not in used and (self.me is None or name != self.me[0]):
+            if self.me is not None and name == self.me[0]:
+                continue
+            # best voice takes the name; another voice shares it only when it sounds like
+            # that voice itself (one speaker split into several running voices early on)
+            if name not in holder or float(unit(self.sums[i]) @ unit(self.sums[holder[name]])) >= SIBLING:
                 out[f"v{i + 1}"] = (name, role)
-                used.add(name)
+                holder.setdefault(name, i)
         return out
 
     def nearest(self) -> dict[str, tuple[str, float]]:
