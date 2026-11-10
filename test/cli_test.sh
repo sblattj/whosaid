@@ -71,7 +71,9 @@ assert_ne() {  # assert_ne <actual> <unexpected> <what>
 }
 
 assert_text() {  # assert_text <ERE-pattern> <text> <what>
-  if printf '%s\n' "$2" | grep -qE -- "$1"; then
+  # not grep -q: it exits at the first match, printf then dies of SIGPIPE on a
+  # text larger than the pipe buffer (whosaid help), and pipefail flips the result
+  if printf '%s\n' "$2" | grep -E -- "$1" >/dev/null; then
     PASS=$((PASS + 1))
   else
     fail "$3: pattern [$1] not found in text: [$2]"
@@ -79,7 +81,9 @@ assert_text() {  # assert_text <ERE-pattern> <text> <what>
 }
 
 assert_not_text() {  # assert_not_text <ERE-pattern> <text> <what>
-  if printf '%s\n' "$2" | grep -qE -- "$1"; then
+  # not grep -q: it exits at the first match, printf then dies of SIGPIPE on a
+  # text larger than the pipe buffer (whosaid help), and pipefail flips the result
+  if printf '%s\n' "$2" | grep -E -- "$1" >/dev/null; then
     fail "$3: pattern [$1] unexpectedly found in text: [$2]"
   else
     PASS=$((PASS + 1))
