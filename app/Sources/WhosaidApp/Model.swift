@@ -2,7 +2,7 @@ import SwiftUI
 import WhosaidKit
 
 enum SidebarItem: String, CaseIterable, Identifiable, Hashable {
-  case meetings, live, actionItems, commitments, topics, chats, people, unnamed, recorder
+  case meetings, live, actionItems, commitments, topics, chats, people, unnamed, recorder, drafts
   var id: String { rawValue }
   var title: String {
     switch self {
@@ -15,6 +15,7 @@ enum SidebarItem: String, CaseIterable, Identifiable, Hashable {
     case .people: "People"
     case .unnamed: "Unnamed voices"
     case .recorder: "Recorder"
+    case .drafts: "Drafts"
     }
   }
   var symbol: String {
@@ -28,11 +29,13 @@ enum SidebarItem: String, CaseIterable, Identifiable, Hashable {
     case .people: "person.2"
     case .unnamed: "person.crop.circle.badge.questionmark"
     case .recorder: "record.circle"
+    case .drafts: "paperplane"
     }
   }
   static let library: [SidebarItem] = [.meetings, .live, .actionItems, .commitments, .topics, .chats]
   static let peopleGroup: [SidebarItem] = [.people, .unnamed]
   static let recorderGroup: [SidebarItem] = [.recorder]
+  static let outboxGroup: [SidebarItem] = [.drafts]
 }
 
 /// What the main window knows about the workspace (G8 empty states).
@@ -106,6 +109,14 @@ final class AppModel {
   var searchContext: [JSONValue] = []
   var searchError: String?
 
+  // Drafts outbox (~/.drafts): preview, then stage into Teams; nothing here ever sends.
+  var drafts: [DraftRow] = []
+  var draftsError: String?
+  var draftDetail: [String: DraftRow] = [:]
+  var staging: String?
+  var stageOutcome: [String: StageOutcome] = [:]
+  var draftsWatcher: FolderWatcher?
+
   init(paths: WhosaidPaths = .resolve()) {
     self.paths = paths
     AppModelLocator.model = self
@@ -121,6 +132,7 @@ final class AppModel {
     }
     restartStream()
     watchWorkspace()
+    watchDrafts()
     live.attach(paths: paths)
     Task { await refreshHealth() }
   }

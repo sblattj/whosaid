@@ -788,13 +788,23 @@ def _self_speakers(sidecar: dict) -> set[str]:
     return mine
 
 
+_CHAT_SUFFIX = re.compile(r"\s+\(chat [0-9a-f]{4,}\)$")
+
+
+def same_chat(name: str, chat: str) -> bool:
+    """name is the chat, or the chat with the short suffix teams_cache gives a second chat of that
+    name ("Name (chat 1a2b3c)", e.g. a group chat titled like the 1:1)."""
+    n, want = (name or "").strip().lower(), (chat or "").strip().lower()
+    return bool(want) and (n == want or _CHAT_SUFFIX.sub("", n) == want)
+
+
 def chat_messages(ws: Path, chat: str, since_ms: int | None = None, days: int = 14) -> list[dict]:
-    """Ingested messages of one chat (exact chat name, case-insensitive), oldest first.
+    """Ingested messages of one chat (chat name case-insensitive, or that name with a "(chat 1a2b3c)"
+    suffix), oldest first.
 
     Folders are YYYY-MM-DD-HHMM chat-days, so only the last `days` (or since since_ms) are read."""
     floor_ms = since_ms if since_ms is not None else int((time.time() - days * 86400) * 1000)
     floor_day = datetime.fromtimestamp(floor_ms / 1000).strftime("%Y-%m-%d")
-    want = chat.strip().lower()
     out: list[dict] = []
     try:
         folders = sorted((p for p in Path(ws).iterdir() if p.is_dir() and re.match(r"\d{4}-\d{2}-\d{2}", p.name)),
@@ -812,7 +822,7 @@ def chat_messages(ws: Path, chat: str, since_ms: int | None = None, days: int = 
         except (OSError, ValueError):
             continue
         src = data.get("source") or {}
-        if src.get("kind") != CHAT_KIND or (src.get("chat_name") or "").strip().lower() != want:
+        if src.get("kind") != CHAT_KIND or not same_chat(src.get("chat_name") or "", chat):
             continue
         mine = _self_speakers(data)
         for seg in data.get("segments") or []:
@@ -836,12 +846,12 @@ def _live_chat_messages(ws: Path, chat: str, floor_ms: int, seen: set) -> list[d
         import teams_cache
         if not teams_cache._leveldb(teams_cache.cache_dir()).is_dir():
             return []
-        res = teams_cache.messages(chat, floor_ms, None, Path(ws), exact=True)
+        res = teams_cache.messages(chat, floor_ms, None, Path(ws))
     except Exception:  # noqa: BLE001 - the cache is a bonus, never a reason to fail
         return []
     return [{"epoch_ms": m["epoch_ms"], "at": m["at"], "speaker": m["author"].replace(" ", "_"),
              "self": m["self"], "text": m["text"], "mid": m["message_id"], "folder": "(teams cache)"}
-            for m in res.get("messages") or [] if m["message_id"] not in seen]
+            for m in res.get("messages") or [] if m["message_id"] not in seen and same_chat(m.get("chat", ""), chat)]
 
 
 def _ms(iso: str | None) -> int | None:
@@ -1147,9 +1157,13 @@ def _stage_ws(ws) -> Path | None:
 
 
 def stage(ids: list[str] | None = None, all_ready: bool = False, dry_run: bool = False,
-          tab: str | None = None, ws: str | os.PathLike | None = None, replace: bool = False) -> dict:
+          tab: str | None = None, ws: str | os.PathLike | None = None, replace: bool = False,
+          queue: bool = False) -> dict:
+    """Stage drafts into their chats; never sends. One per run unless queue: each lands in its own chat's
+    compose box, so queue stages them all, oldest first, and stops at the first stager failure."""
     if all_ready:
-        ids = [m["id"] for m in all_drafts() if m["status"] in OPEN and state(m).startswith("verified")]
+        ready = [m for m in all_drafts() if m["status"] in OPEN and state(m).startswith("verified")]
+        ids = [m["id"] for m in sorted(ready, key=lambda m: m.get("updated_at") or "")]
     ids = ids or []
     if not ids:
         return {"staged": [], "skipped": [], "failed": [], "note": "nothing verified and unstaged"}
@@ -1228,8 +1242,8 @@ def stage(ids: list[str] | None = None, all_ready: bool = False, dry_run: bool =
                 save(sup)
             res["staged"].append({"id": draft_id, "to": m["to"], "stager": tail[0]})
             # The stager focuses the chat it staged: one per run, so the user sends or edits it first.
-            if len(ids) > 1:
-                res["note"] = f"staged 1 of {len(ids)}; run stage --all again for the next"
+            if len(ids) > 1 and not queue:
+                res["note"] = f"staged 1 of {len(ids)}; run stage --all again for the next (or --queue for all)"
                 break
     finally:
         if not dry_run:
@@ -1432,6 +1446,7 @@ def build_parser() -> argparse.ArgumentParser:
     a.add_argument("--replace", action="store_true",
                    help="overwrite text already in the compose box and drop its old attachments")
     a.add_argument("--ws", help="workspace with the ingested chats (default WHOSAID_WORKSPACE)")
+    a.add_argument("--queue", action="store_true", help="with --all: stage every verified draft, oldest first")
     a = sub.add_parser("edit-sent", help="load the corrected draft.md into Teams' Edit box on the sent message")
     a.add_argument("id")
     a.add_argument("--dry-run", action="store_true")
@@ -1578,7 +1593,10 @@ def main(argv: list[str] | None = None) -> int:
         elif c == "stage":
             if not args.all and not args.id:
                 raise DraftsError("need an id or --all")
-            r = stage([args.id] if args.id else None, args.all, args.dry_run, args.tab, args.ws, args.replace)
+            if args.queue and not args.all:
+                raise DraftsError("--queue needs --all")
+            r = stage([args.id] if args.id else None, args.all, args.dry_run, args.tab, args.ws, args.replace,
+                      queue=args.queue)
             for did, ctx in r.get("context", {}).items():
                 print(f"{did}: {ctx['chat']} has {ctx['ingested']} ingested message(s) in 14 days"
                       + (f", newest {ctx['newest_at'][:16]}" if ctx["newest_at"] else ""))

@@ -100,6 +100,7 @@ def main() -> None:
         "whosaid_draft_stakeholders",
         "whosaid_draft_stale",
         "whosaid_draft_sent_check",
+        "whosaid_draft_stage",
         "whosaid_teams_live",
         "whosaid_teams_calendar",
     } | workspace_tools
@@ -336,7 +337,7 @@ def main() -> None:
           "set_status desc: one event, done alias, refusal")
     check("whosaid_set_status" in mcp_server.SERVER_INSTRUCTIONS, "instructions name the one writing workspace tool")
 
-    # --- drafts outbox (#165): three writers, three readers, no stage or send over MCP ---
+    # --- drafts outbox (#165): writers, readers, one stage tool, no send over MCP ---
     for name in ("whosaid_draft_new", "whosaid_draft_write", "whosaid_draft_verify", "whosaid_draft_close",
                  "whosaid_draft_merge", "whosaid_draft_sent_check"):
         ann = dumps[name].get("annotations") or {}
@@ -345,7 +346,17 @@ def main() -> None:
         check(name in mcp_server.SERVER_INSTRUCTIONS, f"instructions name {name}")
     for name in ("whosaid_drafts", "whosaid_draft_stakeholders", "whosaid_draft_stale"):
         check((dumps[name].get("annotations") or {}).get("readOnlyHint") is True, f"{name} must be read-only")
-    check(not any("stage" in n or "send" in n for n in by_name), "no stage/send tool over MCP")
+    check(not any("send" in n for n in by_name), "no send tool over MCP")
+    check([n for n in by_name if "stage" in n] == ["whosaid_draft_stage"], "one stage tool over MCP")
+    st_ann = dumps["whosaid_draft_stage"].get("annotations") or {}
+    check(st_ann.get("readOnlyHint") is False and st_ann.get("destructiveHint") is False
+          and st_ann.get("openWorldHint") is True, f"draft_stage annotations: {st_ann}")
+    check(not dumps["whosaid_draft_stage"]["inputSchema"].get("required"), "draft_stage: id or all, nothing required")
+    check({"id", "all", "queue", "dry_run", "replace"} <= set(dumps["whosaid_draft_stage"]["inputSchema"]["properties"]),
+          f"draft_stage params: {dumps['whosaid_draft_stage']['inputSchema']}")
+    check(all(t in (by_name["whosaid_draft_stage"].description or "") for t in ("NEVER sends", "ONE per call", "queue=true", "dry_run")),
+          "draft_stage desc: never sends, one per call, queue, dry_run")
+    check("whosaid_draft_stage" in mcp_server.SERVER_INSTRUCTIONS, "instructions name whosaid_draft_stage")
     check(set(dumps["whosaid_draft_new"]["inputSchema"].get("required") or []) == {"to", "topic"},
           "draft_new requires to + topic")
     check(set(dumps["whosaid_draft_merge"]["inputSchema"].get("required") or []) == {"into", "from"},

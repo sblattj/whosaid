@@ -699,6 +699,19 @@ class ChatHistoryTest(DraftsBase):
         self.assertEqual(drafts.load(did)["sent_message"]["mid"], "m0")
         self.assertEqual(drafts.load(other)["status"], "staged")
 
+    def test_sent_check_finds_the_message_in_a_suffixed_same_name_chat(self):
+        did = self.ready()
+        drafts.stage([did], ws=self.ws)
+        self.chat([(datetime.now() + timedelta(seconds=5), "Me_Self", "Hi, can you add the two DNS records? thx")],
+                  chat="Test Person (chat 2b3c4d)")
+        self.chat([(datetime.now() + timedelta(seconds=5), "Me_Self", "Hi, can you add the two DNS records?")],
+                  chat="Test Personality", when=datetime.now() + timedelta(minutes=1))
+        r = drafts.sent_check(self.ws)
+        self.assertEqual([s["id"] for s in r["sent"]], [did])
+        self.assertTrue(drafts.same_chat("Test Person (chat 2b3c4d)", "test person"))
+        self.assertFalse(drafts.same_chat("Test Personality", "Test Person"))
+        self.assertFalse(drafts.same_chat("Test Person (chat zz)", "Test Person"))
+
     def test_their_message_is_not_ours(self):
         did = self.ready()
         drafts.stage([did], ws=self.ws)
@@ -936,6 +949,57 @@ class MergeTest(DraftsBase):
         self.assertEqual(rc, 0, out.getvalue())
         self.assertIn("4 claim(s), 2 stakeholder(s), 2 page(s)", out.getvalue())
         self.assertEqual(drafts.show(a)["text"], "A merged note.\n")
+
+
+
+class McpStageTest(DraftsBase):
+    """whosaid_draft_stage: the MCP path runs the same gated drafts.stage, one draft, never sends."""
+
+    def call(self, **kw):
+        import asyncio
+        import mcp_server
+        return asyncio.run(mcp_server.whosaid_draft_stage(**kw))
+
+    def test_dry_run_changes_nothing(self):
+        did = self.ready()
+        r = self.call(id=did, dry_run=True)
+        self.assertTrue(r["ok"])
+        self.assertEqual(r["would_run"][0]["id"], did)
+        self.assertEqual(self.stager_calls(), [])
+        self.assertEqual(drafts.state(drafts.load(did)), "verified")
+
+    def test_stages_one_verified_draft_and_refuses_a_stale_one(self):
+        did = self.ready()
+        r = self.call(id=did)
+        self.assertTrue(r["ok"])
+        self.assertEqual([s["id"] for s in r["staged"]], [did])
+        self.assertEqual(drafts.state(drafts.load(did)), "staged")
+        drafts.write(did, text="Hi, revised but not verified.")
+        r = self.call(id=did)
+        self.assertEqual(r["staged"], [])
+        self.assertIn("re-verify", r["failed"][0]["why"])
+        self.assertEqual(len(self.stager_calls()), 1)
+
+    def test_all_stages_one_and_queue_stages_every_verified_draft_oldest_first(self):
+        a = self.ready()
+        b = self.ready(to="Second Person", topic="other")
+        c = self.ready(to="Third Person", topic="third")
+        r = self.call(all=True)
+        self.assertEqual([s["id"] for s in r["staged"]], [a])
+        self.assertIn("--queue", r["note"])
+        r = self.call(all=True, queue=True)
+        self.assertEqual([s["id"] for s in r["staged"]], [b, c])
+        self.assertEqual([x["argv"][1] for x in self.stager_calls()], ["Test Person", "Second Person", "Third Person"])
+        self.assertEqual(self.call(all=True, queue=True)["staged"], [])
+
+    def test_bad_argument_mixes_are_refused(self):
+        self.assertFalse(self.call()["ok"])
+        self.assertFalse(self.call(id="x", all=True)["ok"])
+        self.assertFalse(self.call(id="x", queue=True)["ok"])
+
+    def test_unknown_id_is_an_error_not_a_crash(self):
+        r = self.call(id="no-such-draft")
+        self.assertFalse(r["ok"])
 
 
 if __name__ == "__main__":

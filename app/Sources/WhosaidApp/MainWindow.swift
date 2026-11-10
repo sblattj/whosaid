@@ -12,6 +12,7 @@ struct MainWindow: View {
         Section("Library") { ForEach(SidebarItem.library) { row($0) } }
         Section("People") { ForEach(SidebarItem.peopleGroup) { row($0) } }
         Section("Recorder") { ForEach(SidebarItem.recorderGroup) { row($0) } }
+        Section("Outbox") { ForEach(SidebarItem.outboxGroup) { row($0) } }
       }
       .navigationSplitViewColumnWidth(min: 200, ideal: 230)
     } detail: {
@@ -36,6 +37,7 @@ struct MainWindow: View {
   func badge(_ item: SidebarItem) -> Int {
     switch item {
     case .unnamed: model.voiceGroupsLoaded ? model.voiceGroups.count : model.state?.unnamedVoices ?? 0
+    case .drafts: model.drafts.filter(\.stageable).count
     default: 0
     }
   }
@@ -66,6 +68,7 @@ struct DetailView: View {
       case .live: LiveWorkspaceView()
       case .recorder: RecorderView()
       case .topics: TopicsView()
+      case .drafts: DraftsView()
       default: workspaceContent
       }
     }

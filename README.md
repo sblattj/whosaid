@@ -288,8 +288,9 @@ whosaid drafts lint --all                       # the voice lint alone, read-onl
 whosaid drafts list                             # state and the session that wrote each one
 whosaid drafts merge <into> <from> [<from> ...] --text-file merged.md   # fold rival drafts into one
 whosaid drafts stale-check ~/meetings           # stakeholders said something new since verify?
-whosaid drafts stage <id>                       # you run this; nothing is sent
+whosaid drafts stage <id>                       # paste it into the Teams chat; nothing is sent
 whosaid drafts stage <id> --replace             # the compose box already holds text: overwrite it
+whosaid drafts stage --all --queue              # every verified draft, oldest first, each in its chat
 whosaid drafts mark-sent --check ~/meetings     # staged drafts you have since sent
 whosaid drafts html                             # review page of every open draft
 ```
@@ -324,7 +325,18 @@ whosaid drafts html                             # review page of every open draf
   open draft to the same person, then runs the stager (the built-in one, or `WHOSAID_DRAFTS_STAGER`,
   see below) with `--chat NAME --md FILE [--attach PAGE ...]`, plus `--replace
   --only-these-attachments` on a restage, and `TEAMS_OUTBOX_LOCK` set. One draft per run with
-  `--all`. `mark-sent` and `drop` close a draft (a soft delete: `list --all` still shows it).
+  `--all`; `--all --queue` stages every verified draft, oldest first, each into its own chat's
+  compose box, and stops at the first stager failure. `mark-sent` and `drop` close a draft (a soft
+  delete: `list --all` still shows it).
+- **Staging from an agent or the app.** The MCP tool `whosaid_draft_stage` (id, or `all` with an
+  optional `queue`, `dry_run`, `replace`) runs the same `stage`, so an agent can stage a draft when
+  you ask instead of handing you the command. The app's **Drafts** page (sidebar, Outbox) lists the
+  open drafts with a count of ready ones, previews each message and its attached pages, and has
+  **Stage in Teams** and **Stage all ready**. None of them sends: the stager never presses Enter or
+  a send button, so you read the message in Teams and send it there.
+- **Sent check and same-name chats.** `mark-sent --check` (and the already-sent check in `stage`)
+  also reads a chat whose name is the recipient's plus a `(chat 1a2b3c)` suffix, the name the
+  Teams cache gives a second chat with the same title (a group chat named like the 1:1).
 - **Merging rivals.** Teams has one compose box per chat, so `stage` refuses a second open draft
   to the same person (`list` shows a `rivals` count per recipient). `drafts merge INTO FROM [FROM ...]`
   folds them into one: claims union by `key` (a key with a different verdict or evidence refuses and

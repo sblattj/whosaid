@@ -6,7 +6,13 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ## [Unreleased]
 
+### Added
+- `whosaid_draft_stage` MCP tool: stages a verified outbox draft (id), the oldest verified one (`all`), or every verified one in order (`all` + `queue`) into its Teams chat, through the same gated `drafts stage` (outbox lock, stale/rival/already-sent refusals, `--replace` on a restage). It never sends. It runs off the server's event loop, so a stage of up to minutes doesn't block other calls. Agents can now stage a draft when asked instead of handing over a `whosaid drafts stage` command.
+- `whosaid drafts stage --all --queue`: every verified draft, oldest first, each into its own chat's compose box; stops at the first stager failure.
+- App: a **Drafts** page (sidebar, Outbox; the badge counts ready drafts) previews each open draft's message and attached pages and stages it with **Stage in Teams** or **Stage all ready**. You send in Teams.
+
 ### Fixed
+- `drafts mark-sent --check` and the already-sent check in `stage` missed a message sent in a chat ingested as `<Name> (chat 1a2b3c)` (a second chat with the recipient's name) and reported "not in the 0 ingested message(s)". Both now read that chat too.
 - Live names: one person whose first few lines started several running voices now gets their name on all of them instead of one, with the rest left as "them" (#193). The best-matching voice still takes the name first; another voice shares it only when it is at least 0.75 cosine-similar (`SIBLING`) to that voice, so a different person who merely resembles the same voiceprint stays unnamed. On a real meeting this had left 213 of 312 "them" lines belonging to one person, split across four voices that were 0.87-0.95 similar to each other while different people stayed under 0.35.
 
 ## [1.36.2] - 2026-11-09

@@ -215,7 +215,7 @@ Commitment tracking: kind distinguishes explicit promises, requests, standing di
 
 Not exposed here: `enroll` and `record` are interactive microphone operations that need a live terminal. Run them from the `whosaid` CLI. The first transcribe downloads ~1.5 GB of models; run whosaid_doctor to check readiness. Full flag/env/long-audio reference: read the whosaid://guide resource.
 
-Meeting workspace (search across many transcripts): point the server at a workspace directory by launching it with WHOSAID_WORKSPACE=<dir>, or pass `workspace` on each call; with neither, the workspace of the only installed `whosaid watch` agent is used (the response says so in workspace_source); there is no cwd fallback. Flow: whosaid_search (turn-level hits with meeting folder + timestamp) -> whosaid_context (the verbatim minute around one hit; do not read whole transcripts) -> whosaid_items / whosaid_item / whosaid_person for action items and per-person commitments; whosaid_worklist for one person's ranked P1/P2/P3 worklist across both corpora. whosaid_meetings, whosaid_prs and whosaid_speakers list what the graph knows; whosaid_workspace_status says whether the index exists. The index (_search.db, _WIKI.md) is built by `whosaid index <ws>` from the CLI or the watcher, never from here: every workspace tool is read-only except whosaid_set_status, which appends one status event to the tracking ledger (_tracking.json) when the user marks an item, and whosaid_name_voice_group, which names one unnamed voice across all its meetings (groups come from whosaid_voice_groups) and then rebuilds the index. Drafts outbox (not workspace files): whosaid_draft_new, whosaid_draft_write, whosaid_draft_verify, whosaid_draft_close, whosaid_draft_merge and whosaid_draft_sent_check write chat drafts to ~/.drafts for the user to stage (one open draft per recipient: new joins it; whosaid_draft_merge folds rival drafts into one); whosaid_drafts, whosaid_draft_stakeholders and whosaid_draft_stale read. Live Teams chats: whosaid_teams_live reads the newest messages (or chats) straight from the Teams desktop app's local cache, read-only and offline, for what was said in the last minutes or hours before it is ingested. Calendar: whosaid_teams_calendar reads your meetings from the same cache (the weeks the app has synced), with the recorded meeting folder for each when a workspace is set. Resources: whosaid://workspace/wiki, whosaid://workspace/action-items, whosaid://workspace/index, whosaid://workspace/meeting/{folder}/transcript and whosaid://workspace/meeting/{folder}/action-items. Everything stays local (SQLite FTS5 plus optional embeddings from a localhost Ollama)."""
+Meeting workspace (search across many transcripts): point the server at a workspace directory by launching it with WHOSAID_WORKSPACE=<dir>, or pass `workspace` on each call; with neither, the workspace of the only installed `whosaid watch` agent is used (the response says so in workspace_source); there is no cwd fallback. Flow: whosaid_search (turn-level hits with meeting folder + timestamp) -> whosaid_context (the verbatim minute around one hit; do not read whole transcripts) -> whosaid_items / whosaid_item / whosaid_person for action items and per-person commitments; whosaid_worklist for one person's ranked P1/P2/P3 worklist across both corpora. whosaid_meetings, whosaid_prs and whosaid_speakers list what the graph knows; whosaid_workspace_status says whether the index exists. The index (_search.db, _WIKI.md) is built by `whosaid index <ws>` from the CLI or the watcher, never from here: every workspace tool is read-only except whosaid_set_status, which appends one status event to the tracking ledger (_tracking.json) when the user marks an item, and whosaid_name_voice_group, which names one unnamed voice across all its meetings (groups come from whosaid_voice_groups) and then rebuilds the index. Drafts outbox (not workspace files): whosaid_draft_new, whosaid_draft_write, whosaid_draft_verify, whosaid_draft_close, whosaid_draft_merge and whosaid_draft_sent_check write chat drafts to ~/.drafts; whosaid_draft_stage puts one verified draft into its Teams chat when the user asks (it never sends: the user presses send) (one open draft per recipient: new joins it; whosaid_draft_merge folds rival drafts into one); whosaid_drafts, whosaid_draft_stakeholders and whosaid_draft_stale read. Live Teams chats: whosaid_teams_live reads the newest messages (or chats) straight from the Teams desktop app's local cache, read-only and offline, for what was said in the last minutes or hours before it is ingested. Calendar: whosaid_teams_calendar reads your meetings from the same cache (the weeks the app has synced), with the recorded meeting folder for each when a workspace is set. Resources: whosaid://workspace/wiki, whosaid://workspace/action-items, whosaid://workspace/index, whosaid://workspace/meeting/{folder}/transcript and whosaid://workspace/meeting/{folder}/action-items. Everything stays local (SQLite FTS5 plus optional embeddings from a localhost Ollama)."""
 
 
 try:
@@ -3280,7 +3280,8 @@ _DESC_DRAFT_NEW = (
     "may write it, and your text becomes a new revision); read it with whosaid_drafts(action='show') "
     "and merge your points in. separate=true makes a second draft instead; supersedes = an older "
     "draft this one replaces. Returns {ok, id, path, joined, note}. Then: whosaid_draft_stakeholders, "
-    "check every claim, whosaid_draft_write, whosaid_draft_verify. Never sends or stages anything."
+    "check every claim, whosaid_draft_write, whosaid_draft_verify. Never sends or stages anything; "
+    "whosaid_draft_stage does the staging."
 )
 
 _DESC_DRAFT_WRITE = (
@@ -3307,8 +3308,8 @@ _DESC_DRAFT_VERIFY = (
     "Write the message as one short paragraph of 1 to 3 sentences. For a real exception pass "
     "voice='warn' (or 'off') with a reason; it is kept on the draft, voice='clear' drops it. Returns "
     "{ok, id, confirmed, unverified, refuted, stakeholders, voice_lint, voice_warnings} or ok=false "
-    "with every failed gate. Only the user stages a verified draft into the chat app, with "
-    "`whosaid drafts stage ID`."
+    "with every failed gate. A verified draft goes into the chat app with whosaid_draft_stage "
+    "(or `whosaid drafts stage ID`); nothing ever sends it."
 )
 
 _DESC_DRAFTS = (
@@ -3321,6 +3322,22 @@ _DESC_DRAFTS = (
     "one against the newest) and who wrote each. action=lint: the voice lint verify would run, for "
     "id or every open draft, each {id, mode, would_fail, errors, warnings}. Use it to find and "
     "update your own open drafts as the work moves. Read-only."
+)
+
+_DESC_DRAFT_STAGE = (
+    "Stage a verified outbox draft (id) into its Teams chat (the Teams web app in the Chromium browser on "
+    "the CDP port, $WHOSAID_CDP_PORT, default 9222): opens the chat with the recipient, pastes the "
+    "message as rich text, adds the @mentions, attaches the pages and focuses the tab. It NEVER sends: "
+    "the stager refuses any Enter key and any click on a send control, so the user reads it in Teams "
+    "and presses send. Same gates as `whosaid drafts stage ID`: takes the outbox lock, refuses a "
+    "draft that is not verified, is stale, fails a gate, has a rival open draft to the same person, "
+    "or already shows up as the user's message in the ingested chat (workspace, else WHOSAID_WORKSPACE). "
+    "A draft staged before (or replace=true) clears the compose box and its attachments first. "
+    "dry_run=true takes no lock, changes nothing and returns the stager argv. Staging replaces "
+    "whatever is in that chat's compose box, so stage only when the user asked for it. all=true stages the oldest verified unstaged draft (ONE per call); all=true, queue=true stages "
+    "every one in order, each into its own chat's compose box, stopping at the first stager failure. "
+    "Takes up to about 5 minutes a draft. Returns {ok, staged: [{id, to, stager}], skipped: [{id, "
+    "why}], failed: [{id, why}], context: {id: last chat messages}, would_run (dry_run)}."
 )
 
 _DESC_DRAFT_SENT_CHECK = (
@@ -3561,6 +3578,26 @@ def whosaid_teams_calendar(start: str = "today", days: float = 7, query: Optiona
         return _ws_error(str(exc), "install and sign in to the new Teams desktop app on this Mac and open its "
                          "Calendar tab once, or set WHOSAID_TEAMS_CACHE to its IndexedDB directory; "
                          "`whosaid teams calendar status` checks", category="teams_cache")
+
+
+@mcp.tool(name="whosaid_draft_stage", description=_DESC_DRAFT_STAGE,
+          annotations=ToolAnnotations(read_only_hint=False, destructive_hint=False,
+                                      idempotent_hint=False, open_world_hint=True))
+async def whosaid_draft_stage(id: Optional[str] = None, all: bool = False, queue: bool = False,
+                              dry_run: bool = False, replace: bool = False, tab: Optional[str] = None,
+                              workspace: Optional[str] = None) -> dict:
+    """Stage verified drafts into their chats; never sends."""
+    import anyio
+    import drafts
+    if bool(id) == bool(all):
+        return _ws_error("pass id, or all=true (not both)", "whosaid_drafts(action='list') shows the verified drafts")
+    if queue and not all:
+        return _ws_error("queue needs all=true", "pass all=true, queue=true to stage every verified draft")
+    ws = workspace or os.environ.get("WHOSAID_WORKSPACE") or None
+    # A stage drives a browser for up to minutes: off the event loop, so the server keeps answering.
+    return await anyio.to_thread.run_sync(
+        lambda: _drafts_call(drafts.stage, [id] if id else None, all_ready=all, dry_run=dry_run, tab=tab, ws=ws,
+                             replace=replace, queue=queue))
 
 
 @mcp.tool(name="whosaid_draft_sent_check", description=_DESC_DRAFT_SENT_CHECK, annotations=_DRAFT_WRITE_ANN)

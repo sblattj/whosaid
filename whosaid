@@ -814,7 +814,7 @@ DRAFTS
   whosaid drafts diff ID [--from N --to M] | html [--out PATH] [--all]
   whosaid drafts stakeholders [WS] --topic T [--topic T2] [--repo DIR --path P] [--exclude NAME] [--json]
   whosaid drafts stale-check [WS] [ID] [--json]
-  whosaid drafts stage ID|--all [--dry-run] [--replace] [--tab TARGET] [--ws WS] | edit-sent ID [--dry-run] [--match-file F] [--allow-longer] | mark-sent ID | mark-sent --check [WS] | drop ID [--reason R]
+  whosaid drafts stage ID|--all [--queue] [--dry-run] [--replace] [--tab TARGET] [--ws WS] | edit-sent ID [--dry-run] [--match-file F] [--allow-longer] | mark-sent ID | mark-sent --check [WS] | drop ID [--reason R]
   whosaid drafts merge INTO FROM [FROM ...] [--text-file F] [--dry-run] [--force]
   An offline outbox for chat drafts an agent writes for you, one folder per draft in
   ~/.drafts/<id>/ (WHOSAID_DRAFTS_DIR overrides): draft.md, claims.json, draft.json.
@@ -830,7 +830,8 @@ DRAFTS
   whose stakeholders said something on their topics after the verify. stage is the
   only step that drives a browser: it takes ~/.drafts/.outbox.lock, refuses stale
   drafts and rival drafts to the same person, then runs WHOSAID_DRAFTS_STAGER with
-  --chat NAME --md FILE [--attach PAGE] and TEAMS_OUTBOX_LOCK set. Nothing is sent.
+  --chat NAME --md FILE [--attach PAGE] and TEAMS_OUTBOX_LOCK set. Nothing is sent. One draft a
+  run; --all --queue stages every verified draft, oldest first. MCP: whosaid_draft_stage.
   Changing another live session's draft needs --force; a gone session's draft is
   adopted by whoever changes it. mark-sent and drop are soft deletes (list --all).
   One open draft per recipient: new to someone who has one joins it (you become a
