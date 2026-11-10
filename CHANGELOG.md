@@ -6,6 +6,8 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ## [Unreleased]
 
+## [1.37.2] - 2026-11-10
+
 ### Fixed
 - Stager `--mention`: "no mention suggestion for NAME" right after the compose box was cleared (as `--replace` does). Teams often ignores the first key after a clear and opens no @ list; the stager now waits for the list and, when it stays shut, deletes the last letter and types it again (twice at most). Verified live.
 
