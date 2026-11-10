@@ -6,6 +6,8 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ## [Unreleased]
 
+## [1.38.1] - 2026-11-10
+
 ### Added
 - `whosaid drafts unstage ID [--reason R]`: a staged draft goes back to verified (an `unstaged` history event with the reason) after its compose box was cleared by hand, so the next stage starts fresh.
 
