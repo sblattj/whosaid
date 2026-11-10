@@ -6,6 +6,15 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ## [Unreleased]
 
+## [1.38.0] - 2026-11-10
+
+### Added
+- `whosaid teams launch [--port N] [--check] [--force] [--wait S]` and the `whosaid_teams_launch` MCP tool: start the Microsoft Teams desktop app with a DevTools port (default 9333, or `WHOSAID_TEAMS_CDP_PORT`) so the stager can drive it. Prints `{port, up, action, browser, pages}`. It refuses when another browser holds the port, and it won't quit a running Teams that's on a call (mic in use) unless you pass `--force`. `--check` only reports. (#196)
+- `whosaid drafts stage` can target the Teams desktop app: with no `--cdp-port`, it tries the app port first and uses app mode when that port is Teams (`Edg/`). Otherwise it falls back to the browser on 9222. In app mode it picks the chat window (title `Chat |`, or the page with the search box) and never opens a new tab. (#196)
+
+### Changed
+- `drafts stage` port order: `--cdp-port`, then `WHOSAID_CDP_PORT`, then the Teams app port (if it answers as Teams), then 9222. An explicit port (flag or env) skips the app probe and behaves as before.
+
 ## [1.37.3] - 2026-11-10
 
 ### Changed
