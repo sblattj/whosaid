@@ -2,19 +2,29 @@
 """
 drafts_stager.py: the built-in stager for `whosaid drafts stage` (GitHub issue #168).
 
-Opens a chat in the Teams web app, pastes draft.md as rich text, attaches pages and focuses the
-tab, in a Chromium browser started with --remote-debugging-port (the port `whosaid record
---browser` uses). It NEVER sends: no Enter/Return key event is ever dispatched (one choke point,
+Opens a chat in Teams, pastes draft.md as rich text, attaches pages and brings the chat to the front.
+By default (--app desktop) that is the Microsoft Teams desktop app, started with a WebView2 DevTools
+port (WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=9333; `whosaid drafts teams-app
+--launch` does it); --app web drives a Teams web tab in a Chromium browser started with
+--remote-debugging-port (the port `whosaid record --browser` uses). It NEVER sends: no Enter/Return key event is ever dispatched (one choke point,
 CDP.send, raises on it), and no click lands on anything that looks like a send button (click()
 hit-tests the point first). Ported from the proven teams-draft stage.ts.
 
 Usage (the contract in lib/drafts.py):
   drafts_stager.py --chat NAME --md FILE [--attach PAGE ...] [--mention NAME ...]
                    [--replace --only-these-attachments] [--new-chat] [--tab ID]
+<<<<<<< HEAD
                    [--cdp-port N] [--bypass-outbox]
 Port: --cdp-port N, else $WHOSAID_CDP_PORT, else the Teams desktop app's port ($WHOSAID_TEAMS_CDP_PORT,
 default 9333) when it answers as Edg/ (app mode: picks the chat window, never opens a tab), else 9222
 (browser mode). Refuses (exit 2) unless $TEAMS_OUTBOX_LOCK
+=======
+                   [--app desktop|web] [--cdp-port N] [--bypass-outbox]
+--app defaults to $WHOSAID_TEAMS_APP, else desktop. --cdp-port defaults to $WHOSAID_TEAMS_APP_CDP_PORT,
+else 9333 (desktop), or $WHOSAID_CDP_PORT, else 9222 (web). Desktop: of the app's page targets the one
+showing the chat rail is used (none: exit 1; several windows: exit 1, pass --tab); a tab is never opened;
+the app is brought to the front with $WHOSAID_TEAMS_ACTIVATE (default: osascript activate; "" skips it). Refuses (exit 2) unless $TEAMS_OUTBOX_LOCK
+>>>>>>> 3c89788 (drafts: unstage command; stage into the Teams desktop app by default)
 names an existing path (`drafts stage` sets it), unless --bypass-outbox.
 --only-these-attachments (needs --replace, else exit 2): after clearing the text, every attachment chip
 already in the COMPOSE ROOT is removed (its remove control, a real click, hit-tested to be inside the
@@ -110,6 +120,8 @@ import urllib.request
 # Anchored to the URL's host: a Teams URL inside another page's path or query must not match.
 IS_TEAMS = re.compile(r"^https://teams\.(cloud\.)?microsoft(\.com)?(:\d+)?/", re.I)
 TEAMS_URL = "https://teams.cloud.microsoft/"
+DESKTOP_PORT, WEB_PORT = 9333, 9222
+ACTIVATE_APP = """osascript -e 'tell application "Microsoft Teams" to activate'"""
 
 
 # ---- selectors: CHECKED = matched on a signed-in Teams web tab (read-only probe, 2026-11-06);
@@ -463,6 +475,7 @@ JS_EDIT_PASTE = (_EDITS + "const e=EE();e.focus();const dt=new DataTransfer();dt
                  "bubbles:true,cancelable:true}));return {len:e.innerText.trim().length,links:e.querySelectorAll('a').length}")
 
 
+<<<<<<< HEAD
 async def has_search_box(c: CDP, tid: str) -> bool:
     """Attach to a candidate, look for the stager's search box, detach again."""
     sid = (await c.send("Target.attachToTarget", {"targetId": tid, "flatten": True}))["sessionId"]
@@ -473,20 +486,47 @@ async def has_search_box(c: CDP, tid: str) -> bool:
     except StagerError:
         return False
     finally:
+=======
+async def find_app_page(c: CDP, tabs: list[dict]) -> str:
+    """The desktop app's main window: of its Teams page targets (it also runs hidden helper pages), the
+    one that shows the chat rail. Read-only: attach, count the rail items, detach."""
+    pages = [t for t in tabs if t.get("type") == "page" and IS_TEAMS.search(t.get("url", ""))]
+    with_rail = []
+    for t in pages:
+        sid = (await c.send("Target.attachToTarget", {"targetId": t["targetId"], "flatten": True}))["sessionId"]
+        r = await c.send("Runtime.evaluate", {"expression": op("rail_find", JS_RAIL, name=""),
+                                              "returnByValue": True}, session=sid)
+        if ((r.get("result") or {}).get("value") or {}).get("total"):
+            with_rail.append(t["targetId"])
+>>>>>>> 3c89788 (drafts: unstage command; stage into the Teams desktop app by default)
         try:
             await c.send("Target.detachFromTarget", {"sessionId": sid})
         except StagerError:
             pass
+<<<<<<< HEAD
 
 
 async def find_tab(c: CDP, want: str | None, chat: str | None = None, app: bool = False) -> str:
     """--tab wins. App mode (the Teams desktop app's own port): pick the chat window among the Teams pages,
     never open a tab. Browser mode: the first Teams page, else a new tab."""
+=======
+    if not with_rail:
+        raise StagerError("the Teams app shows no chat rail (signed in? Chat open?); "
+                          f"{len(pages)} Teams page(s) on this port")
+    if len(with_rail) > 1:
+        raise StagerError(f"{len(with_rail)} Teams app windows show a chat rail; pass --tab "
+                          f"({', '.join(with_rail)})")
+    return with_rail[0]
+
+
+async def find_tab(c: CDP, want: str | None, app: str = "web") -> str:
+>>>>>>> 3c89788 (drafts: unstage command; stage into the Teams desktop app by default)
     tabs = (await c.send("Target.getTargets")).get("targetInfos", [])
     if want:
         if not any(t["targetId"] == want for t in tabs):
             raise StagerError(f"no tab {want}")
         return want
+<<<<<<< HEAD
     pages = [t for t in tabs if t.get("type") == "page" and IS_TEAMS.search(t.get("url", ""))]
     if app:
         chats = [t for t in pages if str(t.get("title", "")).startswith("Chat |")]
@@ -501,6 +541,13 @@ async def find_tab(c: CDP, want: str | None, chat: str | None = None, app: bool 
         raise StagerError("Teams app is up but no chat window found", 1)
     if pages:
         return pages[0]["targetId"]
+=======
+    if app == "desktop":
+        return await find_app_page(c, tabs)
+    for t in tabs:
+        if t.get("type") == "page" and IS_TEAMS.search(t.get("url", "")):
+            return t["targetId"]
+>>>>>>> 3c89788 (drafts: unstage command; stage into the Teams desktop app by default)
     # Vivaldi wedges a tab attached in its first milliseconds: wait for its first
     # Target.targetInfoChanged (capped at 2s) before attaching.
     await c.send("Target.setDiscoverTargets", {"discover": True})
@@ -529,7 +576,9 @@ def title_matches(title: str, chat: str) -> bool:
     for Bo Chen and the draft landed in the group). A group's rail name ("Ann and Bo Chen") matches a
     title listing the same members ("Ann Lee, Bo Chen"): same count, each a full name or first name."""
     parts = [p.strip() for p in (title or "").split(" | ")]
-    mid = parts[-2] if len(parts) >= 3 else parts[0]
+    if len(parts) >= 2 and parts[-1].lower() == "microsoft teams":
+        parts = parts[:-1]  # the web tab adds it; the desktop window title is just "Chat | <name>"
+    mid = parts[1] if len(parts) >= 2 else parts[0]
     want_s = (chat or "").strip()
     if not want_s:
         return False
@@ -785,6 +834,9 @@ async def stage(a) -> dict:
         with urllib.request.urlopen(f"http://127.0.0.1:{a.cdp_port}/json/version", timeout=5) as r:
             ws_url = json.load(r)["webSocketDebuggerUrl"]
     except Exception:
+        if a.app == "desktop":
+            raise StagerError(f"no Teams app on DevTools port {a.cdp_port}; relaunch it with the port: "
+                              f"whosaid drafts teams-app --launch (or stage into a Teams web tab with --web)")
         raise StagerError(f"no browser on DevTools port {a.cdp_port}; start one with --remote-debugging-port")
     try:
         from websockets.asyncio.client import connect
@@ -795,10 +847,14 @@ async def stage(a) -> dict:
         c = CDP(ws)
         try:
             step("finding the Teams tab")
+<<<<<<< HEAD
             tid = await find_tab(c, a.tab, a.chat, app)
+=======
+            tid = await find_tab(c, a.tab, a.app)
+>>>>>>> 3c89788 (drafts: unstage command; stage into the Teams desktop app by default)
             c.session = (await c.send("Target.attachToTarget", {"targetId": tid, "flatten": True}))["sessionId"]
             step("bringing the tab to the front")  # a background tab (document.hidden) ignores rail clicks
-            await bring_to_front(c, tid)
+            await bring_to_front(c, tid, a.app)
             step("opening the chat")
             title = await (new_chat(c, a.chat) if a.new_chat else open_chat(c, a.chat))
             if a.edit_sent:
@@ -849,7 +905,7 @@ async def stage(a) -> dict:
                                       f"attachment; rerun the stage to replace it)") from None
 
             step("focusing the tab")
-            await bring_to_front(c, tid)
+            await bring_to_front(c, tid, a.app)
             await c.ev(op("caret_end", JS_CARET))
             fin = await c.ev(op("final", JS_FINAL))
             measured = len(await chip_names(c) or [])  # chips actually in the compose box, not what was asked
@@ -930,12 +986,20 @@ async def edit_sent(c: CDP, a, title: str, html: str, plain: str) -> dict:
     return {"sent": False, "saved": False, "edit": True, "chat": title, "chars": res["len"], "links": res["links"]}
 
 
-async def bring_to_front(c: CDP, tid: str):
+async def bring_to_front(c: CDP, tid: str, app: str = "web"):
     await c.send("Target.activateTarget", {"targetId": tid})
     try:
         await c.s("Page.bringToFront")
     except StagerError:
         pass
+    if app == "desktop":  # a WebView2 page can't raise its own window: ask macOS to
+        cmd = os.environ.get("WHOSAID_TEAMS_ACTIVATE", ACTIVATE_APP).strip()
+        if cmd:
+            import shlex, subprocess
+            try:
+                subprocess.run(shlex.split(cmd), capture_output=True, timeout=10)
+            except (OSError, subprocess.TimeoutExpired):
+                pass
 
 
 async def stage_with_deadline(a) -> dict:
@@ -1015,7 +1079,9 @@ async def upload(c: CDP, files: list[str]):
 # ---- CLI ---------------------------------------------------------------------------------
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
-    p = argparse.ArgumentParser(prog="drafts_stager.py", description="Stage a draft in a Teams web chat. Never sends.")
+    p = argparse.ArgumentParser(prog="drafts_stager.py", description="Stage a draft in a Teams chat. Never sends.")
+    p.add_argument("--app", choices=("desktop", "web"), default=None,
+                   help="the Teams desktop app (default, $WHOSAID_TEAMS_APP) or a Teams web tab")
     p.add_argument("--chat", required=True)
     p.add_argument("--md", required=True)
     p.add_argument("--attach", action="append", default=[])
@@ -1029,6 +1095,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     p.add_argument("--edit-sent", action="store_true", help="edit your sent message matching --match-file")
     p.add_argument("--match-file", help="text of the sent message to edit (--edit-sent)")
     a = p.parse_args(argv)  # argparse exits 2 on usage errors
+<<<<<<< HEAD
     a.app_port = None
     if a.cdp_port is None and os.environ.get("WHOSAID_CDP_PORT"):  # only read the env var when the flag is absent
         raw = os.environ["WHOSAID_CDP_PORT"]
@@ -1042,6 +1109,19 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
             a.app_port = int(raw)
         except ValueError:
             raise StagerError(f"WHOSAID_TEAMS_CDP_PORT is not a port number: {raw!r}", 2)
+=======
+    if a.app is None:
+        a.app = (os.environ.get("WHOSAID_TEAMS_APP") or "desktop").strip().lower()
+        if a.app not in ("desktop", "web"):
+            raise StagerError(f"WHOSAID_TEAMS_APP must be desktop or web: {a.app!r}", 2)
+    if a.cdp_port is None:  # only read the env var when the flag is absent
+        var, dflt = ("WHOSAID_TEAMS_APP_CDP_PORT", DESKTOP_PORT) if a.app == "desktop" else ("WHOSAID_CDP_PORT", WEB_PORT)
+        raw = os.environ.get(var) or str(dflt)
+        try:
+            a.cdp_port = int(raw)
+        except ValueError:
+            raise StagerError(f"{var} is not a port number: {raw!r}", 2)
+>>>>>>> 3c89788 (drafts: unstage command; stage into the Teams desktop app by default)
     return a
 
 

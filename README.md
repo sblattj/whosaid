@@ -288,7 +288,10 @@ whosaid drafts lint --all                       # the voice lint alone, read-onl
 whosaid drafts list                             # state and the session that wrote each one
 whosaid drafts merge <into> <from> [<from> ...] --text-file merged.md   # fold rival drafts into one
 whosaid drafts stale-check ~/meetings           # stakeholders said something new since verify?
+whosaid drafts teams-app --launch               # reopen the Teams desktop app with a DevTools port
 whosaid drafts stage <id>                       # paste it into the Teams chat; nothing is sent
+whosaid drafts stage <id> --web                 # into a Teams web tab instead of the desktop app
+whosaid drafts unstage <id> --reason R          # you cleared the compose box by hand: back to verified
 whosaid drafts stage <id> --replace             # the compose box already holds text: overwrite it
 whosaid drafts stage --all --queue              # every verified draft, oldest first, each in its chat
 whosaid drafts mark-sent --check ~/meetings     # staged drafts you have since sent
@@ -348,8 +351,17 @@ whosaid drafts html                             # review page of every open draf
   live session needs `--force`, like `drop`. `--dry-run` prints the result and clashes and writes
   nothing. MCP: `whosaid_draft_merge(into, from, text?, force?, dry_run?)`.
 - **The built-in stager.** When `WHOSAID_DRAFTS_STAGER` is unset, `stage` uses `lib/drafts_stager.py`.
+<<<<<<< HEAD
   It needs either the Teams desktop app or a Chromium browser started with `--remote-debugging-port`
   with Teams web signed in (port order below). It opens the chat by
+=======
+  By default it stages into the Microsoft Teams desktop app, which needs its WebView2 DevTools port
+  (`WHOSAID_TEAMS_APP_CDP_PORT`, default 9333): `whosaid drafts teams-app` checks it and `--launch`
+  quits and reopens Teams with `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=9333`.
+  It uses the app window that shows the chat rail, never opens one, and brings Teams to the front.
+  `--web` (or `WHOSAID_TEAMS_APP=web`) drives a Teams web tab instead, in a Chromium browser started
+  with `--remote-debugging-port` (`WHOSAID_CDP_PORT`, default 9222). Either way it opens the chat by
+>>>>>>> 3c89788 (drafts: unstage command; stage into the Teams desktop app by default)
   exact name (left rail, else search; `--new-chat` starts one via the To picker), pastes the draft
   as rich text, attaches the pages, and with `--replace` clears the box (`--only-these-attachments`
   also removes the attachments already there). Each `--mention NAME` becomes a real @mention at the

@@ -424,6 +424,22 @@ class OutboxTest(DraftsBase):
             with self.assertRaises(drafts.DraftsError):
                 fn()
 
+    def test_unstage_returns_a_staged_draft_to_verified(self):
+        did = self.ready()
+        with self.assertRaises(drafts.DraftsError):
+            drafts.unstage(did)  # verified, not staged
+        drafts.stage([did])
+        self.assertEqual(drafts.state(drafts.load(did)), "staged")
+        r = drafts.unstage(did, "cleared from Teams web")
+        m = drafts.load(did)
+        self.assertEqual((r["state"], m["status"]), ("verified", "verified"))
+        self.assertNotIn("staged_at", m)
+        self.assertEqual(m["history"][-1]["event"], "unstaged")
+        self.assertEqual(m["history"][-1]["why"], "cleared from Teams web")
+        drafts.stage([did])  # restage starts fresh: the box was cleared, so no --replace
+        self.assertNotIn("--replace", self.stager_calls()[-1]["argv"])
+        self.assertEqual(drafts.main(["unstage", did, "--reason", "r"]), 0)
+
     def test_bad_ids_refused(self):
         for bad in ("../x", ".outbox.lock", ""):
             with self.assertRaises(drafts.DraftsError):

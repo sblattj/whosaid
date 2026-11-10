@@ -3325,9 +3325,17 @@ _DESC_DRAFTS = (
 )
 
 _DESC_DRAFT_STAGE = (
+<<<<<<< HEAD
     "Stage a verified outbox draft (id) into its Teams chat (the Teams web app in the Chromium browser on "
     "the CDP port; tries the Teams app port (WHOSAID_TEAMS_CDP_PORT, default 9333) first, then the browser port (WHOSAID_CDP_PORT, default 9222); an explicit port skips the probe): opens the chat with the recipient, pastes the "
     "message as rich text, adds the @mentions, attaches the pages and focuses the tab. It NEVER sends: "
+=======
+    "Stage a verified outbox draft (id) into its Teams chat, in the Microsoft Teams desktop app by default "
+    "(its WebView2 DevTools port, $WHOSAID_TEAMS_APP_CDP_PORT, default 9333; `whosaid drafts teams-app "
+    "--launch` reopens Teams with it), or with web=true a Teams web tab in the Chromium browser on "
+    "$WHOSAID_CDP_PORT, default 9222: opens the chat with the recipient, pastes the "
+    "message as rich text, adds the @mentions, attaches the pages and brings it to the front. It NEVER sends: "
+>>>>>>> 3c89788 (drafts: unstage command; stage into the Teams desktop app by default)
     "the stager refuses any Enter key and any click on a send control, so the user reads it in Teams "
     "and presses send. Same gates as `whosaid drafts stage ID`: takes the outbox lock, refuses a "
     "draft that is not verified, is stale, fails a gate, has a rival open draft to the same person, "
@@ -3628,7 +3636,7 @@ async def whosaid_teams_launch(port: Optional[int] = None, check_only: bool = Fa
                                       idempotent_hint=False, open_world_hint=True))
 async def whosaid_draft_stage(id: Optional[str] = None, all: bool = False, queue: bool = False,
                               dry_run: bool = False, replace: bool = False, tab: Optional[str] = None,
-                              workspace: Optional[str] = None) -> dict:
+                              workspace: Optional[str] = None, web: bool = False) -> dict:
     """Stage verified drafts into their chats; never sends."""
     import anyio
     import drafts
@@ -3640,7 +3648,7 @@ async def whosaid_draft_stage(id: Optional[str] = None, all: bool = False, queue
     # A stage drives a browser for up to minutes: off the event loop, so the server keeps answering.
     return await anyio.to_thread.run_sync(
         lambda: _drafts_call(drafts.stage, [id] if id else None, all_ready=all, dry_run=dry_run, tab=tab, ws=ws,
-                             replace=replace, queue=queue))
+                             replace=replace, queue=queue, web=web))
 
 
 @mcp.tool(name="whosaid_draft_sent_check", description=_DESC_DRAFT_SENT_CHECK, annotations=_DRAFT_WRITE_ANN)

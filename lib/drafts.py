@@ -617,6 +617,20 @@ def close(draft_id: str, status: str, reason: str | None = None, force: bool = F
     return {"id": draft_id, "status": status}
 
 
+def unstage(draft_id: str, reason: str | None = None) -> dict:
+    """Back from staged to verified, for a compose box someone cleared by hand: the next stage starts
+    fresh (no --replace). Only the bookkeeping changes; the chat is not touched."""
+    m = load(draft_id)
+    if m["status"] != "staged":
+        raise DraftsError(f"{draft_id} is {state(m)}, not staged")
+    m["status"] = "verified"
+    m.pop("staged_hash", None)
+    m.pop("staged_at", None)
+    _event(m, "unstaged", why=reason, by=os.environ.get("CLAUDE_CODE_SESSION_ID"))
+    save(m)
+    return {"id": draft_id, "status": m["status"], "state": state(m)}
+
+
 def _claim_id(k: dict) -> str:
     return k.get("key") or (k.get("text") or "")[:40]
 
@@ -1158,8 +1172,8 @@ def _stage_ws(ws) -> Path | None:
 
 def stage(ids: list[str] | None = None, all_ready: bool = False, dry_run: bool = False,
           tab: str | None = None, ws: str | os.PathLike | None = None, replace: bool = False,
-          queue: bool = False) -> dict:
-    """Stage drafts into their chats; never sends. One per run unless queue: each lands in its own chat's
+          queue: bool = False, web: bool = False) -> dict:
+    """Stage drafts into their chats; never sends. Into the Teams desktop app unless web (a Teams web tab). One per run unless queue: each lands in its own chat's
     compose box, so queue stages them all, oldest first, and stops at the first stager failure."""
     if all_ready:
         ready = [m for m in all_drafts() if m["status"] in OPEN and state(m).startswith("verified")]
@@ -1218,6 +1232,8 @@ def stage(ids: list[str] | None = None, all_ready: bool = False, dry_run: bool =
                 argv += ["--new-chat"]
             if tab:
                 argv += ["--tab", tab]
+            if web:
+                argv += ["--app", "web"]
             if dry_run:
                 res["would_run"].append({"id": draft_id, "argv": cmd + argv})
                 continue
@@ -1278,7 +1294,7 @@ def sent_text(ws: Path | None, m: dict) -> dict | None:
 
 
 def edit_sent(draft_id: str, dry_run: bool = False, tab: str | None = None, ws: str | os.PathLike | None = None,
-              match_file: str | None = None, allow_longer: bool = False) -> dict:
+              match_file: str | None = None, allow_longer: bool = False, web: bool = False) -> dict:
     """Load the current draft.md into Teams' Edit box on the message this draft was sent as (#176).
     The stager never saves the edit: the user checks it and presses save in Teams."""
     m = load(draft_id)
@@ -1305,7 +1321,7 @@ def edit_sent(draft_id: str, dry_run: bool = False, tab: str | None = None, ws: 
     matchf = ddir(draft_id) / ".edit-match.txt"
     matchf.write_text(old)
     argv = [*stager_builtin(), "--chat", m["to"], "--md", str(ddir(draft_id) / "draft.md"),
-            "--edit-sent", "--match-file", str(matchf)] + (["--tab", tab] if tab else [])
+            "--edit-sent", "--match-file", str(matchf)] + (["--tab", tab] if tab else []) + (["--app", "web"] if web else [])
     res: dict = {"id": draft_id, "to": m["to"], "sent_message": where}
     if dry_run:
         return res | {"would_run": argv}
@@ -1331,6 +1347,42 @@ def edit_sent(draft_id: str, dry_run: bool = False, tab: str | None = None, ws: 
     save(m)
     return res | {"stager": ((r.stdout or "").strip().splitlines() or [""])[-1],
                   "note": "the new text is in the Edit box; check it and save it in Teams"}
+
+
+def teams_app(launch: bool = False, port: int | None = None) -> dict:
+    """Is the Teams desktop app up with a DevTools port (what stage drives by default)? With launch, quit
+    Teams and start it again with WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=PORT.
+    Quitting is refused while Teams won't quit (a call in progress keeps it open)."""
+    import urllib.request
+    port = port or int(os.environ.get("WHOSAID_TEAMS_APP_CDP_PORT") or 9333)
+
+    def probe() -> dict | None:
+        try:
+            with urllib.request.urlopen(f"http://127.0.0.1:{port}/json/version", timeout=2) as r:
+                return json.load(r)
+        except Exception:
+            return None
+
+    up = probe()
+    if up or not launch:
+        return {"port": port, "up": bool(up), "browser": (up or {}).get("Browser"),
+                **({} if up else {"hint": "whosaid drafts teams-app --launch (quits and reopens Teams)"})}
+    running = lambda: subprocess.run(["pgrep", "-xq", "MSTeams"]).returncode == 0
+    if running():
+        subprocess.run(["osascript", "-e", 'quit app "Microsoft Teams"'], capture_output=True, timeout=20)
+        for _ in range(40):
+            if not running():
+                break
+            time.sleep(0.5)
+        if running():
+            raise DraftsError("Teams didn't quit (in a call?); try again after it")
+    subprocess.run(["open", "-a", "Microsoft Teams", "--env",
+                    f"WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port={port}"], check=True)
+    for _ in range(60):
+        if up := probe():
+            return {"port": port, "up": True, "browser": up.get("Browser"), "launched": True}
+        time.sleep(1)
+    raise DraftsError(f"Teams started but no DevTools port {port} after 60s")
 
 
 def stager_builtin() -> list[str]:
@@ -1447,6 +1499,7 @@ def build_parser() -> argparse.ArgumentParser:
                    help="overwrite text already in the compose box and drop its old attachments")
     a.add_argument("--ws", help="workspace with the ingested chats (default WHOSAID_WORKSPACE)")
     a.add_argument("--queue", action="store_true", help="with --all: stage every verified draft, oldest first")
+    a.add_argument("--web", action="store_true", help="a Teams web tab instead of the Teams desktop app")
     a = sub.add_parser("edit-sent", help="load the corrected draft.md into Teams' Edit box on the sent message")
     a.add_argument("id")
     a.add_argument("--dry-run", action="store_true")
@@ -1454,6 +1507,10 @@ def build_parser() -> argparse.ArgumentParser:
     a.add_argument("--ws", help="workspace with the ingested chats (default WHOSAID_WORKSPACE)")
     a.add_argument("--match-file", help="text of the sent message, when it isn't ingested yet")
     a.add_argument("--allow-longer", action="store_true", help="the new text may be much longer than the sent one")
+    a.add_argument("--web", action="store_true", help="a Teams web tab instead of the Teams desktop app")
+    a = sub.add_parser("teams-app", help="is the Teams desktop app up with a DevTools port (what stage drives)")
+    a.add_argument("--launch", action="store_true", help="if not, quit Teams and reopen it with the port")
+    a.add_argument("--port", type=int)
     a = sub.add_parser("mark-sent")
     a.add_argument("id", nargs="?", help="a draft id, or with --check an optional workspace")
     a.add_argument("--check", action="store_true", help="mark staged drafts sent that show up in the ingested chat")
@@ -1466,6 +1523,9 @@ def build_parser() -> argparse.ArgumentParser:
     a.add_argument("--text-file", help="the merged message (markdown, or - for stdin); default: the texts joined")
     a.add_argument("--dry-run", action="store_true", help="print the merged result and clashes, write nothing")
     a.add_argument("--force", action="store_true", help=force)
+    a = sub.add_parser("unstage", help="staged back to verified, after the compose box was cleared by hand")
+    a.add_argument("id")
+    a.add_argument("--reason")
     a = sub.add_parser("drop")
     a.add_argument("id")
     a.add_argument("--reason")
@@ -1584,19 +1644,23 @@ def main(argv: list[str] | None = None) -> int:
                     for f in d["new_statements"]:
                         print(f"   {f['meeting']} {f['t_str']} {f['speaker']} on '{f['topic']}': {f['text'][:100]}")
         elif c == "edit-sent":
-            r = edit_sent(args.id, args.dry_run, args.tab, args.ws, args.match_file, args.allow_longer)
+            r = edit_sent(args.id, args.dry_run, args.tab, args.ws, args.match_file, args.allow_longer, web=args.web)
             if "would_run" in r:
                 print(f"{r['id']}: would edit your message in {r['to']} ({r['sent_message']}): "
                       + " ".join(shlex.quote(x) for x in r["would_run"]))
             else:
                 print(f"{r['id']}: {r['note']}. {r['stager']}")
+        elif c == "teams-app":
+            r = teams_app(args.launch, args.port)
+            print(json.dumps(r, indent=2))
+            return 0 if r["up"] else 1
         elif c == "stage":
             if not args.all and not args.id:
                 raise DraftsError("need an id or --all")
             if args.queue and not args.all:
                 raise DraftsError("--queue needs --all")
             r = stage([args.id] if args.id else None, args.all, args.dry_run, args.tab, args.ws, args.replace,
-                      queue=args.queue)
+                      queue=args.queue, web=args.web)
             for did, ctx in r.get("context", {}).items():
                 print(f"{did}: {ctx['chat']} has {ctx['ingested']} ingested message(s) in 14 days"
                       + (f", newest {ctx['newest_at'][:16]}" if ctx["newest_at"] else ""))
@@ -1648,6 +1712,9 @@ def main(argv: list[str] | None = None) -> int:
                 print("text: the drafts' texts are joined with blank lines; rewrite them as one message "
                       "(drafts text), then verify")
             print(f"{r['into']}: {r['state']}; verify it again before stage")
+        elif c == "unstage":
+            r = unstage(args.id, args.reason)
+            print(f"{r['id']}: {r['state']}")
         elif c in ("mark-sent", "drop"):
             if not args.id:
                 raise DraftsError("need a draft id (or mark-sent --check)")

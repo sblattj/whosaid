@@ -26,6 +26,11 @@ import drafts  # noqa: E402
 import drafts_stager as ds  # noqa: E402
 
 SCRIPT = str(ROOT / "lib" / "drafts_stager.py")
+
+# No test may reach a real Teams: the desktop app (9333) and a browser (9222) may be running on this
+# machine. Every default port points at a closed one; the fakes pass --cdp-port; Teams is never raised.
+os.environ.update({"WHOSAID_TEAMS_APP_CDP_PORT": "9", "WHOSAID_CDP_PORT": "9", "WHOSAID_TEAMS_ACTIVATE": "",
+                   "WHOSAID_TEAMS_APP": ""})
 SEND_XY = (900, 900)
 OP_RE = re.compile(r"^/\*op:(\w+)\*//\*args:(.*?)\*/")
 
@@ -98,6 +103,7 @@ class Args(unittest.TestCase):
         return ds.parse_args(["--chat", "Ann Lee", "--md", self.md, *extra])
 
     def test_defaults_and_port_env(self):
+<<<<<<< HEAD
         with patch.dict(os.environ, {"WHOSAID_CDP_PORT": "", "WHOSAID_TEAMS_CDP_PORT": ""}):
             a = ds.parse_args(["--chat", "a", "--md", "b"])
             self.assertEqual((a.cdp_port, a.app_port), (None, 9333))  # settled later by resolve_port
@@ -105,6 +111,14 @@ class Args(unittest.TestCase):
             self.assertEqual(ds.parse_args(["--chat", "a", "--md", "b"]).cdp_port, 9444)
         with patch.dict(os.environ, {"WHOSAID_CDP_PORT": "", "WHOSAID_TEAMS_CDP_PORT": "9555"}):
             self.assertEqual(ds.parse_args(["--chat", "a", "--md", "b"]).app_port, 9555)
+=======
+        with patch.dict(os.environ, {"WHOSAID_CDP_PORT": ""}):
+            self.assertEqual(ds.parse_args(["--chat", "a", "--md", "b", "--app", "web"]).cdp_port, 9222)
+        with patch.dict(os.environ, {"WHOSAID_CDP_PORT": "9444"}):
+            self.assertEqual(ds.parse_args(["--chat", "a", "--md", "b", "--app", "web"]).cdp_port, 9444)
+        with patch.dict(os.environ, {"WHOSAID_TEAMS_APP": "", "WHOSAID_TEAMS_APP_CDP_PORT": "9555"}):
+            self.assertEqual(ds.parse_args(["--chat", "a", "--md", "b"]).cdp_port, 9555)
+>>>>>>> 3c89788 (drafts: unstage command; stage into the Teams desktop app by default)
 
     def test_outbox_gate(self):
         with self.assertRaises(ds.StagerError) as e:
@@ -210,12 +224,12 @@ class Args(unittest.TestCase):
 
     def test_bad_port_env_is_exit_2_not_a_traceback(self):
         env = {k: v for k, v in os.environ.items() if k != "TEAMS_OUTBOX_LOCK"}
-        env["WHOSAID_CDP_PORT"] = "not-a-port"
-        r = subprocess.run([sys.executable, SCRIPT, "--chat", "Ann Lee", "--md", self.md, "--bypass-outbox"],
-                           capture_output=True, text=True, env=env, timeout=30)
-        self.assertEqual(r.returncode, 2, r.stderr)
-        self.assertIn("WHOSAID_CDP_PORT", r.stderr)
-        self.assertNotIn("Traceback", r.stderr)
+        for app, var in (("web", "WHOSAID_CDP_PORT"), ("desktop", "WHOSAID_TEAMS_APP_CDP_PORT")):
+            r = subprocess.run([sys.executable, SCRIPT, "--chat", "Ann Lee", "--md", self.md, "--bypass-outbox",
+                                "--app", app], capture_output=True, text=True, env={**env, var: "not-a-port"}, timeout=30)
+            self.assertEqual(r.returncode, 2, r.stderr)
+            self.assertIn(var, r.stderr)
+            self.assertNotIn("Traceback", r.stderr)
 
     def test_bad_app_port_env_is_exit_2_not_a_traceback(self):
         env = {k: v for k, v in os.environ.items() if k not in ("TEAMS_OUTBOX_LOCK", "WHOSAID_CDP_PORT")}
@@ -264,9 +278,17 @@ class FakeTeams:
 
     def __init__(self, rail=(), search=(), compose="", teams_tab=True, old_chips=(), people=(), mention_dir=(),
                  history=(), no_root=False, remover_noop=False, drop_uploads=False, focus_miss=False,
+<<<<<<< HEAD
                  fail_set_files=False, root_flicker=0, hidden=False, own=(), no_edit_item=False, titles=None, mention_lazy=False, targets=None, browser=None):
         from websockets.sync.server import serve
         self.targets, self.browser = targets, browser  # targets: dicts of id/title/url; browser: /json/version Browser
+=======
+                 fail_set_files=False, root_flicker=0, hidden=False, own=(), no_edit_item=False, titles=None, mention_lazy=False,
+                 helpers=0, desktop=False):
+        from websockets.sync.server import serve
+        # the desktop app: teams.microsoft.com/v2/ pages, plus hidden helper pages without a chat rail
+        self.helpers, self.desktop = helpers, desktop
+>>>>>>> 3c89788 (drafts: unstage command; stage into the Teams desktop app by default)
         self.titles = dict(titles or {})  # rail name -> window title, when it isn't "Chat | <name> | ..."
         self.rail, self.search_dir, self.compose = list(rail), list(search), compose
         self.people_dir, self.mention_dir = list(people), list(mention_dir)
@@ -548,12 +570,23 @@ class FakeTeams:
             self.cur_session = msg.get("sessionId")
             result: dict = {}
             if method == "Target.getTargets":
+<<<<<<< HEAD
                 if self.targets is not None:
                     result = {"targetInfos": [{"targetId": t["id"], "type": "page", "title": t["title"], "url": t["url"]}
                                               for t in self.targets]}
                 else:
                     result = {"targetInfos": [{"targetId": "T1", "type": "page",
                                                "url": "https://teams.cloud.microsoft/v2/" if self.teams_tab else "https://example.com/"}]}
+=======
+                host = "https://teams.microsoft.com/v2/" if self.desktop else "https://teams.cloud.microsoft/v2/"
+                helpers = [{"targetId": f"H{i}", "type": "page", "url": host} for i in range(self.helpers)]
+                result = {"targetInfos": helpers + [{"targetId": "T1", "type": "page",
+                                           "url": host if self.teams_tab else "https://example.com/"}]}
+            elif method == "Target.attachToTarget" and params.get("targetId", "T1") != "T1":
+                result = {"sessionId": "S-" + params["targetId"]}
+            elif method == "Runtime.evaluate" and msg.get("sessionId", "S1") != "S1":
+                result = {"result": {"type": "object", "value": {"total": 0, "matches": []}}}
+>>>>>>> 3c89788 (drafts: unstage command; stage into the Teams desktop app by default)
             elif method == "Target.createTarget":
                 result = {"targetId": "T1"}
                 self.teams_tab = True
@@ -650,9 +683,12 @@ class EndToEnd(unittest.TestCase):
         self.fakes.append(f)
         return f
 
-    def run_stager(self, fake, *extra, lock=True, chat="Ann Lee", env_extra=None):
+    def run_stager(self, fake, *extra, lock=True, chat="Ann Lee", env_extra=None, app="web"):
         env = {k: v for k, v in os.environ.items() if k != "TEAMS_OUTBOX_LOCK"}
         env["WHOSAID_STAGER_TIME_SCALE"] = "0.01"
+        env["WHOSAID_TEAMS_ACTIVATE"] = ""  # never raise the real Teams app from a test
+        if app:
+            extra = ("--app", app, *extra)
         env.update(env_extra or {})
         if lock:
             env["TEAMS_OUTBOX_LOCK"] = str(self.lock)
@@ -927,6 +963,40 @@ class EndToEnd(unittest.TestCase):
         self.assertEqual(r.returncode, 1)
         self.assertIn("no browser on DevTools port", r.stderr)
 
+    def test_desktop_app_uses_the_window_with_the_rail(self):
+        f = self.fake(rail=["Ann Lee"], desktop=True, helpers=2,
+                      titles={"Ann Lee": "Chat | Ann Lee"})  # the desktop title has no "| Microsoft Teams"
+        r = self.run_stager(f, app="desktop")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn(("Target.activateTarget", {"targetId": "T1"}), f.calls)
+        self.assertNotIn("Target.createTarget", [m for m, _ in f.calls])
+        self.assertIn("paste", f.ops)
+        f.never_sent(self)
+
+    def test_desktop_app_never_opens_a_tab(self):
+        f = self.fake(rail=["Ann Lee"], desktop=True, teams_tab=False)
+        r = self.run_stager(f, app="desktop")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("shows no chat rail", r.stderr)
+        self.assertNotIn("Target.createTarget", [m for m, _ in f.calls])
+        self.assertNotIn("paste", f.ops)
+
+    def test_desktop_is_the_default_app(self):
+        with patch.dict(os.environ, {"WHOSAID_TEAMS_APP": "", "WHOSAID_TEAMS_APP_CDP_PORT": "", "WHOSAID_CDP_PORT": ""}):
+            a = ds.parse_args(["--chat", "a", "--md", "b"])
+            self.assertEqual((a.app, a.cdp_port), ("desktop", 9333))
+            a = ds.parse_args(["--chat", "a", "--md", "b", "--app", "web"])
+            self.assertEqual((a.app, a.cdp_port), ("web", 9222))
+        with patch.dict(os.environ, {"WHOSAID_TEAMS_APP": "web", "WHOSAID_CDP_PORT": ""}):
+            self.assertEqual(ds.parse_args(["--chat", "a", "--md", "b"]).app, "web")
+
+    def test_desktop_no_port_says_how_to_launch(self):
+        f = self.fake(rail=["Ann Lee"], desktop=True)
+        f.close()
+        r = self.run_stager(f, app="desktop")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("whosaid drafts teams-app --launch", r.stderr)
+
     def test_opens_teams_tab_when_none(self):
         f = self.fake(rail=["Ann Lee"], teams_tab=False)
         r = self.run_stager(f)
@@ -1020,6 +1090,9 @@ class EndToEnd(unittest.TestCase):
     def test_title_matches_rules(self):
         tm = ds.title_matches
         self.assertTrue(tm("Chat | Ann Lee | Microsoft Teams", "Ann Lee"))
+        self.assertTrue(tm("Chat | Ann Lee", "Ann Lee"))  # the desktop app's window title
+        self.assertFalse(tm("Chat | Cy Dee, Ann Lee", "Ann Lee"))
+        self.assertTrue(tm("Chat | Cy Dee, Ann Lee", "Cy and Ann Lee"))
         self.assertFalse(tm("Chat | Cy Dee, Ann Lee | Microsoft Teams", "Ann Lee"))
         self.assertTrue(tm("Chat | Cy Dee, Ann Lee | Microsoft Teams", "Cy and Ann Lee"))
         self.assertTrue(tm("Chat | Cy Dee, Ann Lee | Microsoft Teams", "Ann Lee, Cy Dee"))
