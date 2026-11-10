@@ -40,7 +40,7 @@ cites a URL; at least one stakeholder, each with the topics searched. Verify has
 claims and pages; any later edit reads as stale until verified again.
 
 Voice lint (lib/voice_lint.py, DEFAULT_PROFILE): verify also checks the message shape. Group B
-(more than one paragraph, a greeting opener like "Hi Sam", an "attached page" or "Thanks!"
+(more than one paragraph, a greeting opener like "Hi Sam" or "heads up", an "attached page" or "Thanks!"
 closer) fails verify when the workspace's whosaid.toml sets [drafts] voice_lint = "enforce";
 group A (over the word limit, "want me to" asks, banned words and characters) only warns.
 "warn" (the default, also with no workspace) reports every hit as a warning; "off" skips it.

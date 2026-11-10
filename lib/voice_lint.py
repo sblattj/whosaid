@@ -12,7 +12,7 @@ A profile is a JSON object; every rule is off unless the profile sets it:
   groups          {rule: label}  optional labels so callers can score rule groups separately
 
 DEFAULT_PROFILE is what `whosaid drafts verify` uses (whosaid.toml [drafts.voice] merges over it).
-Group B is the message shape (one paragraph, no greeting opener, no "attached page" / "Thanks!"
+Group B is the message shape (one paragraph, no greeting opener (a "heads up" opener counts), no "attached page" / "Thanks!"
 closer); group A is advisory (length, "want me to" asks, the em dash). banned_words is empty.
 
 Links are reduced to their labels and bare URLs dropped before counting, so a long
@@ -27,7 +27,7 @@ RULES = ("max_words", "max_paragraphs", "greeting", "closers", "ask_phrases", "b
 
 DEFAULT_PROFILE = {
     "max_paragraphs": 1,
-    "greeting": r"(hi|hey|hello)\s+(all|team|everyone|[A-Z]\w+)",
+    "greeting": r"(hi|hey|hello)\s+(all|team|everyone|[A-Z]\w+)|heads[\s-]*up\b",
     "closers": ["attached page", "thanks!"],
     "max_words": 47,
     "ask_phrases": ["want me to", "do you want me to", "would you like me to"],

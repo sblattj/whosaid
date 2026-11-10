@@ -6,6 +6,9 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ## [Unreleased]
 
+### Changed
+- Voice lint: a draft that opens with "heads up" (also "Heads-up:", "headsup") hits the greeting-opener rule. The whole message is the heads up.
+
 ## [1.37.1] - 2026-11-10
 
 ### Fixed

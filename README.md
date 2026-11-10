@@ -303,7 +303,7 @@ whosaid drafts html                             # review page of every open draf
   confirmed tech claim without a doc URL, no stakeholders, a stakeholder with no searched topics,
   or an em dash. It stamps a hash of the message, claims and pages; any later edit reads as stale.
 - **Voice lint.** `verify` also checks the message shape with `lib/voice_lint.py` (plain rules, no
-  model). Shape rules (more than one paragraph, a greeting opener like `Hi Sam,`, an `attached
+  model). Shape rules (more than one paragraph, a greeting opener like `Hi Sam,` or `heads up`, an `attached
   page` or `Thanks!` closer) fail verify when the workspace's `whosaid.toml` says so; the rest
   (over 47 words, "want me to" asks, banned words and characters) only print warnings. The
   workspace is `--ws`, else `WHOSAID_WORKSPACE`; with none, the default `warn` applies.

@@ -50,6 +50,12 @@ class VoiceLint(unittest.TestCase):
         r = V.lint("the gadget says hey Quill", P)
         self.assertNotIn("greeting", r["hits"])
 
+    def test_default_profile_flags_a_heads_up_opener(self):
+        for t in ("heads up, the build is red on main", "Heads-up: the build is red", "headsup the build is red"):
+            self.assertIn("greeting", V.lint(t, V.DEFAULT_PROFILE)["hits"], t)
+        for t in ("the build is red, just a heads up", "headsets up front are fine"):
+            self.assertNotIn("greeting", V.lint(t, V.DEFAULT_PROFILE)["hits"], t)
+
     def test_cli_fail_over_and_unknown_key(self):
         d = tempfile.mkdtemp()
         prof, msg = os.path.join(d, "p.json"), os.path.join(d, "m.txt")
