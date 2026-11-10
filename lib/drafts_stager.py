@@ -142,8 +142,11 @@ SEARCH_SEL = ('[data-tid="AUTOSUGGEST_INPUT"],input[role=combobox][aria-label*="
 # The new-chat control. CHECKED: Teams now labels it "New message" (no data-tid); "New chat" matched nothing.
 NEW_CHAT_SEL = '[aria-label="New message" i],[aria-label="New chat" i],[data-tid*="new-chat" i]'
 # The To / people picker input in a new chat, and a chosen recipient chip in it (UNVERIFIED).
-PEOPLE_PICKER_SEL = ('input[aria-label^="To" i],[data-tid*="people-picker" i] input,'
-                     '[role=combobox][aria-label*="To:" i]')
+# Verified live 2026-11-10: the To input is itself input[data-tid=people-picker-search].
+PEOPLE_PICKER_SEL = ('input[data-tid="people-picker-search"],input[aria-label^="To" i],'
+                     '[data-tid*="people-picker" i] input,[role=combobox][aria-label*="To:" i]')
+# The To label's aria-label lists the picked people: "To: Ann Lee, Bo Ray" (verified live 2026-11-10).
+TO_LABEL_SEL = '[data-tid="people-picker-label-id"]'
 TO_CHIP_SEL = '[data-tid*="people-picker" i] [data-tid*="pill" i],[data-tid*="people-picker" i] [data-tid*="persona" i]'
 # Suggestion rows of any open suggestion list (people picker and @mention) (UNVERIFIED).
 SUGGEST_SEL = "[role=listbox] [role=option]"
@@ -428,7 +431,9 @@ JS_IN_ROOT = "const r=ROOT();const e=document.elementFromPoint(A.x,A.y);return !
 JS_NEW_CHAT_BTN = _XY + f"const b=document.querySelector({json.dumps(NEW_CHAT_SEL)});return b?xy(b):null"
 JS_PEOPLE_PICKER = _XY + f"const b=document.querySelector({json.dumps(PEOPLE_PICKER_SEL)});return b?xy(b):null"
 JS_PEOPLE_FIND = _XY + _OPTS
-JS_TO_CHIP = (f"return [...document.querySelectorAll({json.dumps(TO_CHIP_SEL)})]"
+JS_TO_CHIP = (f"const l=document.querySelector({json.dumps(TO_LABEL_SEL)})?.getAttribute('aria-label')||'';"
+              "if(l.replace(/^To:\\s*/i,'').split(',').map(x=>x.trim()).includes(A.name))return true;"
+              f"return [...document.querySelectorAll({json.dumps(TO_CHIP_SEL)})]"
               ".some(e=>e.innerText.trim().split('\\n')[0].trim()===A.name)")
 JS_MENTION_COUNT = f"return (ED()?.querySelectorAll({json.dumps(MENTION_SEL)}).length)||0"
 JS_MENTION_FIND = _XY + _OPTS
@@ -486,6 +491,31 @@ async def type_into(c: CDP, sel: str, text: str, what: str):
     await c.s("Input.insertText", {"text": text})
 
 
+def title_matches(title: str, chat: str) -> bool:
+    """The window title names exactly this chat. Teams titles read "Chat | <name or members> | Microsoft
+    Teams"; a 1:1 must show only that person (a substring check once let "Chat | Ann Lee, Bo Chen" pass
+    for Bo Chen and the draft landed in the group). A group's rail name ("Ann and Bo Chen") matches a
+    title listing the same members ("Ann Lee, Bo Chen"): same count, each a full name or first name."""
+    parts = [p.strip() for p in (title or "").split(" | ")]
+    mid = parts[-2] if len(parts) >= 3 else parts[0]
+    want_s = (chat or "").strip()
+    if not want_s:
+        return False
+    if mid.lower() == want_s.lower():
+        return True
+    want = [w.strip().lower() for w in re.split(r",\s*|\s+and\s+", want_s) if w.strip()]
+    members = [m.strip().lower() for m in mid.split(",") if m.strip()]
+    if len(want) < 2 or len(members) != len(want):
+        return False
+    left = list(members)
+    for w in want:
+        hit = next((m for m in left if m == w or m.startswith(w + " ")), None)
+        if hit is None:
+            return False
+        left.remove(hit)
+    return True
+
+
 async def open_chat(c: CDP, chat: str) -> str:
     matches: list[dict] = []
     rendered = 0  # polls since the rail first showed any item
@@ -526,7 +556,7 @@ async def open_chat(c: CDP, chat: str) -> str:
         await c.click(matches[0]["x"], matches[0]["y"])
         for _ in range(20):
             title = await c.ev(op("title", "return document.title"))
-            if chat in title:
+            if title_matches(title, chat):
                 return title
             await nap(0.5)
         if source != "left rail":
@@ -566,27 +596,32 @@ async def pick_exact(c: CDP, opname: str, js: str, name: str, none_msg: str, wha
 
 
 async def new_chat(c: CDP, name: str) -> str:
+    """New message to NAME, or to every person in "First Last, Other Person" (a new group chat)."""
+    people = [p.strip() for p in name.split(",") if p.strip()]
     btn = await c.ev(op("new_chat_btn", JS_NEW_CHAT_BTN))
     if not btn:
         raise StagerError("no New chat control found (signed in?)")
     await c.click(btn["x"], btn["y"])
-    box = None
-    for _ in range(20):
-        box = await c.ev(op("people_picker", JS_PEOPLE_PICKER))
-        if box:
-            break
-        await nap(0.5)
-    if not box:
-        raise StagerError("no To field in the new chat")
-    await c.click(box["x"], box["y"])
-    await type_into(c, PEOPLE_PICKER_SEL, name, "To field")
-    m = await pick_exact(c, "people_find", JS_PEOPLE_FIND, name, f"no person named {name}", "people")
-    await c.click(m["x"], m["y"])
-    for _ in range(20):
-        if await c.ev(op("to_chip", JS_TO_CHIP, name=name)):
-            return name
-        await nap(0.5)
-    raise StagerError(f"the To field doesn't show {name}; stopping")
+    for person in people:
+        box = None
+        for _ in range(20):
+            box = await c.ev(op("people_picker", JS_PEOPLE_PICKER))
+            if box:
+                break
+            await nap(0.5)
+        if not box:
+            raise StagerError("no To field in the new chat")
+        await c.click(box["x"], box["y"])
+        await type_into(c, PEOPLE_PICKER_SEL, person, "To field")
+        m = await pick_exact(c, "people_find", JS_PEOPLE_FIND, person, f"no person named {person}", "people")
+        await c.click(m["x"], m["y"])
+        for _ in range(20):
+            if await c.ev(op("to_chip", JS_TO_CHIP, name=person)):
+                break
+            await nap(0.5)
+        else:
+            raise StagerError(f"the To field doesn't show {person}; stopping")
+    return name
 
 
 async def clear_compose(c: CDP):

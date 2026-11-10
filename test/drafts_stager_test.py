@@ -252,8 +252,9 @@ class FakeTeams:
 
     def __init__(self, rail=(), search=(), compose="", teams_tab=True, old_chips=(), people=(), mention_dir=(),
                  history=(), no_root=False, remover_noop=False, drop_uploads=False, focus_miss=False,
-                 fail_set_files=False, root_flicker=0, hidden=False, own=(), no_edit_item=False):
+                 fail_set_files=False, root_flicker=0, hidden=False, own=(), no_edit_item=False, titles=None):
         from websockets.sync.server import serve
+        self.titles = dict(titles or {})  # rail name -> window title, when it isn't "Chat | <name> | ..."
         self.rail, self.search_dir, self.compose = list(rail), list(search), compose
         self.people_dir, self.mention_dir = list(people), list(mention_dir)
         # attachment cards in the chat HISTORY, outside the compose root, each with a Remove/Delete control
@@ -374,6 +375,7 @@ class FakeTeams:
             if self.picker_focus and near(self.person_xy(i)):
                 self.to_chips.append(n)
                 self.chat, self.picker_focus = n, False  # title stays "Chat | Microsoft Teams"
+                self.picker_typed = ""  # Teams clears the To input after a pick
         for i, n in enumerate(self.mention_options()):
             if near(self.mention_xy(i)):
                 self.mentions.append(n)
@@ -390,7 +392,7 @@ class FakeTeams:
                 break
         for i, n in enumerate(self.rail):
             if near(self.rail_xy(i)):
-                self.chat, self.title = n, f"Chat | {n} | Microsoft Teams"
+                self.chat, self.title = n, self.titles.get(n, f"Chat | {n} | Microsoft Teams")
         if near(self.SEARCH_XY):
             self.search_open = True
         for i, n in enumerate(self.options()):
@@ -842,6 +844,39 @@ class EndToEnd(unittest.TestCase):
         self.assertEqual(json.loads(r.stdout.strip().splitlines()[-1])["chat"], "Ann Lee")
         self.assertTrue(f.compose.startswith("Hi **Ann**"))
         f.never_sent(self)
+
+    def test_new_chat_with_two_people_picks_each(self):
+        f = self.fake(people=["Ann Lee", "Bob Ray", "Bob Rayne"])
+        r = self.run_stager(f, "--new-chat", chat="Ann Lee, Bob Ray")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(f.to_chips, ["Ann Lee", "Bob Ray"])
+        f.never_sent(self)
+
+    def test_one_to_one_refuses_a_group_window_that_lists_the_person(self):
+        f = self.fake(rail=["Ann Lee"], titles={"Ann Lee": "Chat | Cy Dee, Ann Lee | Microsoft Teams"})
+        r = self.run_stager(f)
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("not Ann Lee", r.stderr)
+        self.assertNotIn("paste", f.ops)
+        f.never_sent(self)
+
+    def test_group_rail_name_matches_its_member_title(self):
+        f = self.fake(rail=["Cy and Ann Lee"], titles={"Cy and Ann Lee": "Chat | Cy Dee, Ann Lee | Microsoft Teams"})
+        r = self.run_stager(f, chat="Cy and Ann Lee")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("paste", f.ops)
+        f.never_sent(self)
+
+    def test_title_matches_rules(self):
+        tm = ds.title_matches
+        self.assertTrue(tm("Chat | Ann Lee | Microsoft Teams", "Ann Lee"))
+        self.assertFalse(tm("Chat | Cy Dee, Ann Lee | Microsoft Teams", "Ann Lee"))
+        self.assertTrue(tm("Chat | Cy Dee, Ann Lee | Microsoft Teams", "Cy and Ann Lee"))
+        self.assertTrue(tm("Chat | Cy Dee, Ann Lee | Microsoft Teams", "Ann Lee, Cy Dee"))
+        self.assertFalse(tm("Chat | Cy Dee, Ann Lee, Bo Ray | Microsoft Teams", "Cy and Ann Lee"))
+        self.assertFalse(tm("Chat | Ann Leeson | Microsoft Teams", "Ann Lee"))
+        self.assertTrue(tm("Chat | Release crew | Microsoft Teams", "release crew"))
+        self.assertFalse(tm("", "Ann Lee"))
 
     def test_new_chat_no_such_person(self):
         f = self.fake(people=["Ann Leeson"])
