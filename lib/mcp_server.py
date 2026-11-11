@@ -233,15 +233,29 @@ def _with_workspace_source(fn):
     from ("workspace_source": argument | WHOSAID_WORKSPACE | watch agent <label>).
     One wrapper at registration reaches every workspace tool (issue #181)."""
     import functools
+    import inspect
+
+    def stamp(out):
+        if _WS_SOURCE and isinstance(out, dict) and out.get("ok") is True:
+            out.setdefault("workspace_source", _WS_SOURCE)
+        return out
+
+    # An async tool needs an async wrapper: the SDK awaits only what looks like a coroutine
+    # function, so a sync wrapper handed back "<coroutine object ...>" as the result text.
+    if inspect.iscoroutinefunction(fn):
+        @functools.wraps(fn)
+        async def awrapper(*args, **kwargs):
+            global _WS_SOURCE
+            _WS_SOURCE = None
+            return stamp(await fn(*args, **kwargs))
+
+        return awrapper
 
     @functools.wraps(fn)
     def wrapper(*args, **kwargs):
         global _WS_SOURCE
         _WS_SOURCE = None
-        out = fn(*args, **kwargs)
-        if _WS_SOURCE and isinstance(out, dict) and out.get("ok") is True:
-            out.setdefault("workspace_source", _WS_SOURCE)
-        return out
+        return stamp(fn(*args, **kwargs))
 
     return wrapper
 

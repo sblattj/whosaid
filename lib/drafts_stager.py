@@ -398,6 +398,9 @@ return {total:items.length,matches:m.map(t=>{const r=t.getBoundingClientRect();r
 JS_SEARCH_BOX = ("const b=document.querySelector(" + json.dumps(SEARCH_SEL) + ");"
                  "if(!b)return null;const r=b.getBoundingClientRect();if(!r.width)return null;"
                  "return {x:r.x+r.width/2,y:r.y+r.height/2}")
+JS_SEARCH_SELECT = ("const b=document.querySelector(A.sel);if(!b)return false;b.focus();"
+                    "if(b.select)b.select();else{const r=document.createRange();r.selectNodeContents(b);"
+                    "const s=getSelection();s.removeAllRanges();s.addRange(r)}return true")
 JS_FOCUS_IS = "const b=document.querySelector(A.sel);const f=document.activeElement;return !!b&&!!f&&(f===b||b.contains(f))"
 JS_SEARCH_FIND = """const o=[...document.querySelectorAll('[role=option]')];
 const m=o.filter(e=>e.innerText.trim().split('\\n')[0].trim()===A.name);
@@ -550,6 +553,37 @@ def title_matches(title: str, chat: str) -> bool:
     return True
 
 
+def search_queries(chat: str) -> list[str]:
+    """What to type into Teams search for CHAT: the name itself, then for a group's rail name
+    ("Ann and Bo Chen") each member, full names first. Teams search lists an unnamed group chat
+    under its members' names, not under the rail name, so a group off the rail is found that way."""
+    out = [chat]
+    members = [w.strip() for w in re.split(r",\s*|\s+and\s+", chat) if w.strip()]
+    if len(members) >= 2:
+        for m in sorted(members, key=lambda w: (" " not in w, -len(w))):
+            if m not in out:
+                out.append(m)
+    return out
+
+
+async def search_type(c: CDP, text: str):
+    """Replace whatever the search box holds with TEXT (Teams keeps the last query there, so a bare
+    insertText once searched for "<old query><name>")."""
+    if not await c.ev(op("search_select", JS_SEARCH_SELECT, sel=SEARCH_SEL)):
+        raise StagerError("couldn't focus the search box")
+    await type_into(c, SEARCH_SEL, text, "search box")
+
+
+async def search_clear(c: CDP):
+    """Leave the search box empty after a failed search, so the user's next search starts clean."""
+    try:
+        if await c.ev(op("search_select", JS_SEARCH_SELECT, sel=SEARCH_SEL)):
+            await c.key("Backspace", "Backspace", 8)
+        await c.key("Escape", "Escape", 27)
+    except StagerError:
+        pass
+
+
 async def open_chat(c: CDP, chat: str) -> str:
     matches: list[dict] = []
     rendered = 0  # polls since the rail first showed any item
@@ -570,17 +604,23 @@ async def open_chat(c: CDP, chat: str) -> str:
         if not box:
             raise StagerError(f"no chat named {chat} in the left rail and no search box found (signed in?)")
         await c.click(box["x"], box["y"])
-        await type_into(c, SEARCH_SEL, chat, "search box")
-        last = -1
-        for _ in range(20):
-            await nap(0.5)
-            r = await c.ev(op("search_find", JS_SEARCH_FIND, name=chat))
-            matches = r["matches"]
-            if matches and len(matches) == last:
+        queries = search_queries(chat)
+        for q in queries:
+            await search_type(c, q)
+            last = -1
+            for _ in range(20):
+                await nap(0.5)
+                r = await c.ev(op("search_find", JS_SEARCH_FIND, name=chat))
+                matches = r["matches"]
+                if matches and len(matches) == last:
+                    break
+                last = len(matches)
+            if matches:
                 break
-            last = len(matches)
         if not matches:
-            raise StagerError(f"no chat named {chat} (rail or search)")
+            await search_clear(c)
+            tried = ", ".join(f'"{q}"' for q in queries)
+            raise StagerError(f"no chat named {chat} (rail or search; searched {tried})")
     if len(matches) > 1:
         raise StagerError(f"ambiguous: {len(matches)} chats named {chat}")
     title = ""

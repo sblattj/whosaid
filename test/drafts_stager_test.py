@@ -268,7 +268,8 @@ class FakeTeams:
 
     def __init__(self, rail=(), search=(), compose="", teams_tab=True, old_chips=(), people=(), mention_dir=(),
                  history=(), no_root=False, remover_noop=False, drop_uploads=False, focus_miss=False,
-                 fail_set_files=False, root_flicker=0, hidden=False, own=(), no_edit_item=False, titles=None, mention_lazy=False, targets=None, browser=None):
+                 fail_set_files=False, root_flicker=0, hidden=False, own=(), no_edit_item=False, titles=None, mention_lazy=False, targets=None, browser=None,
+                 search_groups=None, search_stale=""):
         from websockets.sync.server import serve
         self.targets, self.browser = targets, browser  # targets: dicts of id/title/url; browser: /json/version Browser
         self.titles = dict(titles or {})  # rail name -> window title, when it isn't "Chat | <name> | ..."
@@ -300,7 +301,11 @@ class FakeTeams:
                          self.DONE_XY: {"aria-label": "Done"}}
         self.chat = None
         self.title = "Chat | Microsoft Teams"
-        self.typed = ""
+        # Teams search keeps the last query in the box, so typing appends to it unless it is cleared first
+        self.typed = search_stale
+        self.search_sel = False
+        # group chats Teams search lists only for a member's name, never for the rail name itself
+        self.search_groups = dict(search_groups or {})
         self.search_open = False
         self.selected = False
         self.chips: list[str] = list(old_chips)
@@ -428,7 +433,10 @@ class FakeTeams:
             self.compose = ""  # a send would empty the box; the tests also assert it never happens
 
     def options(self):
-        return [n for n in self.search_dir if self.search_open and self.typed and self.typed in n]
+        if not (self.search_open and self.typed):
+            return []
+        return ([n for n in self.search_dir if self.typed in n]
+                + [n for n, members in self.search_groups.items() if self.typed in members])
 
     def evaluate(self, expr):
         m = OP_RE.match(expr)
@@ -516,6 +524,9 @@ class FakeTeams:
             if self.cur_session == "S0":  # the empty host page has no search box
                 return None
             return {"x": self.SEARCH_XY[0], "y": self.SEARCH_XY[1]}
+        if name == "search_select":
+            self.search_sel = self.search_open
+            return self.search_open
         if name == "search_find":
             opts = self.options()
             return {"total": len(opts), "matches": [{"x": self.opt_xy(i)[0], "y": self.opt_xy(i)[1]}
@@ -580,6 +591,8 @@ class FakeTeams:
                         ws.send(json.dumps({"method": "Page.fileChooserOpened", "sessionId": "S1",
                                             "params": {"backendNodeId": 77, "mode": "selectMultiple"}}))
             elif method == "Input.dispatchKeyEvent":
+                if params.get("key") == "Backspace" and params["type"] == "keyDown" and self.search_sel:
+                    self.typed, self.search_sel = "", False
                 if params.get("key") == "Backspace" and params["type"] == "keyDown" and self.edit_selected:
                     self.edit_text, self.edit_selected = "", False
                 if params.get("key") == "Backspace" and params["type"] == "keyDown" and self.selected:
@@ -605,7 +618,8 @@ class FakeTeams:
                         self.mention_typed, self.mention_keyed, self.mention_keys = t, False, 0
                     self.compose += t  # the typed text is in the box until a suggestion replaces it
                 else:
-                    self.typed += t
+                    self.typed = t if self.search_sel else self.typed + t  # a selected query is replaced
+                    self.search_sel = False
             elif method == "DOM.getDocument":
                 result = {"root": {"nodeId": 1}}
             elif method == "DOM.querySelector":
@@ -698,6 +712,45 @@ class EndToEnd(unittest.TestCase):
         r = self.run_stager(f)
         self.assertEqual(r.returncode, 1)
         self.assertIn("ambiguous: 2 chats named Ann Lee", r.stderr)
+        self.assertNotIn("paste", f.ops)
+        f.never_sent(self)
+
+    def test_search_box_holding_an_old_query_is_cleared_first(self):
+        f = self.fake(rail=["Zed"], search=["Ann Lee"], search_stale="Ann LeeAnn Lee")
+        r = self.run_stager(f)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("Ann Lee", f.title)
+        f.never_sent(self)
+
+    def test_group_chat_not_in_rail_found_by_member_search(self):
+        # an older group chat is off the rail, and Teams search lists it only under a member's name
+        f = self.fake(rail=["Zed"], search=["Bo Chen"], search_groups={"Ann and Bo Chen": ["Bo Chen", "Ann"]},
+                      search_stale="leftover")
+        r = self.run_stager(f, chat="Ann and Bo Chen")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(f.chat, "Ann and Bo Chen")
+        out = json.loads(r.stdout.strip().splitlines()[-1])
+        self.assertIs(out["sent"], False)
+        self.assertGreaterEqual(f.ops.count("search_find"), 2)
+        f.never_sent(self)
+
+    def test_group_chat_ambiguous_by_member_search_refused(self):
+        f = self.fake(rail=["Zed"])
+        # two group chats with the same rail name, both listed under the member's name
+        f.options = lambda: ["Ann and Bo Chen", "Ann and Bo Chen"] if f.search_open and f.typed == "Bo Chen" else []
+        r = self.run_stager(f, chat="Ann and Bo Chen")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("ambiguous: 2 chats named Ann and Bo Chen", r.stderr)
+        self.assertNotIn("paste", f.ops)
+        f.never_sent(self)
+
+    def test_chat_not_found_leaves_the_search_box_empty(self):
+        f = self.fake(rail=["Zed"], search=["Someone Else"])
+        r = self.run_stager(f, chat="Ann and Bo Chen")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("no chat named Ann and Bo Chen", r.stderr)
+        self.assertIn("Bo Chen", r.stderr.split("no chat named Ann and Bo Chen", 1)[1])  # says what it searched
+        self.assertEqual(f.typed, "")
         self.assertNotIn("paste", f.ops)
         f.never_sent(self)
 

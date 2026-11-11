@@ -6,6 +6,11 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ## [Unreleased]
 
+### Fixed
+- Async MCP tools (`whosaid_draft_stage`, `whosaid_teams_launch`) returned the text `<coroutine object ...>` instead of running, even with `dry_run=true`: the wrapper that adds `workspace_source` was sync, so the SDK never awaited them. Async tools now get an async wrapper, and a test calls both through the server's `call_tool`.
+- Stager search: a group chat that has dropped off the left rail is found again. Teams search lists an unnamed group (rail name `Ann and Bo Chen`) only under its members' names, so after the rail name itself the stager searches each member, full names first, and still opens only an exact rail-name match. The search box is cleared before each query (Teams keeps the last one, so a retry once searched for `<old query><name>`), and left empty when nothing matches.
+- `whosaid drafts stage` prints which stager and port it uses (`stager: built-in drafts_stager.py, Teams app on port 9333`, or the `WHOSAID_DRAFTS_STAGER` override), and warns when the override is the browser-only `stage.ts` while the Teams app answers on its port. The MCP result carries the same `stager_info`.
+
 ## [1.38.1] - 2026-11-10
 
 ### Added

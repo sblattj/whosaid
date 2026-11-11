@@ -53,6 +53,9 @@ class DraftsBase(unittest.TestCase):
             "WHOSAID_DRAFTS_NO_HISTORY": "1",
             "WHOSAID_TEAMS_CACHE": "off",
             "WHOSAID_WORKSPACE": "",
+            # never probe a real Teams app on this machine: stage reports which stager and port it uses
+            "WHOSAID_TEAMS_CDP_PORT": "1",
+            "WHOSAID_CDP_PORT": "",
         })
         self.env.start()
         (self.root / "sessions").mkdir()
@@ -967,6 +970,96 @@ class MergeTest(DraftsBase):
 
 
 
+class FakeDevTools:
+    """/json/version on a local port, answering like a browser (Browser: Edg/... is the Teams app)."""
+
+    def __init__(self, browser):
+        import http.server
+        import threading
+
+        class H(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                body = json.dumps({"Browser": browser}).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *a):
+                pass
+
+        self.srv = http.server.HTTPServer(("127.0.0.1", 0), H)
+        self.port = self.srv.server_address[1]
+        threading.Thread(target=self.srv.serve_forever, daemon=True).start()
+
+    def close(self):
+        self.srv.shutdown()
+        self.srv.server_close()
+
+
+class StagerChoiceTest(DraftsBase):
+    """stage says which stager and port it uses, and warns when an override would miss the Teams app."""
+
+    def app(self, browser="Edg/150.0.0.0"):
+        f = FakeDevTools(browser)
+        self.addCleanup(f.close)
+        return f.port
+
+    def test_builtin_stager_reports_the_teams_app_port(self):
+        did = self.ready()
+        port = self.app()
+        with patch.dict(os.environ, {"WHOSAID_DRAFTS_STAGER": "", "WHOSAID_TEAMS_CDP_PORT": str(port)}):
+            r = drafts.stage([did], dry_run=True)
+        info = r["stager_info"]
+        self.assertEqual(info["kind"], "built-in")
+        self.assertIn(f"Teams app on port {port}", info["target"])
+        self.assertNotIn("warning", info)
+
+    def test_builtin_stager_without_the_app_reports_the_browser_port(self):
+        did = self.ready()
+        with patch.dict(os.environ, {"WHOSAID_DRAFTS_STAGER": ""}):
+            r = drafts.stage([did], dry_run=True)
+        self.assertIn("browser on port 9222", r["stager_info"]["target"])
+        with patch.dict(os.environ, {"WHOSAID_DRAFTS_STAGER": "", "WHOSAID_CDP_PORT": "9555"}):
+            r = drafts.stage([did], dry_run=True)
+        self.assertIn("browser on port 9555", r["stager_info"]["target"])
+
+    def test_override_is_named_and_stage_ts_warns_when_the_app_answers(self):
+        did = self.ready()
+        r = drafts.stage([did], dry_run=True)
+        info = r["stager_info"]
+        self.assertEqual(info["kind"], "override")
+        self.assertIn("WHOSAID_DRAFTS_STAGER", info["stager"])
+        self.assertNotIn("warning", info)
+        port = self.app()
+        with patch.dict(os.environ, {"WHOSAID_DRAFTS_STAGER": "bun /skills/x/stage.ts",
+                                     "WHOSAID_TEAMS_CDP_PORT": str(port)}):
+            r = drafts.stage([did], dry_run=True)
+        self.assertIn("stage.ts", r["stager_info"]["warning"])
+        self.assertIn("env -u WHOSAID_DRAFTS_STAGER", r["stager_info"]["warning"])
+        not_app = self.app("Chrome/150.0.0.0")
+        with patch.dict(os.environ, {"WHOSAID_DRAFTS_STAGER": "bun /skills/x/stage.ts",
+                                     "WHOSAID_TEAMS_CDP_PORT": str(not_app)}):
+            r = drafts.stage([did], dry_run=True)
+        self.assertNotIn("warning", r["stager_info"])
+
+    def test_cli_prints_the_stager_and_the_warning(self):
+        import io
+        from contextlib import redirect_stderr, redirect_stdout
+        did = self.ready()
+        port = self.app()
+        with patch.dict(os.environ, {"WHOSAID_DRAFTS_STAGER": "bun /skills/x/stage.ts",
+                                     "WHOSAID_TEAMS_CDP_PORT": str(port)}):
+            with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()) as err:
+                drafts.main(["stage", did, "--dry-run"])
+        self.assertIn("stager: WHOSAID_DRAFTS_STAGER=bun /skills/x/stage.ts", err.getvalue())
+        self.assertIn("warning:", err.getvalue())
+        with patch.dict(os.environ, {"WHOSAID_DRAFTS_STAGER": "", "WHOSAID_TEAMS_CDP_PORT": str(port)}):
+            with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()) as err:
+                drafts.main(["stage", did, "--dry-run"])
+        self.assertIn(f"stager: built-in drafts_stager.py, Teams app on port {port}", err.getvalue())
+
+
 class McpStageTest(DraftsBase):
     """whosaid_draft_stage: the MCP path runs the same gated drafts.stage, one draft, never sends."""
 
@@ -974,6 +1067,34 @@ class McpStageTest(DraftsBase):
         import asyncio
         import mcp_server
         return asyncio.run(mcp_server.whosaid_draft_stage(**kw))
+
+    def mcp_call(self, name, args):
+        """Through the server's own call_tool, the path an MCP client takes; the result serialized
+        whatever its shape (SDK 1.x tuple or list, 2.x CallToolResult)."""
+        import asyncio
+        import mcp_server
+        out = asyncio.run(mcp_server.mcp.call_tool(name, args))
+        return json.dumps(out, default=lambda o: o.model_dump(mode="json") if hasattr(o, "model_dump") else str(o))
+
+    def test_async_tools_run_through_the_mcp_layer(self):
+        """An async tool behind the workspace_source wrapper must still be awaited: it once came back
+        as the text "<coroutine object whosaid_draft_stage ...>" and never ran."""
+        import inspect
+        import mcp_server
+        self.assertTrue(inspect.iscoroutinefunction(mcp_server.whosaid_draft_stage))
+        self.assertTrue(inspect.iscoroutinefunction(mcp_server.whosaid_teams_launch))
+        did = self.ready()
+        text = self.mcp_call("whosaid_draft_stage", {"id": did, "dry_run": True})
+        self.assertNotIn("coroutine object", text)
+        self.assertIn("would_run", text)
+        self.assertIn(did, text)
+        done = subprocess.CompletedProcess(["whosaid"], 0, '{"port": 1, "up": true, "action": "none"}\n', "")
+        with patch.object(mcp_server, "_run_cli", return_value=done) as run:
+            text = self.mcp_call("whosaid_teams_launch", {"check_only": True})
+        self.assertNotIn("coroutine object", text)
+        self.assertIn('action', text)
+        self.assertIn('none', text)
+        self.assertEqual(run.call_args[0][0], ["teams", "launch", "--check"])
 
     def test_dry_run_changes_nothing(self):
         did = self.ready()

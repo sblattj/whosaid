@@ -1158,6 +1158,47 @@ def stager() -> list[str]:
     return shlex.split(cmd)
 
 
+def _devtools_browser(port: int, timeout: float = 1.0) -> str | None:
+    """The "Browser" string /json/version reports on port, or None when nothing answers."""
+    import urllib.request
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/json/version", timeout=timeout) as r:
+            return str(json.load(r).get("Browser", ""))
+    except Exception:
+        return None
+
+
+def stager_info() -> dict:
+    """Which stager stage runs and where it lands, the way the built-in stager picks its port: an
+    explicit WHOSAID_CDP_PORT is a browser; else the Teams app when its port (WHOSAID_TEAMS_CDP_PORT,
+    default 9333) answers as Edg/; else the browser on 9222. An override that is the browser-only
+    stage.ts while the app answers gets a warning: its drafts would go to the browser, not the app."""
+    cmd = os.environ.get("WHOSAID_DRAFTS_STAGER", "").strip()
+    raw_app = os.environ.get("WHOSAID_TEAMS_CDP_PORT") or "9333"
+    try:
+        app_port = int(raw_app)
+    except ValueError:
+        app_port = None
+    explicit = (os.environ.get("WHOSAID_CDP_PORT") or "").strip()
+    app_up = False
+    if not explicit and app_port is not None:
+        app_up = (_devtools_browser(app_port) or "").startswith("Edg/")
+    if cmd:
+        info = {"kind": "override", "stager": f"WHOSAID_DRAFTS_STAGER={cmd}", "target": "chosen by the override"}
+        if "stage.ts" in cmd and app_up:
+            info["warning"] = (f"WHOSAID_DRAFTS_STAGER points at stage.ts (browser only) while the Teams app answers "
+                               f"on port {app_port}; drafts go to the browser, not the app. Unset it to use the "
+                               f"built-in stager: env -u WHOSAID_DRAFTS_STAGER whosaid drafts stage ...")
+        return info
+    if explicit:
+        target = f"browser on port {explicit} (WHOSAID_CDP_PORT)"
+    elif app_up:
+        target = f"Teams app on port {app_port}"
+    else:
+        target = "browser on port 9222" + (f" (no Teams app on port {app_port})" if app_port is not None else "")
+    return {"kind": "built-in", "stager": "built-in drafts_stager.py", "target": target}
+
+
 def _stage_ws(ws) -> Path | None:
     """The workspace whose ingested chats stage reads; None (history not checked) when there is none."""
     if ws:
@@ -1185,7 +1226,8 @@ def stage(ids: list[str] | None = None, all_ready: bool = False, dry_run: bool =
     wsp = _stage_ws(ws)
     if not dry_run:
         acquire_lock(" ".join(["stage", *ids]))
-    res: dict = {"staged": [], "skipped": [], "failed": [], "would_run": [], "context": {}}
+    res: dict = {"staged": [], "skipped": [], "failed": [], "would_run": [], "context": {},
+                 "stager_info": stager_info()}
     if wsp is None:
         res["history_note"] = "no workspace (WHOSAID_WORKSPACE or --ws): the chat history was not checked"
     try:
@@ -1614,6 +1656,12 @@ def main(argv: list[str] | None = None) -> int:
                 raise DraftsError("--queue needs --all")
             r = stage([args.id] if args.id else None, args.all, args.dry_run, args.tab, args.ws, args.replace,
                       queue=args.queue)
+            si = r.get("stager_info")
+            if si:
+                print(f"stager: {si['stager']}" + (f", {si['target']}" if si["kind"] == "built-in" else ""),
+                      file=sys.stderr)
+                if si.get("warning"):
+                    print(f"warning: {si['warning']}", file=sys.stderr)
             for did, ctx in r.get("context", {}).items():
                 print(f"{did}: {ctx['chat']} has {ctx['ingested']} ingested message(s) in 14 days"
                       + (f", newest {ctx['newest_at'][:16]}" if ctx["newest_at"] else ""))
