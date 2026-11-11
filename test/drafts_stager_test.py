@@ -269,7 +269,7 @@ class FakeTeams:
     def __init__(self, rail=(), search=(), compose="", teams_tab=True, old_chips=(), people=(), mention_dir=(),
                  history=(), no_root=False, remover_noop=False, drop_uploads=False, focus_miss=False,
                  fail_set_files=False, root_flicker=0, hidden=False, own=(), no_edit_item=False, titles=None, mention_lazy=False, targets=None, browser=None,
-                 search_groups=None, search_stale=""):
+                 search_groups=None, search_stale="", app_toolbar=False):
         from websockets.sync.server import serve
         self.targets, self.browser = targets, browser  # targets: dicts of id/title/url; browser: /json/version Browser
         self.titles = dict(titles or {})  # rail name -> window title, when it isn't "Chat | <name> | ..."
@@ -285,6 +285,9 @@ class FakeTeams:
         self.hidden = hidden
         # --edit-sent (#176): our sent messages, hover/menu/edit state
         self.own, self.no_edit_item = list(own), no_edit_item
+        # the Teams desktop app: Edit is a button on the hover toolbar, not in the More menu, and every
+        # message also carries a hidden 4px "More message options" button that opens nothing
+        self.app_toolbar = app_toolbar
         self.hovered = self.more_menu = self.editing = None
         self.edit_text, self.edit_selected, self.edit_saved = "", False, False
         self.newchat_open = self.picker_focus = self.compose_focused = False
@@ -358,6 +361,12 @@ class FakeTeams:
 
     def more_xy(self, i):
         return (720, 100 + 40 * i)
+
+    def edit_btn_xy(self, i):
+        return (690, 100 + 40 * i)
+
+    def hidden_more_xy(self, i):
+        return (610, 100 + 40 * i)
     NEWCHAT_XY, PICKER_XY = (30, 20), (250, 60)
 
     def person_xy(self, i):
@@ -389,6 +398,9 @@ class FakeTeams:
         for i in range(len(self.own)):
             if near(self.more_xy(i)) and self.hovered == i:
                 self.more_menu = i
+        for i in range(len(self.own)):
+            if self.app_toolbar and near(self.edit_btn_xy(i)) and self.hovered == i:
+                self.editing, self.edit_text = i, self.own[i]
         if near(self.EDIT_ITEM_XY) and self.more_menu is not None:
             self.editing, self.edit_text, self.more_menu = self.more_menu, self.own[self.more_menu], None
         if near(self.DONE_XY):
@@ -456,9 +468,20 @@ class FakeTeams:
             if i is None:
                 return None
             at = {"x": self.own_xy(i)[0], "y": self.own_xy(i)[1]}
+            if self.app_toolbar:  # the old query found the hidden button, hovered or not
+                return {"at": at, "more": {"x": self.hidden_more_xy(i)[0], "y": self.hidden_more_xy(i)[1]}}
             return {"at": at, "more": {"x": self.more_xy(i)[0], "y": self.more_xy(i)[1]} if self.hovered == i else None}
+        if name == "msg_actions":
+            norm = lambda t: " ".join(t.split())  # noqa: E731
+            i = next((i for i, t in enumerate(self.own) if norm(t).startswith(args["key"])), None)
+            if i is None:
+                return None
+            xy = lambda p: {"x": p[0], "y": p[1]}  # noqa: E731
+            shown = self.hovered == i  # the toolbar shows for the hovered message only
+            return {"at": xy(self.own_xy(i)), "more": xy(self.more_xy(i)) if shown else None,
+                    "edit": xy(self.edit_btn_xy(i)) if shown and self.app_toolbar else None}
         if name == "menu_item":
-            if self.more_menu is not None and args["label"] == "Edit" and not self.no_edit_item:
+            if self.more_menu is not None and args["label"] == "Edit" and not self.no_edit_item and not self.app_toolbar:
                 return {"x": self.EDIT_ITEM_XY[0], "y": self.EDIT_ITEM_XY[1]}
             return None
         if name == "edit_ready":
@@ -848,6 +871,23 @@ class EndToEnd(unittest.TestCase):
         r = self.run_stager(f, "--attach", str(self.page))
         self.assertEqual(r.returncode, 1)
         self.assertIn("never showed up", r.stderr)
+        f.never_sent(self)
+
+    def test_attach_chip_that_teams_drops_again_is_a_failure(self):
+        """The Teams desktop app shows the chip for a moment, then removes it (the upload never lands).
+        A chip seen once is not an attachment: it has to stay."""
+        f = self.fake(rail=["Ann Lee"])
+        orig = f.evaluate
+
+        def flicker(e):
+            out = orig(e)
+            if "op:root_chip_names" in e and "page.html" in f.chips:
+                f.chips.remove("page.html")  # gone right after this read
+            return out
+        f.evaluate = flicker
+        r = self.run_stager(f, "--attach", str(self.page))
+        self.assertEqual(r.returncode, 1, r.stdout)
+        self.assertIn("removed it again", r.stderr)
         f.never_sent(self)
 
     def test_no_outbox_lock_refused_before_touching_the_browser(self):
@@ -1280,6 +1320,21 @@ class EndToEnd(unittest.TestCase):
         self.assertNotIn("paste", f.ops)
         out = json.loads(r.stdout.strip().splitlines()[-1])
         self.assertEqual((out["sent"], out["saved"], out["edit"]), (False, False, True))
+        f.never_sent(self)
+
+    def test_edit_sent_in_the_desktop_app_uses_the_toolbar_edit_button(self):
+        """The app has no Edit in the More menu: it is a hover-toolbar button. The toolbar is showing for
+        another message when the run starts, and a hidden 4px More button sits on every message."""
+        f = self.fake(rail=["Ann Lee"], own=self.OWN, app_toolbar=True)
+        f.hovered = 0
+        r = self.edit_run(f, self.OWN[1])
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(f.editing, 1)
+        self.assertEqual(f.edit_text.strip(), "so I filed a follow-up to run the migration once per env")
+        self.assertFalse(f.edit_saved)
+        self.assertFalse([c for c in f.clicks if abs(c[0] - f.hidden_more_xy(1)[0]) < 5], "clicked the hidden button")
+        self.assertFalse([c for c in f.clicks if abs(c[0] - f.edit_btn_xy(0)[0]) < 5 and abs(c[1] - f.edit_btn_xy(0)[1]) < 5],
+                         "clicked Edit on another message")
         f.never_sent(self)
 
     def test_edit_sent_matches_a_lightly_edited_send(self):

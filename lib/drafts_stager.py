@@ -135,6 +135,10 @@ CHIP_REMOVE_SEL = 'button[aria-label^="Remove" i],button[aria-label^="Dismiss" i
 # Teams web renders own messages with Fluent's ChatMyMessage; the toolbar shows on hover).
 OWN_MSG_SEL = '.fui-ChatMyMessage,[data-tid="chat-pane-message"][data-is-mine="true"]'
 OWN_BODY_SEL = '[data-tid="chat-pane-message"],.fui-ChatMyMessage__body'
+# CHECKED in the Teams desktop app (2026-11-11): Edit is a button on the floating hover toolbar
+# ("Reactions and message actions", outside the message's chat-pane-item), next to its "More options";
+# the More menu has no Edit. Each message also holds a hidden 4px "More message options" button.
+EDIT_BTN_SEL = '[data-tid="message-actions-edit"],button[aria-label="Edit" i]'
 MORE_SEL = 'button[aria-label="More options" i],button[aria-label^="More message options" i]'
 # Saving an edit. Refused as a click target in --edit-sent mode (UNVERIFIED names).
 SAVE_GUARD = '[aria-label="Done" i],[aria-label^="Save" i],[aria-label="Update" i],[data-tid*="save" i]'
@@ -447,14 +451,26 @@ _OWN = (f"const own=()=>[...document.querySelectorAll({json.dumps(OWN_MSG_SEL)})
         f"const body=m=>m.querySelector({json.dumps(OWN_BODY_SEL)})||m;"
         "const norm=t=>(t||'').replace(/\\s+/g,' ').trim();")
 # Edit boxes: editors that are not the compose box (no Attach button around them).
-_EDITS = (f"const EDS=()=>[...document.querySelectorAll({json.dumps(EDITOR_SEL)})].filter(e=>{{let n=e.parentElement;"
+# The app keeps the message list and the compose box under one ancestor that holds the Attach button,
+# so an editor inside the message list is an edit box outright; elsewhere the walk-up rule decides.
+_EDITS = (f"const EDS=()=>[...document.querySelectorAll({json.dumps(EDITOR_SEL)})].filter(e=>{{"
+          "if(e.closest('[data-tid=\"chat-pane-item\"],[data-tid=\"message-pane-body\"]'))return true;let n=e.parentElement;"
           f"while(n&&n!==document.documentElement){{if(n.querySelector({json.dumps(ATTACH_SEL)}))return false;"
           "n=n.parentElement}return true});const EE=()=>{const l=EDS();return l.length===1?l[0]:null};")
 JS_OWN_MSGS = _OWN + "return own().map(m=>({text:body(m).innerText}))"
-JS_MSG_MORE = (_XY + _OWN + "const m=own().find(m=>norm(body(m).innerText).startsWith(A.key));if(!m)return null;"
-               f"const s=m.closest('[data-tid=\"chat-pane-item\"]')||m.parentElement||m;"
-               "body(m).scrollIntoView({block:'center'});"
-               f"const b=s.querySelector({json.dumps(MORE_SEL)});return {{at:xy(body(m)),more:b?xy(b):null}}")
+# The message's own Edit / More controls: visible ones only (the hidden 4px button opens nothing),
+# inside the message's item, else on a toolbar anchored at the item's top edge (the app's floating
+# hover toolbar sits outside the item and follows the pointer, so geometry ties it to this message).
+JS_MSG_ACTIONS = (_XY + _OWN + "const m=own().find(m=>norm(body(m).innerText).startsWith(A.key));if(!m)return null;"
+                  "const s=m.closest('[data-tid=\"chat-pane-item\"]')||m.parentElement||m;"
+                  "body(m).scrollIntoView({block:'center'});const S=s.getBoundingClientRect();"
+                  "const vis=e=>{const r=e.getBoundingClientRect();return r.width>=12&&r.height>=12};"
+                  "const anchored=e=>{const r=e.getBoundingClientRect();const cy=r.top+r.height/2;"
+                  "return !!e.closest('[role=toolbar]')&&Math.abs(cy-S.top)<=40&&r.left<S.right+80};"
+                  "const pick=sel=>[...s.querySelectorAll(sel)].find(vis)||[...document.querySelectorAll(sel)]"
+                  ".find(e=>!s.contains(e)&&vis(e)&&anchored(e))||null;"
+                  f"const ed=pick({json.dumps(EDIT_BTN_SEL)}),mo=pick({json.dumps(MORE_SEL)});"
+                  "return {at:xy(body(m)),edit:ed?xy(ed):null,more:mo?xy(mo):null}")
 JS_MENU_ITEM = (_XY + "const m=[...document.querySelectorAll('[role=menuitem]')]"
                 ".find(e=>e.innerText.trim().split('\\n')[0].trim()===A.label);return m?xy(m):null")
 JS_EDIT_READY = _EDITS + "const l=EDS();return {editors:l.length,text:l.length===1?l[0].innerText:''}"
@@ -924,28 +940,35 @@ async def edit_sent(c: CDP, a, title: str, html: str, plain: str) -> dict:
         raise StagerError(f"ambiguous: {len(hits)} of your messages in {a.chat} match the sent text")
     key = _norm_text(hits[0]["text"])[:60]
     step("opening Edit on it")
-    more = None
+    got: dict | None = None
     for _ in range(10):
-        got = await c.ev(op("msg_more", JS_MSG_MORE, key=key))
+        got = await c.ev(op("msg_actions", JS_MSG_ACTIONS, key=key))
         if not got or not got.get("at"):
             raise StagerError("that message left the chat view; rerun")
-        more = got.get("more")
-        if more:
-            break
+        # hover first, then read: the one floating toolbar may still show for the last message hovered
         await c.s("Input.dispatchMouseEvent", {"type": "mouseMoved", "x": got["at"]["x"], "y": got["at"]["y"]})
         await nap(0.3)
-    if not more:
-        raise StagerError("no More options control on that message")
-    await c.click(more["x"], more["y"])
-    item = None
-    for _ in range(10):
-        await nap(0.3)
-        item = await c.ev(op("menu_item", JS_MENU_ITEM, label="Edit"))
-        if item:
+        got = await c.ev(op("msg_actions", JS_MSG_ACTIONS, key=key))
+        if got and (got.get("edit") or got.get("more")):
             break
-    if not item:
-        raise StagerError("no Edit item in that message's menu (only your own messages can be edited)")
-    await c.click(item["x"], item["y"])
+    if not got or not got.get("at"):
+        raise StagerError("that message left the chat view; rerun")
+    if got.get("edit"):  # the desktop app: an Edit button on the hover toolbar
+        await c.click(got["edit"]["x"], got["edit"]["y"])
+    else:
+        more = got.get("more")
+        if not more:
+            raise StagerError("no Edit or More options control on that message")
+        await c.click(more["x"], more["y"])
+        item = None
+        for _ in range(10):
+            await nap(0.3)
+            item = await c.ev(op("menu_item", JS_MENU_ITEM, label="Edit"))
+            if item:
+                break
+        if not item:
+            raise StagerError("no Edit item in that message's menu (only your own messages can be edited)")
+        await c.click(item["x"], item["y"])
     step("waiting for the edit box")
     ready = {"editors": 0, "text": ""}
     for _ in range(20):
@@ -1005,6 +1028,7 @@ async def attach(c: CDP, files: list[str]):
             names = await chip_names(c) or []
             if len(names) >= len(before) + len(files) and all(
                     any(os.path.basename(f) in n for n in names) for f in files):
+                await chips_stay(c, files)
                 return
             await nap(0.5)
         missing = [f for f in files if not any(os.path.basename(f) in n for n in names)]
@@ -1015,6 +1039,21 @@ async def attach(c: CDP, files: list[str]):
             await asyncio.wait_for(c.s("Page.setInterceptFileChooserDialog", {"enabled": False}), 3)
         except Exception:
             pass  # the connection may be gone; nothing more to do
+
+
+async def chips_stay(c: CDP, files: list[str], reads: int = 6, gap: float = 0.5):
+    """A chip seen once is not an attachment: the Teams desktop app shows the chip for a moment and then
+    removes it when the upload doesn't land (seen 2026-11-11: gone within 0.3s, no message). Every read
+    over ~3s has to still show each file."""
+    for _ in range(reads):
+        await nap(gap)
+        names = await chip_names(c)
+        if names is None:
+            continue  # the compose root re-rendering, not an answer
+        gone = [f for f in files if not any(os.path.basename(f) in n for n in names)]
+        if gone:
+            raise StagerError(f"Teams showed the attachment chip for {os.path.basename(gone[0])}, then removed it "
+                              "again: the upload didn't land (attach the page by hand in Teams)")
 
 
 async def upload(c: CDP, files: list[str]):
