@@ -434,6 +434,11 @@ def parse_when(s: str | None, default_ms: int, future: bool = False) -> int:
         raise CacheError(f"{s!r}: use today, tomorrow, yesterday, now, 3d, 2026-11-09 or an ISO time") from None
 
 
+def is_local_midnight(ms: int) -> bool:
+    """True when ms is exactly 00:00:00 local; only such a start is snapped to a calendar-day end."""
+    return datetime.fromtimestamp(ms / 1000).time() == datetime.min.time()
+
+
 def _week_end(start_ms: int) -> int:
     """The local midnight 7 calendar days after start_ms (DST-safe, unlike adding 7 * 24h)."""
     d = datetime.fromtimestamp(start_ms / 1000).date() + timedelta(days=7)

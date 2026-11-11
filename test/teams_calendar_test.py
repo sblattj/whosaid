@@ -299,6 +299,23 @@ class ParseWhen(unittest.TestCase):
         self.assertEqual(seen["start"], cal.parse_when("next-week", 0))
         self.assertEqual(seen["end"], cal._week_end(seen["start"]))
 
+    def test_mcp_week_window_only_snaps_midnight_starts(self):
+        try:
+            import mcp_server
+        except ImportError:
+            self.skipTest("needs the mcp SDK: uv run --with 'mcp[cli]' python test/teams_calendar_test.py")
+        seen = []
+
+        def fake(start, end, *a, **k):
+            seen.append((start, end))
+            return {"ok": True}
+        with patch.object(cal, "events", fake):
+            mcp_server.whosaid_teams_calendar(start="next-week", days=7)
+            mcp_server.whosaid_teams_calendar(start="now", days=7)
+        (ms, me), (ns, ne) = seen
+        self.assertEqual(me, cal._week_end(ms))  # midnight start: ends the following Monday
+        self.assertEqual(ne - ns, 7 * 86400000)  # mid-day start: a plain 7 * 24h window, no snap
+
 
 class Missing(unittest.TestCase):
     def test_no_cache_dir(self):

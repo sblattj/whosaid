@@ -3586,7 +3586,7 @@ def whosaid_teams_calendar(start: str = "today", days: float = 7, query: Optiona
         return err  # a workspace that was asked for and is wrong; none at all just skips `recorded`
     try:
         start_ms = teams_calendar.parse_when(start, teams_calendar.parse_when("today", 0))
-        if float(days) == 7:
+        if float(days) == 7 and teams_calendar.is_local_midnight(start_ms):
             end_ms = teams_calendar._week_end(start_ms)  # 7 calendar days, right across a DST change
         else:
             end_ms = start_ms + int(max(0.01, min(float(days), 366)) * 86400000)
