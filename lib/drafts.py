@@ -868,6 +868,25 @@ def _live_chat_messages(ws: Path, chat: str, floor_ms: int, seen: set) -> list[d
             for m in res.get("messages") or [] if m["message_id"] not in seen and same_chat(m.get("chat", ""), chat)]
 
 
+def chat_thread_id(m: dict, ws: Path | None) -> str | None:
+    """The Teams thread id of the draft's chat: the draft's own thread_id, else the one chat the Teams
+    desktop app's cache names like the draft's recipient. None when there is no cache or the name is
+    not exactly one chat (the stager then checks the title instead)."""
+    if m.get("thread_id"):
+        return str(m["thread_id"])
+    if (os.environ.get("WHOSAID_TEAMS_CACHE") or "").strip().lower() in ("off", "0", "none"):
+        return None
+    try:
+        import teams_cache
+        if not teams_cache._leveldb(teams_cache.cache_dir()).is_dir():
+            return None
+        names = teams_cache.name_chats(teams_cache.load(), Path(ws) if ws else None)
+    except Exception:  # noqa: BLE001 - the cache is a bonus, never a reason to fail
+        return None
+    ids = [cid for cid, n in names.items() if (n or "").strip().lower() == (m.get("to") or "").strip().lower()]
+    return ids[0] if len(ids) == 1 else None
+
+
 def _ms(iso: str | None) -> int | None:
     if not iso:
         return None
@@ -1274,6 +1293,9 @@ def stage(ids: list[str] | None = None, all_ready: bool = False, dry_run: bool =
                 argv += ["--new-chat"]
             if tab:
                 argv += ["--tab", tab]
+            tid = None if m.get("new_chat") else chat_thread_id(m, wsp)
+            if tid:
+                argv += ["--thread-id", tid]
             if dry_run:
                 res["would_run"].append({"id": draft_id, "argv": cmd + argv})
                 continue

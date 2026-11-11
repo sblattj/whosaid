@@ -6,6 +6,10 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ## [Unreleased]
 
+### Fixed
+- Attachments in the Teams desktop app: the app is sandboxed and can't read a page handed to it over DevTools from outside its container, so it showed the chip and dropped it (the web app reads any path). In app mode the stager now uploads a same-named copy from `~/Library/Containers/com.microsoft.teams2/Data/tmp/whosaid-stage/` (`WHOSAID_TEAMS_STAGE_DIR` overrides it); copies older than an hour are pruned on the next run.
+- Chat check: the stager is given the chat's Teams thread id (the draft's `thread_id`, else the one chat the Teams desktop cache names like the recipient) and requires the open chat to carry it (`data-track-thread-id` on the compose box's Send button). The sidebar row and search hit are found by that id too. Without an id the title must name exactly the chat, and a title like `Ann Lee, Bo Chen +1` (more members than listed) is another chat.
+
 ## [1.39.1] - 2026-11-10
 
 ### Fixed

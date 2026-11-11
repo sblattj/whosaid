@@ -1060,6 +1060,39 @@ class StagerChoiceTest(DraftsBase):
         self.assertIn(f"stager: built-in drafts_stager.py, Teams app on port {port}", err.getvalue())
 
 
+class ThreadIdTest(DraftsBase):
+    """stage passes the chat's thread id so the stager can tell two chats with one title apart."""
+
+    def test_draft_thread_id_is_passed(self):
+        did = self.ready()
+        m = drafts.load(did)
+        m["thread_id"] = "19:abc@thread.v2"
+        drafts.save(m)
+        r = drafts.stage([did], dry_run=True)
+        argv = r["would_run"][0]["argv"]
+        self.assertEqual(argv[argv.index("--thread-id") + 1], "19:abc@thread.v2")
+
+    def test_cache_names_one_chat(self):
+        did = self.ready(to="Ann and Bo Chen")
+        import teams_cache
+        names = {"19:abc@thread.v2": "Ann and Bo Chen", "19:zzz@thread.v2": "Someone Else"}
+        with patch.dict(os.environ, {"WHOSAID_TEAMS_CACHE": ""}), \
+                patch.object(teams_cache, "_leveldb", return_value=self.root), \
+                patch.object(teams_cache, "load", return_value={}), \
+                patch.object(teams_cache, "name_chats", return_value=names):
+            r = drafts.stage([did], dry_run=True)
+            argv = r["would_run"][0]["argv"]
+            self.assertEqual(argv[argv.index("--thread-id") + 1], "19:abc@thread.v2")
+            names["19:dup@thread.v2"] = "ann and bo chen"  # two chats with that name: no id, title check
+            r = drafts.stage([did], dry_run=True)
+            self.assertNotIn("--thread-id", r["would_run"][0]["argv"])
+
+    def test_no_cache_no_thread_id(self):
+        did = self.ready()
+        r = drafts.stage([did], dry_run=True)
+        self.assertNotIn("--thread-id", r["would_run"][0]["argv"])
+
+
 class McpStageTest(DraftsBase):
     """whosaid_draft_stage: the MCP path runs the same gated drafts.stage, one draft, never sends."""
 

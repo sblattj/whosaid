@@ -396,18 +396,27 @@ class CDP:
 # ---- ops ---------------------------------------------------------------------------------
 
 JS_RAIL = """const items=[...document.querySelectorAll('[role=treeitem]')];
-const m=items.filter(e=>e.innerText.trim().split('\\n')[0].trim()===A.name);
+const tid=e=>e.getAttribute('data-fui-tree-item-value')||e.querySelector('[data-fui-tree-item-value]')?.getAttribute('data-fui-tree-item-value');
+const byId=A.id?items.filter(e=>tid(e)===A.id):[];
+const m=byId.length?byId:items.filter(e=>e.innerText.trim().split('\\n')[0].trim()===A.name);
 if(m.length===1)m[0].scrollIntoView({block:'center'});
 return {total:items.length,matches:m.map(t=>{const r=t.getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2}})}"""
 JS_SEARCH_BOX = ("const b=document.querySelector(" + json.dumps(SEARCH_SEL) + ");"
                  "if(!b)return null;const r=b.getBoundingClientRect();if(!r.width)return null;"
                  "return {x:r.x+r.width/2,y:r.y+r.height/2}")
+# CHECKED in the Teams desktop app (2026-11-11): the compose box's Send button carries the open chat's
+# thread id (data-track-thread-id="19:...@thread.v2", "48:notes" for the self-chat); rail rows carry theirs
+# in data-fui-tree-item-value, and search hits in their data-tid.
+JS_OPEN_THREAD_ID = ("const r=ROOT();const b=(r&&r.querySelector('[data-track-thread-id]'))||"
+                     "document.querySelector('[data-tid$=\"-send\"][data-track-thread-id]');"
+                     "return b?b.getAttribute('data-track-thread-id'):null")
 JS_SEARCH_SELECT = ("const b=document.querySelector(A.sel);if(!b)return false;b.focus();"
                     "if(b.select)b.select();else{const r=document.createRange();r.selectNodeContents(b);"
                     "const s=getSelection();s.removeAllRanges();s.addRange(r)}return true")
 JS_FOCUS_IS = "const b=document.querySelector(A.sel);const f=document.activeElement;return !!b&&!!f&&(f===b||b.contains(f))"
 JS_SEARCH_FIND = """const o=[...document.querySelectorAll('[role=option]')];
-const m=o.filter(e=>e.innerText.trim().split('\\n')[0].trim()===A.name);
+const byId=A.id?o.filter(e=>(e.getAttribute('data-tid')||'').includes(A.id)):[];
+const m=byId.length?byId:o.filter(e=>e.innerText.trim().split('\\n')[0].trim()===A.name);
 return {total:o.length,matches:m.map(t=>{const r=t.getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2}})}"""
 JS_SELECT = """const e=ED();e.focus();const r=document.createRange();r.selectNodeContents(e);
 const x=getSelection();x.removeAllRanges();x.addRange(r);return null"""
@@ -558,6 +567,8 @@ def title_matches(title: str, chat: str) -> bool:
         return True
     want = [w.strip().lower() for w in re.split(r",\s*|\s+and\s+", want_s) if w.strip()]
     members = [m.strip().lower() for m in mid.split(",") if m.strip()]
+    if any(re.search(r"\s\+\d+$", m) for m in members):
+        return False  # "Ann Lee, Bo Chen +1": more members than the title lists, so another chat
     if len(want) < 2 or len(members) != len(want):
         return False
     left = list(members)
@@ -600,11 +611,13 @@ async def search_clear(c: CDP):
         pass
 
 
-async def open_chat(c: CDP, chat: str) -> str:
+async def open_chat(c: CDP, chat: str, thread_id: str | None = None) -> str:
+    """Open CHAT and prove it is the one: with a thread id, the open chat's id must equal it (whatever the
+    title says, "+1" included); without one, the title must name exactly this chat."""
     matches: list[dict] = []
     rendered = 0  # polls since the rail first showed any item
     for _ in range(45):  # wait for the rail, then give the exact row up to 15 polls (~15s) to appear
-        r = await c.ev(op("rail_find", JS_RAIL, name=chat))
+        r = await c.ev(op("rail_find", JS_RAIL, name=chat, id=thread_id))
         matches = r["matches"]
         if matches:
             break
@@ -626,7 +639,7 @@ async def open_chat(c: CDP, chat: str) -> str:
             last = -1
             for _ in range(20):
                 await nap(0.5)
-                r = await c.ev(op("search_find", JS_SEARCH_FIND, name=chat))
+                r = await c.ev(op("search_find", JS_SEARCH_FIND, name=chat, id=thread_id))
                 matches = r["matches"]
                 if matches and len(matches) == last:
                     break
@@ -642,23 +655,29 @@ async def open_chat(c: CDP, chat: str) -> str:
     title = ""
     for attempt in range(2):  # the rail can still be scrolling or re-rendering: a click once landed on the next chat
         if source == "left rail":
-            matches = await settled_rail_xy(c, chat, matches)
+            matches = await settled_rail_xy(c, chat, matches, thread_id)
         await c.click(matches[0]["x"], matches[0]["y"])
         for _ in range(20):
             title = await c.ev(op("title", "return document.title"))
-            if title_matches(title, chat):
+            got = await c.ev(op("open_thread_id", JS_OPEN_THREAD_ID)) if thread_id else None
+            if thread_id and got:
+                if got == thread_id:
+                    return title
+            elif title_matches(title, chat):
                 return title
             await nap(0.5)
         if source != "left rail":
             break
+    if thread_id and got and got != thread_id:
+        raise StagerError(f'the open chat\'s thread id is {got}, not {thread_id} ({chat}); stopping ({source})')
     raise StagerError(f'title is "{title}", not {chat}; stopping ({source})')
 
 
-async def settled_rail_xy(c: CDP, chat: str, matches: list[dict]) -> list[dict]:
+async def settled_rail_xy(c: CDP, chat: str, matches: list[dict], thread_id: str | None = None) -> list[dict]:
     """rail_find scrolls the row into view; read its position again until two reads agree (max ~2s)."""
     for _ in range(8):
         await nap(0.25)
-        r = await c.ev(op("rail_find", JS_RAIL, name=chat))
+        r = await c.ev(op("rail_find", JS_RAIL, name=chat, id=thread_id))
         now = r["matches"]
         if len(now) != 1:
             raise StagerError(f"chat {chat} left the rail while scrolling to it ({len(now)} rows match)")
@@ -858,7 +877,7 @@ async def stage(a) -> dict:
             step("bringing the tab to the front")  # a background tab (document.hidden) ignores rail clicks
             await bring_to_front(c, tid)
             step("opening the chat")
-            title = await (new_chat(c, a.chat) if a.new_chat else open_chat(c, a.chat))
+            title = await (new_chat(c, a.chat) if a.new_chat else open_chat(c, a.chat, a.thread_id))
             if a.edit_sent:
                 return await edit_sent(c, a, title, html, plain)
 
@@ -901,7 +920,7 @@ async def stage(a) -> dict:
             if a.attach:
                 step("attaching pages")
                 try:
-                    await attach(c, a.attach)
+                    await attach(c, a.attach, app)
                 except StagerError as e:  # the paste already happened: say the chat is half-staged
                     raise StagerError(f"{e} (the draft text is already in the compose box, without the "
                                       f"attachment; rerun the stage to replace it)") from None
@@ -1012,9 +1031,45 @@ async def stage_with_deadline(a) -> dict:
         raise StagerError(f"timed out during {STEP[0]} (global limit {deadline():g}s)")
 
 
-async def attach(c: CDP, files: list[str]):
+TEAMS_CONTAINER = os.path.expanduser("~/Library/Containers/com.microsoft.teams2/Data")
+
+
+def app_stage_dir() -> str | None:
+    """Where app mode copies pages before uploading them. The Teams desktop app is sandboxed: a path handed
+    over CDP outside its container can't be read, so Teams shows the chip and drops it (proven 2026-11-11;
+    a copy under the container's tmp uploads and stays). None when there is no container."""
+    d = os.environ.get("WHOSAID_TEAMS_STAGE_DIR")
+    if d:
+        return d
+    return os.path.join(TEAMS_CONTAINER, "tmp", "whosaid-stage") if os.path.isdir(TEAMS_CONTAINER) else None
+
+
+async def attach(c: CDP, files: list[str], app: bool = False):
     """Upload the files, then prove it: the chips INSIDE the compose root grew by len(files) and each file
-    name shows there. The file-chooser intercept is always switched off again, even on failure."""
+    name shows there, and stays. In app mode the upload is a same-named copy inside the Teams sandbox
+    (copies older than an hour are pruned on the next run)."""
+    root = app_stage_dir() if app else None
+    if not root:
+        return await _attach(c, files)
+    import shutil
+    import tempfile
+    import time
+    os.makedirs(root, exist_ok=True)
+    for old in os.listdir(root):  # earlier runs' copies: kept an hour so a slow upload can finish reading
+        p = os.path.join(root, old)
+        if old.startswith("stage-") and time.time() - os.path.getmtime(p) > 3600:
+            shutil.rmtree(p, ignore_errors=True)
+    run = tempfile.mkdtemp(prefix="stage-", dir=root)
+    copies = []
+    for f in files:
+        dst = os.path.join(run, os.path.basename(f))
+        shutil.copyfile(f, dst)
+        copies.append(dst)
+    return await _attach(c, copies)
+
+
+async def _attach(c: CDP, files: list[str]):
+    """The file-chooser intercept is always switched off again, even on failure."""
     before = await settled_chip_names(c)
     if before is None:
         raise StagerError("couldn't find the compose area to check the attachments")
@@ -1105,6 +1160,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     p.add_argument("--only-these-attachments", action="store_true")
     p.add_argument("--new-chat", action="store_true")
     p.add_argument("--tab")
+    p.add_argument("--thread-id", help="the chat's Teams thread id; the open chat must carry it")
     p.add_argument("--cdp-port", type=int, default=None)
     p.add_argument("--bypass-outbox", action="store_true")
     p.add_argument("--edit-sent", action="store_true", help="edit your sent message matching --match-file")

@@ -15,6 +15,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import time
 import threading
 import unittest
 from pathlib import Path
@@ -269,7 +270,8 @@ class FakeTeams:
     def __init__(self, rail=(), search=(), compose="", teams_tab=True, old_chips=(), people=(), mention_dir=(),
                  history=(), no_root=False, remover_noop=False, drop_uploads=False, focus_miss=False,
                  fail_set_files=False, root_flicker=0, hidden=False, own=(), no_edit_item=False, titles=None, mention_lazy=False, targets=None, browser=None,
-                 search_groups=None, search_stale="", app_toolbar=False):
+                 search_groups=None, search_stale="", app_toolbar=False,
+                 thread_ids=None):
         from websockets.sync.server import serve
         self.targets, self.browser = targets, browser  # targets: dicts of id/title/url; browser: /json/version Browser
         self.titles = dict(titles or {})  # rail name -> window title, when it isn't "Chat | <name> | ..."
@@ -288,6 +290,8 @@ class FakeTeams:
         # the Teams desktop app: Edit is a button on the hover toolbar, not in the More menu, and every
         # message also carries a hidden 4px "More message options" button that opens nothing
         self.app_toolbar = app_toolbar
+        # chat name -> thread id, what the app shows on the compose box's Send button (data-track-thread-id)
+        self.thread_ids = dict(thread_ids or {})
         self.hovered = self.more_menu = self.editing = None
         self.edit_text, self.edit_selected, self.edit_saved = "", False, False
         self.newchat_open = self.picker_focus = self.compose_focused = False
@@ -455,8 +459,13 @@ class FakeTeams:
         assert m, f"evaluate without an op marker: {expr[:80]}"
         name, args = m.group(1), json.loads(m.group(2))
         self.ops.append(name)
+        if name == "open_thread_id":
+            return self.thread_ids.get(self.chat) if self.chat else None
         if name == "rail_find":
-            hits = [{"x": self.rail_xy(i)[0], "y": self.rail_xy(i)[1]} for i, n in enumerate(self.rail) if n == args["name"]]
+            want_id = args.get("id")
+            by_id = [i for i, n in enumerate(self.rail) if want_id and self.thread_ids.get(n) == want_id]
+            idx = by_id or [i for i, n in enumerate(self.rail) if n == args["name"]]
+            hits = [{"x": self.rail_xy(i)[0], "y": self.rail_xy(i)[1]} for i in idx]
             return {"total": len(self.rail), "matches": hits}
         if name == "title":
             return self.title
@@ -937,6 +946,36 @@ class EndToEnd(unittest.TestCase):
         self.assertNotIn("Target.createTarget", [m for m, _ in f.calls])
         f.never_sent(self)
 
+    def test_app_mode_uploads_a_copy_from_inside_the_teams_sandbox(self):
+        """The Teams desktop app is sandboxed: it can't read a page outside its container, so it shows the chip
+        and drops it. In app mode the stager uploads a same-named copy from the container, then deletes it."""
+        stage_dir = self.d / "container" / "whosaid-stage"
+        f = self.fake(rail=["Ann Lee"], targets=[self.T0, self.T1], browser="Edg/150.0")
+        r = self.run_port(app_fake=f, env={"WHOSAID_TEAMS_STAGE_DIR": str(stage_dir)},
+                          extra=("--attach", str(self.page)))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        sent = [p["files"] for m, p in f.calls if m == "DOM.setFileInputFiles"]
+        self.assertEqual(len(sent), 1)
+        self.assertEqual(os.path.basename(sent[0][0]), "page.html")
+        self.assertTrue(sent[0][0].startswith(str(stage_dir) + os.sep), sent)
+        old = stage_dir / "stage-old"
+        self.assertEqual(len(list(stage_dir.rglob("page.html"))), 1)  # kept for a slow upload
+        old.mkdir()
+        os.utime(old, (time.time() - 7200, time.time() - 7200))
+        f2 = self.fake(rail=["Ann Lee"], targets=[self.T0, self.T1], browser="Edg/150.0")
+        r = self.run_port(app_fake=f2, env={"WHOSAID_TEAMS_STAGE_DIR": str(stage_dir)},
+                          extra=("--attach", str(self.page)))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertFalse(old.exists())  # copies older than an hour are pruned
+        self.assertEqual(f.chips, ["page.html"])
+        f.never_sent(self)
+
+    def test_browser_mode_uploads_the_page_itself(self):
+        f = self.fake(rail=["Ann Lee"])
+        r = self.run_stager(f, "--attach", str(self.page), env_extra={"WHOSAID_TEAMS_STAGE_DIR": str(self.d / "x")})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual([p["files"] for m, p in f.calls if m == "DOM.setFileInputFiles"], [[str(self.page)]])
+
     def test_app_mode_prefers_chat_titled_for_the_requested_name(self):
         other = {"id": "T2", "title": "Chat | Zed Q | Microsoft Teams", "url": self.T1["url"]}
         mine = {"id": "T3", "title": "Chat | Ann Lee | Microsoft Teams", "url": self.T1["url"]}
@@ -1126,8 +1165,44 @@ class EndToEnd(unittest.TestCase):
         self.assertIn("paste", f.ops)
         f.never_sent(self)
 
+    def test_more_members_title_is_another_chat(self):
+        """"Chat | Ann Lee, Bo Chen +1" has a third member: without a thread id it is not "Ann and Bo Chen"."""
+        f = self.fake(rail=["Ann and Bo Chen"], titles={"Ann and Bo Chen": "Chat | Ann Lee, Bo Chen +1"})
+        r = self.run_stager(f, chat="Ann and Bo Chen")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("not Ann and Bo Chen", r.stderr)
+        self.assertNotIn("paste", f.ops)
+        f.never_sent(self)
+
+    def test_thread_id_confirms_the_chat_whatever_its_title(self):
+        f = self.fake(rail=["Zed", "Ann and Bo Chen"], titles={"Ann and Bo Chen": "Chat | Ann Lee, Bo Chen +1"},
+                      thread_ids={"Ann and Bo Chen": "19:abc@thread.v2", "Zed": "19:zed@thread.v2"})
+        r = self.run_stager(f, "--thread-id", "19:abc@thread.v2", chat="Ann and Bo Chen")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(f.chat, "Ann and Bo Chen")
+        self.assertIn("open_thread_id", f.ops)
+        f.never_sent(self)
+
+    def test_thread_id_found_in_the_rail_under_another_name(self):
+        # the rail renamed the group since the draft was written: the id still finds it
+        f = self.fake(rail=["Zed", "Ann, Bo and Cy"], thread_ids={"Ann, Bo and Cy": "19:abc@thread.v2"})
+        r = self.run_stager(f, "--thread-id", "19:abc@thread.v2", chat="Ann and Bo Chen")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(f.chat, "Ann, Bo and Cy")
+        f.never_sent(self)
+
+    def test_thread_id_mismatch_refused_even_with_the_exact_title(self):
+        f = self.fake(rail=["Ann Lee"], thread_ids={"Ann Lee": "19:other@unq.gbl.spaces"})
+        r = self.run_stager(f, "--thread-id", "19:want@unq.gbl.spaces")
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("thread", r.stderr)
+        self.assertNotIn("paste", f.ops)
+        f.never_sent(self)
+
     def test_title_matches_rules(self):
         tm = ds.title_matches
+        self.assertFalse(tm("Chat | Ann Lee, Bo Chen +1", "Ann and Bo Chen"))
+        self.assertFalse(tm("Chat | Ann Lee +2", "Ann Lee"))
         self.assertTrue(tm("Chat | Ann Lee | Microsoft Teams", "Ann Lee"))
         self.assertTrue(tm("Chat | Ann Lee", "Ann Lee"))  # the desktop app's window title
         self.assertFalse(tm("Chat | Cy Dee, Ann Lee", "Ann Lee"))
