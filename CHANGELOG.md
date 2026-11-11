@@ -6,6 +6,8 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ## [Unreleased]
 
+## [1.38.2] - 2026-11-10
+
 ### Fixed
 - Async MCP tools (`whosaid_draft_stage`, `whosaid_teams_launch`) returned the text `<coroutine object ...>` instead of running, even with `dry_run=true`: the wrapper that adds `workspace_source` was sync, so the SDK never awaited them. Async tools now get an async wrapper, and a test calls both through the server's `call_tool`.
 - Stager search: a group chat that has dropped off the left rail is found again. Teams search lists an unnamed group (rail name `Ann and Bo Chen`) only under its members' names, so after the rail name itself the stager searches each member, full names first, and still opens only an exact rail-name match. The search box is cleared before each query (Teams keeps the last one, so a retry once searched for `<old query><name>`), and left empty when nothing matches.
