@@ -33,16 +33,19 @@ message, in the given order, each followed by one space, before the pasted body.
 the draft text is stripped from the pasted text (html and plain, plus one blank after it) so it isn't
 duplicated. Each mention: type "@NAM" with Input.insertText and the last letter as a real key event (the
 picker only filters on key events, #183), wait for the suggestion list, click the
-option whose first line is NAME exactly (none: exit 1 "no mention suggestion for NAME"; several:
-exit 1 ambiguous; never Enter), then check the compose box gained one mention element. Mentions are
-inserted after any --replace clearing and before the paste.
+option whose first line is NAME exactly (whitespace normalised; several: exit 1 ambiguous; never Enter),
+then check the compose box gained one mention element. A NAME with a one-letter word ("Ana B") gets a
+second query without it ("@Ana") when the full one lists nobody, still picking "Ana B" exactly. A query
+that finds nobody is taken back (Escape, one Backspace per typed character) before the next; none
+left: exit 1 "no mention suggestion for NAME", after clearing the compose box (and saying so if it
+didn't clear). Mentions are inserted after any --replace clearing and before the paste.
 
 --edit-sent --match-file F (#176): edit one of YOUR messages already in the chat instead of composing.
 Finds the own message whose text matches F (same rule as `drafts mark-sent --check`; none: exit 1, several:
 exit 1 ambiguous), hovers it, clicks its "More options", then the "Edit" menu item, waits for the edit box
 (an editor that is not the compose box), clears it and pastes --md. It never saves: no Enter, and in this
-mode a click on a Done/Save control is refused too. Not combinable with --attach/--mention/--replace/
---new-chat (exit 2). Output: {"sent": false, "saved": false, "edit": true, "chat", "chars", "links"}.
+mode a click on a Done/Save control is refused too. Messages from others after it in the chat view stop
+it (exit 1) unless --allow-newer (#209). Not combinable with --attach/--mention/--replace/--new-chat (exit 2). Output: {"sent": false, "saved": false, "edit": true, "chat", "chars", "links"}.
 
 Output: the last stdout line is {"sent": false, "chat": <title>, "chars": n, "links": n,
 "attachments": n, "mentions": n}. Errors go to stderr, exit 1; usage errors exit 2.
@@ -86,6 +89,8 @@ Wave 3 ops (--edit-sent):
   msg_more     {key}              null when none of your messages starts with key, else scrolls it into view and
                                   returns {"at": {x,y} of its body, "more": {x,y} of its "More options" or null}
   menu_item    {label}            {x,y} of the menu item whose first line is label, or null
+  newer_others {key}              int, chat items after our message's item with a message and none of ours
+                                  (-1 no such message, 0 when the view has no chat items)
   edit_ready   {}                 {"editors": n edit boxes (editors outside the compose root), "text": str}
   edit_len     {}                 int, trimmed text length of the one edit box (-1 when not exactly one)
   edit_select  {}                 null, selects the edit box contents with a range
@@ -434,7 +439,8 @@ JS_FINAL = "const e=ED();return {len:e.innerText.trim().length,links:e.querySele
 JS_LEN = "return (ED()?.innerText||'').trim().length"
 _XY = "const xy=e=>{const r=e.getBoundingClientRect();return r.width?{x:r.x+r.width/2,y:r.y+r.height/2}:null};"
 _OPTS = ("const o=[...document.querySelectorAll(" + json.dumps(SUGGEST_SEL) + ")];"
-         "const m=o.filter(e=>e.innerText.trim().split('\\n')[0].trim()===A.name);"
+         "const nm=t=>(t||'').replace(/\\s+/g,' ').trim();"
+         "const m=o.filter(e=>nm(e.innerText.trim().split('\\n')[0])===nm(A.name));"
          "return {total:o.length,matches:m.map(xy).filter(Boolean)}")
 # Chips are only ever looked up INSIDE the compose root (outermost match only, so nested cards count once).
 _CHIPS = (f"const root=ROOT();const chips=root?[...root.querySelectorAll({json.dumps(CHIP_SEL)})]"
@@ -484,6 +490,13 @@ JS_MSG_ACTIONS = (_XY + _OWN + "const m=own().find(m=>norm(body(m).innerText).st
                   ".find(e=>!s.contains(e)&&vis(e)&&anchored(e))||null;"
                   f"const ed=pick({json.dumps(EDIT_BTN_SEL)}),mo=pick({json.dumps(MORE_SEL)});"
                   "return {at:xy(body(m)),edit:ed?xy(ed):null,more:mo?xy(mo):null}")
+# Messages after ours from someone else (#209): chat items after the one holding our message, that hold a
+# message and none of ours. Best effort: 0 when the chat list has no items (the outbox checked ingest too).
+JS_NEWER_OTHERS = (_OWN + "const m=own().find(m=>norm(body(m).innerText).startsWith(A.key));if(!m)return -1;"
+                   "const items=[...document.querySelectorAll('[data-tid=\"chat-pane-item\"]')];"
+                   "const i=items.findIndex(it=>it.contains(m));if(i<0)return 0;"
+                   f"return items.slice(i+1).filter(it=>!it.querySelector({json.dumps(OWN_MSG_SEL)})"
+                   "&&it.querySelector('[data-tid=\"chat-pane-message\"]')).length")
 JS_MENU_ITEM = (_XY + "const m=[...document.querySelectorAll('[role=menuitem]')]"
                 ".find(e=>e.innerText.trim().split('\\n')[0].trim()===A.label);return m?xy(m):null")
 JS_EDIT_READY = _EDITS + "const l=EDS();return {editors:l.length,text:l.length===1?l[0].innerText:''}"
@@ -819,23 +832,62 @@ async def mention_list_open(c: CDP, name: str, secs: float = 2.5) -> bool:
     return False
 
 
+def mention_queries(name: str) -> list[str]:
+    """What to type after @ for NAME: the full name, then (when it has a one-letter token, like "Ana B")
+    the name without those tokens, since the picker finds nothing for a one-letter word. The pick is
+    always the suggestion named NAME exactly."""
+    full = " ".join(name.split())
+    short = " ".join(t for t in full.split(" ") if len(t.rstrip(".")) > 1)
+    return [full] + ([short] if short and short != full else [])
+
+
+async def type_mention_query(c: CDP, query: str, name: str) -> list[dict]:
+    """Type @QUERY at the caret and return the exact matches for NAME once the list settles ([] if none)."""
+    # The picker only filters on real key events (#183): insert all but the last letter, then key it.
+    await c.s("Input.insertText", {"text": "@" + query[:-1]})
+    await c.type_char(query[-1])
+    # Right after a clear Teams often ignores that first key and no list opens (seen live 6 of 6):
+    # Backspace the last letter and key it again, which opens it.
+    for _ in range(2):
+        if await mention_list_open(c, name):
+            break
+        await c.key("Backspace", "Backspace", 8)
+        await nap(0.3)
+        await c.type_char(query[-1])
+    try:
+        return [await pick_exact(c, "mention_find", JS_MENTION_FIND, name, "", "mention suggestions")]
+    except StagerError as exc:
+        if str(exc).startswith("ambiguous"):
+            raise
+        return []
+
+
+async def erase_typed(c: CDP, n: int):
+    """Take back n typed characters (an @query that found no suggestion) and close the list."""
+    for typ in ("keyDown", "keyUp"):
+        await c.s("Input.dispatchKeyEvent", {"type": typ, "key": "Escape", "code": "Escape",
+                                              "windowsVirtualKeyCode": 27})
+    for _ in range(n):
+        await c.key("Backspace", "Backspace", 8)
+
+
 async def insert_mentions(c: CDP, names: list[str]):
     for name in names:
         before = await c.ev(op("mention_count", JS_MENTION_COUNT))
-        await c.ev(op("caret_end", JS_CARET))
-        # The picker only filters on real key events (#183): insert all but the last letter, then key it.
-        await c.s("Input.insertText", {"text": "@" + name[:-1]})
-        await c.type_char(name[-1])
-        # Right after a clear Teams often ignores that first key and no list opens (seen live 6 of 6):
-        # Backspace the last letter and key it again, which opens it.
-        for _ in range(2):
-            if await mention_list_open(c, name):
+        m = None
+        for q in mention_queries(name):
+            await c.ev(op("caret_end", JS_CARET))
+            try:
+                hits = await type_mention_query(c, q, name)
+            except StagerError:
+                await erase_typed(c, len(q) + 1)
+                raise
+            if hits:
+                m = hits[0]
                 break
-            await c.key("Backspace", "Backspace", 8)
-            await nap(0.3)
-            await c.type_char(name[-1])
-        m = await pick_exact(c, "mention_find", JS_MENTION_FIND, name,
-                             f"no mention suggestion for {name}", "mention suggestions")
+            await erase_typed(c, len(q) + 1)  # never leave "@Name" behind as plain text
+        if m is None:
+            raise StagerError(f"no mention suggestion for {name}")
         await c.click(m["x"], m["y"])
         for _ in range(20):
             if await c.ev(op("mention_count", JS_MENTION_COUNT)) == before + 1:
@@ -917,11 +969,16 @@ async def stage(a) -> dict:
                 step("inserting mentions")
                 try:
                     await insert_mentions(c, a.mention)
-                except StagerError:
+                except StagerError as exc:
+                    left = -1
                     try:
                         await clear_compose(c)  # don't leave a half-typed "@NAME" behind
+                        left = await c.ev(op("compose_len", JS_LEN))
                     except StagerError:
                         pass
+                    if left != 0:
+                        raise StagerError(f"{exc}; the compose box may still hold the typed @ text, clear it in "
+                                          "Teams before staging again") from exc
                     raise
                 await c.ev(op("caret_end", JS_CARET))
 
@@ -971,6 +1028,10 @@ async def edit_sent(c: CDP, a, title: str, html: str, plain: str) -> dict:
     if len(hits) > 1:
         raise StagerError(f"ambiguous: {len(hits)} of your messages in {a.chat} match the sent text")
     key = _norm_text(hits[0]["text"])[:60]
+    newer = await c.ev(op("newer_others", JS_NEWER_OTHERS, key=key)) or 0
+    if newer > 0 and not a.allow_newer:
+        raise StagerError(f"{newer} newer message(s) from others after yours in {a.chat}; editing an answered "
+                          "message can confuse the thread (--allow-newer to edit anyway)")
     step("opening Edit on it")
     got: dict | None = None
     for _ in range(10):
@@ -1202,6 +1263,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     p.add_argument("--bypass-outbox", action="store_true")
     p.add_argument("--edit-sent", action="store_true", help="edit your sent message matching --match-file")
     p.add_argument("--match-file", help="text of the sent message to edit (--edit-sent)")
+    p.add_argument("--allow-newer", action="store_true",
+                   help="--edit-sent: edit even when others posted after the message")
     a = p.parse_args(argv)  # argparse exits 2 on usage errors
     a.app_port = None
     if a.cdp_port is None and os.environ.get("WHOSAID_CDP_PORT"):  # only read the env var when the flag is absent

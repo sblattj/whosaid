@@ -823,7 +823,7 @@ DRAFTS
   whosaid drafts diff ID [--from N --to M] | html [--out PATH] [--all]
   whosaid drafts stakeholders [WS] --topic T [--topic T2] [--repo DIR --path P] [--exclude NAME] [--json]
   whosaid drafts stale-check [WS] [ID] [--json]
-  whosaid drafts stage ID|--all [--queue] [--dry-run] [--replace] [--tab TARGET] [--ws WS] | edit-sent ID [--dry-run] [--match-file F] [--allow-longer] | mark-sent ID | mark-sent --check [WS] | drop ID [--reason R]
+  whosaid drafts stage ID|--all [--queue] [--dry-run] [--replace] [--tab TARGET] [--ws WS] | stage ID --edit [--allow-newer] [--allow-longer] [--dry-run] | edit-sent ID [--dry-run] [--match-file F] [--allow-longer] [--allow-newer] | mark-sent ID | mark-sent --check [WS] | drop ID [--reason R]
   whosaid drafts merge INTO FROM [FROM ...] [--text-file F] [--dry-run] [--force]
   An offline outbox for chat drafts an agent writes for you, one folder per draft in
   ~/.drafts/<id>/ (WHOSAID_DRAFTS_DIR overrides): draft.md, claims.json, draft.json.
@@ -848,9 +848,12 @@ DRAFTS
   text change is kept: show --rev N, diff --from N --to M. stage reads the ingested
   chat with that person, prints the last messages, and skips a draft already sent;
   mark-sent --check marks staged drafts sent once your message shows up there.
-  edit-sent fixes a message already sent: write the corrected text (drafts text), then
-  edit-sent finds your message in the chat, opens Teams' Edit on it and loads the new
-  text. Like stage it never saves: you check it and save it in Teams.
+  stage ID --edit fixes a message already sent (edit-sent ID is an alias): write the
+  corrected text (drafts text, plus claims), verify it, then stage --edit finds your
+  message in the chat by its id, opens Teams' Edit on it and loads the new text. It
+  never saves: you check it and save it in Teams. It refuses an unverified or unchanged
+  correction, a message not found or not yours, and one others answered since
+  (--allow-newer). mark-sent --check records edited_at once the chat shows the edit.
   html writes a review page of open drafts (default <drafts dir>/outbox.html).
   merge folds rival open drafts to one person into INTO: claims union by key (a different verdict or
   evidence refuses), stakeholders by speaker, pages and mentions union, FROM owners become contributors;

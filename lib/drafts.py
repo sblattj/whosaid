@@ -193,6 +193,8 @@ def content_hash(m: dict) -> str:
 
 
 def state(m: dict) -> str:
+    if m["status"] == "sent":
+        return edit_state(m)
     if m["status"] not in OPEN:
         return m["status"]
     h = content_hash(m)
@@ -201,6 +203,63 @@ def state(m: dict) -> str:
     if m.get("verified_hash") == h:
         return "verified, changed since staged" if m["status"] == "staged" else "verified"
     return "stale, edited after verify" if m.get("verified_hash") else "drafting"
+
+
+# ---- edits of a sent message (#209) -------------------------------------------------
+# A sent draft takes a revised text (and its claims), is verified again, and `stage --edit` loads it
+# into Teams' Edit box on the sent message; the user saves. sent_hash is the content as it went out
+# (or as the last edit that landed left it); anything else is a pending edit. Pages are not part of
+# an edit (Teams can't change a sent message's attachments), so the edit hash leaves them out.
+
+def edit_hash(m: dict) -> str:
+    h = hashlib.sha256(b"edit\0")
+    d = ddir(m["id"])
+    for f in (d / "draft.md", d / "claims.json"):
+        h.update(f.name.encode() + b"\0" + (f.read_bytes() if f.exists() else b"MISSING") + b"\0")
+    h.update(json.dumps(sorted(m.get("mentions") or [])).encode())
+    return h.hexdigest()[:16]
+
+
+def _changed_since_sent(m: dict, h: str) -> bool:
+    if m.get("sent_edit_hash"):
+        return h != m["sent_edit_hash"]
+    # sent before #209: pending when the text has a revision newer than the sent event
+    sent_at = max((e.get("at") or "" for e in m.get("history") or [] if e.get("event") in ("sent", "edit-staged")),
+                  default="")
+    revs = m.get("revisions") or []
+    return bool(sent_at and revs and (revs[-1].get("at") or "") > sent_at)
+
+
+def edit_state(m: dict) -> str:
+    """sent, or for a sent draft whose text or claims moved on: sent, edit drafting | edit verified | edit staged."""
+    h = edit_hash(m)
+    if not _changed_since_sent(m, h):
+        return "sent"
+    if m.get("edit_staged_hash") == h:
+        return "sent, edit staged"
+    if m.get("edit_verified_hash") == h:
+        return "sent, edit verified"
+    return "sent, edit drafting"
+
+
+def edit_pending(m: dict) -> bool:
+    return m["status"] == "sent" and edit_state(m) != "sent"
+
+
+def _mark_sent(m: dict, hit: dict | None, how: str) -> None:
+    """status sent, with the message it went out as and the baseline later edits compare against."""
+    m["status"] = "sent"
+    if hit:
+        m["sent_message"] = {k: hit.get(k) for k in ("at", "mid", "folder")}
+    m["sent_edit_hash"] = edit_hash(m)
+    m["sent_text"] = _draft_text(m)
+    _event(m, "sent", how=how, message=m.get("sent_message"))
+
+
+def _plain_links(s: str) -> str:
+    """_plain plus the link targets, so an edit that only adds or fixes a link counts as a change."""
+    urls = set(re.findall(r"\]\((\S+?)\)", s or "")) | set(re.findall(r"https?://[^\s)\]>]+", s or ""))
+    return _plain(s) + " " + " ".join(sorted(urls))
 
 
 def claims_of(m: dict) -> dict:
@@ -215,7 +274,7 @@ def gate(m: dict) -> list[str]:
         errs.append("draft.md missing")
     elif EM_DASH in md.read_text():
         errs.append("draft.md has an em dash")
-    for p in m.get("pages", []):
+    for p in m.get("pages", []) if m["status"] != "sent" else []:  # an edit can't change attachments
         if not Path(p).exists():
             errs.append(f"page missing: {p}")
     c = _read_json(d / "claims.json")
@@ -429,12 +488,13 @@ def write(draft_id: str, text: str | None = None, claims: list | None = None, st
     A changed text is kept as a new revision, tagged with the writing session. thread_id sets the
     chat's Teams thread id ("" clears it)."""
     m = load(draft_id)
-    # a sent draft takes a corrected text (for edit-sent), nothing else
-    text_only = text is not None and not any(x is not None for x in (claims, stakeholders, docs, mentions)) \
-        and not pages and not remove_pages and thread_id is None
-    if m["status"] not in OPEN and not (m["status"] == "sent" and text_only):
-        raise DraftsError(f"{draft_id} is {m['status']}" + (" (a sent draft only takes a new text, for edit-sent)"
-                                                            if m["status"] == "sent" else ""))
+    # a sent draft takes a corrected text and its claims (for stage --edit, #209); Teams can't change a
+    # sent message's attachments or mentions, so nothing else
+    edit_only = mentions is None and not pages and not remove_pages and thread_id is None
+    if m["status"] not in OPEN and not (m["status"] == "sent" and edit_only):
+        raise DraftsError(f"{draft_id} is {m['status']}" + (
+            " (a sent draft takes only a corrected text, claims, stakeholders and docs, for stage --edit)"
+            if m["status"] == "sent" else ""))
     guard(m, force)
     d = ddir(draft_id)
     for p in remove_pages or []:
@@ -569,7 +629,11 @@ def set_voice_override(m: dict, mode: str, reason: str | None) -> None:
 def verify(draft_id: str, force: bool = False, voice: str | None = None, reason: str | None = None,
            ws=None) -> dict:
     m = load(draft_id)
-    if m["status"] not in OPEN:
+    editing = m["status"] == "sent"
+    if editing and not edit_pending(m):
+        raise DraftsError(f"{draft_id} is sent and unchanged; to correct the sent message write the new text "
+                          "first (drafts text), then verify and stage --edit")
+    if m["status"] not in OPEN and not editing:
         raise DraftsError(f"{draft_id} is {m['status']}")
     guard(m, force)
     if voice:
@@ -586,16 +650,19 @@ def verify(draft_id: str, force: bool = False, voice: str | None = None, reason:
                     f"greeting or closer line, or for a real exception: whosaid drafts verify {draft_id} "
                     "--voice warn --reason R")
         raise DraftsError(msg)
-    m["verified_hash"] = content_hash(m)
-    m["verified_at"] = now()
+    if editing:
+        m["edit_verified_hash"], m["edit_verified_at"] = edit_hash(m), now()
+    else:
+        m["verified_hash"] = content_hash(m)
+        m["verified_at"] = now()
     if m["status"] == "drafting":
         m["status"] = "verified"
-    _event(m, "verified", hash=m["verified_hash"], by=os.environ.get("CLAUDE_CODE_SESSION_ID"),
-           voice_lint=v["mode"], voice_warnings=len(v["warnings"]))
+    _event(m, "verified", hash=m.get("edit_verified_hash") if editing else m["verified_hash"], edit=editing or None,
+           by=os.environ.get("CLAUDE_CODE_SESSION_ID"), voice_lint=v["mode"], voice_warnings=len(v["warnings"]))
     save(m)
     c = claims_of(m)
     n = {v_: sum(1 for k in c["claims"] if k.get("verdict") == v_) for v_ in VERDICTS}
-    return {"id": draft_id, "state": "verified", **n, "stakeholders": len(c.get("stakeholders") or []),
+    return {"id": draft_id, "state": state(m) if editing else "verified", **n, "stakeholders": len(c.get("stakeholders") or []),
             "voice_lint": v["mode"], "voice_warnings": v["warnings"]}
 
 
@@ -606,14 +673,16 @@ def summary(m: dict) -> dict:
             "mentions": m.get("mentions") or [], "revisions": len(revisions(m)),
             "contributors": [_who(c) for c in m.get("contributors") or []],
             "sent_message": m.get("sent_message"), "merged_from": m.get("merged_from") or [],
-            "merged_into": m.get("merged_into")}
+            "merged_into": m.get("merged_into"),
+            "edits": [{k: e.get(k) for k in ("n", "staged_at", "edited_at", "mid", "rev")} for e in m.get("edits") or []]}
 
 
 def listing(include_closed: bool = False, mine: bool = False, session_id: str | None = None) -> list[dict]:
     sid = session_id or os.environ.get("CLAUDE_CODE_SESSION_ID")
     if mine and not sid:
         raise DraftsError("mine needs a Claude Code session (CLAUDE_CODE_SESSION_ID)")
-    rows = [m for m in all_drafts() if include_closed or m["status"] in OPEN]
+    # a sent draft with a pending edit is open work too
+    rows = [m for m in all_drafts() if include_closed or m["status"] in OPEN or edit_pending(m)]
     if mine:
         rows = [m for m in rows if m["owner"].get("sessionId") == sid]
     open_to: dict[str, int] = {}
@@ -634,7 +703,8 @@ def show(draft_id: str, rev: int | None = None) -> dict:
     md = ddir(draft_id) / "draft.md"
     text = revision_text(m, rev) if rev else (md.read_text() if md.exists() else None)
     return {**summary(m), "text": text, "rev": rev or len(revisions(m)) or None,
-            "revision_log": revisions(m), "claims": claims_of(m), "gate": gate(m), "history": m.get("history", [])}
+            "revision_log": revisions(m), "claims": claims_of(m), "gate": gate(m), "history": m.get("history", []),
+            "edits": m.get("edits") or []}
 
 
 def close(draft_id: str, status: str, reason: str | None = None, force: bool = False) -> dict:
@@ -645,8 +715,12 @@ def close(draft_id: str, status: str, reason: str | None = None, force: bool = F
     if m["status"] not in OPEN:
         raise DraftsError(f"{draft_id} is already {m['status']}")
     guard(m, force)
-    m["status"] = status
-    _event(m, status, reason=reason)
+    if status == "sent":
+        _mark_sent(m, None, "by hand")
+        m["history"][-1]["reason"] = reason
+    else:
+        m["status"] = status
+        _event(m, status, reason=reason)
     save(m)
     return {"id": draft_id, "status": status}
 
@@ -880,12 +954,18 @@ def chat_messages(ws: Path, chat: str, since_ms: int | None = None, days: int = 
             out.append({"epoch_ms": ms, "at": datetime.fromtimestamp(ms / 1000, timezone.utc).isoformat()[:19] + "Z",
                         "speaker": seg.get("speaker"), "self": seg.get("speaker") in mine,
                         "text": seg.get("text") or "", "mid": seg.get("mid") or seg.get("message_id"),
-                        "folder": f.name})
-    out.extend(_live_chat_messages(ws, chat, floor_ms, {str(m["mid"]) for m in out if m.get("mid")}))
+                        "folder": f.name, "edited_ms": seg.get("edited_ms")})
+    by_mid = {str(m["mid"]): m for m in out if m.get("mid")}
+    for x in _live_chat_messages(ws, chat, floor_ms):
+        old = by_mid.get(str(x["mid"]))
+        if old is None:
+            out.append(x)
+        elif x.get("edited_ms") and (x["edited_ms"] > (old.get("edited_ms") or 0)):
+            old.update(text=x["text"], edited_ms=x["edited_ms"])  # edited after the last ingest
     return sorted(out, key=lambda x: x["epoch_ms"])
 
 
-def _live_chat_messages(ws: Path, chat: str, floor_ms: int, seen: set) -> list[dict]:
+def _live_chat_messages(ws: Path, chat: str, floor_ms: int) -> list[dict]:
     """Messages of the chat still only in the Teams desktop app's local cache (not ingested yet).
     Empty when there is no cache; WHOSAID_TEAMS_CACHE=off turns it off."""
     if (os.environ.get("WHOSAID_TEAMS_CACHE") or "").strip().lower() in ("off", "0", "none"):
@@ -898,8 +978,9 @@ def _live_chat_messages(ws: Path, chat: str, floor_ms: int, seen: set) -> list[d
     except Exception:  # noqa: BLE001 - the cache is a bonus, never a reason to fail
         return []
     return [{"epoch_ms": m["epoch_ms"], "at": m["at"], "speaker": m["author"].replace(" ", "_"),
-             "self": m["self"], "text": m["text"], "mid": m["message_id"], "folder": "(teams cache)"}
-            for m in res.get("messages") or [] if m["message_id"] not in seen and same_chat(m.get("chat", ""), chat)]
+             "self": m["self"], "text": m["text"], "mid": m["message_id"], "folder": "(teams cache)",
+             "edited_ms": m.get("edited_ms")}
+            for m in res.get("messages") or [] if same_chat(m.get("chat", ""), chat)]
 
 
 def chat_thread_id(m: dict, ws: Path | None) -> str | None:
@@ -951,11 +1032,15 @@ def chat_context(ws: Path, m: dict, n: int = 5) -> dict:
 
 
 def sent_check(ws: Path, draft_id: str | None = None) -> dict:
-    """Mark staged drafts sent once the ingested chat shows them as our message after staging."""
-    todo = [load(draft_id)] if draft_id else [m for m in all_drafts() if m["status"] == "staged"]
-    res: dict = {"sent": [], "still_staged": [],
+    """Mark staged drafts sent once the ingested chat shows them as our message after staging, and staged
+    edits saved once the sent message (by id) holds the new text or Teams marks it edited."""
+    todo = [load(draft_id)] if draft_id else [m for m in all_drafts() if m["status"] == "staged" or _edit_open(m)]
+    res: dict = {"sent": [], "still_staged": [], "edited": [], "edit_not_seen": [],
                  "note": "a draft stays staged until its chat is ingested again (whosaid teams ingest)"}
     for m in todo:
+        if _edit_open(m):
+            _check_edit(ws, m, res)
+            continue
         if m["status"] != "staged":
             res["still_staged"].append({"id": m["id"], "why": f"is {m['status']}, not staged"})
             continue
@@ -966,12 +1051,46 @@ def sent_check(ws: Path, draft_id: str | None = None) -> dict:
             res["still_staged"].append({"id": m["id"], "to": m["to"], "why": f"not in the {len(msgs)} ingested "
                                         f"message(s) of {m['to']} since staging"})
             continue
-        m["status"] = "sent"
-        m["sent_message"] = {k: hit[k] for k in ("at", "mid", "folder")}
-        _event(m, "sent", how="check", message=m["sent_message"])
+        _mark_sent(m, hit, "check")
         save(m)
         res["sent"].append({"id": m["id"], "to": m["to"], **m["sent_message"]})
     return res
+
+
+def _edit_open(m: dict) -> bool:
+    """A staged edit the chat hasn't shown saved yet."""
+    e = (m.get("edits") or [None])[-1]
+    return m["status"] == "sent" and bool(e) and not e.get("edited_at")
+
+
+def _check_edit(ws: Path, m: dict, res: dict) -> None:
+    e = m["edits"][-1]
+    since = (_ms((m.get("sent_message") or {}).get("at")) or _ms(e.get("staged_at")) or 0) - 300_000
+    x = next((x for x in chat_messages(ws, m["to"], since_ms=since) if e.get("mid") and str(x.get("mid")) == str(e["mid"])),
+             None)
+    staged_ms = _ms(e.get("staged_at")) or 0
+    if x is None:
+        res["edit_not_seen"].append({"id": m["id"], "to": m["to"], "why": f"message {e.get('mid')} is not in the "
+                                     f"ingested {m['to']} chat"})
+        return
+    # Teams' edit time is the proof; without one, the new text (and not the old) in that message
+    flagged = bool(x.get("edited_ms")) and x["edited_ms"] >= staged_ms - 60_000
+    def near(a: str) -> float:
+        return difflib.SequenceMatcher(None, _plain(a), _plain(x["text"]), autojunk=False).ratio()
+    by_text = (_plain(e["to_text"]) != _plain(e["from_text"]) and same_message(e["to_text"], x["text"])
+               and near(e["to_text"]) > near(e["from_text"]))
+    if not (flagged or by_text):
+        res["edit_not_seen"].append({"id": m["id"], "to": m["to"], "why": "the message still holds the old text "
+                                     "(not saved in Teams yet, or the chat not ingested since)"})
+        return
+    e["edited_at"] = (datetime.fromtimestamp(x["edited_ms"] / 1000, timezone.utc).isoformat()[:19] + "Z"
+                      if x.get("edited_ms") else x["at"])
+    e["seen_text"] = x["text"]
+    if e.get("hash") == edit_hash(m):  # the outbox still holds what was saved: that is the new baseline
+        m["sent_edit_hash"], m["sent_text"] = e["hash"], e["to_text"]
+    _event(m, "edited", n=e["n"], mid=e.get("mid"), edited_at=e["edited_at"])
+    save(m)
+    res["edited"].append({"id": m["id"], "to": m["to"], "n": e["n"], "mid": e.get("mid"), "edited_at": e["edited_at"]})
 
 
 # ---- review page ------------------------------------------------------------------------
@@ -1266,9 +1385,25 @@ def _stage_ws(ws) -> Path | None:
 
 def stage(ids: list[str] | None = None, all_ready: bool = False, dry_run: bool = False,
           tab: str | None = None, ws: str | os.PathLike | None = None, replace: bool = False,
-          queue: bool = False) -> dict:
+          queue: bool = False, edit: bool = False, allow_newer: bool = False, allow_longer: bool = False) -> dict:
     """Stage drafts into their chats; never sends. One per run unless queue: each lands in its own chat's
-    compose box, so queue stages them all, oldest first, and stops at the first stager failure."""
+    compose box, so queue stages them all, oldest first, and stops at the first stager failure.
+    edit: load a sent draft's verified correction into Teams' Edit box on that message instead (one id;
+    never saves). Returns the usual shape, with the edit in staged[0] (sent_message, warnings)."""
+    if edit:
+        if all_ready or len(ids or []) != 1:
+            raise DraftsError("stage --edit takes one draft id")
+        try:
+            r = _stage_edit(ids[0], dry_run, tab, _stage_ws(ws), None, allow_longer, allow_newer)
+        except DraftsError as exc:
+            return {"staged": [], "skipped": [], "failed": [{"id": ids[0], "why": str(exc)}], "edit": True}
+        out = {"staged": [], "skipped": [], "failed": [], "edit": True, "warnings": r.get("warnings") or []}
+        if dry_run:
+            out["would_run"] = [{"id": ids[0], "argv": r["would_run"], "sent_message": r["sent_message"]}]
+        else:
+            out["staged"] = [{k: r[k] for k in ("id", "to", "stager", "sent_message")}]
+            out["note"] = r["note"]
+        return out
     if all_ready:
         ready = [m for m in all_drafts() if m["status"] in OPEN and state(m).startswith("verified")]
         ids = [m["id"] for m in sorted(ready, key=lambda m: m.get("updated_at") or "")]
@@ -1389,25 +1524,84 @@ def sent_text(ws: Path | None, m: dict) -> dict | None:
     return None
 
 
-def edit_sent(draft_id: str, dry_run: bool = False, tab: str | None = None, ws: str | os.PathLike | None = None,
-              match_file: str | None = None, allow_longer: bool = False) -> dict:
-    """Load the current draft.md into Teams' Edit box on the message this draft was sent as (#176).
-    The stager never saves the edit: the user checks it and presses save in Teams."""
-    m = load(draft_id)
-    if m["status"] in ("dropped", "superseded"):
-        raise DraftsError(f"{draft_id} is {m['status']}")
-    new = _draft_text(m).strip()
-    if not new:
-        raise DraftsError(f"{draft_id} has no text")
-    if match_file:
-        old, where = Path(match_file).expanduser().read_text(), {"from": "--match-file"}
+def find_sent(ws: Path | None, m: dict) -> tuple[dict | None, list[dict]]:
+    """(the message this draft went out as, the chat messages after it). By the recorded message id; a
+    draft sent before ids were recorded (or marked sent by hand) falls back to the text match."""
+    if ws is None:
+        return None, []
+    sm = m.get("sent_message") or {}
+    since = (_ms(sm.get("at")) or _ms(m.get("staged_at")) or _ms(m.get("created_at")) or 0) - 300_000
+    msgs = chat_messages(ws, m["to"], since_ms=since)
+    if sm.get("mid"):
+        hit = next((x for x in msgs if str(x.get("mid")) == str(sm["mid"])), None)
     else:
-        hit = sent_text(_stage_ws(ws), m)
+        hit = sent_text(ws, m)
+        hit = next((x for x in msgs if x.get("mid") and x.get("mid") == (hit or {}).get("mid")), hit)
+    if hit is None:
+        return None, []
+    return hit, [x for x in msgs if x["epoch_ms"] > hit["epoch_ms"]]
+
+
+def _stage_edit(draft_id: str, dry_run: bool, tab: str | None, wsp: Path | None, match_file: str | None,
+                allow_longer: bool, allow_newer: bool) -> dict:
+    """Load a verified correction of a sent draft into Teams' Edit box on that message (#176, #209).
+    The stager never saves the edit: the user checks it and saves it in Teams."""
+    m = load(draft_id)
+    if m["status"] in OPEN:
+        hit = sent_text(wsp, m)  # sent by hand without mark-sent: found in the chat, so it went out
         if not hit:
-            raise DraftsError(f"no message of yours in the ingested {m['to']} chat matches {draft_id} (ingest the "
-                              "chat again, or pass --match-file with the sent text)")
-        old, where = hit["text"], {k: hit[k] for k in ("at", "mid", "folder")}
-    if _plain(old) == _plain(new):
+            raise DraftsError(f"{draft_id} is {state(m)}, not sent; stage it the normal way")
+        # it went out as that message; the baseline is what the chat holds, so a correction already in
+        # draft.md is a pending edit (and needs its own verify)
+        unchanged = _plain_links(_draft_text(m)) == _plain_links(hit["text"])
+        _mark_sent(m, hit, "found in chat by stage --edit")
+        if not unchanged:
+            m["sent_edit_hash"], m["sent_text"] = "unknown", hit["text"]
+        if not dry_run:  # a dry run reports, it records nothing
+            save(m)
+    if m["status"] != "sent":
+        raise DraftsError(f"{draft_id} is {m['status']}")
+    st = edit_state(m)
+    if st == "sent":
+        raise DraftsError(f"{draft_id} is sent and unchanged; write the corrected text first (drafts text)")
+    if st == "sent, edit drafting":
+        raise DraftsError(f"{draft_id}: the correction is not verified; owner {owner_line(m['owner'])} must "
+                          "verify it (drafts verify)")
+    errs = gate(m)
+    if errs:
+        raise DraftsError("gate fails: " + "; ".join(errs))
+    new = _draft_text(m).strip()
+    warnings: list[str] = []
+    if match_file:  # the chat isn't ingested: the user hands over the sent text, so nothing else can be checked
+        old, where, after = Path(match_file).expanduser().read_text(), {"from": "--match-file"}, []
+        warnings.append("--match-file: the message's id, author and later messages were not checked")
+    else:
+        if wsp is None:
+            raise DraftsError("no workspace (WHOSAID_WORKSPACE or --ws) to find the sent message in")
+        hit, after = find_sent(wsp, m)
+        if hit is None:
+            sm = m.get("sent_message") or {}
+            raise DraftsError(f"can't find the sent message in the ingested {m['to']} chat"
+                              + (f" (id {sm['mid']})" if sm.get("mid") else "")
+                              + "; ingest the chat again (whosaid teams sync), or pass --match-file with the sent text")
+        if not hit["self"]:
+            raise DraftsError(f"message {hit.get('mid')} in {m['to']} is by {hit.get('speaker')}, not you: "
+                              "only your own messages can be edited")
+        old, where = hit["text"], {k: hit.get(k) for k in ("at", "mid", "folder")}
+        others = [x for x in after if not x["self"]]
+        if others and not allow_newer:
+            last = others[-1]
+            raise DraftsError(f"{len(others)} newer message(s) in {m['to']} since yours, the last by "
+                              f"{last.get('speaker')} at {last['at']}: \"{last['text'][:80]}\". Editing a message "
+                              "people already answered can confuse the thread; send a follow-up instead, or pass "
+                              "--allow-newer (allow_newer=true) to edit anyway")
+        if others:
+            warnings.append(f"{len(others)} newer message(s) from others since yours (--allow-newer)")
+        mine = [x for x in after if x["self"]]
+        if mine:
+            warnings.append(f"you posted {len(mine)} message(s) after this one; the edit changes the older message")
+    base = m.get("sent_text") or old
+    if _plain_links(base) == _plain_links(new) or _plain_links(old) == _plain_links(new):
         raise DraftsError("draft.md is the same as the sent message; write the corrected text first")
     # The edit replaces the whole message: a draft of which only a part was sent would add the rest.
     if not allow_longer and len(_plain(new)) > 1.5 * len(_plain(old)) + 40:
@@ -1415,13 +1609,20 @@ def edit_sent(draft_id: str, dry_run: bool = False, tab: str | None = None, ws: 
                           f"({len(_plain(old))} chars), and the edit replaces the whole message; write only the "
                           "corrected message (drafts text), or pass --allow-longer")
     matchf = ddir(draft_id) / ".edit-match.txt"
-    matchf.write_text(old)
     argv = [*stager_builtin(), "--chat", m["to"], "--md", str(ddir(draft_id) / "draft.md"),
-            "--edit-sent", "--match-file", str(matchf)] + (["--tab", tab] if tab else [])
-    res: dict = {"id": draft_id, "to": m["to"], "sent_message": where}
+            "--edit-sent", "--match-file", str(matchf)]
+    if allow_newer:
+        argv += ["--allow-newer"]
+    tid = chat_thread_id(m, wsp)
+    if tid:
+        argv += ["--thread-id", tid]
+    if tab:
+        argv += ["--tab", tab]
+    res: dict = {"id": draft_id, "to": m["to"], "sent_message": where, "warnings": warnings}
     if dry_run:
         return res | {"would_run": argv}
-    acquire_lock(f"edit-sent {draft_id}")
+    matchf.write_text(old)
+    acquire_lock(f"stage --edit {draft_id}")
     try:
         env = {**os.environ, "TEAMS_OUTBOX_LOCK": str(_lock_path())}
         try:
@@ -1435,14 +1636,24 @@ def edit_sent(draft_id: str, dry_run: bool = False, tab: str | None = None, ws: 
         _event(m, "edit-failed", err=msg)
         save(m)
         raise DraftsError(f"stager exit {r.returncode}: {msg}")
-    if m["status"] != "sent":  # found in the chat as ours: it was sent
-        m["status"] = "sent"
-        m.setdefault("sent_message", where if "at" in where else None)
-    m["edit_staged_at"] = now()
-    _event(m, "edit-staged", message=where, out=(r.stdout or "")[-300:])
+    h = edit_hash(m)
+    # sent before #209 (no baseline hash): pin one now, or the edit-staged event would read as "unchanged"
+    m.setdefault("sent_edit_hash", "unknown")
+    edits = m.setdefault("edits", [])
+    edits.append({"n": len(edits) + 1, "staged_at": now(),
+                  "mid": where.get("mid") or (m.get("sent_message") or {}).get("mid"), "rev": len(revisions(m)),
+                  "from_text": old, "to_text": _draft_text(m), "hash": h, "edited_at": None})
+    m["edit_staged_hash"] = h
+    _event(m, "edit-staged", n=len(edits), message=where, out=(r.stdout or "")[-300:])
     save(m)
     return res | {"stager": ((r.stdout or "").strip().splitlines() or [""])[-1],
-                  "note": "the new text is in the Edit box; check it and save it in Teams"}
+                  "note": "the new text is in Teams' Edit box on your message; check it and save it in Teams"}
+
+
+def edit_sent(draft_id: str, dry_run: bool = False, tab: str | None = None, ws: str | os.PathLike | None = None,
+              match_file: str | None = None, allow_longer: bool = False, allow_newer: bool = False) -> dict:
+    """`drafts edit-sent ID`: an alias of `drafts stage ID --edit` (same gates, #209)."""
+    return _stage_edit(draft_id, dry_run, tab, _stage_ws(ws), match_file, allow_longer, allow_newer)
 
 
 def stager_builtin() -> list[str]:
@@ -1565,13 +1776,21 @@ def build_parser() -> argparse.ArgumentParser:
                    help="overwrite text already in the compose box and drop its old attachments")
     a.add_argument("--ws", help="workspace with the ingested chats (default WHOSAID_WORKSPACE)")
     a.add_argument("--queue", action="store_true", help="with --all: stage every verified draft, oldest first")
-    a = sub.add_parser("edit-sent", help="load the corrected draft.md into Teams' Edit box on the sent message")
+    a.add_argument("--edit", action="store_true",
+                   help="a sent draft: load its verified correction into Teams' Edit box on the sent message "
+                        "(never saves; you save it in Teams)")
+    a.add_argument("--allow-newer", action="store_true",
+                   help="with --edit: edit even though others posted after your message")
+    a.add_argument("--allow-longer", action="store_true",
+                   help="with --edit: the new text may be much longer than the sent one")
+    a = sub.add_parser("edit-sent", help="alias of stage ID --edit (plus --match-file for a chat not ingested)")
     a.add_argument("id")
     a.add_argument("--dry-run", action="store_true")
     a.add_argument("--tab")
     a.add_argument("--ws", help="workspace with the ingested chats (default WHOSAID_WORKSPACE)")
     a.add_argument("--match-file", help="text of the sent message, when it isn't ingested yet")
     a.add_argument("--allow-longer", action="store_true", help="the new text may be much longer than the sent one")
+    a.add_argument("--allow-newer", action="store_true", help="edit even though others posted after your message")
     a = sub.add_parser("mark-sent")
     a.add_argument("id", nargs="?", help="a draft id, or with --check an optional workspace")
     a.add_argument("--check", action="store_true", help="mark staged drafts sent that show up in the ingested chat")
@@ -1708,7 +1927,10 @@ def main(argv: list[str] | None = None) -> int:
                     for f in d["new_statements"]:
                         print(f"   {f['meeting']} {f['t_str']} {f['speaker']} on '{f['topic']}': {f['text'][:100]}")
         elif c == "edit-sent":
-            r = edit_sent(args.id, args.dry_run, args.tab, args.ws, args.match_file, args.allow_longer)
+            r = edit_sent(args.id, args.dry_run, args.tab, args.ws, args.match_file, args.allow_longer,
+                          args.allow_newer)
+            for w in r.get("warnings") or []:
+                print(f"warning: {w}", file=sys.stderr)
             if "would_run" in r:
                 print(f"{r['id']}: would edit your message in {r['to']} ({r['sent_message']}): "
                       + " ".join(shlex.quote(x) for x in r["would_run"]))
@@ -1719,8 +1941,14 @@ def main(argv: list[str] | None = None) -> int:
                 raise DraftsError("need an id or --all")
             if args.queue and not args.all:
                 raise DraftsError("--queue needs --all")
+            if (args.allow_newer or args.allow_longer) and not args.edit:
+                raise DraftsError("--allow-newer/--allow-longer go with --edit")
+            if args.edit and (args.all or args.replace):
+                raise DraftsError("--edit takes one draft id (no --all, --replace)")
             r = stage([args.id] if args.id else None, args.all, args.dry_run, args.tab, args.ws, args.replace,
-                      queue=args.queue)
+                      queue=args.queue, edit=args.edit, allow_newer=args.allow_newer, allow_longer=args.allow_longer)
+            for w in r.get("warnings") or []:
+                print(f"warning: {w}", file=sys.stderr)
             si = r.get("stager_info")
             if si:
                 print(f"stager: {si['stager']}" + (f", {si['target']}" if si["kind"] == "built-in" else ""),
@@ -1739,7 +1967,8 @@ def main(argv: list[str] | None = None) -> int:
             for s in r.get("would_run", []):
                 print(f"{s['id']}: would run {' '.join(shlex.quote(x) for x in s['argv'])}")
             for s in r["staged"]:
-                print(f"{s['id']}: staged in {s['to']}. {s['stager']}")
+                print(f"{s['id']}: {'edit staged on your message' if r.get('edit') else 'staged'} in {s['to']}. "
+                      f"{s['stager']}")
             for s in r["skipped"]:
                 print(f"{s['id']}: skip, {s['why']}")
             for s in r["failed"]:
@@ -1753,7 +1982,11 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"{s['id']}: sent at {s['at']} (found in {s['folder']})")
             for s in r["still_staged"]:
                 print(f"{s['id']}: still staged, {s['why']}")
-            if not r["sent"] and not r["still_staged"]:
+            for s in r["edited"]:
+                print(f"{s['id']}: edit {s['n']} saved in Teams at {s['edited_at']}")
+            for s in r["edit_not_seen"]:
+                print(f"{s['id']}: edit staged, not seen saved yet: {s['why']}")
+            if not r["sent"] and not r["still_staged"] and not r["edited"] and not r["edit_not_seen"]:
                 print("no staged drafts")
             elif r["still_staged"]:
                 print(r["note"])

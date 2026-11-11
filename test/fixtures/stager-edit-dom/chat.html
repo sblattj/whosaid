@@ -1,0 +1,119 @@
+<!doctype html>
+<!-- A hand-written stand-in for a Teams chat (#209): synthetic names, no real data. Layout comes from
+     data-rect="x,y,w,h" (the bridge maps getBoundingClientRect and elementFromPoint onto it). The app
+     part below mimics what the stager relies on: a left rail, own and other messages, ONE floating hover
+     toolbar with Edit (desktop app style), a hidden 4px More button per message, an edit box with a Done
+     control opened inside the message, and the compose box with Attach and Send. window.__fx records
+     what happened: saved / sent must stay false. -->
+<html><head><title>Activity | Microsoft Teams</title></head><body>
+<div role="tree" data-rect="0,0,200,600">
+  <div role="treeitem" data-rect="0,40,200,40">Bo Chen</div>
+  <div role="treeitem" data-rect="0,80,200,40">Ann Lee</div>
+</div>
+<div data-tid="message-pane-body" data-rect="200,0,800,700">
+  <div data-tid="chat-pane-item" data-rect="200,100,800,60">
+    <div data-tid="chat-pane-message" data-rect="220,110,500,40">morning, is the staging build green again?</div>
+  </div>
+  <div data-tid="chat-pane-item" data-rect="200,160,800,60">
+    <div class="fui-ChatMyMessage" data-rect="400,170,580,40">
+      <div data-tid="chat-pane-message" data-rect="420,175,520,30">morning, the build is green again</div>
+      <button aria-label="More message options" data-rect="970,170,4,4"></button>
+    </div>
+  </div>
+  <div data-tid="chat-pane-item" data-rect="200,220,800,60">
+    <div class="fui-ChatMyMessage" data-rect="400,230,580,40">
+      <div data-tid="chat-pane-message" data-rect="420,235,520,30">can you add the two DNS records for the staging hosts?</div>
+      <button aria-label="More message options" data-rect="970,230,4,4"></button>
+    </div>
+  </div>
+  <div data-tid="chat-pane-item" id="later" data-rect="200,280,800,60">
+    <div data-tid="chat-pane-message" data-rect="220,290,500,40">sure, on it</div>
+  </div>
+</div>
+<div role="toolbar" id="hover" data-rect="0,0,0,0">
+  <button aria-label="Edit" id="hover-edit" data-rect="0,0,0,0">Edit</button>
+</div>
+<div id="compose" data-rect="200,700,800,100">
+  <div data-tid="ckeditor" contenteditable="true" role="textbox" data-rect="210,710,600,40"></div>
+  <button data-tid="sendMessageCommands-FilePicker" aria-label="Attach files" data-rect="820,760,30,30"></button>
+  <button data-tid="sendMessageCommands-send" aria-label="Send" data-rect="900,890,40,30"></button>
+</div>
+<script>
+(() => {
+  const fx = window.__fx = {saved: false, sent: false, editing: null, clicks: [], hovered: null};
+  const items = () => [...document.querySelectorAll('[data-tid="message-pane-body"] [data-tid="chat-pane-item"]')];
+  const rect = (el, r) => el.setAttribute("data-rect", r.join(","));
+  if (new URLSearchParams(location.search).get("later") !== "1") document.getElementById("later").remove();
+  document.querySelectorAll('[role=treeitem]').forEach(t => t.addEventListener("click", () => {
+    document.title = `Chat | ${t.textContent.trim()} | Microsoft Teams`;
+  }));
+  // the one floating toolbar follows the pointer: it sits on the top edge of the item last hovered
+  document.addEventListener("mouseover", e => {
+    const it = e.target.closest && e.target.closest('[data-tid="chat-pane-item"]');
+    if (!it || !it.querySelector(".fui-ChatMyMessage")) return;
+    const [x, y, w] = it.getAttribute("data-rect").split(",").map(Number);
+    fx.hovered = items().indexOf(it);
+    rect(document.getElementById("hover"), [x + w - 120, y - 16, 100, 32]);
+    rect(document.getElementById("hover-edit"), [x + w - 110, y - 12, 24, 24]);
+  });
+  document.getElementById("hover-edit").addEventListener("click", () => {
+    const it = items()[fx.hovered];
+    const body = it.querySelector('[data-tid="chat-pane-message"]');
+    const ed = document.createElement("div");
+    ed.setAttribute("data-tid", "ckeditor"); ed.setAttribute("contenteditable", "true");
+    ed.setAttribute("role", "textbox"); ed.setAttribute("data-rect", "420,175,520,30");
+    ed.textContent = body.textContent;
+    const done = document.createElement("button");
+    done.setAttribute("aria-label", "Done"); done.setAttribute("data-rect", "900,0,40,24");
+    done.addEventListener("click", () => { fx.saved = true; });
+    ed.addEventListener("keydown", e => {
+      if (e.key === "Enter") fx.saved = true;
+      const s = getSelection();
+      if (e.key === "Backspace" && s.rangeCount && s.toString() === ed.textContent) ed.innerHTML = "";
+    });
+    ed.addEventListener("paste", e => { e.preventDefault(); ed.innerHTML += e.clipboardData.getData("text/html"); });
+    body.after(ed, done);
+    fx.editing = items().indexOf(it);
+  });
+  document.querySelector('[data-tid="sendMessageCommands-send"]').addEventListener("click", () => { fx.sent = true; });
+  // The @ picker on the compose box. Like the real one (as far as #209 knows), it finds nobody for a query
+  // holding a one-letter word ("@Ana B"); "@Ana" lists everyone whose name starts with it.
+  const people = ["Ana B", "Ana Bell", "Bo Chen"];
+  const box = document.querySelector('#compose [data-tid="ckeditor"]');
+  let list = null;
+  const close = () => { if (list) { list.remove(); list = null; } };
+  const refresh = () => {
+    close();
+    const t = box.textContent, at = t.lastIndexOf("@");
+    if (at < 0) return;
+    const q = t.slice(at + 1);
+    if (!q || q.split(" ").some(w => w.length === 1)) return;
+    const hits = people.filter(p => p.toLowerCase().startsWith(q.toLowerCase()));
+    if (!hits.length) return;
+    list = document.createElement("div");
+    list.setAttribute("role", "listbox");
+    hits.forEach((p, i) => {
+      const o = document.createElement("div");
+      o.setAttribute("role", "option");
+      o.setAttribute("data-rect", `220,${600 + 30 * i},300,28`);
+      o.innerHTML = `<div>${p}</div><div>Available</div>`;
+      o.addEventListener("click", () => {
+        const last = [...box.childNodes].reverse().find(n => n.nodeType === 3 && n.data.includes("@"));
+        last.data = last.data.slice(0, last.data.lastIndexOf("@"));
+        const m = document.createElement("span");
+        m.setAttribute("itemtype", "http://schema.skype.com/Mention");
+        m.textContent = p;
+        box.appendChild(m);
+        fx.mentions = (fx.mentions || []).concat([p]);
+        close();
+      });
+      list.appendChild(o);
+    });
+    document.body.appendChild(list);
+  };
+  box.addEventListener("input", refresh);
+  box.addEventListener("keydown", e => { if (e.key === "Escape") close(); if (e.key === "Enter") fx.sent = true; });
+  box.addEventListener("paste", e => { e.preventDefault(); box.insertAdjacentHTML("beforeend", e.clipboardData.getData("text/html")); });
+})();
+</script>
+</body></html>

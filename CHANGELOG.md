@@ -6,6 +6,20 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ## [Unreleased]
 
+### Added
+- `whosaid drafts stage ID --edit` and `whosaid_draft_stage(edit=true)` correct a message you already sent (#209). A sent draft takes a corrected text, claims, stakeholders and docs, is verified like any draft (states `sent, edit drafting` / `sent, edit verified` / `sent, edit staged`), and the stager finds your sent message in the chat by its recorded id, opens Teams' Edit on it and replaces the text with links kept. It never saves: no Enter, no click on a save, Done or send control; you save it in Teams. Refused when the correction isn't verified or changes nothing (a link-only fix counts as a change), the message can't be found or isn't yours, or someone else posted after it (`--allow-newer` / `allow_newer=true` to edit anyway; your own later messages only warn). The stager checks the chat view for later replies too.
+- Edit history on the draft: `edits[]` keeps the old and new text, the revision, `staged_at` and `edited_at`. `mark-sent --check` / `whosaid_draft_sent_check` sets `edited_at` once the chat shows the edit (Teams' edit time, or the new text on that message id) and makes it the new baseline.
+- `whosaid teams sync` re-ingests a message the Teams desktop cache shows edited since it was ingested, replacing its text in place; segments carry `edited_ms` / `edited_at`, and a chat export record may carry `edited_ms`. The outbox's chat history also overlays a newer edit from the cache.
+- The app's Drafts page lists a sent draft with a pending correction and stages it with **Stage edit in Teams**.
+- `test/stager_dom_test.py`: the stager's edit path against a hand-written fixture DOM in jsdom (bun), no browser and no Teams.
+
+### Fixed
+- `whosaid drafts stage` with a `--mention` whose last name is one letter ("Ana B") failed with "no mention suggestion" and could leave "@Ana B" as plain text in the compose box. The stager now tries the full name, then the name without one-letter words ("@Ana"), and still picks the suggestion named exactly "Ana B" (spaces normalised). A query that finds nobody is taken back before the next one, and a mention that still fails clears the compose box and says so if it couldn't.
+
+### Changed
+- `whosaid drafts edit-sent ID` is now an alias of `stage ID --edit`: the correction must be verified first, and the message is found by its id (text match only for drafts sent before ids were recorded). `--match-file` still works for a chat that isn't ingested.
+- A sent draft's pages and mentions can't change (Teams can't change them on a sent message); its text, claims, stakeholders and docs can.
+
 ## [1.40.1] - 2026-11-11
 
 ### Fixed

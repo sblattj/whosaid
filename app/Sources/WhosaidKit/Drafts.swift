@@ -5,7 +5,8 @@ public struct DraftRow: Sendable, Equatable, Identifiable {
   public let id: String
   public let to: String
   public let topic: String
-  /// drafting, verified, stale, staged, or "verified, changed since staged".
+  /// drafting, verified, stale, staged, or "verified, changed since staged"; a sent draft with a
+  /// correction is "sent, edit drafting", "sent, edit verified" or "sent, edit staged" (#209).
   public let state: String
   public let pages: [String]
   public let mentions: [String]
@@ -34,8 +35,10 @@ public struct DraftRow: Sendable, Equatable, Identifiable {
   }
 
   /// Verified and not staged with this content: the Stage button is live.
-  public var stageable: Bool { state.hasPrefix("verified") && rivals == 0 }
-  public var staged: Bool { state == "staged" }
+  public var stageable: Bool { (state.hasPrefix("verified") && rivals == 0) || state == "sent, edit verified" }
+  public var staged: Bool { state == "staged" || state == "sent, edit staged" }
+  /// A correction of a message already sent: Stage loads it into Teams' Edit box (edit=true); the user saves.
+  public var isEdit: Bool { state.hasPrefix("sent, edit") }
 
   public var stateLabel: String {
     switch state {
@@ -43,6 +46,9 @@ public struct DraftRow: Sendable, Equatable, Identifiable {
     case "verified, changed since staged": "ready to stage again"
     case "staged": "staged, send it in Teams"
     case "stale": "edited after verify"
+    case "sent, edit drafting": "correction, verify it"
+    case "sent, edit verified": "correction ready to stage"
+    case "sent, edit staged": "edit staged, save it in Teams"
     default: state
     }
   }
@@ -64,9 +70,12 @@ public struct StageOutcome: Sendable, Equatable {
       return
     }
     staged = (v["staged"]?.array ?? []).compactMap { $0["id"]?.string }
+    let edit = v["edit"]?.bool == true
     for s in v["staged"]?.array ?? [] {
-      lines.append("Staged for \(s["to"]?.string ?? "?"): open Teams, read it, press send.")
+      lines.append(edit ? "Edit loaded on your message to \(s["to"]?.string ?? "?"): check it in Teams and save it."
+                        : "Staged for \(s["to"]?.string ?? "?"): open Teams, read it, press send.")
     }
+    for w in v["warnings"]?.array ?? [] { if let w = w.string { lines.append("Warning: \(w)") } }
     for s in v["skipped"]?.array ?? [] { lines.append("Skipped: \(s["why"]?.string ?? "")") }
     let failed = v["failed"]?.array ?? []
     for s in failed { lines.append("Not staged: \(s["why"]?.string ?? "")") }

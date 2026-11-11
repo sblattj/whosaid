@@ -17,6 +17,12 @@ import Testing
   #expect(!stale.stageable && stale.stateLabel == "edited after verify")
   let again = try #require(DraftRow(try JSONValue.parse(Data(#"{"id":"a","to":"B","state":"verified, changed since staged"}"#.utf8))))
   #expect(again.stageable)
+  let fix = try #require(DraftRow(try JSONValue.parse(Data(#"{"id":"a","to":"B","state":"sent, edit verified"}"#.utf8))))
+  #expect(fix.stageable && fix.isEdit && !fix.staged && fix.stateLabel == "correction ready to stage")
+  let fixing = try #require(DraftRow(try JSONValue.parse(Data(#"{"id":"a","to":"B","state":"sent, edit drafting"}"#.utf8))))
+  #expect(!fixing.stageable && fixing.isEdit)
+  let saved = try #require(DraftRow(try JSONValue.parse(Data(#"{"id":"a","to":"B","state":"sent, edit staged"}"#.utf8))))
+  #expect(saved.staged && !saved.stageable)
   #expect(DraftRow(try JSONValue.parse(Data(#"{"to":"B"}"#.utf8))) == nil)
 }
 
@@ -32,6 +38,11 @@ import Testing
   let err = StageOutcome(try JSONValue.parse(Data(#"{"ok": false, "error": "outbox locked"}"#.utf8)))
   #expect(!err.ok && err.lines == ["outbox locked"])
   #expect(StageOutcome(try JSONValue.parse(Data(#"{"ok": true, "staged": [], "skipped": [], "failed": []}"#.utf8))).lines == ["Nothing to stage."])
+  let edit = StageOutcome(try JSONValue.parse(Data(#"""
+  {"ok": true, "edit": true, "staged": [{"id": "a", "to": "Quill Example"}], "skipped": [], "failed": [],
+   "warnings": ["you posted 1 message(s) after this one"]}
+  """#.utf8)))
+  #expect(edit.ok && edit.lines.first?.contains("save it") == true && edit.lines.last?.hasPrefix("Warning:") == true)
 }
 
 @Test func draftsFolderHonoursTheOverride() {

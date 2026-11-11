@@ -292,7 +292,8 @@ whosaid drafts stage <id>                       # paste it into the Teams chat; 
 whosaid drafts unstage <id> --reason R          # you cleared the compose box by hand: back to verified
 whosaid drafts stage <id> --replace             # the compose box already holds text: overwrite it
 whosaid drafts stage --all --queue              # every verified draft, oldest first, each in its chat
-whosaid drafts mark-sent --check ~/meetings     # staged drafts you have since sent
+whosaid drafts mark-sent --check ~/meetings     # staged drafts you have since sent (and edits you saved)
+whosaid drafts stage <id> --edit                # a sent draft's verified correction into Teams' Edit box
 whosaid drafts html                             # review page of every open draft
 ```
 
@@ -335,6 +336,21 @@ whosaid drafts html                             # review page of every open draf
   open drafts with a count of ready ones, previews each message and its attached pages, and has
   **Stage in Teams** and **Stage all ready**. None of them sends: the stager never presses Enter or
   a send button, so you read the message in Teams and send it there.
+- **Correcting a message you already sent (#209).** A draft marked sent keeps the id of the
+  message it went out as. Write the corrected message (`drafts text`, plus `drafts claims` for
+  anything new, such as a link), `drafts verify` it like any draft, then `drafts stage <id> --edit`
+  (MCP `whosaid_draft_stage(edit=true)`, or **Stage edit in Teams** in the app). The stager finds
+  your message in the chat by its id, opens Teams' Edit on it, replaces the text (rich text, links
+  kept) and stops: it never presses Enter and never clicks a save, Done or send control, so you
+  check the edit and save it in Teams. It refuses a correction that isn't verified or changes
+  nothing (a link-only change counts), a message it can't find or that isn't yours, and a message
+  someone else answered since (`--allow-newer` to edit anyway; your own later messages only warn).
+  A sent draft takes a new text, claims, stakeholders and docs, never pages or mentions (Teams
+  can't change those on a sent message). Each staged edit is kept in the draft's `edits[]` (old
+  text, new text, revision, `staged_at`), and `mark-sent --check` sets `edited_at` once the chat
+  shows the edit: Teams' edit time from the desktop cache, or the new text on that message id.
+  `whosaid teams sync` re-ingests a message Teams edited since it was ingested. `drafts edit-sent
+  <id>` is an alias with the same gates, plus `--match-file` for a chat that isn't ingested.
 - **Sent check and same-name chats.** `mark-sent --check` (and the already-sent check in `stage`)
   also reads a chat whose name is the recipient's plus a `(chat 1a2b3c)` suffix, the name the
   Teams cache gives a second chat with the same title (a group chat named like the 1:1).
@@ -397,8 +413,9 @@ Agents use the same outbox over MCP: `whosaid_draft_new`, `whosaid_draft_write`,
 `whosaid_draft_verify`, `whosaid_draft_close`, `whosaid_drafts`, `whosaid_draft_stakeholders`,
 `whosaid_draft_stale`, `whosaid_draft_sent_check`: create, read (with `rev` and `diff`),
 update and close. `whosaid_draft_verify` takes `voice` and `reason` for the override and
-returns `voice_warnings`; `whosaid_drafts(action="lint")` is the read-only lint. There is no
-stage or send tool.
+returns `voice_warnings`; `whosaid_drafts(action="lint")` is the read-only lint.
+`whosaid_draft_stage` stages (and with `edit=true` loads a correction into Teams' Edit box); there
+is no send tool.
 
 ### Enroll from an existing recording
 
@@ -1788,6 +1805,13 @@ placeholder speakers and `--no-embed` so Ollama is never contacted:
 - `./test/search_test.sh` covers `lib/search.py`: the FTS5 build, exact queries with filters,
   `context`, `speakers`, `status`, and the no-Ollama fallback.
 - `python3 test/graph_test.py` covers `lib/graph.py`: the entity tables, each view, and the wiki.
+- `uv run --quiet --with websockets python test/stager_dom_test.py` runs the built-in stager's
+  `--edit-sent` against a hand-written Teams chat fixture (`test/fixtures/stager-edit-dom/`) in
+  jsdom under bun, behind a small CDP server: the stager's own JavaScript finds the message, opens
+  Edit from the hover toolbar, replaces the text, and never saves or sends; and `--mention` with a
+  one-letter last name against the fixture's @ picker, including a failed mention leaving no text. It needs `bun`; jsdom
+  is installed once into `~/.cache/whosaid-test-jsdom`. Without bun it skips with a SKIP line
+  (`WHOSAID_REQUIRE_DOM_TEST=1` makes that a failure).
 - `python3 test/teams_chat_test.py` covers `whosaid teams ingest`: chat-day folders, turn
   parsing, name and role mapping, idempotent re-ingest, and a CLI ingest → index → search run.
 - `node test/teams_scraper_pills_test.js` runs the Teams scraper against a stub DOM (no real

@@ -227,6 +227,34 @@ class WithWorkspace(unittest.TestCase):
         with patch.dict(os.environ, {"WHOSAID_TEAMS_CACHE": "off"}):
             self.assertEqual(len(drafts.chat_messages(self.ws, "Bob Builder", since_ms=0)), 1)
 
+    def test_sync_reingests_a_message_edited_since_and_keeps_its_edit_time(self):
+        """#209: a known message id comes in again once Teams edited it; the folder holds the new text."""
+        with patch.dict(os.environ, {"TZ": "UTC"}):
+            tc.sync(self.ws, None, tz="UTC")
+            mine = next(m for m in self.data["messages"] if m["chat_id"] == DM and m["self"])
+            edited = int(time.time() * 1000) + 60_000  # after the folder was written
+            raw = raw_fixture()
+            m = raw["replychains"][0]["messageMap"]["b"]
+            m.update(content="on it, see <a href=\"https://example.test/pr/8\">the fixed PR</a>",
+                     version=str(edited), properties={"edittime": str(edited)})
+            self.data = tc.decode(raw)
+            self.assertEqual(next(x for x in self.data["messages"] if x["message_id"] == mine["message_id"])
+                             ["edited_ms"], edited)
+            r = tc.sync(self.ws, None, tz="UTC")
+            self.assertEqual((r["new_messages"], r["edited_messages"]), (1, 1))
+            segs = [s for p in self.ws.glob("*/teams.diarization.json")
+                    for s in json.loads(p.read_text())["segments"] if s["mid"] == mine["message_id"]]
+            self.assertEqual(len(segs), 1, "replaced in place, not added")
+            self.assertIn("the fixed PR", segs[0]["text"])
+            self.assertEqual(segs[0]["edited_ms"], edited)
+            self.assertTrue(segs[0]["edited_at"].endswith("Z"))
+            self.assertEqual(tc.sync(self.ws, None, tz="UTC")["new_messages"], 0, "once per edit")
+            # an edit older than the folder's capture is already in its text: no re-ingest
+            m.update(version=str(edited + 1), properties={"edittime": str(mine["epoch_ms"] + 1000)},
+                     content="an older edit the scraper already captured")
+            self.data = tc.decode(raw)
+            self.assertEqual(tc.sync(self.ws, None, tz="UTC")["new_messages"], 0)
+
     def test_dry_run_writes_nothing(self):
         r = tc.sync(self.ws, None, dry_run=True, tz="UTC")
         self.assertEqual(r["new_messages"], 7)

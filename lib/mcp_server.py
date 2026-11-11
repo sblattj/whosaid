@@ -215,7 +215,7 @@ Commitment tracking: kind distinguishes explicit promises, requests, standing di
 
 Not exposed here: `enroll` and `record` are interactive microphone operations that need a live terminal. Run them from the `whosaid` CLI. The first transcribe downloads ~1.5 GB of models; run whosaid_doctor to check readiness. Full flag/env/long-audio reference: read the whosaid://guide resource.
 
-Meeting workspace (search across many transcripts): point the server at a workspace directory by launching it with WHOSAID_WORKSPACE=<dir>, or pass `workspace` on each call; with neither, the workspace of the only installed `whosaid watch` agent is used (the response says so in workspace_source); there is no cwd fallback. Flow: whosaid_search (turn-level hits with meeting folder + timestamp) -> whosaid_context (the verbatim minute around one hit; do not read whole transcripts) -> whosaid_items / whosaid_item / whosaid_person for action items and per-person commitments; whosaid_worklist for one person's ranked P1/P2/P3 worklist across both corpora. whosaid_meetings, whosaid_prs and whosaid_speakers list what the graph knows; whosaid_workspace_status says whether the index exists. The index (_search.db, _WIKI.md) is built by `whosaid index <ws>` from the CLI or the watcher, never from here: every workspace tool is read-only except whosaid_set_status, which appends one status event to the tracking ledger (_tracking.json) when the user marks an item, and whosaid_name_voice_group, which names one unnamed voice across all its meetings (groups come from whosaid_voice_groups) and then rebuilds the index. Drafts outbox (not workspace files): whosaid_draft_new, whosaid_draft_write, whosaid_draft_verify, whosaid_draft_close, whosaid_draft_merge and whosaid_draft_sent_check write chat drafts to ~/.drafts; whosaid_draft_stage puts one verified draft into its Teams chat when the user asks (it never sends: the user presses send) (one open draft per recipient: new joins it; whosaid_draft_merge folds rival drafts into one); whosaid_drafts, whosaid_draft_stakeholders and whosaid_draft_stale read. Live Teams chats: whosaid_teams_live reads the newest messages (or chats) straight from the Teams desktop app's local cache, read-only and offline, for what was said in the last minutes or hours before it is ingested. Calendar: whosaid_teams_calendar reads your meetings from the same cache (the weeks the app has synced), with the recorded meeting folder for each when a workspace is set. whosaid_teams_launch starts the Teams desktop app with a DevTools port (or checks it) so whosaid_draft_stage can drive the real app; it quits a running Teams only when its mic is idle. Resources: whosaid://workspace/wiki, whosaid://workspace/action-items, whosaid://workspace/index, whosaid://workspace/meeting/{folder}/transcript and whosaid://workspace/meeting/{folder}/action-items. Everything stays local (SQLite FTS5 plus optional embeddings from a localhost Ollama)."""
+Meeting workspace (search across many transcripts): point the server at a workspace directory by launching it with WHOSAID_WORKSPACE=<dir>, or pass `workspace` on each call; with neither, the workspace of the only installed `whosaid watch` agent is used (the response says so in workspace_source); there is no cwd fallback. Flow: whosaid_search (turn-level hits with meeting folder + timestamp) -> whosaid_context (the verbatim minute around one hit; do not read whole transcripts) -> whosaid_items / whosaid_item / whosaid_person for action items and per-person commitments; whosaid_worklist for one person's ranked P1/P2/P3 worklist across both corpora. whosaid_meetings, whosaid_prs and whosaid_speakers list what the graph knows; whosaid_workspace_status says whether the index exists. The index (_search.db, _WIKI.md) is built by `whosaid index <ws>` from the CLI or the watcher, never from here: every workspace tool is read-only except whosaid_set_status, which appends one status event to the tracking ledger (_tracking.json) when the user marks an item, and whosaid_name_voice_group, which names one unnamed voice across all its meetings (groups come from whosaid_voice_groups) and then rebuilds the index. Drafts outbox (not workspace files): whosaid_draft_new, whosaid_draft_write, whosaid_draft_verify, whosaid_draft_close, whosaid_draft_merge and whosaid_draft_sent_check write chat drafts to ~/.drafts; whosaid_draft_stage puts one verified draft into its Teams chat when the user asks (it never sends: the user presses send; edit=true loads a sent draft's verified correction into Teams' Edit box on that message, and the user saves it) (one open draft per recipient: new joins it; whosaid_draft_merge folds rival drafts into one); whosaid_drafts, whosaid_draft_stakeholders and whosaid_draft_stale read. Live Teams chats: whosaid_teams_live reads the newest messages (or chats) straight from the Teams desktop app's local cache, read-only and offline, for what was said in the last minutes or hours before it is ingested. Calendar: whosaid_teams_calendar reads your meetings from the same cache (the weeks the app has synced), with the recorded meeting folder for each when a workspace is set. whosaid_teams_launch starts the Teams desktop app with a DevTools port (or checks it) so whosaid_draft_stage can drive the real app; it quits a running Teams only when its mic is idle. Resources: whosaid://workspace/wiki, whosaid://workspace/action-items, whosaid://workspace/index, whosaid://workspace/meeting/{folder}/transcript and whosaid://workspace/meeting/{folder}/action-items. Everything stays local (SQLite FTS5 plus optional embeddings from a localhost Ollama)."""
 
 
 try:
@@ -2955,6 +2955,30 @@ people, meetings, action items, commitments, PR mentions) plus `_WIKI.md`.
 - Nothing here writes: rebuild with `whosaid index <ws>` (the watcher does it
   after each ingest). A missing index comes back as an error dict with that hint.
 
+## Drafts outbox: correcting a message you already sent
+A draft marked sent (whosaid_draft_sent_check, or `drafts mark-sent`) keeps the
+id of the message it went out as. To fix that message (a missing link, a wrong
+number):
+1. whosaid_draft_write(id, text=..., claims=...): the corrected message, whole.
+   A sent draft takes text, claims, stakeholders and docs; not pages or mentions
+   (Teams can't change those on a sent message). State: `sent, edit drafting`.
+2. whosaid_draft_verify(id): the same gates and voice lint as any draft.
+   State: `sent, edit verified`.
+3. whosaid_draft_stage(id, edit=true) (CLI `whosaid drafts stage ID --edit`,
+   alias `drafts edit-sent ID`): finds your message in the chat by its id,
+   opens Teams' Edit on it, replaces the text (rich text, links) and stops.
+   It never saves: no Enter, no click on a save, Done or send control. The user
+   checks the box and saves in Teams. State: `sent, edit staged`.
+   Refused when: the correction isn't verified or changes nothing (a link-only
+   change counts), the message isn't found (ingest the chat again), it isn't
+   yours, or someone else posted after it (allow_newer=true to edit anyway;
+   your own later messages only warn). The new text may not be much longer
+   than the sent one unless allow_longer=true (the edit replaces the message).
+4. whosaid_draft_sent_check: once the chat shows the edit (the Teams cache's
+   edit time, or the new text on that message id), edited_at is set on the
+   draft's edits[] entry, which also keeps the old and new text. `whosaid
+   teams sync` re-ingests a known message when Teams edited it since.
+
 ## Not exposed over MCP
 `whosaid enroll` and `whosaid record` need a live terminal + Microphone
 permission — run them from the CLI. To enroll from a file you already have, use
@@ -3312,7 +3336,9 @@ _DESC_DRAFT_WRITE = (
     "of the text. Returns {ok, id, state, gate}; gate lists the claim and page gates verify would "
     "still refuse. verify also runs the voice lint on the text (one short paragraph, no greeting or "
     "closer line; whosaid_drafts(action='lint') shows it before you verify). Any "
-    "write after a verify makes the draft stale until verified again. A draft owned by another live session is refused unless force=true or you joined it with whosaid_draft_new; ask that session instead."
+    "write after a verify makes the draft stale until verified again. A sent draft takes only a corrected "
+    "text, claims, stakeholders and docs (to correct the sent message: verify, then whosaid_draft_stage "
+    "edit=true). A draft owned by another live session is refused unless force=true or you joined it with whosaid_draft_new; ask that session instead."
 )
 
 _DESC_DRAFT_VERIFY = (
@@ -3327,14 +3353,16 @@ _DESC_DRAFT_VERIFY = (
     "voice='warn' (or 'off') with a reason; it is kept on the draft, voice='clear' drops it. Returns "
     "{ok, id, confirmed, unverified, refuted, stakeholders, voice_lint, voice_warnings} or ok=false "
     "with every failed gate. A verified draft goes into the chat app with whosaid_draft_stage "
-    "(or `whosaid drafts stage ID`); nothing ever sends it."
+    "(or `whosaid drafts stage ID`); nothing ever sends it. A sent draft with a corrected text is "
+    "verified the same way (state 'sent, edit verified'), then staged with edit=true."
 )
 
 _DESC_DRAFTS = (
     "Read the drafts outbox. action=list: open drafts (all=true adds sent, dropped, superseded), "
     "each {id, to, state, owner, owner_live, updated_at}; mine=true keeps only this session's. "
     "state is drafting, verified, stale (edited after verify), staged, or verified with changes "
-    "since staged. action=show with id: the text, claims, stakeholders, mentions, contributors, "
+    "since staged; a sent draft whose text was corrected is listed too, as 'sent, edit drafting', "
+    "'sent, edit verified' or 'sent, edit staged' (its edits[] record each staged edit and edited_at). action=show with id: the text, claims, stakeholders, mentions, contributors, "
     "revision_log, failed gates and history; rev=N shows the text of revision N (1 is the oldest). "
     "action=diff with id: unified diff of revision from_rev against to_rev (default: the previous "
     "one against the newest) and who wrote each. action=lint: the voice lint verify would run, for "
@@ -3355,7 +3383,11 @@ _DESC_DRAFT_STAGE = (
     "whatever is in that chat's compose box, so stage only when the user asked for it. all=true stages the oldest verified unstaged draft (ONE per call); all=true, queue=true stages "
     "every one in order, each into its own chat's compose box, stopping at the first stager failure. "
     "Takes up to about 5 minutes a draft. Returns {ok, staged: [{id, to, stager}], skipped: [{id, "
-    "why}], failed: [{id, why}], context: {id: last chat messages}, would_run (dry_run)}."
+    "why}], failed: [{id, why}], context: {id: last chat messages}, would_run (dry_run)}. "
+    "edit=true (one id): a sent draft's corrected, re-verified text goes into Teams' Edit box on your sent "
+    "message (found by id); it NEVER saves (no Enter, no save/Done/send click), the user saves in Teams. "
+    "Refused if unverified, unchanged, not found, not yours, or others posted after it (allow_newer=true; "
+    "allow_longer=true for a much longer text). Steps: whosaid://guide, Drafts outbox."
 )
 
 _DESC_DRAFT_SENT_CHECK = (
@@ -3364,7 +3396,10 @@ _DESC_DRAFT_SENT_CHECK = (
     "draft was staged and looks for your own message (speaker role self) matching the draft text, "
     "ignoring markdown and small edits. A match sets status sent with the message time and id. "
     "Drafts not found stay staged, since the chat may not be ingested yet (whosaid teams ingest). "
-    "Returns {ok, sent: [{id, to, at, mid, folder}], still_staged: [{id, why}], note}. Changes only "
+    "A staged edit (whosaid_draft_stage edit=true) counts as saved once the sent message, found by id, "
+    "carries Teams' edit time or holds the new text; that sets edited_at on the draft's edit. "
+    "Returns {ok, sent: [{id, to, at, mid, folder}], still_staged: [{id, why}], edited: [{id, to, n, mid, "
+    "edited_at}], edit_not_seen: [{id, why}], note}. Changes only "
     "draft status in ~/.drafts; never reads or drives a chat app."
 )
 
@@ -3653,19 +3688,26 @@ async def whosaid_teams_launch(port: Optional[int] = None, check_only: bool = Fa
                                       idempotent_hint=False, open_world_hint=True))
 async def whosaid_draft_stage(id: Optional[str] = None, all: bool = False, queue: bool = False,
                               dry_run: bool = False, replace: bool = False, tab: Optional[str] = None,
-                              workspace: Optional[str] = None) -> dict:
-    """Stage verified drafts into their chats; never sends."""
+                              workspace: Optional[str] = None, edit: bool = False, allow_newer: bool = False,
+                              allow_longer: bool = False) -> dict:
+    """Stage verified drafts into their chats; never sends. edit=true: a sent draft's verified correction
+    into Teams' Edit box on that message; never saves."""
     import anyio
     import drafts
     if bool(id) == bool(all):
         return _ws_error("pass id, or all=true (not both)", "whosaid_drafts(action='list') shows the verified drafts")
+    if edit and (all or replace or queue):
+        return _ws_error("edit takes one id (no all, queue or replace)", "pass id and edit=true")
+    if (allow_newer or allow_longer) and not edit:
+        return _ws_error("allow_newer/allow_longer go with edit=true", "pass edit=true to correct a sent message")
     if queue and not all:
         return _ws_error("queue needs all=true", "pass all=true, queue=true to stage every verified draft")
     ws = workspace or os.environ.get("WHOSAID_WORKSPACE") or None
     # A stage drives a browser for up to minutes: off the event loop, so the server keeps answering.
     return await anyio.to_thread.run_sync(
         lambda: _drafts_call(drafts.stage, [id] if id else None, all_ready=all, dry_run=dry_run, tab=tab, ws=ws,
-                             replace=replace, queue=queue))
+                             replace=replace, queue=queue, edit=edit, allow_newer=allow_newer,
+                             allow_longer=allow_longer))
 
 
 @mcp.tool(name="whosaid_draft_sent_check", description=_DESC_DRAFT_SENT_CHECK, annotations=_DRAFT_WRITE_ANN)

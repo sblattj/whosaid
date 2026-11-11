@@ -59,7 +59,7 @@ ORIGIN = "https_teams.microsoft.com_0.indexeddb"
 DEFAULT_CACHE = (Path.home() / "Library/Containers/com.microsoft.teams2/Data/Library/Application Support"
                  / "Microsoft/MSTeams/EBWebView/WV2Profile_tfw/IndexedDB")
 SCRAPER = "teams-local-cache@1"
-CACHE_VERSION = 1
+CACHE_VERSION = 2  # 2: messages carry edited_ms (#209)
 TEXT_TYPES = frozenset({"RichText/Html", "Text", "RichText", "RichText/Media_Card"})
 CHAT_KINDS = frozenset({"Chat", "Meeting"})
 CHANNEL_KINDS = frozenset({"Space", "Thread", "Topic"})
@@ -289,10 +289,22 @@ def _first_name(name: str) -> str:
     return (name or "").split()[0] if (name or "").split() else name
 
 
+def _edit_ms(props: dict) -> int | None:
+    """When the message was last edited (the app keeps it as a ms-epoch string), else None."""
+    for k in ("edittime", "editedTime"):
+        try:
+            v = int(float(props.get(k) or 0))
+        except (TypeError, ValueError):
+            continue
+        if v > 0:
+            return v
+    return None
+
+
 def decode(raw: dict, channels: bool = False) -> dict:
     """{self, chats, messages} from read_store() output. Pure: tests feed it plain dicts.
 
-    messages: {chat_id, author, author_mri, self, epoch_ms, message_id, text, edited}
+    messages: {chat_id, author, author_mri, self, epoch_ms, message_id, text, edited, edited_ms}
     chats:    {id: {id, kind, topic, members: [names], name (left-rail guess), last_ms}}
     """
     kinds = CHAT_KINDS | (CHANNEL_KINDS if channels else frozenset())
@@ -359,7 +371,8 @@ def decode(raw: dict, channels: bool = False) -> dict:
         author = names.get(creator) or _first(m.get("imDisplayName"), m.get("fromDisplayNameInToken")) or "Unknown"
         out.append({"chat_id": cid, "author": author, "author_mri": creator, "self": bool(creator) and creator == self_mri,
                     "epoch_ms": ms, "message_id": mid, "text": text,
-                    "edited": bool(props.get("edittime") or props.get("editedTime"))})
+                    "edited": bool(props.get("edittime") or props.get("editedTime")),
+                    "edited_ms": _edit_ms(props)})
         c = chats.setdefault(cid, {"id": cid, "kind": kind or "Chat",
                                    "topic": ((conv.get("threadProperties") or {}).get("topic") or "").strip(),
                                    "members": set(), "last_ms": 0})
@@ -463,6 +476,39 @@ def workspace_names(ws: Path | None) -> tuple[dict[str, str], dict[str, str], di
             if mid:
                 by_mid[mid] = src["chat_name"]
     return by_mid, by_cid, overrides
+
+
+def workspace_edits(ws: Path | None) -> dict[str, tuple[str, int]]:
+    """message id -> (ingested text, the newest of its edited_ms and its folder's scraped_at, in ms),
+    over the workspace's Teams chat folders: an edit older than that is already in the text."""
+    out: dict[str, tuple[str, int]] = {}
+    if not ws or not Path(ws).is_dir():
+        return out
+    for sc in Path(ws).glob("*/teams.diarization.json"):
+        try:
+            data = json.loads(sc.read_text())
+        except (OSError, ValueError):
+            continue
+        src = data.get("source") or {}
+        if src.get("kind") != "teams-chat":
+            continue
+        try:
+            seen = int(datetime.fromisoformat(str(src.get("scraped_at")).replace("Z", "+00:00")).timestamp() * 1000)
+        except ValueError:
+            seen = 0
+        for seg in data.get("segments") or []:
+            mid = str(seg.get("mid") or seg.get("message_id") or "")
+            if mid:
+                out[mid] = (str(seg.get("text") or ""), max(int(seg.get("edited_ms") or 0), seen))
+    return out
+
+
+def _edited_since(m: dict, known: tuple[str, int] | None) -> bool:
+    """The cache holds an edit of an ingested message that the workspace doesn't have yet."""
+    if not known or not m.get("edited_ms"):
+        return False
+    text, seen = known
+    return m["edited_ms"] > seen and m["text"] != text
 
 
 def name_chats(data: dict, ws: Path | None) -> dict[str, str]:
@@ -586,14 +632,18 @@ def sync(ws: str | os.PathLike, since_ms: int | None = None, dry_run: bool = Fal
     data = load(path, channels=channels)
     cname = name_chats(data, ws)
     have, _, _ = workspace_names(ws)
+    edits = workspace_edits(ws)
+    # new ids, plus known ones edited since they were ingested (#209): re-ingest replaces the text by id
     new = [m for m in data["messages"] if (since_ms is None or m["epoch_ms"] >= since_ms)
-           and m["message_id"] not in have]
+           and (m["message_id"] not in have or _edited_since(m, edits.get(m["message_id"])))]
     res = {"ok": True, **_meta(data), "workspace": str(ws), "new_messages": len(new), "folders": [],
            "dry_run": dry_run}
     if not new:
         return res
+    res["edited_messages"] = sum(1 for m in new if m["message_id"] in have)
     records = [{"chat": cname.get(m["chat_id"], m["chat_id"]), "chat_id": m["chat_id"], "author": m["author"],
-                "epoch_ms": m["epoch_ms"], "message_id": m["message_id"], "text": m["text"]} for m in new]
+                "epoch_ms": m["epoch_ms"], "message_id": m["message_id"], "text": m["text"],
+                **({"edited_ms": m["edited_ms"]} if m.get("edited_ms") else {})} for m in new]
     src = dataclasses.replace(teams_chat.TEAMS, scraper=SCRAPER)
     fd, tmp = tempfile.mkstemp(prefix="whosaid-teams-sync-", suffix=".json")
     try:

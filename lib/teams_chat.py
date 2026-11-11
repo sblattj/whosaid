@@ -12,7 +12,8 @@ Input is a hand-off file: a list of message records, an object
 {"<chat>": {"messages": [...]}}, or NDJSON (one record per line). A record is
 {"chat", "author", "epoch_ms" | "epoch", "text"} with "timestamp_iso" | "ts"
 (ISO 8601) as the fallback clock, plus optional "chat_id", "url", "message_id"
-(or the Outlook scraper's "msg_id").
+(or the Outlook scraper's "msg_id"), and "edited_ms" (when the message was last edited; kept on the
+segment as edited_ms / edited_at, and a newer edit of a known message id replaces its text).
 epoch_ms wins over epoch. Records may be unsorted and duplicated.
 
 A record may carry "images": [{"alt", "src", "width", "height", "data" (data URL or
@@ -231,6 +232,8 @@ def load_export(path: str | os.PathLike) -> list[dict]:
             "images": images,
             "message_id": _message_id(rec, ms),
             "attribution": assertion_parts(rec["text"], rec),
+            **({"edited_ms": int(rec["edited_ms"])} if isinstance(rec.get("edited_ms"), (int, float))
+               and not isinstance(rec.get("edited_ms"), bool) and rec["edited_ms"] > 0 else {}),
         })
     # A chat whose records carry a chat_id on only some of them is one chat:
     # propagate the first id (and url) seen for each chat name to the rest.
@@ -350,6 +353,8 @@ def group_chat_days(records: list[dict], tz: tzinfo, name_map: dict[str, str]) -
         key = _message_key(rec["epoch_ms"], mid, speaker, text)
         g["messages"][key] = (speaker, text)
         g["metadata"][key] = {"message_id": mid, **(rec.get("attribution") or {})}
+        if isinstance(rec.get("edited_ms"), int) and rec["edited_ms"] > 0:
+            g["metadata"][key]["edited_ms"] = rec["edited_ms"]
         if images:
             g["images"][key] = images
         else:
@@ -559,6 +564,9 @@ def render_sidecar(group: dict, messages: dict[MessageKey, tuple[str, str]], nam
         metadata = (group.get("metadata") or {}).get(ms, {})
         if mid:
             seg["message_id"] = mid
+        if isinstance(metadata.get("edited_ms"), int):  # edited in Teams after it was sent (#209)
+            seg["edited_ms"] = metadata["edited_ms"]
+            seg["edited_at"] = utc_iso(metadata["edited_ms"])
         if metadata.get("quoted") or metadata.get("attribution_uncertain"):
             seg.update({k: metadata[k] for k in ("assertion_text", "quoted", "attribution_uncertain") if k in metadata})
         images = IMAGE_REF_RE.findall(text)

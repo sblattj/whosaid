@@ -33,6 +33,8 @@ extension AppModel {
     staging = id ?? "*"
     defer { staging = nil }
     var args: [String: JSONValue] = id.map { ["id": .string($0)] } ?? ["all": .bool(true), "queue": .bool(true)]
+    // a sent draft's verified correction goes into Teams' Edit box on that message (#209)
+    if let id, drafts.first(where: { $0.id == id })?.isEdit == true { args["edit"] = .bool(true) }
     if let ws = paths.workspace { args["workspace"] = .string(ws) }
     let key = id ?? "*"
     do {
@@ -85,12 +87,12 @@ struct DraftsView: View {
   var list: some View {
     VStack(alignment: .leading, spacing: 0) {
       HStack {
-        Text("\(model.drafts.filter(\.stageable).count) ready").font(.callout).foregroundStyle(.secondary)
+        Text("\(model.drafts.filter { $0.stageable && !$0.isEdit }.count) ready").font(.callout).foregroundStyle(.secondary)
         Spacer()
         Button {
           Task { await model.stage(nil) }
         } label: { Label("Stage all ready", systemImage: "tray.and.arrow.up") }
-          .disabled(model.staging != nil || !model.drafts.contains(where: \.stageable))
+          .disabled(model.staging != nil || !model.drafts.contains { $0.stageable && !$0.isEdit })
           .help("Stage every verified draft into its Teams chat, oldest first. Nothing is sent.")
       }
       .padding(10)
@@ -161,6 +163,7 @@ struct DraftDetail: View {
           Task { await model.stage(row.id) }
         } label: {
           if model.staging == row.id || model.staging == "*" { ProgressView().controlSize(.small) }
+          else if row.isEdit { Label(row.staged ? "Edit staged" : "Stage edit in Teams", systemImage: "pencil") }
           else { Label(row.staged ? "Staged" : "Stage in Teams", systemImage: "paperplane.fill") }
         }
         .buttonStyle(.borderedProminent)

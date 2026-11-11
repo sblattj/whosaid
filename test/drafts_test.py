@@ -635,70 +635,239 @@ class ChatHistoryTest(DraftsBase):
         self.assertTrue(r["context"][did]["reply_since_ours"])
         self.assertEqual(len(self.stager_calls()), 1, "no second paste of a sent message")
 
-    # ---- edit-sent (#176) ----
+    # ---- stage --edit / edit-sent (#176, #209) ----
     def edit_env(self):
         return patch.dict(os.environ, {"WHOSAID_DRAFTS_EDIT_STAGER": os.environ["WHOSAID_DRAFTS_STAGER"]})
 
-    def test_edit_sent_loads_the_corrected_text_for_the_sent_message(self):
+    SENT = "Hi, can you add the two DNS records?"
+
+    def sent_draft(self, extra=()):
+        """A draft staged, then found in the chat as our message m0 (plus extra later messages)."""
         did = self.ready()
         drafts.stage([did], ws=self.ws)
-        sent = "Hi, can you add the two DNS records? thanks"
-        self.chat([(datetime.now() + timedelta(seconds=5), "Me_Self", sent)])
-        drafts.sent_check(self.ws)
-        self.assertEqual(drafts.load(did)["status"], "sent")
-        drafts.write(did, text="Hi, can you add the two DNS records today? thanks")  # allowed once sent
-        with self.assertRaises(drafts.DraftsError):
-            drafts.write(did, pages=[str(self.page)])  # but only the text
-        with self.edit_env():
-            r = drafts.edit_sent(did, ws=self.ws)
-        call = self.stager_calls()[-1]["argv"]
-        self.assertIn("--edit-sent", call)
-        self.assertEqual(Path(call[call.index("--match-file") + 1]).read_text(), sent)
-        self.assertEqual(call[call.index("--chat") + 1], "Test Person")
-        self.assertTrue(self.stager_calls()[-1]["lock"])
-        self.assertEqual(r["sent_message"]["mid"], "m0")
-        m = drafts.load(did)
-        self.assertEqual(m["status"], "sent")
-        self.assertIn("edit-staged", [e.get("event") for e in m.get("history", [])])
+        t = datetime.now() + timedelta(seconds=5)
+        self.chat([(t, "Me_Self", self.SENT)] + [(t + timedelta(seconds=10 * (i + 1)), spk, txt)
+                                                for i, (spk, txt) in enumerate(extra)])
+        self.assertEqual([x["id"] for x in drafts.sent_check(self.ws)["sent"]], [did])
+        return did
 
-    def test_edit_sent_a_verified_draft_sent_by_hand_becomes_sent(self):
-        did = self.ready()
-        self.chat([(datetime.now() + timedelta(seconds=5), "Me_Self", "Hi, can you add the two DNS records?")])
+    def rewrite_chat(self, text, edited_ms=None, speaker="Me_Self"):
+        """The chat-day folder again, with message m0 as Teams now shows it."""
+        sc = next(self.ws.glob("*/teams.diarization.json"))
+        data = json.loads(sc.read_text())
+        seg = data["segments"][0]
+        seg.update(text=text, speaker=speaker)
+        if edited_ms:
+            seg["edited_ms"] = edited_ms
+        sc.write_text(json.dumps(data))
+
+    def test_edit_flow_write_verify_stage_then_sent_check_sees_it_saved(self):
+        did = self.sent_draft()
+        m = drafts.load(did)
+        self.assertEqual(drafts.state(m), "sent")
+        self.assertEqual(m["sent_message"]["mid"], "m0")
+        self.assertEqual(m["sent_text"].strip(), self.SENT)
+        with self.assertRaisesRegex(drafts.DraftsError, "sent and unchanged"):
+            drafts.verify(did)
+        # the motivating case: the same words, now with a link
+        new = "Hi, can you add the two [DNS records](https://example.com/dns)?"
+        claims = GOOD_CLAIMS["claims"] + [{"key": "d", "text": "the dns page", "kind": "code",
+                                           "verdict": "confirmed", "evidence": "docs/dns.md"}]
+        drafts.write(did, text=new, claims=claims)
+        with self.assertRaises(drafts.DraftsError):
+            drafts.write(did, pages=[str(self.page)])  # attachments can't change on a sent message
+        with self.assertRaises(drafts.DraftsError):
+            drafts.write(did, mentions=["Someone"])
+        self.assertEqual(drafts.state(drafts.load(did)), "sent, edit drafting")
+        self.assertIn(did, [r["id"] for r in drafts.listing()], "a pending edit is open work")
+        with self.edit_env():
+            r = drafts.stage([did], ws=self.ws, edit=True)
+            self.assertIn("not verified", r["failed"][0]["why"])
+            self.assertEqual(drafts.verify(did)["state"], "sent, edit verified")
+            r = drafts.stage([did], ws=self.ws, edit=True)
+        self.assertEqual(r["failed"], [])
+        self.assertEqual(r["staged"][0]["sent_message"]["mid"], "m0")
+        call = self.stager_calls()[-1]
+        argv = call["argv"]
+        self.assertIn("--edit-sent", argv)
+        self.assertNotIn("--attach", argv)
+        self.assertEqual(Path(argv[argv.index("--match-file") + 1]).read_text(), self.SENT)
+        self.assertTrue(call["lock"])
+        m = drafts.load(did)
+        self.assertEqual(drafts.state(m), "sent, edit staged")
+        e = m["edits"][0]
+        self.assertEqual((e["n"], e["mid"], e["from_text"], e["edited_at"]), (1, "m0", self.SENT, None))
+        self.assertIn("[DNS records](https://example.com/dns)", e["to_text"])
+        # not saved in Teams yet: the chat still holds the old text
+        r = drafts.sent_check(self.ws)
+        self.assertEqual(r["edited"], [])
+        self.assertEqual(r["edit_not_seen"][0]["id"], did)
+        # saved: ingest shows Teams' edit time on m0 (a link-only edit reads the same as plain text)
+        edited = int(time.time() * 1000) + 60_000
+        self.rewrite_chat("Hi, can you add the two DNS records?", edited_ms=edited)
+        r = drafts.sent_check(self.ws)
+        self.assertEqual([x["id"] for x in r["edited"]], [did])
+        m = drafts.load(did)
+        self.assertTrue(m["edits"][0]["edited_at"].endswith("Z"))
+        self.assertEqual(drafts.state(m), "sent", "the saved edit is the new baseline")
+        self.assertNotIn(did, [x["id"] for x in drafts.listing()])
+        self.assertIn("edited", [h["event"] for h in m["history"]])
+        self.assertEqual(drafts.sent_check(self.ws)["edited"], [], "recorded once")
+        self.assertEqual(drafts.summary(m)["edits"][0]["n"], 1)
+
+    def test_sent_check_sees_an_edit_by_its_new_text(self):
+        did = self.sent_draft()
+        drafts.write(did, text="Hi, can you add the two DNS records today?")
+        drafts.verify(did)
+        with self.edit_env():
+            drafts.stage([did], ws=self.ws, edit=True)
+        self.rewrite_chat("Hi, can you add the two DNS records today?")
+        self.assertEqual(len(drafts.sent_check(self.ws)["edited"]), 1)
+
+    def test_edit_refusals(self):
+        with self.edit_env():
+            did = self.ready()
+            r = drafts.stage([did], ws=self.ws, edit=True)
+            self.assertIn("not sent", r["failed"][0]["why"])
+            did = self.sent_draft()
+            r = drafts.stage([did], ws=self.ws, edit=True)
+            self.assertIn("sent and unchanged", r["failed"][0]["why"])
+            # a claims-only change is pending but changes nothing in the message
+            drafts.write(did, docs=[{"url": "https://example.com/x", "what": "x"}])
+            drafts.verify(did)
+            r = drafts.stage([did], ws=self.ws, edit=True)
+            self.assertIn("same as the sent message", r["failed"][0]["why"])
+            drafts.write(did, text=self.SENT + "\n\nAlso a second paragraph that was never sent, which the "
+                         "edit must not add to the message at all.\n\nPage attached.")
+            drafts.verify(did)
+            r = drafts.stage([did], ws=self.ws, edit=True)
+            self.assertIn("much longer than the sent message", r["failed"][0]["why"])
+            r = drafts.stage([did], ws=self.ws, edit=True, allow_longer=True, dry_run=True)
+            self.assertIn("--edit-sent", r["would_run"][0]["argv"])
+            with self.assertRaisesRegex(drafts.DraftsError, "one draft id"):
+                drafts.stage(all_ready=True, edit=True)
+        self.assertEqual(len(self.stager_calls()), 1, "only the normal stage ran the stager")
+
+    def corrected(self, did):
+        drafts.write(did, text="Hi, can you add the two DNS records today?")
+        drafts.verify(did)
+
+    def test_edit_refuses_a_message_that_is_gone_or_not_yours(self):
+        with self.edit_env():
+            did = self.sent_draft()
+            self.corrected(did)
+            self.rewrite_chat(self.SENT, speaker="Test_Person")
+            r = drafts.stage([did], ws=self.ws, edit=True)
+            self.assertIn("not you", r["failed"][0]["why"])
+            m = drafts.load(did)
+            m["sent_message"]["mid"] = "m-gone"
+            drafts.save(m)
+            r = drafts.stage([did], ws=self.ws, edit=True)
+            self.assertIn("can't find the sent message", r["failed"][0]["why"])
+            self.assertIn("m-gone", r["failed"][0]["why"])
+            r = drafts.stage([did], ws=None, edit=True)
+        self.assertEqual(len(self.stager_calls()), 1)
+
+    def test_edit_refuses_when_others_replied_unless_allow_newer(self):
+        with self.edit_env():
+            did = self.sent_draft(extra=[("Test_Person", "sure, on it")])
+            self.corrected(did)
+            r = drafts.stage([did], ws=self.ws, edit=True)
+            why = r["failed"][0]["why"]
+            self.assertIn("1 newer message(s)", why)
+            self.assertIn("Test_Person", why)
+            self.assertIn("allow-newer", why)
+            r = drafts.stage([did], ws=self.ws, edit=True, allow_newer=True)
+        self.assertEqual(r["failed"], [])
+        self.assertIn("newer message(s) from others", r["warnings"][0])
+        self.assertIn("--allow-newer", self.stager_calls()[-1]["argv"])
+
+    def test_edit_only_warns_for_your_own_later_messages(self):
+        with self.edit_env():
+            did = self.sent_draft(extra=[("Me_Self", "one more thing, the TTL can stay at the default")])
+            self.corrected(did)
+            r = drafts.stage([did], ws=self.ws, edit=True)
+        self.assertEqual(r["failed"], [])
+        self.assertIn("you posted 1 message(s) after", r["warnings"][0])
+        self.assertNotIn("--allow-newer", self.stager_calls()[-1]["argv"])
+
+    def test_edit_sent_alias_runs_the_same_gates(self):
+        did = self.sent_draft()
         drafts.write(did, text="Hi, can you add the two DNS records today?")
         with self.edit_env():
-            drafts.edit_sent(did, ws=self.ws)
-        self.assertEqual(drafts.load(did)["status"], "sent")
+            with self.assertRaisesRegex(drafts.DraftsError, "not verified"):
+                drafts.edit_sent(did, ws=self.ws)
+            drafts.verify(did)
+            r = drafts.edit_sent(did, ws=self.ws)
+            self.assertEqual(r["sent_message"]["mid"], "m0")
+            r = drafts.edit_sent(did, dry_run=True, match_file=str(self.page), allow_longer=True)
+            self.assertIn("--edit-sent", r["would_run"])
+            self.assertIn("not checked", r["warnings"][0])
 
-    def test_edit_sent_finds_a_paragraph_sent_before_the_correction(self):
-        """draft.md was corrected in place (no older revision kept); only its middle paragraph was sent."""
+    def test_a_draft_sent_by_hand_is_marked_sent_and_its_correction_needs_a_verify(self):
+        did = self.ready()
+        self.chat([(datetime.now() + timedelta(seconds=5), "Me_Self", self.SENT)])
+        drafts.write(did, text="Hi, can you add the two DNS records today?")  # stale, never staged
+        with self.edit_env():
+            r = drafts.stage([did], ws=self.ws, edit=True)
+            self.assertIn("not verified", r["failed"][0]["why"])
+            m = drafts.load(did)
+            self.assertEqual((m["status"], m["sent_message"]["mid"]), ("sent", "m0"))
+            self.assertEqual(drafts.state(m), "sent, edit drafting")
+            drafts.verify(did)
+            r = drafts.stage([did], ws=self.ws, edit=True)
+        self.assertEqual(r["failed"], [])
+        self.assertEqual(drafts.load(did)["edits"][0]["from_text"], self.SENT)
+
+    def test_a_sent_draft_from_before_edits_is_still_just_sent_and_can_be_corrected(self):
+        did = self.sent_draft()
+        m = drafts.load(did)
+        for k in ("sent_edit_hash", "sent_text"):
+            m.pop(k)
+        drafts.save(m)
+        self.assertEqual(drafts.state(drafts.load(did)), "sent")
+        self.page.write_text("<html>the page changed after sending</html>")
+        self.assertEqual(drafts.state(drafts.load(did)), "sent", "pages are not part of an edit")
+        time.sleep(0.01)
+        drafts.write(did, text="Hi, can you add the two DNS records today?")
+        self.assertEqual(drafts.state(drafts.load(did)), "sent, edit drafting")
+        drafts.verify(did)
+        with self.edit_env():
+            self.assertEqual(drafts.stage([did], ws=self.ws, edit=True)["failed"], [])
+            self.assertEqual(drafts.state(drafts.load(did)), "sent, edit staged")
+            self.assertIn(did, [r["id"] for r in drafts.listing()])
+            time.sleep(0.01)
+            drafts.write(did, text="Hi, can you add the two DNS records today, please?")
+            drafts.verify(did)
+            self.assertEqual(drafts.stage([did], ws=self.ws, edit=True)["failed"], [], "a second correction stages")
+        self.assertEqual([e["n"] for e in drafts.show(did)["edits"]], [1, 2])
+        self.assertIn("please", drafts.show(did)["edits"][1]["to_text"])
+
+    def test_a_dry_run_records_nothing(self):
+        did = self.ready()
+        self.chat([(datetime.now() + timedelta(seconds=5), "Me_Self", self.SENT)])
+        before = drafts.load(did)
+        drafts.stage([did], ws=self.ws, edit=True, dry_run=True)
+        self.assertEqual(drafts.load(did), before)
+
+    def test_paragraph_match_for_a_draft_without_a_message_id(self):
         did = self.ready()
         self.chat([(datetime.now() + timedelta(seconds=5), "Me_Self",
                     "sounds good, so I'll file a follow-up to move the job and drop the manual step")])
-        drafts.write(did, text="so I filed a follow-up to move the job and drop the manual step")
-        self.assertIsNotNone(drafts.sent_text(self.ws, drafts.load(did)))
         drafts.write(did, text="first part.\n\nsounds good, so I filed a follow-up to move the job and drop "
                                "the manual step\n\nlast part")
         self.assertIsNotNone(drafts.sent_text(self.ws, drafts.load(did)))
         self.assertFalse(drafts.edit_match("an unrelated note about lunch plans today", "sounds good, so I'll "
                                            "file a follow-up to move the job and drop the manual step"))
 
-    def test_edit_sent_refusals(self):
-        did = self.ready()
-        with self.edit_env():
-            with self.assertRaisesRegex(drafts.DraftsError, "no message of yours"):
-                drafts.edit_sent(did, ws=self.ws)
-            self.chat([(datetime.now() + timedelta(seconds=5), "Me_Self", "Hi, can you add the two DNS records?")])
-            with self.assertRaisesRegex(drafts.DraftsError, "same as the sent message"):
-                drafts.edit_sent(did, ws=self.ws)
-            drafts.write(did, text="Hi, can you add the two DNS records?\n\nAlso the second paragraph that was "
-                                   "never sent, which the edit must not add to the message.\n\nPage attached.")
-            with self.assertRaisesRegex(drafts.DraftsError, "much longer than the sent message"):
-                drafts.edit_sent(did, ws=self.ws)
-            r = drafts.edit_sent(did, dry_run=True, ws=self.ws, allow_longer=True)
-            self.assertIn("--edit-sent", r["would_run"])
-            r = drafts.edit_sent(did, dry_run=True, match_file=str(self.page), allow_longer=True)
-            self.assertIn("--edit-sent", r["would_run"])
-        self.assertEqual(self.stager_calls(), [])
+    def test_the_teams_cache_shows_an_edit_before_it_is_ingested(self):
+        did = self.sent_draft()
+        live = [{"epoch_ms": 0, "at": "", "speaker": "Me_Self", "self": True, "text": "edited in the app",
+                 "mid": "m0", "folder": "(teams cache)", "edited_ms": 123}]
+        with patch.object(drafts, "_live_chat_messages", return_value=live):
+            msgs = drafts.chat_messages(self.ws, "Test Person")
+        self.assertEqual([(x["mid"], x["text"], x["edited_ms"]) for x in msgs], [("m0", "edited in the app", 123)])
+        self.assertTrue(did)
 
     def test_sent_check_marks_only_what_appears(self):
         did = self.ready()
@@ -1186,6 +1355,17 @@ class McpStageTest(DraftsBase):
         self.assertIn('action', text)
         self.assertIn('none', text)
         self.assertEqual(run.call_args[0][0], ["teams", "launch", "--check"])
+
+    def test_edit_goes_through_the_same_gates(self):
+        self.assertFalse(self.call(id="x", edit=True, replace=True)["ok"])
+        self.assertFalse(self.call(all=True, edit=True)["ok"])
+        self.assertFalse(self.call(id="x", allow_newer=True)["ok"])
+        did = self.ready()
+        r = self.call(id=did, edit=True, dry_run=True)
+        self.assertTrue(r["ok"])
+        self.assertTrue(r["edit"])
+        self.assertIn("not sent", r["failed"][0]["why"])
+        self.assertEqual(self.stager_calls(), [])
 
     def test_dry_run_changes_nothing(self):
         did = self.ready()
