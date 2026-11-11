@@ -1081,12 +1081,11 @@ async def _attach(c: CDP, files: list[str]):
         names: list[str] = []
         for _ in range(40):
             names = await chip_names(c) or []
-            if len(names) >= len(before) + len(files) and all(
-                    any(os.path.basename(f) in n for n in names) for f in files):
-                await chips_stay(c, files)
+            if len(names) >= len(before) + len(files) and not unmatched(files, names):
+                await chips_stay(c, files, len(before) + len(files))
                 return
             await nap(0.5)
-        missing = [f for f in files if not any(os.path.basename(f) in n for n in names)]
+        missing = unmatched(files, names)
         raise StagerError(f"attachment chip for {(missing or files)[0]} never showed up in the compose box "
                           f"(chips {len(before)} -> {len(names)}, wanted +{len(files)})")
     finally:
@@ -1096,18 +1095,43 @@ async def _attach(c: CDP, files: list[str]):
             pass  # the connection may be gone; nothing more to do
 
 
-async def chips_stay(c: CDP, files: list[str], reads: int = 6, gap: float = 0.5):
+def chip_shows(name: str, text: str) -> bool:
+    """The chip text names this file. OneDrive renames an upload whose name is already taken in the chat
+    files folder ("page.html" -> "page 3.html", seen 2026-11-11 on a restage), and the chip then shows the
+    new name, so a number before the extension still counts as this file."""
+    stem, ext = os.path.splitext(name)
+    return re.search(re.escape(stem) + r"(?: \d+)?" + re.escape(ext), text) is not None
+
+
+def unmatched(files: list[str], names: list[str]) -> list[str]:
+    """The files no chip names, each chip counted for one file only (exact names claimed first, so
+    "a.html" and "a 2.html" in one stage can't share a chip)."""
+    left = list(names)
+    missing = []
+    order = sorted(files, key=lambda f: not any(os.path.basename(f) in n for n in names))
+    for f in order:
+        base = os.path.basename(f)
+        hit = next((n for n in left if base in n), None) or next((n for n in left if chip_shows(base, n)), None)
+        if hit is None:
+            missing.append(f)
+        else:
+            left.remove(hit)
+    return [f for f in files if f in missing]
+
+
+async def chips_stay(c: CDP, files: list[str], want: int, reads: int = 6, gap: float = 0.5):
     """A chip seen once is not an attachment: the Teams desktop app shows the chip for a moment and then
     removes it when the upload doesn't land (seen 2026-11-11: gone within 0.3s, no message). Every read
-    over ~3s has to still show each file."""
+    over ~3s has to still hold WANT chips and one naming each file."""
     for _ in range(reads):
         await nap(gap)
         names = await chip_names(c)
         if names is None:
             continue  # the compose root re-rendering, not an answer
-        gone = [f for f in files if not any(os.path.basename(f) in n for n in names)]
-        if gone:
-            raise StagerError(f"Teams showed the attachment chip for {os.path.basename(gone[0])}, then removed it "
+        gone = unmatched(files, names)
+        if gone or len(names) < want:
+            name = os.path.basename((gone or files)[0])
+            raise StagerError(f"Teams showed the attachment chip for {name}, then removed it "
                               "again: the upload didn't land (attach the page by hand in Teams)")
 
 

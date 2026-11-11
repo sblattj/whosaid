@@ -899,6 +899,30 @@ class EndToEnd(unittest.TestCase):
         self.assertIn("removed it again", r.stderr)
         f.never_sent(self)
 
+    def test_attach_chip_renamed_by_onedrive_still_counts(self):
+        """A page re-uploaded under a name the chat files folder already holds comes back as "page 3.html"
+        once the upload lands. That's the upload working, not Teams dropping the chip."""
+        f = self.fake(rail=["Ann Lee"])
+        orig = f.evaluate
+
+        def rename(e):
+            out = orig(e)
+            if "op:root_chip_names" in e and "page.html" in f.chips:
+                f.chips[f.chips.index("page.html")] = "page 3.html\nPeople in your organization with the link can view"
+            return out
+        f.evaluate = rename
+        r = self.run_stager(f, "--attach", str(self.page))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(json.loads(r.stdout.strip().splitlines()[-1])["attachments"], 1)
+        f.never_sent(self)
+
+    def test_chip_matching_takes_one_chip_per_file(self):
+        self.assertEqual(ds.unmatched(["/a/page.html", "/b/page 2.html"], ["page 2.html"]), ["/a/page.html"])
+        self.assertEqual(ds.unmatched(["/a/page.html", "/b/page 2.html"], ["page 2.html", "page 3.html"]), [])
+        self.assertEqual(ds.unmatched(["/a/page.html"], ["other.html", "mypage.htm"]), ["/a/page.html"])
+        self.assertTrue(ds.chip_shows("page.html", "page 12.html Main actions"))
+        self.assertFalse(ds.chip_shows("page.html", "page-12.html"))
+
     def test_no_outbox_lock_refused_before_touching_the_browser(self):
         f = self.fake(rail=["Ann Lee"])
         r = self.run_stager(f, lock=False)
