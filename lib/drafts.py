@@ -257,10 +257,12 @@ def _who(o: dict) -> dict:
 
 def new(to: str, topic: str, pages: list[str] | None = None, supersedes: str | None = None,
         new_chat: bool = False, owner_session: str | None = None, mentions: list[str] | None = None,
-        separate: bool = False) -> dict:
+        separate: bool = False, thread_id: str | None = None) -> dict:
     """Start a draft, or join the open draft to the same recipient (one compose box per chat).
 
-    separate=True (CLI --new) or supersedes makes a second draft instead of joining."""
+    separate=True (CLI --new) or supersedes makes a second draft instead of joining. thread_id = the
+    chat's Teams thread id; without one (and not new_chat) it is filled from the Teams desktop cache
+    when exactly one cached chat carries the recipient's name."""
     to, topic = (to or "").strip(), (topic or "").strip()
     if not to:
         raise DraftsError('need the recipient, exactly as the chat list shows the name ("First Last")')
@@ -271,12 +273,14 @@ def new(to: str, topic: str, pages: list[str] | None = None, supersedes: str | N
         if not os.path.isabs(p):
             raise DraftsError(f"page needs an absolute path: {p}")
     mentions = [x.strip() for x in mentions or [] if x and x.strip()]
+    thread_id = check_thread_id(thread_id)
     if supersedes:
         load(supersedes)
     me = owner(owner_session)
     clash = [d for d in all_drafts() if d["status"] in OPEN and d["to"] == to and d["id"] != supersedes]
     if clash and not separate and not supersedes:
-        return _join(max(clash, key=lambda d: d.get("updated_at") or ""), me, topic, pages, mentions, new_chat)
+        return _join(max(clash, key=lambda d: d.get("updated_at") or ""), me, topic, pages, mentions, new_chat,
+                     thread_id)
     ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M")
     draft_id = f"{ts}-{slug(to)}-{slug(topic)}"
     d = ddir(draft_id)
@@ -287,9 +291,15 @@ def new(to: str, topic: str, pages: list[str] | None = None, supersedes: str | N
          "pages": pages, "mentions": mentions, "supersedes": supersedes, "owner": me, "contributors": [],
          "revisions": [], "created_at": now(), "updated_at": now(),
          "verified_hash": None, "staged_hash": None, "history": [{"at": now(), "event": "new", "by": me["sessionId"]}]}
+    if thread_id:
+        m["thread_id"], m["thread_id_source"] = thread_id, "given"
+    elif not new_chat:
+        found = chat_thread_id(m, _voice_ws())
+        if found:
+            m["thread_id"], m["thread_id_source"] = found, "teams cache"
     save(m)
     (d / "claims.json").write_text(json.dumps({"claims": [], "stakeholders": [], "docs": []}, indent=2) + "\n")
-    out = {"id": draft_id, "path": str(d), "joined": False,
+    out = {"id": draft_id, "path": str(d), "joined": False, "thread_id": m.get("thread_id"),
            "next": "write claims and stakeholders, verify them, then the text"}
     if clash:
         out["note"] = (f"open draft(s) to {to} already: " + ", ".join(f"{c['id']} [{owner_line(c['owner'])}]" for c in clash)
@@ -298,7 +308,18 @@ def new(to: str, topic: str, pages: list[str] | None = None, supersedes: str | N
     return out
 
 
-def _join(m: dict, me: dict, topic: str, pages: list[str], mentions: list[str], new_chat: bool) -> dict:
+def check_thread_id(tid: str | None) -> str | None:
+    """A Teams thread id ("19:...@thread.v2", "48:notes"): one token with a colon. None/"" is none."""
+    tid = (tid or "").strip()
+    if not tid:
+        return None
+    if re.search(r"\s", tid) or ":" not in tid:
+        raise DraftsError(f"not a Teams thread id: {tid!r} (they look like 19:...@thread.v2)")
+    return tid
+
+
+def _join(m: dict, me: dict, topic: str, pages: list[str], mentions: list[str], new_chat: bool,
+          thread_id: str | None = None) -> dict:
     """A second session's `new` to the same recipient: add it as a contributor of the open draft."""
     sid = me.get("sessionId")
     o = m.get("owner") or {}
@@ -312,6 +333,11 @@ def _join(m: dict, me: dict, topic: str, pages: list[str], mentions: list[str], 
         if x not in m.setdefault("mentions", []):
             m["mentions"].append(x)
     m["new_chat"] = bool(m.get("new_chat") or new_chat)
+    if thread_id and thread_id != m.get("thread_id"):
+        if m.get("thread_id") and m.get("thread_id_source") != "teams cache":
+            raise DraftsError(f"{m['id']} already goes to thread {m['thread_id']}, not {thread_id}; "
+                              "change it with write/thread-id if that one is wrong")
+        m["thread_id"], m["thread_id_source"] = thread_id, "given"
     _event(m, "joined", by=sid, topic=topic)
     save(m)
     return {"id": m["id"], "path": str(ddir(m["id"])), "joined": True, "owner_line": owner_line(o),
@@ -398,13 +424,14 @@ def diff(draft_id: str, a: int | None = None, b: int | None = None) -> dict:
 
 def write(draft_id: str, text: str | None = None, claims: list | None = None, stakeholders: list | None = None,
           docs: list | None = None, pages: list[str] | None = None, remove_pages: list[str] | None = None,
-          force: bool = False, mentions: list[str] | None = None) -> dict:
+          force: bool = False, mentions: list[str] | None = None, thread_id: str | None = None) -> dict:
     """Replace the message text, mentions and/or the claims parts that are passed; add or remove pages.
-    A changed text is kept as a new revision, tagged with the writing session."""
+    A changed text is kept as a new revision, tagged with the writing session. thread_id sets the
+    chat's Teams thread id ("" clears it)."""
     m = load(draft_id)
     # a sent draft takes a corrected text (for edit-sent), nothing else
     text_only = text is not None and not any(x is not None for x in (claims, stakeholders, docs, mentions)) \
-        and not pages and not remove_pages
+        and not pages and not remove_pages and thread_id is None
     if m["status"] not in OPEN and not (m["status"] == "sent" and text_only):
         raise DraftsError(f"{draft_id} is {m['status']}" + (" (a sent draft only takes a new text, for edit-sent)"
                                                             if m["status"] == "sent" else ""))
@@ -416,6 +443,13 @@ def write(draft_id: str, text: str | None = None, claims: list | None = None, st
         m["pages"].remove(p)
     if mentions is not None:
         m["mentions"] = [x.strip() for x in mentions if x and x.strip()]
+    if thread_id is not None:
+        tid = check_thread_id(thread_id)
+        if tid:
+            m["thread_id"], m["thread_id_source"] = tid, "given"
+        else:
+            m.pop("thread_id", None)
+            m.pop("thread_id_source", None)
     if text is not None:
         text = text if text.endswith("\n") else text + "\n"
         md = d / "draft.md"
@@ -1452,6 +1486,8 @@ def build_parser() -> argparse.ArgumentParser:
     a.add_argument("--page", action="append", default=[])
     a.add_argument("--supersedes")
     a.add_argument("--new-chat", action="store_true")
+    a.add_argument("--thread-id", help="the chat's Teams thread id (19:...@thread.v2); default: from the "
+                   "Teams cache when exactly one chat has the recipient's name")
     a.add_argument("--mention", action="append", default=[], help="a name to @mention when staged")
     a.add_argument("--new", action="store_true", dest="separate",
                    help="a second draft even if the recipient has an open one (default: join it)")
@@ -1472,6 +1508,10 @@ def build_parser() -> argparse.ArgumentParser:
     a = sub.add_parser("mentions", help="set the names to @mention (none clears them)")
     a.add_argument("id")
     a.add_argument("names", nargs="*")
+    a.add_argument("--force", action="store_true", help=force)
+    a = sub.add_parser("thread-id", help="set the chat's Teams thread id (none clears it)")
+    a.add_argument("id")
+    a.add_argument("thread_id", nargs="?", default="")
     a.add_argument("--force", action="store_true", help=force)
     a = sub.add_parser("verify")
     a.add_argument("id")
@@ -1564,7 +1604,7 @@ def main(argv: list[str] | None = None) -> int:
         c = args.cmd
         if c == "new":
             r = new(args.to, args.topic, args.page, args.supersedes, args.new_chat,
-                    mentions=args.mention, separate=args.separate)
+                    mentions=args.mention, separate=args.separate, thread_id=args.thread_id)
             print(json.dumps({k: v for k, v in r.items() if k != "note"}, indent=2))
             if r.get("note"):
                 print(f"note: {r['note']}", file=sys.stderr)
@@ -1584,6 +1624,9 @@ def main(argv: list[str] | None = None) -> int:
         elif c == "mentions":
             write(args.id, mentions=args.names, force=args.force)
             print(", ".join(load(args.id).get("mentions") or []) or "(no mentions)")
+        elif c == "thread-id":
+            write(args.id, thread_id=args.thread_id, force=args.force)
+            print(load(args.id).get("thread_id") or "(no thread id: the stager checks the chat title)")
         elif c == "verify":
             r = verify(args.id, force=args.force, voice=args.voice, reason=args.reason, ws=args.ws)
             print(f"verified {r['id']}: {r['confirmed']} confirmed, {r['unverified']} unverified, "

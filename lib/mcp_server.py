@@ -3293,7 +3293,10 @@ _DESC_DRAFT_NEW = (
     "the recipient already has one, you join it (joined=true, same id, you become a contributor who "
     "may write it, and your text becomes a new revision); read it with whosaid_drafts(action='show') "
     "and merge your points in. separate=true makes a second draft instead; supersedes = an older "
-    "draft this one replaces. Returns {ok, id, path, joined, note}. Then: whosaid_draft_stakeholders, "
+    "draft this one replaces. thread_id = the chat's Teams thread id (19:...@thread.v2), for a chat "
+    "the title can't pin down (a group whose title ends in +N); without it the id is taken from the "
+    "Teams desktop cache when exactly one cached chat has the recipient's name. Returns {ok, id, path, "
+    "joined, thread_id, note}. Then: whosaid_draft_stakeholders, "
     "check every claim, whosaid_draft_write, whosaid_draft_verify. Never sends or stages anything; "
     "whosaid_draft_stage does the staging."
 )
@@ -3303,7 +3306,8 @@ _DESC_DRAFT_WRITE = (
     "[{key, text, kind: code|tech|people|status, verdict: confirmed|refuted|unverified, evidence, "
     "dropped}], stakeholders = [{name, speaker, why, searched: [topics], found}], docs = [{url, "
     "what}], mentions = [names], each replaced whole when passed. A changed text is kept as a new "
-    "revision tagged with your session. pages = absolute page paths to add, remove_pages = ones to detach. Write the claims "
+    "revision tagged with your session. pages = absolute page paths to add, remove_pages = ones to detach. thread_id = the chat's "
+    "Teams thread id (\"\" clears it; stage then checks the chat title). Write the claims "
     "first and check each one before the text: a refuted claim must be marked dropped and left out "
     "of the text. Returns {ok, id, state, gate}; gate lists the claim and page gates verify would "
     "still refuse. verify also runs the voice lint on the text (one short paragraph, no greeting or "
@@ -3399,22 +3403,25 @@ def _drafts_call(fn, *args, **kwargs) -> dict:
 @mcp.tool(name="whosaid_draft_new", description=_DESC_DRAFT_NEW, annotations=_DRAFT_WRITE_ANN)
 def whosaid_draft_new(to: str, topic: str, pages: Optional[list[str]] = None, supersedes: Optional[str] = None,
                       new_chat: bool = False, owner_session: Optional[str] = None,
-                      mentions: Optional[list[str]] = None, separate: bool = False) -> dict:
+                      mentions: Optional[list[str]] = None, separate: bool = False,
+                      thread_id: Optional[str] = None) -> dict:
     """Create ~/.drafts/<id>/ with draft.json and an empty claims.json, or join the recipient's open draft."""
     import drafts
     return _drafts_call(drafts.new, to, topic, pages, supersedes, new_chat, owner_session,
-                        mentions=mentions, separate=separate)
+                        mentions=mentions, separate=separate, thread_id=thread_id)
 
 
 @mcp.tool(name="whosaid_draft_write", description=_DESC_DRAFT_WRITE, annotations=_DRAFT_WRITE_ANN)
 def whosaid_draft_write(id: str, text: Optional[str] = None, claims: Optional[list[dict]] = None,
                         stakeholders: Optional[list[dict]] = None, docs: Optional[list[dict]] = None,
                         pages: Optional[list[str]] = None, remove_pages: Optional[list[str]] = None,
-                        force: bool = False, mentions: Optional[list[str]] = None) -> dict:
+                        force: bool = False, mentions: Optional[list[str]] = None,
+                        thread_id: Optional[str] = None) -> dict:
     """Replace the passed parts of one draft; returns its state and open gates."""
     import drafts
     return _drafts_call(drafts.write, id, text=text, claims=claims, stakeholders=stakeholders, docs=docs,
-                        pages=pages, remove_pages=remove_pages, force=force, mentions=mentions)
+                        pages=pages, remove_pages=remove_pages, force=force, mentions=mentions,
+                        thread_id=thread_id)
 
 
 @mcp.tool(name="whosaid_draft_verify", description=_DESC_DRAFT_VERIFY, annotations=_DRAFT_WRITE_ANN)

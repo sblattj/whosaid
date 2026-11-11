@@ -1092,6 +1092,64 @@ class ThreadIdTest(DraftsBase):
         r = drafts.stage([did], dry_run=True)
         self.assertNotIn("--thread-id", r["would_run"][0]["argv"])
 
+    def test_new_takes_a_thread_id(self):
+        did = self.ready(to="Ann and Bo Chen", thread_id="19:grp@thread.v2")
+        m = drafts.load(did)
+        self.assertEqual((m["thread_id"], m["thread_id_source"]), ("19:grp@thread.v2", "given"))
+        argv = drafts.stage([did], dry_run=True)["would_run"][0]["argv"]
+        self.assertEqual(argv[argv.index("--thread-id") + 1], "19:grp@thread.v2")
+
+    def test_bad_thread_id_is_refused(self):
+        for bad in ("Ann and Bo", "19:a b@thread.v2", "no-colon"):
+            with self.assertRaises(drafts.DraftsError):
+                drafts.new("Ann", "t", thread_id=bad)
+
+    def test_new_fills_the_thread_id_from_one_cached_chat(self):
+        import teams_cache
+        names = {"19:abc@thread.v2": "Ann and Bo Chen", "19:zzz@thread.v2": "Someone Else"}
+        with patch.dict(os.environ, {"WHOSAID_TEAMS_CACHE": ""}), \
+                patch.object(teams_cache, "_leveldb", return_value=self.root), \
+                patch.object(teams_cache, "load", return_value={}), \
+                patch.object(teams_cache, "name_chats", return_value=names):
+            r = drafts.new("Ann and Bo Chen", "t")
+            self.assertEqual(r["thread_id"], "19:abc@thread.v2")
+            self.assertEqual(drafts.load(r["id"])["thread_id_source"], "teams cache")
+            names["19:dup@thread.v2"] = "Ann and Bo Chen"
+            r2 = drafts.new("Ann and Bo Chen", "t2", separate=True)
+            self.assertIsNone(r2["thread_id"])  # two chats with that name: none, stage checks the title
+            r3 = drafts.new("Someone Else", "t3", new_chat=True)
+            self.assertIsNone(r3["thread_id"])  # a new chat has no thread yet
+
+    def test_write_and_cli_set_and_clear_the_thread_id(self):
+        import io
+        from contextlib import redirect_stdout
+        did = self.ready()
+        drafts.write(did, thread_id="19:x@thread.v2")
+        self.assertEqual(drafts.load(did)["thread_id"], "19:x@thread.v2")
+        with redirect_stdout(io.StringIO()):
+            self.assertEqual(drafts.main(["thread-id", did, "19:y@thread.v2"]), 0)
+        self.assertEqual(drafts.load(did)["thread_id"], "19:y@thread.v2")
+        with redirect_stdout(io.StringIO()):
+            self.assertEqual(drafts.main(["thread-id", did]), 0)
+        self.assertNotIn("thread_id", drafts.load(did))
+        with redirect_stdout(io.StringIO()):
+            self.assertEqual(drafts.main(["new", "--to", "Ann", "--topic", "t", "--thread-id", "19:z@thread.v2"]), 0)
+        self.assertEqual([d["thread_id"] for d in drafts.all_drafts() if d["to"] == "Ann"], ["19:z@thread.v2"])
+
+    def test_joining_with_another_thread_id_is_refused(self):
+        drafts.new("Ann", "t", thread_id="19:a@thread.v2")
+        with self.assertRaises(drafts.DraftsError):
+            drafts.new("Ann", "t2", thread_id="19:b@thread.v2")
+
+    def test_mcp_new_and_write_pass_the_thread_id(self):
+        import mcp_server
+        r = mcp_server.whosaid_draft_new(to="Ann", topic="t", thread_id="19:m@thread.v2")
+        self.assertTrue(r["ok"], r)
+        self.assertEqual(r["thread_id"], "19:m@thread.v2")
+        r = mcp_server.whosaid_draft_write(id=r["id"], thread_id="")
+        self.assertTrue(r["ok"], r)
+        self.assertNotIn("thread_id", drafts.load(r["id"]))
+
 
 class McpStageTest(DraftsBase):
     """whosaid_draft_stage: the MCP path runs the same gated drafts.stage, one draft, never sends."""
