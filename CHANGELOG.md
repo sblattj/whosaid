@@ -6,6 +6,8 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ## [Unreleased]
 
+## [1.40.0] - 2026-11-11
+
 ### Added
 - Drafts can carry the chat's Teams thread id, for a chat the title can't pin down (a group whose title ends in `+N`): `whosaid drafts new --thread-id 19:...@thread.v2`, `whosaid drafts thread-id ID [TID]` (no TID clears it), and `thread_id` on the MCP `whosaid_draft_new` and `whosaid_draft_write`. Without one, `drafts new` fills it from the Teams desktop cache when exactly one cached chat has the recipient's name (`thread_id_source: "teams cache"`); a `--new-chat` draft gets none. Joining an open draft with a different given thread id is refused.
 
