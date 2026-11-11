@@ -6,6 +6,14 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ## [Unreleased]
 
+## [1.39.0] - 2026-11-10
+
+### Added
+- `whosaid teams calendar --next-week` / `--this-week`, and `this-week`, `next-week`, `last-week` as `--from` (and MCP `start`) values: Monday 00:00 local through the next Monday, counted in calendar days so a DST change inside the week doesn't move the end by an hour. (#186)
+
+### Fixed
+- `whosaid_teams_calendar` (MCP): a 7-day window is snapped to the following Monday only when it starts at local midnight, so `start=now` with the default 7 days is a plain 7 x 24h window instead of running to midnight a week later.
+
 ## [1.38.2] - 2026-11-10
 
 ### Fixed
@@ -96,7 +104,6 @@ All notable changes to whosaid are documented here. This project adheres to
 ### Added
 - `whosaid teams calendar [--from today|2d|ISO] [--to ISO] [--days N] [--q TEXT] [--cancelled] [--free] [--ws DIR] [--json]`: your meetings read from the Teams desktop app's local cache, offline, with no Graph permission. It merges the Outlook calendar the Teams Calendar tab embeds (`owa-offline-data-*`, in its own storage bucket) with the older `Teams:calendar` database, which goes stale once the app uses the Outlook calendar; each event carries `source` and the result lists each store's range in `sources`. Times are converted from the store's UTC; recurring meetings come one row per occurrence, filling attendees and body from the series when an occurrence lacks them; cancelled and Free events are hidden by default and counted. Each result says which weeks the cache covers and when Teams last synced. With a workspace, each event lists the recorded meeting folders made during it. `whosaid teams calendar status` shows what the cache holds.
 - MCP `whosaid_teams_calendar` (read-only): the same events for a window, with `covers`, `synced_at` and `recorded`.
-- `whosaid teams calendar --next-week` / `--this-week`, and `this-week`, `next-week`, `last-week` as `--from` (and MCP `start`) values: Monday 00:00 local through the next Monday, counted in calendar days so a DST change inside the week doesn't move the end by an hour.
 
 ### Changed
 - `lib/teams_cache.py`: the store copy, retry and database lookup moved into `read_dbs(reader)`, shared by the chat and calendar readers. `read_store` returns the same shape as before.
