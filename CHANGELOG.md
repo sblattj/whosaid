@@ -6,6 +6,8 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ## [Unreleased]
 
+## [1.39.1] - 2026-11-10
+
 ### Fixed
 - `drafts edit-sent` in the Teams desktop app: Edit is a button on the floating hover toolbar there, not an item in the More menu, and every message also holds a hidden 4px "More message options" button that opens nothing. The stager now hovers the message, clicks the toolbar's Edit (tied to that message by position), and falls back to the More menu elsewhere. The edit box is found inside the message list, where the app keeps it under the same ancestor as the Attach button.
 - Attachments in the Teams desktop app: the app shows the file chip for a moment and then removes it when the upload doesn't land, so the stager reported `attachments: 1` for pages that were never attached. A chip now has to stay for ~3s, and otherwise the stage fails with "Teams showed the attachment chip ..., then removed it again".
