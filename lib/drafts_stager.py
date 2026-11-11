@@ -448,6 +448,10 @@ JS_ROOT_CHIP_REMOVERS = (_CHIPS + _XY + f"return chips.map(c=>c.querySelector({j
                          ".filter(Boolean).map(xy).filter(Boolean)")
 JS_IN_ROOT = "const r=ROOT();const e=document.elementFromPoint(A.x,A.y);return !!(r&&e&&r.contains(e))"
 JS_NEW_CHAT_BTN = _XY + f"const b=document.querySelector({json.dumps(NEW_CHAT_SEL)});return b?xy(b):null"
+# CHECKED in the Teams desktop app (2026-11-11): "New message" exists only in the Chat view; on Calendar
+# (or any other app) the app bar's Chat button (aria-label "Chat", maybe ", N unread") switches to it.
+JS_CHAT_APP_BTN = _XY + ("const b=[...document.querySelectorAll('button,[role=button]')]"
+                         ".find(b=>/^chat(,|$)/i.test((b.getAttribute('aria-label')||'').trim()));return b?xy(b):null")
 JS_PEOPLE_PICKER = _XY + f"const b=document.querySelector({json.dumps(PEOPLE_PICKER_SEL)});return b?xy(b):null"
 JS_PEOPLE_FIND = _XY + _OPTS
 JS_TO_CHIP = (f"const l=document.querySelector({json.dumps(TO_LABEL_SEL)})?.getAttribute('aria-label')||'';"
@@ -708,6 +712,15 @@ async def new_chat(c: CDP, name: str) -> str:
     """New message to NAME, or to every person in "First Last, Other Person" (a new group chat)."""
     people = [p.strip() for p in name.split(",") if p.strip()]
     btn = await c.ev(op("new_chat_btn", JS_NEW_CHAT_BTN))
+    if not btn:  # Teams is on another view (Calendar, Activity...): switch to Chat first
+        app_btn = await c.ev(op("chat_app_btn", JS_CHAT_APP_BTN))
+        if app_btn:
+            await c.click(app_btn["x"], app_btn["y"])
+            for _ in range(20):
+                await nap(0.5)
+                btn = await c.ev(op("new_chat_btn", JS_NEW_CHAT_BTN))
+                if btn:
+                    break
     if not btn:
         raise StagerError("no New chat control found (signed in?)")
     await c.click(btn["x"], btn["y"])

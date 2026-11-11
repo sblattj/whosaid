@@ -6,6 +6,9 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ## [Unreleased]
 
+### Fixed
+- `whosaid drafts stage` for a `--new-chat` draft failed with "no New chat control found (signed in?)" when the Teams desktop app was on another view (Calendar, Activity): its New message button exists only in the Chat view. The stager now clicks the app bar's Chat button first and waits for New message.
+
 ## [1.40.0] - 2026-11-11
 
 ### Added

@@ -371,7 +371,8 @@ class FakeTeams:
 
     def hidden_more_xy(self, i):
         return (610, 100 + 40 * i)
-    NEWCHAT_XY, PICKER_XY = (30, 20), (250, 60)
+    NEWCHAT_XY, PICKER_XY, CHAT_APP_XY = (30, 20), (250, 60), (10, 200)
+    view = "chat"  # the Teams app shown: "New message" exists only in the Chat view
 
     def person_xy(self, i):
         return (300, 400 + 40 * i)
@@ -410,7 +411,9 @@ class FakeTeams:
         if near(self.DONE_XY):
             self.edit_saved = True
         self.compose_focused = False
-        if near(self.NEWCHAT_XY):
+        if near(self.CHAT_APP_XY):
+            self.view = "chat"
+        if near(self.NEWCHAT_XY) and self.view == "chat":
             self.newchat_open = True
         if near(self.PICKER_XY) and self.newchat_open:
             self.picker_focus = True
@@ -532,7 +535,9 @@ class FakeTeams:
                 return False
             return self.search_open if args["sel"] == ds.SEARCH_SEL else self.picker_focus
         if name == "new_chat_btn":
-            return {"x": self.NEWCHAT_XY[0], "y": self.NEWCHAT_XY[1]}
+            return {"x": self.NEWCHAT_XY[0], "y": self.NEWCHAT_XY[1]} if self.view == "chat" else None
+        if name == "chat_app_btn":
+            return {"x": self.CHAT_APP_XY[0], "y": self.CHAT_APP_XY[1]}
         if name == "people_picker":
             return {"x": self.PICKER_XY[0], "y": self.PICKER_XY[1]} if self.newchat_open else None
         if name == "people_find":
@@ -1165,6 +1170,16 @@ class EndToEnd(unittest.TestCase):
         self.assertNotIn("rail_find", f.ops)
         self.assertEqual(json.loads(r.stdout.strip().splitlines()[-1])["chat"], "Ann Lee")
         self.assertTrue(f.compose.startswith("Hi **Ann**"))
+        f.never_sent(self)
+
+    def test_new_chat_from_the_calendar_view_switches_to_chat_first(self):
+        f = self.fake(people=["Ann Lee"])
+        f.view = "calendar"
+        r = self.run_stager(f, "--new-chat")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(f.to_chips, ["Ann Lee"])
+        self.assertLess(f.ops.index("chat_app_btn"), len(f.ops))
+        self.assertIn(f.CHAT_APP_XY, f.clicks)
         f.never_sent(self)
 
     def test_new_chat_with_two_people_picks_each(self):
