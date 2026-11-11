@@ -6,6 +6,8 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ## [Unreleased]
 
+## [1.41.0] - 2026-11-11
+
 ### Added
 - `whosaid drafts stage ID --edit` and `whosaid_draft_stage(edit=true)` correct a message you already sent (#209). A sent draft takes a corrected text, claims, stakeholders and docs, is verified like any draft (states `sent, edit drafting` / `sent, edit verified` / `sent, edit staged`), and the stager finds your sent message in the chat by its recorded id, opens Teams' Edit on it and replaces the text with links kept. It never saves: no Enter, no click on a save, Done or send control; you save it in Teams. Refused when the correction isn't verified or changes nothing (a link-only fix counts as a change), the message can't be found or isn't yours, or someone else posted after it (`--allow-newer` / `allow_newer=true` to edit anyway; your own later messages only warn). The stager checks the chat view for later replies too.
 - Edit history on the draft: `edits[]` keeps the old and new text, the revision, `staged_at` and `edited_at`. `mark-sent --check` / `whosaid_draft_sent_check` sets `edited_at` once the chat shows the edit (Teams' edit time, or the new text on that message id) and makes it the new baseline.
