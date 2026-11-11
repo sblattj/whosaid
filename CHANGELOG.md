@@ -6,6 +6,8 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ## [Unreleased]
 
+## [1.39.3] - 2026-11-11
+
 ### Fixed
 - Attachments in the Teams desktop app, again: a restage failed with "Teams showed the attachment chip for <page>, then removed it again" while the upload had landed. When the chat files folder in OneDrive already holds a file with that name, Teams renames the upload (`page.html` becomes `page 3.html`) and the chip shows the new name, which the exact-name check read as the chip being dropped. A chip now counts for a file when it shows the name or the name with a number before the extension, each chip for one file only, and the chip count has to hold for the whole ~3s check.
 
