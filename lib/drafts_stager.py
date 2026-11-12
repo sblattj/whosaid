@@ -650,15 +650,15 @@ async def check_open(c: CDP, chat: str, thread_id: str | None) -> str:
     """Right before the compose box is cleared or typed into: the chat that opened is still the one.
     Returns the title. Raises naming what is open instead."""
     title = await c.ev(op("title", "return document.title"))
-    if thread_id:
-        got = await open_thread_id(c)
+    got = await open_thread_id(c) if thread_id else None
+    if thread_id and got:
         if got != thread_id:
             raise StagerError(f"the open chat's thread id is {got}, not {thread_id} ({chat}); stopping before "
                               "touching the compose box")
         if not names_ok(title, [chat] + list(getattr(c, "opened_names", []))):
             raise StagerError(f'the window title is "{title}", not {chat}, though the thread id matches; '
                               "stopping before touching the compose box")
-    elif not title_matches(title, chat):
+    elif not any(title_matches(title, n) for n in [chat] + list(getattr(c, "opened_names", []))):
         raise StagerError(f'title is "{title}", not {chat}; stopping before touching the compose box')
     return title
 
@@ -756,7 +756,7 @@ async def open_chat(c: CDP, chat: str, thread_id: str | None = None) -> str:
                     id_ok = True
                     if names_ok(title, [chat] + c.opened_names):
                         return title
-            elif not thread_id and title_matches(title, chat):
+            elif title_matches(title, chat):  # no id readable (or none given): the exact title, as without one
                 return title
             await nap(0.5)
         if source != "left rail" or id_ok:

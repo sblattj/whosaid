@@ -1241,6 +1241,13 @@ class EndToEnd(unittest.TestCase):
         self.assertNotIn("compose_len", f.ops, "looked at (or cleared) the compose box")
         f.never_sent(self)
 
+    def test_thread_id_unreadable_falls_back_to_the_exact_title(self):
+        f = self.fake(rail=["Ann Lee"], thread_ids={})
+        r = self.run_stager(f, "--thread-id", "19:ann@thread.v2", chat="Ann Lee")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("paste", f.ops)
+        f.never_sent(self)
+
     def test_thread_id_mismatch_refused_even_with_the_exact_title(self):
         f = self.fake(rail=["Ann Lee"], thread_ids={"Ann Lee": "19:other@unq.gbl.spaces"})
         r = self.run_stager(f, "--thread-id", "19:want@unq.gbl.spaces")
