@@ -18,7 +18,7 @@ jobs:
   review:
     name: prxref review
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 45
     # prxref is non-blocking by design (exits 0 on all network/LLM/forge errors),
     # but continue-on-error provides belt-and-braces protection for CI continuity.
     continue-on-error: true
