@@ -1083,8 +1083,11 @@ def _check_edit(ws: Path, m: dict, res: dict) -> None:
         res["edit_not_seen"].append({"id": m["id"], "to": m["to"], "why": "the message still holds the old text "
                                      "(not saved in Teams yet, or the chat not ingested since)"})
         return
+    # Teams' own edit time when it flagged this edit; seen by its text only, the time it was first seen here
+    # (the message's own "at" is when it was first SENT, before the edit was even staged)
     e["edited_at"] = (datetime.fromtimestamp(x["edited_ms"] / 1000, timezone.utc).isoformat()[:19] + "Z"
-                      if x.get("edited_ms") else x["at"])
+                      if flagged else now())
+    e["edited_at_source"] = "teams" if flagged else "seen"
     e["seen_text"] = x["text"]
     if e.get("hash") == edit_hash(m):  # the outbox still holds what was saved: that is the new baseline
         m["sent_edit_hash"], m["sent_text"] = e["hash"], e["to_text"]

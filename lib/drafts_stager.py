@@ -322,6 +322,7 @@ class CDP:
         self.pending: dict[int, asyncio.Future] = {}
         self.events: list[dict] = []
         self.session: str | None = None
+        self.opened_names: list[str] = []  # rail/search row names open_chat accepted by thread id
         self.reader = asyncio.create_task(self._read())
 
     async def _read(self):
@@ -405,7 +406,7 @@ const tid=e=>e.getAttribute('data-fui-tree-item-value')||e.querySelector('[data-
 const byId=A.id?items.filter(e=>tid(e)===A.id):[];
 const m=byId.length?byId:items.filter(e=>e.innerText.trim().split('\\n')[0].trim()===A.name);
 if(m.length===1)m[0].scrollIntoView({block:'center'});
-return {total:items.length,matches:m.map(t=>{const r=t.getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2}})}"""
+return {total:items.length,matches:m.map(t=>{const r=t.getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2,name:t.innerText.trim().split('\\n')[0].trim()}})}"""
 JS_SEARCH_BOX = ("const b=document.querySelector(" + json.dumps(SEARCH_SEL) + ");"
                  "if(!b)return null;const r=b.getBoundingClientRect();if(!r.width)return null;"
                  "return {x:r.x+r.width/2,y:r.y+r.height/2}")
@@ -415,6 +416,9 @@ JS_SEARCH_BOX = ("const b=document.querySelector(" + json.dumps(SEARCH_SEL) + ")
 JS_OPEN_THREAD_ID = ("const r=ROOT();const b=(r&&r.querySelector('[data-track-thread-id]'))||"
                      "document.querySelector('[data-tid$=\"-send\"][data-track-thread-id]');"
                      "return b?b.getAttribute('data-track-thread-id'):null")
+# Every distinct thread id on the page: when the compose box has none of its own, the page-wide fallback
+# counts only if it is the one id there (a calling side panel once carried another chat's id).
+JS_PAGE_THREAD_IDS = "return [...new Set([...document.querySelectorAll('[data-track-thread-id]')].map(e=>e.getAttribute('data-track-thread-id')))]"
 JS_SEARCH_SELECT = ("const b=document.querySelector(A.sel);if(!b)return false;b.focus();"
                     "if(b.select)b.select();else{const r=document.createRange();r.selectNodeContents(b);"
                     "const s=getSelection();s.removeAllRanges();s.addRange(r)}return true")
@@ -422,7 +426,7 @@ JS_FOCUS_IS = "const b=document.querySelector(A.sel);const f=document.activeElem
 JS_SEARCH_FIND = """const o=[...document.querySelectorAll('[role=option]')];
 const byId=A.id?o.filter(e=>(e.getAttribute('data-tid')||'').includes(A.id)):[];
 const m=byId.length?byId:o.filter(e=>e.innerText.trim().split('\\n')[0].trim()===A.name);
-return {total:o.length,matches:m.map(t=>{const r=t.getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2}})}"""
+return {total:o.length,matches:m.map(t=>{const r=t.getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2,name:t.innerText.trim().split('\\n')[0].trim()}})}"""
 JS_SELECT = """const e=ED();e.focus();const r=document.createRange();r.selectNodeContents(e);
 const x=getSelection();x.removeAllRanges();x.addRange(r);return null"""
 JS_PASTE = """const e=ED();e.focus();const dt=new DataTransfer();dt.setData('text/html',A.html);dt.setData('text/plain',A.plain);
@@ -597,6 +601,68 @@ def title_matches(title: str, chat: str) -> bool:
     return True
 
 
+def title_names(title: str, chat: str) -> bool:
+    """The window title could be CHAT's: title_matches, or a group title cut short with "+N" whose listed
+    members all belong to it ("Ann Lee, Bo Chen +1" for "Ann, Bo Chen and Cy Dee"). With a thread id
+    the id proves which chat it is; this only refuses a title that names ANOTHER chat ("Chat | Bo Chen"
+    while the id says Ann Lee), which once meant the page's id came from somewhere else."""
+    if title_matches(title, chat):
+        return True
+    parts = [p.strip() for p in (title or "").split(" | ")]
+    if len(parts) >= 2 and parts[-1].lower() == "microsoft teams":
+        parts = parts[:-1]
+    mid = re.sub(r"\s\+\d+$", "", parts[1] if len(parts) >= 2 else parts[0]).strip().lower()
+    want_s = (chat or "").strip().lower()
+    if not mid or not want_s:
+        return False
+    if mid == want_s:
+        return True
+    want = [w.strip() for w in re.split(r",\s*|\s+and\s+", want_s) if w.strip()]
+    members = [m.strip() for m in mid.split(",") if m.strip()]
+    if len(want) < 2 or len(members) > len(want):
+        return False
+    left = list(want)
+    for m in members:
+        hit = next((w for w in left if m == w or m.startswith(w + " ")), None)
+        if hit is None:
+            return False
+        left.remove(hit)
+    return True
+
+
+async def open_thread_id(c: CDP) -> str | None:
+    """The open chat's thread id: the compose box's own, else the page's only one (None if several)."""
+    got = await c.ev(op("open_thread_id", JS_OPEN_THREAD_ID))
+    if got:
+        ids = await c.ev(op("page_thread_ids", JS_PAGE_THREAD_IDS))
+        if isinstance(ids, list) and len(ids) > 1:
+            root_has = await c.ev(op("root_thread_id", "const r=ROOT();const b=r&&r.querySelector('[data-track-thread-id]');"
+                                     "return b?b.getAttribute('data-track-thread-id'):null"))
+            return root_has  # several ids on the page: only the compose box's own counts
+    return got
+
+
+def names_ok(title: str, names: list[str]) -> bool:
+    return any(n and title_names(title, n) for n in names)
+
+
+async def check_open(c: CDP, chat: str, thread_id: str | None) -> str:
+    """Right before the compose box is cleared or typed into: the chat that opened is still the one.
+    Returns the title. Raises naming what is open instead."""
+    title = await c.ev(op("title", "return document.title"))
+    if thread_id:
+        got = await open_thread_id(c)
+        if got != thread_id:
+            raise StagerError(f"the open chat's thread id is {got}, not {thread_id} ({chat}); stopping before "
+                              "touching the compose box")
+        if not names_ok(title, [chat] + list(getattr(c, "opened_names", []))):
+            raise StagerError(f'the window title is "{title}", not {chat}, though the thread id matches; '
+                              "stopping before touching the compose box")
+    elif not title_matches(title, chat):
+        raise StagerError(f'title is "{title}", not {chat}; stopping before touching the compose box')
+    return title
+
+
 def search_queries(chat: str) -> list[str]:
     """What to type into Teams search for CHAT: the name itself, then for a group's rail name
     ("Ann and Bo Chen") each member, full names first. Teams search lists an unnamed group chat
@@ -629,8 +695,10 @@ async def search_clear(c: CDP):
 
 
 async def open_chat(c: CDP, chat: str, thread_id: str | None = None) -> str:
-    """Open CHAT and prove it is the one: with a thread id, the open chat's id must equal it (whatever the
-    title says, "+1" included); without one, the title must name exactly this chat."""
+    """Open CHAT and prove it is the one: with a thread id, the open chat's id must equal it AND the window
+    title must not name another chat (it may name CHAT, the row the id found, or a "+1" cut of either; the id
+    can switch before the title does, so it waits for both); without one, the title must name exactly this
+    chat. The title returned is read once both agree, so the result's "chat" is where the text went."""
     matches: list[dict] = []
     rendered = 0  # polls since the rail first showed any item
     for _ in range(45):  # wait for the rail, then give the exact row up to 15 polls (~15s) to appear
@@ -674,17 +742,28 @@ async def open_chat(c: CDP, chat: str, thread_id: str | None = None) -> str:
         if source == "left rail":
             matches = await settled_rail_xy(c, chat, matches, thread_id)
         await c.click(matches[0]["x"], matches[0]["y"])
+        id_ok = False
+        # with a thread id the row it found may be named otherwise (the group was renamed since the draft):
+        # the title may name that row too, but never a chat that is neither
+        c.opened_names = [n for n in [matches[0].get("name")] if n and thread_id]
         for _ in range(20):
             title = await c.ev(op("title", "return document.title"))
-            got = await c.ev(op("open_thread_id", JS_OPEN_THREAD_ID)) if thread_id else None
+            got = await open_thread_id(c) if thread_id else None
             if thread_id and got:
+                # the id can switch before the title does: wait for both, so the title returned (and reported
+                # as the result's "chat") is the chat's own, and a title naming another chat is not let by
                 if got == thread_id:
-                    return title
-            elif title_matches(title, chat):
+                    id_ok = True
+                    if names_ok(title, [chat] + c.opened_names):
+                        return title
+            elif not thread_id and title_matches(title, chat):
                 return title
             await nap(0.5)
-        if source != "left rail":
+        if source != "left rail" or id_ok:
             break
+    if thread_id and id_ok:
+        raise StagerError(f'the open chat\'s thread id is {thread_id}, but the window title is "{title}", not '
+                          f'{chat}; stopping before touching the compose box ({source})')
     if thread_id and got and got != thread_id:
         raise StagerError(f'the open chat\'s thread id is {got}, not {thread_id} ({chat}); stopping ({source})')
     raise StagerError(f'title is "{title}", not {chat}; stopping ({source})')
@@ -952,6 +1031,8 @@ async def stage(a) -> dict:
                     break
                 await nap(0.5)
             step("clearing the compose box")
+            if not a.new_chat:
+                title = await check_open(c, a.chat, a.thread_id)
             existing = await c.ev(op("compose_len", JS_LEN))
             if existing > 0 and not a.replace:
                 md = getattr(a, "md", None) or ""
@@ -983,6 +1064,8 @@ async def stage(a) -> dict:
                 await c.ev(op("caret_end", JS_CARET))
 
             step("pasting the draft")
+            if not a.new_chat:
+                title = await check_open(c, a.chat, a.thread_id)
             pasted = await c.ev(op("paste", JS_PASTE, html=html, plain=plain))
             if not pasted or not pasted.get("len"):
                 raise StagerError("paste left the compose box empty")
@@ -1000,8 +1083,13 @@ async def stage(a) -> dict:
             await c.ev(op("caret_end", JS_CARET))
             fin = await c.ev(op("final", JS_FINAL))
             measured = len(await chip_names(c) or [])  # chips actually in the compose box, not what was asked
-            return {"sent": False, "chat": title, "chars": fin["len"], "links": fin["links"],
-                    "attachments": measured, "mentions": len(a.mention)}
+            if not a.new_chat:
+                title = await c.ev(op("title", "return document.title")) or title  # "chat": where the text is now
+            out = {"sent": False, "chat": title, "chars": fin["len"], "links": fin["links"],
+                   "attachments": measured, "mentions": len(a.mention)}
+            if a.thread_id:
+                out["thread_id"] = a.thread_id
+            return out
         finally:
             c.reader.cancel()
 

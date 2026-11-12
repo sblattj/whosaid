@@ -5,15 +5,16 @@
 //   {"insert": text}            -> {}  Input.insertText: the text at the selection
 //   {"state": true}             -> {"value": window.__fx plus the edit box html}
 // jsdom has no layout, innerText or clipboard: the shims below map them onto data-rect and textContent.
-// Usage: NODE_PATH=<dir with jsdom> bun bridge.mjs chat.html [later]
+// Usage: NODE_PATH=<dir with jsdom> bun bridge.mjs chat.html [later | QUERY like "lag=1"]
 import { JSDOM } from "jsdom";
 import { readFileSync } from "node:fs";
 import { createInterface } from "node:readline";
 
-const [file, later] = process.argv.slice(2);
+const [file, mode] = process.argv.slice(2);
+const query = !mode ? "" : "?" + (mode === "later" ? "later=1" : mode);
 const html = readFileSync(file, "utf8");
 const dom = new JSDOM(html, {
-  url: "https://teams.cloud.microsoft/v2/" + (later ? "?later=1" : ""), runScripts: "dangerously",
+  url: "https://teams.cloud.microsoft/v2/" + query, runScripts: "dangerously",
   beforeParse(w) {
     const R = el => (el.getAttribute && el.getAttribute("data-rect") || "0,0,0,0").split(",").map(Number);
     w.Element.prototype.getBoundingClientRect = function () {

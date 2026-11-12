@@ -709,6 +709,7 @@ class ChatHistoryTest(DraftsBase):
         self.assertEqual([x["id"] for x in r["edited"]], [did])
         m = drafts.load(did)
         self.assertTrue(m["edits"][0]["edited_at"].endswith("Z"))
+        self.assertEqual(m["edits"][0]["edited_at_source"], "teams")
         self.assertEqual(drafts.state(m), "sent", "the saved edit is the new baseline")
         self.assertNotIn(did, [x["id"] for x in drafts.listing()])
         self.assertIn("edited", [h["event"] for h in m["history"]])
@@ -723,6 +724,10 @@ class ChatHistoryTest(DraftsBase):
             drafts.stage([did], ws=self.ws, edit=True)
         self.rewrite_chat("Hi, can you add the two DNS records today?")
         self.assertEqual(len(drafts.sent_check(self.ws)["edited"]), 1)
+        e = drafts.load(did)["edits"][-1]
+        # seen by its text only: when it was seen, never the message's first-sent time (before the staging)
+        self.assertGreaterEqual(e["edited_at"], e["staged_at"])
+        self.assertEqual(e["edited_at_source"], "seen")
 
     def test_edit_refusals(self):
         with self.edit_env():

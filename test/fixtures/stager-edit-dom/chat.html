@@ -7,8 +7,8 @@
      what happened: saved / sent must stay false. -->
 <html><head><title>Activity | Microsoft Teams</title></head><body>
 <div role="tree" data-rect="0,0,200,600">
-  <div role="treeitem" data-rect="0,40,200,40">Bo Chen</div>
-  <div role="treeitem" data-rect="0,80,200,40">Ann Lee</div>
+  <div role="treeitem" data-fui-tree-item-value="19:bo@thread.v2" data-rect="0,40,200,40">Bo Chen</div>
+  <div role="treeitem" data-fui-tree-item-value="19:ann@thread.v2" data-rect="0,80,200,40">Ann Lee</div>
 </div>
 <div data-tid="message-pane-body" data-rect="200,0,800,700">
   <div data-tid="chat-pane-item" data-rect="200,100,800,60">
@@ -44,8 +44,24 @@
   const items = () => [...document.querySelectorAll('[data-tid="message-pane-body"] [data-tid="chat-pane-item"]')];
   const rect = (el, r) => el.setAttribute("data-rect", r.join(","));
   if (new URLSearchParams(location.search).get("later") !== "1") document.getElementById("later").remove();
+  // Opening a chat: the Send button takes the chat's thread id at once and the title follows. ?lag=1 makes
+  // the title lag the id (the real app can), ?stray=1 is a pane that never switches: the title stays on
+  // Bo Chen, whose staged text is in the compose box, the Send button has no id, and another element
+  // elsewhere carries Ann Lee's id.
+  const q = new URLSearchParams(location.search);
+  const send = document.querySelector('[data-tid="sendMessageCommands-send"]');
+  if (q.get("stray") === "1") {
+    document.title = "Chat | Bo Chen | Microsoft Teams";
+    document.querySelector('#compose [data-tid="ckeditor"]').innerHTML = "<p>the text staged for Bo</p>";
+    const s = document.createElement("div");
+    s.setAttribute("data-tid", "callingSidePanel-send"); s.setAttribute("data-track-thread-id", "19:ann@thread.v2");
+    document.body.prepend(s);
+  }
   document.querySelectorAll('[role=treeitem]').forEach(t => t.addEventListener("click", () => {
-    document.title = `Chat | ${t.textContent.trim()} | Microsoft Teams`;
+    if (q.get("stray") === "1") return;
+    send.setAttribute("data-track-thread-id", t.getAttribute("data-fui-tree-item-value"));
+    const title = () => { document.title = `Chat | ${t.textContent.trim()} | Microsoft Teams`; };
+    if (q.get("lag") === "1") setTimeout(title, 150); else title();
   }));
   // the one floating toolbar follows the pointer: it sits on the top edge of the item last hovered
   document.addEventListener("mouseover", e => {

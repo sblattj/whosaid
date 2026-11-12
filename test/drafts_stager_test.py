@@ -468,7 +468,7 @@ class FakeTeams:
             want_id = args.get("id")
             by_id = [i for i, n in enumerate(self.rail) if want_id and self.thread_ids.get(n) == want_id]
             idx = by_id or [i for i, n in enumerate(self.rail) if n == args["name"]]
-            hits = [{"x": self.rail_xy(i)[0], "y": self.rail_xy(i)[1]} for i in idx]
+            hits = [{"x": self.rail_xy(i)[0], "y": self.rail_xy(i)[1], "name": self.rail[i]} for i in idx]
             return {"total": len(self.rail), "matches": hits}
         if name == "title":
             return self.title
@@ -566,7 +566,7 @@ class FakeTeams:
             return self.search_open
         if name == "search_find":
             opts = self.options()
-            return {"total": len(opts), "matches": [{"x": self.opt_xy(i)[0], "y": self.opt_xy(i)[1]}
+            return {"total": len(opts), "matches": [{"x": self.opt_xy(i)[0], "y": self.opt_xy(i)[1], "name": n}
                                                     for i, n in enumerate(opts) if n == args["name"]]}
         if name == "hit_test":
             for xy, attrs in self.elements.items():
@@ -1228,6 +1228,17 @@ class EndToEnd(unittest.TestCase):
         r = self.run_stager(f, "--thread-id", "19:abc@thread.v2", chat="Ann and Bo Chen")
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(f.chat, "Ann, Bo and Cy")
+        f.never_sent(self)
+
+    def test_thread_id_match_with_a_title_naming_another_chat_is_refused_before_the_compose_box(self):
+        # the id read matched but the window shows another chat: the id came from elsewhere on the page
+        f = self.fake(rail=["Zed Q", "Ann Lee"], titles={"Ann Lee": "Chat | Zed Q"},
+                      thread_ids={"Ann Lee": "19:ann@thread.v2", "Zed Q": "19:zed@thread.v2"})
+        r = self.run_stager(f, "--thread-id", "19:ann@thread.v2", "--replace", chat="Ann Lee")
+        self.assertEqual(r.returncode, 1, r.stdout)
+        self.assertIn('window title is "Chat | Zed Q", not Ann Lee', r.stderr)
+        self.assertNotIn("paste", f.ops)
+        self.assertNotIn("compose_len", f.ops, "looked at (or cleared) the compose box")
         f.never_sent(self)
 
     def test_thread_id_mismatch_refused_even_with_the_exact_title(self):

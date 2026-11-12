@@ -49,10 +49,10 @@ if WHY_NOT:
 class DomTeams:
     """CDP in front of the jsdom bridge: Runtime.evaluate, mouse and keys go to the DOM."""
 
-    def __init__(self, later=False):
+    def __init__(self, later=False, mode=None):
         from websockets.sync.server import serve
         env = {**os.environ, "NODE_PATH": str(JSDOM_DIR / "node_modules")}
-        self.p = subprocess.Popen(["bun", str(FIX / "bridge.mjs"), str(FIX / "chat.html")] + (["later"] if later else []),
+        self.p = subprocess.Popen(["bun", str(FIX / "bridge.mjs"), str(FIX / "chat.html")] + ([mode] if mode else ["later"] if later else []),
                                   stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True, env=env)
         self.lock = threading.Lock()
         self.calls: list[tuple[str, dict]] = []
@@ -253,6 +253,57 @@ class MentionAgainstFixtureDom(unittest.TestCase):
         self.assertIn("no mention suggestion for Cy D", r.stderr)
         self.assertEqual(st["compose"], "", "the typed @Cy D / @Cy was taken back")
         self.assertFalse(st["list"])
+        self.assertFalse(st["sent"])
+
+
+@unittest.skipIf(WHY_NOT and not os.environ.get("WHOSAID_REQUIRE_DOM_TEST"), f"no DOM engine: {WHY_NOT}")
+class OpenChatAgainstFixtureDom(unittest.TestCase):
+    """Staging by thread id: the result names the chat it typed into, and a window title naming another
+    chat stops it before the compose box is touched (an id read elsewhere in the page once passed)."""
+
+    def setUp(self):
+        if WHY_NOT:
+            self.fail(f"WHOSAID_REQUIRE_DOM_TEST is set but {WHY_NOT}")
+        self.tmp = tempfile.TemporaryDirectory(prefix="stager-dom-")
+        d = Path(self.tmp.name)
+        self.md, self.lockd = d / "draft.md", d / "lock"
+        self.md.write_text("the staging hosts are in [the runbook](https://example.com/rb)\n")
+        self.lockd.mkdir()
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def run_stager(self, f, *extra):
+        env = {**os.environ, "WHOSAID_STAGER_TIME_SCALE": "0.02", "TEAMS_OUTBOX_LOCK": str(self.lockd)}
+        return subprocess.run([sys.executable, SCRIPT, "--chat", "Ann Lee", "--thread-id", "19:ann@thread.v2",
+                               "--md", str(self.md), "--cdp-port", str(f.port), *extra],
+                              capture_output=True, text=True, env=env, timeout=90)
+
+    def test_the_result_names_the_chat_it_typed_into_when_the_title_lags_the_id(self):
+        f = DomTeams(mode="lag=1")
+        try:
+            r = self.run_stager(f)
+            st = f.state()
+        finally:
+            f.close()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        out = json.loads(r.stdout.strip().splitlines()[-1])
+        self.assertEqual(out["chat"], "Chat | Ann Lee | Microsoft Teams", "reported a title from before the chat opened")
+        self.assertEqual(out["thread_id"], "19:ann@thread.v2")
+        self.assertIn('href="https://example.com/rb"', st["compose"])
+        self.assertFalse(st["sent"])
+
+    def test_an_id_outside_the_compose_box_with_another_chats_title_stops_before_typing(self):
+        f = DomTeams(mode="stray=1")
+        try:
+            r = self.run_stager(f, "--replace")
+            st = f.state()
+        finally:
+            f.close()
+        self.assertEqual(r.returncode, 1, r.stdout)
+        self.assertIn("Bo Chen", r.stderr)
+        self.assertIn("not Ann Lee", r.stderr)
+        self.assertEqual(st["compose"], "<p>the text staged for Bo</p>", "another chat's staged text was replaced")
         self.assertFalse(st["sent"])
 
 

@@ -6,6 +6,11 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ## [Unreleased]
 
+### Fixed
+- (#211) `whosaid drafts stage` with a thread id reported the window title from before the chat opened as the result's `chat` (a draft for one chat read `"chat": "Chat | <the previous chat>"`), because the open chat's id can switch before the title does. It now waits for both and reports the title of the chat it typed into, plus `thread_id`.
+- (#211) The stager trusted a matching thread id even when the window title named another chat, and the id could come from outside the compose box (a page-wide fallback). With `--replace` that would have overwritten the other chat's staged text. Now a title naming a chat that is neither the draft's nor the row the id found stops it before the compose box is read or cleared; with several thread ids on the page only the compose box's own counts; and the chat is checked again right before clearing and before pasting.
+- (#211) `mark-sent --check` recorded a correction seen only by its new text (Teams showing no edit time) with `edited_at` set to the message's first-sent time, before the edit was even staged. It is now the time the edit was first seen, and `edited_at_source` says which (`teams` or `seen`).
+
 ## [1.41.0] - 2026-11-11
 
 ### Added
