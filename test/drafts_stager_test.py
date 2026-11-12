@@ -1248,6 +1248,14 @@ class EndToEnd(unittest.TestCase):
         self.assertIn("paste", f.ops)
         f.never_sent(self)
 
+    def test_title_names_takes_a_member_subset_only_from_a_plus_n_title(self):
+        tn = ds.title_names
+        group = "Ann Lee, Bo Chen and Cy Dee"
+        self.assertTrue(tn("Chat | Ann Lee, Bo Chen +1", group))
+        self.assertFalse(tn("Chat | Ann Lee", group), "a 1:1 is another chat")
+        self.assertFalse(tn("Chat | Ann Lee, Bo Chen | Microsoft Teams", group), "another group")
+        self.assertFalse(tn("Chat | Ann Lee, Zed Q +1", group))
+
     def test_thread_id_mismatch_refused_even_with_the_exact_title(self):
         f = self.fake(rail=["Ann Lee"], thread_ids={"Ann Lee": "19:other@unq.gbl.spaces"})
         r = self.run_stager(f, "--thread-id", "19:want@unq.gbl.spaces")

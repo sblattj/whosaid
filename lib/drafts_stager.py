@@ -611,12 +611,16 @@ def title_names(title: str, chat: str) -> bool:
     parts = [p.strip() for p in (title or "").split(" | ")]
     if len(parts) >= 2 and parts[-1].lower() == "microsoft teams":
         parts = parts[:-1]
-    mid = re.sub(r"\s\+\d+$", "", parts[1] if len(parts) >= 2 else parts[0]).strip().lower()
+    raw = (parts[1] if len(parts) >= 2 else parts[0]).strip()
+    cut = re.search(r"\s\+\d+$", raw)  # only a title cut short with "+N" may list a subset of the members
+    mid = re.sub(r"\s\+\d+$", "", raw).strip().lower()
     want_s = (chat or "").strip().lower()
     if not mid or not want_s:
         return False
     if mid == want_s:
         return True
+    if not cut:
+        return False
     want = [w.strip() for w in re.split(r",\s*|\s+and\s+", want_s) if w.strip()]
     members = [m.strip() for m in mid.split(",") if m.strip()]
     if len(want) < 2 or len(members) > len(want):
