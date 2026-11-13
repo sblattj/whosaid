@@ -606,14 +606,15 @@ class ChatHistoryTest(DraftsBase):
         self.ws = self.root / "ws"
         self.ws.mkdir()
 
-    def chat(self, messages, chat="Test Person", when=None):
+    def chat(self, messages, chat="Test Person", when=None, chat_id=None):
         when = when or datetime.now()
         folder = self.ws / when.strftime("%Y-%m-%d-%H%M")
         folder.mkdir(exist_ok=True)
         segs = [{"start": 0, "end": 0, "speaker": spk, "epoch_ms": int(t.timestamp() * 1000), "mid": f"m{i}",
                  "text": text} for i, (t, spk, text) in enumerate(messages)]
         (folder / "teams.diarization.json").write_text(json.dumps({
-            "base": "teams", "source": {"kind": "teams-chat", "chat_name": chat, "day": when.strftime("%Y-%m-%d")},
+            "base": "teams", "source": {"kind": "teams-chat", "chat_name": chat, "day": when.strftime("%Y-%m-%d"),
+                                        **({"chat_id": chat_id} if chat_id else {})},
             "names": {}, "roles": {"Me_Self": "self"}, "segments": segs}))
 
     def test_stage_reports_the_chat_and_skips_a_draft_already_sent(self):
@@ -634,6 +635,20 @@ class ChatHistoryTest(DraftsBase):
         self.assertIn("already in Test Person", r["skipped"][0]["why"])
         self.assertTrue(r["context"][did]["reply_since_ours"])
         self.assertEqual(len(self.stager_calls()), 1, "no second paste of a sent message")
+
+    def test_group_ingested_under_its_raw_id_is_found_by_thread_id(self):
+        # #219: ingest named an untitled group by its id; the draft lists the members
+        did = self.ready(to="Alice Adams, Bob Brown", thread_id="19:grp@thread.v2")
+        later = datetime.now() + timedelta(seconds=5)
+        self.chat([(later - timedelta(minutes=3), "Bob_Brown", "morning both")],
+                  chat="19:grp@thread.v2", chat_id="19:grp@thread.v2")
+        self.chat([(later - timedelta(minutes=2), "Other_Person", "unrelated")], chat="Other Chat",
+                  chat_id="19:other@thread.v2", when=datetime.now() - timedelta(minutes=1))
+        r = drafts.stage([did], ws=self.ws)
+        self.assertEqual(r["context"][did]["ingested"], 1)
+        self.chat([(later, "Me_Self", "Hi, can you add the two DNS records?")],
+                  chat="19:grp@thread.v2", chat_id="19:grp@thread.v2")
+        self.assertEqual([x["id"] for x in drafts.sent_check(self.ws)["sent"]], [did])
 
     # ---- stage --edit / edit-sent (#176, #209) ----
     def edit_env(self):

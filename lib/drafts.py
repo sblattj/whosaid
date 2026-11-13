@@ -920,9 +920,11 @@ def same_chat(name: str, chat: str) -> bool:
     return bool(want) and (n == want or _CHAT_SUFFIX.sub("", n) == want)
 
 
-def chat_messages(ws: Path, chat: str, since_ms: int | None = None, days: int = 14) -> list[dict]:
+def chat_messages(ws: Path, chat: str, since_ms: int | None = None, days: int = 14,
+                  thread_id: str | None = None) -> list[dict]:
     """Ingested messages of one chat (chat name case-insensitive, or that name with a "(chat 1a2b3c)"
-    suffix), oldest first.
+    suffix, or, given THREAD_ID, any folder recorded with that chat id: ingest can name an untitled
+    group by its raw id or by the one member who had posted, #219), oldest first.
 
     Folders are YYYY-MM-DD-HHMM chat-days, so only the last `days` (or since since_ms) are read."""
     floor_ms = since_ms if since_ms is not None else int((time.time() - days * 86400) * 1000)
@@ -944,7 +946,8 @@ def chat_messages(ws: Path, chat: str, since_ms: int | None = None, days: int = 
         except (OSError, ValueError):
             continue
         src = data.get("source") or {}
-        if src.get("kind") != CHAT_KIND or not same_chat(src.get("chat_name") or "", chat):
+        if src.get("kind") != CHAT_KIND or not (same_chat(src.get("chat_name") or "", chat)
+                                                or (thread_id and src.get("chat_id") == thread_id)):
             continue
         mine = _self_speakers(data)
         for seg in data.get("segments") or []:
@@ -956,7 +959,7 @@ def chat_messages(ws: Path, chat: str, since_ms: int | None = None, days: int = 
                         "text": seg.get("text") or "", "mid": seg.get("mid") or seg.get("message_id"),
                         "folder": f.name, "edited_ms": seg.get("edited_ms")})
     by_mid = {str(m["mid"]): m for m in out if m.get("mid")}
-    for x in _live_chat_messages(ws, chat, floor_ms):
+    for x in _live_chat_messages(ws, chat, floor_ms, thread_id):
         old = by_mid.get(str(x["mid"]))
         if old is None:
             out.append(x)
@@ -965,7 +968,7 @@ def chat_messages(ws: Path, chat: str, since_ms: int | None = None, days: int = 
     return sorted(out, key=lambda x: x["epoch_ms"])
 
 
-def _live_chat_messages(ws: Path, chat: str, floor_ms: int) -> list[dict]:
+def _live_chat_messages(ws: Path, chat: str, floor_ms: int, thread_id: str | None = None) -> list[dict]:
     """Messages of the chat still only in the Teams desktop app's local cache (not ingested yet).
     Empty when there is no cache; WHOSAID_TEAMS_CACHE=off turns it off."""
     if (os.environ.get("WHOSAID_TEAMS_CACHE") or "").strip().lower() in ("off", "0", "none"):
@@ -974,13 +977,23 @@ def _live_chat_messages(ws: Path, chat: str, floor_ms: int) -> list[dict]:
         import teams_cache
         if not teams_cache._leveldb(teams_cache.cache_dir()).is_dir():
             return []
-        res = teams_cache.messages(chat, floor_ms, None, Path(ws))
+        rows = [m for m in teams_cache.messages(chat, floor_ms, None, Path(ws)).get("messages") or []
+                if same_chat(m.get("chat", ""), chat)]
+        if thread_id:  # the chat by its id, whatever ingest calls it
+            seen = {m["message_id"] for m in rows}
+            rows += [m for m in teams_cache.messages(thread_id, floor_ms, None, Path(ws)).get("messages") or []
+                     if m.get("chat_id") == thread_id and m["message_id"] not in seen]
     except Exception:  # noqa: BLE001 - the cache is a bonus, never a reason to fail
         return []
     return [{"epoch_ms": m["epoch_ms"], "at": m["at"], "speaker": m["author"].replace(" ", "_"),
              "self": m["self"], "text": m["text"], "mid": m["message_id"], "folder": "(teams cache)",
-             "edited_ms": m.get("edited_ms")}
-            for m in res.get("messages") or [] if same_chat(m.get("chat", ""), chat)]
+             "edited_ms": m.get("edited_ms")} for m in sorted(rows, key=lambda m: m["epoch_ms"])]
+
+
+def draft_chat_messages(ws: Path, m: dict, since_ms: int | None = None) -> list[dict]:
+    """chat_messages for a draft's chat: by its name and, when known, its thread id."""
+    tid = None if m.get("new_chat") else chat_thread_id(m, ws)
+    return chat_messages(ws, m["to"], since_ms=since_ms, thread_id=tid)
 
 
 def chat_thread_id(m: dict, ws: Path | None) -> str | None:
@@ -1043,7 +1056,7 @@ def _draft_text(m: dict) -> str:
 def chat_context(ws: Path, m: dict, n: int = 5) -> dict:
     """What the target chat already holds: the newest n ingested messages, our last one, whether
     they replied since, and whether this draft already appears there as ours (already sent)."""
-    msgs = chat_messages(ws, m["to"])
+    msgs = draft_chat_messages(ws, m)
     created = _ms(m.get("created_at")) or 0
     sent = next((x for x in reversed(msgs) if x["self"] and x["epoch_ms"] >= created - 300_000
                  and same_message(_draft_text(m), x["text"])), None)
@@ -1069,7 +1082,7 @@ def sent_check(ws: Path, draft_id: str | None = None) -> dict:
             res["still_staged"].append({"id": m["id"], "why": f"is {m['status']}, not staged"})
             continue
         since = (_ms(m.get("staged_at")) or _ms(m.get("created_at")) or 0) - 300_000
-        msgs = chat_messages(ws, m["to"], since_ms=since)
+        msgs = draft_chat_messages(ws, m, since_ms=since)
         hit = next((x for x in msgs if x["self"] and same_message(_draft_text(m), x["text"])), None)
         if not hit:
             res["still_staged"].append({"id": m["id"], "to": m["to"], "why": f"not in the {len(msgs)} ingested "
@@ -1090,7 +1103,7 @@ def _edit_open(m: dict) -> bool:
 def _check_edit(ws: Path, m: dict, res: dict) -> None:
     e = m["edits"][-1]
     since = (_ms((m.get("sent_message") or {}).get("at")) or _ms(e.get("staged_at")) or 0) - 300_000
-    x = next((x for x in chat_messages(ws, m["to"], since_ms=since) if e.get("mid") and str(x.get("mid")) == str(e["mid"])),
+    x = next((x for x in draft_chat_messages(ws, m, since_ms=since) if e.get("mid") and str(x.get("mid")) == str(e["mid"])),
              None)
     staged_ms = _ms(e.get("staged_at")) or 0
     if x is None:
@@ -1545,7 +1558,7 @@ def sent_text(ws: Path | None, m: dict) -> dict | None:
         return None
     since = (_ms(m.get("staged_at")) or _ms(m.get("created_at")) or 0) - 300_000
     texts = [revision_text(m, r["n"]) for r in revisions(m)] or [_draft_text(m)]
-    for x in reversed(chat_messages(ws, m["to"], since_ms=since)):
+    for x in reversed(draft_chat_messages(ws, m, since_ms=since)):
         if x["self"] and any(edit_match(t, x["text"]) for t in texts if t.strip()):
             return x
     return None
@@ -1558,7 +1571,7 @@ def find_sent(ws: Path | None, m: dict) -> tuple[dict | None, list[dict]]:
         return None, []
     sm = m.get("sent_message") or {}
     since = (_ms(sm.get("at")) or _ms(m.get("staged_at")) or _ms(m.get("created_at")) or 0) - 300_000
-    msgs = chat_messages(ws, m["to"], since_ms=since)
+    msgs = draft_chat_messages(ws, m, since_ms=since)
     if sm.get("mid"):
         hit = next((x for x in msgs if str(x.get("mid")) == str(sm["mid"])), None)
     else:
