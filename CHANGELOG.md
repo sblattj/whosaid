@@ -6,6 +6,12 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ## [Unreleased]
 
+## [1.41.4] - 2026-11-13
+
+### Fixed
+- (#219) A successful stage now keeps the thread id the stager proved it typed into (`thread_id_source: "staged"`, never over a given one), and a draft without an id reuses the one its other drafts to the same recipient agree on, so the next stage finds the chat by id even with the Teams cache off.
+- (#219) With a known thread id, a draft's chat history counts an ingested folder or cached message by its recorded chat id alone, so a 1:1 and a group ingest named alike ("Name" / "Name (chat 1a2b3c)") no longer read each other's messages (a false "already sent").
+
 ## [1.41.3] - 2026-11-13
 
 ### Fixed
