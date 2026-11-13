@@ -126,6 +126,49 @@ class Decode(unittest.TestCase):
         self.assertIn("edited", [x["text"] for x in tc.decode(raw)["messages"]])
 
 
+class Rosters(unittest.TestCase):
+    """#219: a chat's full roster comes from the conversation record, not from who has posted."""
+
+    def raw(self):
+        raw = raw_fixture()
+        quiet = "19:quietgroup@thread.v2"  # Bob and Cat are in it, only Bob has posted
+        raw["conversations"].append({"id": quiet, "type": "Chat",
+                                     "members": [{"id": SELF}, {"id": BOB}, {"id": CAT}],
+                                     "chatTitle": {"shortTitle": "Bob and Cat Coder",
+                                                   "longTitle": "Ann Example, Bob Builder, Cat Coder"}})
+        raw["replychains"].append({"conversationId": quiet, "messageMap": {"a": msg(quiet, NOW - 5, BOB, "hey both")}})
+        for c in raw["conversations"]:
+            if c["id"] == DM:
+                c["members"] = [{"id": SELF}, {"id": BOB}]
+        return raw, quiet
+
+    def test_roster_lists_every_member_but_self_and_keeps_chat_names(self):
+        raw, quiet = self.raw()
+        d = tc.decode(raw)
+        self.assertEqual(d["chats"][quiet]["members"], ["Bob Builder"])  # ingest naming unchanged
+        r = d["rosters"][quiet]
+        self.assertEqual(r["members"], ["Bob Builder", "Cat Coder"])
+        self.assertEqual((r["short_title"], r["one_on_one"]), ("Bob and Cat Coder", False))
+        self.assertTrue(d["rosters"][DM]["one_on_one"])
+        self.assertNotIn("48:notes", d["rosters"])
+        self.assertNotIn("19:chan@thread.tacv2", d["rosters"])
+
+    def test_roster_fits_member_order_first_names_and_the_one_on_one(self):
+        raw, quiet = self.raw()
+        rs = tc.decode(raw)["rosters"]
+        fits = lambda name: sorted(c for c, r in rs.items() if tc.roster_fits(r, name))  # noqa: E731
+        self.assertEqual(fits("Cat Coder, Bob Builder"), [quiet])
+        self.assertEqual(fits("Bob and Cat Coder"), [quiet])
+        self.assertEqual(fits("Bob, Cat"), [quiet])
+        self.assertEqual(fits("Bob Builder"), [DM], "a group where only Bob posted is not the 1:1 with Bob")
+        self.assertEqual(fits("Bob Builder, Cat Coder, Dan Dee"), [])
+        self.assertEqual(fits("Release Room"), [TOPIC])
+
+    def test_same_people_refuses_an_ambiguous_first_name(self):
+        self.assertFalse(tc.same_people(["Bob", "Cat Coder"], ["Bob Builder", "Bob Baker"]))
+        self.assertTrue(tc.same_people(["Bob Baker", "Bob Builder"], ["Bob Builder", "Bob Baker"]))
+
+
 class WithWorkspace(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()

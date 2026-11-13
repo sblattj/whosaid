@@ -467,7 +467,10 @@ class FakeTeams:
         if name == "rail_find":
             want_id = args.get("id")
             by_id = [i for i, n in enumerate(self.rail) if want_id and self.thread_ids.get(n) == want_id]
-            idx = by_id or [i for i, n in enumerate(self.rail) if n == args["name"]]
+            alts = {a.lower() for a in args.get("alts") or [args["name"]]}
+            any_ = [i for i, n in enumerate(self.rail) if n.lower() in alts]
+            exact = [i for i in any_ if self.rail[i].lower() == args["name"].lower()]
+            idx = by_id or exact or any_
             hits = [{"x": self.rail_xy(i)[0], "y": self.rail_xy(i)[1], "name": self.rail[i]} for i in idx]
             return {"total": len(self.rail), "matches": hits}
         if name == "title":
@@ -543,7 +546,8 @@ class FakeTeams:
         if name == "people_find":
             opts = self.people_options()
             return {"total": len(opts), "matches": [{"x": self.person_xy(i)[0], "y": self.person_xy(i)[1]}
-                                                    for i, n in enumerate(opts) if n == args["name"]]}
+                                                    for i, n in enumerate(opts)
+                                                    if n.lower() in {a.lower() for a in args.get("alts") or [args["name"]]}]}
         if name == "to_chip":
             return args["name"] in self.to_chips
         if name == "mention_count":
@@ -551,7 +555,8 @@ class FakeTeams:
         if name == "mention_find":
             opts = self.mention_options()
             return {"total": len(opts), "matches": [{"x": self.mention_xy(i)[0], "y": self.mention_xy(i)[1]}
-                                                    for i, n in enumerate(opts) if n == args["name"]]}
+                                                    for i, n in enumerate(opts)
+                                                    if n.lower() in {a.lower() for a in args.get("alts") or [args["name"]]}]}
         if name == "paste":
             self.compose += args["plain"]  # at the caret, which is at the end
             self.root_gone = self.root_flicker
@@ -567,7 +572,8 @@ class FakeTeams:
         if name == "search_find":
             opts = self.options()
             return {"total": len(opts), "matches": [{"x": self.opt_xy(i)[0], "y": self.opt_xy(i)[1], "name": n}
-                                                    for i, n in enumerate(opts) if n == args["name"]]}
+                                                    for i, n in enumerate(opts)
+                                                    if n.lower() in {a.lower() for a in args.get("alts") or [args["name"]]}]}
         if name == "hit_test":
             for xy, attrs in self.elements.items():
                 if abs(args["x"] - xy[0]) < 20 and abs(args["y"] - xy[1]) < 20 and css_matches(args["sel"], attrs):
@@ -1240,6 +1246,90 @@ class EndToEnd(unittest.TestCase):
         self.assertNotIn("paste", f.ops)
         self.assertNotIn("compose_len", f.ops, "looked at (or cleared) the compose box")
         f.never_sent(self)
+
+    def test_group_found_by_member_set_in_another_order(self):
+        # #219: the rail shows Teams' short title, the draft lists the members, the title lists them sorted
+        f = self.fake(rail=["Zed", "Alice and Bob Brown"], titles={"Alice and Bob Brown": "Chat | Alice Adams, Bob Brown"})
+        r = self.run_stager(f, chat="Bob Brown, Alice Adams")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(f.chat, "Alice and Bob Brown")
+        f.never_sent(self)
+
+    def test_group_found_by_member_set_via_search(self):
+        f = self.fake(rail=["Zed"], search_groups={"Alice and Bob Brown": ["Alice Adams", "Bob Brown"]})
+        f.titles = {}
+        orig = f.click
+        def click(x, y):
+            orig(x, y)
+            if f.chat == "Alice and Bob Brown":
+                f.title = "Chat | Alice Adams, Bob Brown"
+        f.click = click
+        r = self.run_stager(f, chat="Alice Adams, Bob Brown")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(f.chat, "Alice and Bob Brown")
+        f.never_sent(self)
+
+    def test_custom_group_title_found_by_its_thread_id(self):
+        f = self.fake(rail=["Zed", "Launch Plan"], thread_ids={"Launch Plan": "19:grp@thread.v2", "Zed": "19:zed@thread.v2"})
+        r = self.run_stager(f, "--thread-id", "19:grp@thread.v2", chat="Alice Adams, Bob Brown")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(f.chat, "Launch Plan")
+        f.never_sent(self)
+
+    def test_truncated_rail_label_is_not_a_name_match(self):
+        chat = "Alice Adams, Bob Brown, Cara Cole, Dan Diaz, Eve Ellis"
+        f = self.fake(rail=["Alice, Bob, Cara, +2"], search=["Someone Else"])
+        r = self.run_stager(f, chat=chat)
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("no chat named", r.stderr)
+        self.assertNotIn("paste", f.ops)
+        f.never_sent(self)
+
+    def test_truncated_rail_label_found_by_thread_id(self):
+        chat = "Alice Adams, Bob Brown, Cara Cole, Dan Diaz, Eve Ellis"
+        f = self.fake(rail=["Alice, Bob, Cara, +2"], titles={"Alice, Bob, Cara, +2": "Chat | Alice Adams, Bob Brown +3"},
+                      thread_ids={"Alice, Bob, Cara, +2": "19:big@thread.v2"})
+        r = self.run_stager(f, "--thread-id", "19:big@thread.v2", chat=chat)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(f.chat, "Alice, Bob, Cara, +2")
+        f.never_sent(self)
+
+    def test_one_on_one_and_group_with_the_same_person(self):
+        rail = ["Alice and Bob Brown", "Bob Brown"]
+        titles = {"Alice and Bob Brown": "Chat | Alice Adams, Bob Brown"}
+        f = self.fake(rail=rail, titles=titles)
+        r = self.run_stager(f, chat="Bob Brown")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(f.chat, "Bob Brown", "a 1:1 draft opened the group")
+        g = self.fake(rail=rail, titles=titles)
+        r = self.run_stager(g, chat="Alice Adams, Bob Brown")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(g.chat, "Alice and Bob Brown", "a group draft opened the 1:1")
+        f.never_sent(self)
+        g.never_sent(self)
+
+    def test_wrong_chat_open_is_refused_saying_where_it_is_and_where_it_meant_to_go(self):
+        # the click lands in the 1:1 although the id is the group's: refuse before the compose box
+        f = self.fake(rail=["Bob Brown", "Alice and Bob Brown"],
+                      thread_ids={"Bob Brown": "19:dm@unq.gbl.spaces", "Alice and Bob Brown": "19:grp@thread.v2"})
+        orig = f.click
+        f.click = lambda x, y: orig(*f.rail_xy(0)) if (x, y) == f.rail_xy(1) else orig(x, y)
+        r = self.run_stager(f, "--thread-id", "19:grp@thread.v2", "--replace", chat="Alice Adams, Bob Brown")
+        self.assertEqual(r.returncode, 1, r.stdout)
+        self.assertIn('[open: "Chat | Bob Brown | Microsoft Teams" (thread 19:dm@unq.gbl.spaces); '
+                      "meant: Alice Adams, Bob Brown (thread 19:grp@thread.v2)]", r.stderr)
+        self.assertNotIn("paste", f.ops)
+        self.assertNotIn("compose_len", f.ops)
+        f.never_sent(self)
+
+    def test_label_alts_cover_teams_short_titles(self):
+        alts = ds.label_alts("Bob Brown, Alice Adams")
+        self.assertEqual(alts[0], "Bob Brown, Alice Adams")
+        for lab in ("Alice and Bob Brown", "Alice Adams, Bob Brown", "Bob and Alice"):
+            self.assertIn(lab, alts)
+        self.assertIn("Alice, Bob, and Cara", ds.label_alts("Cara Cole, Alice Adams, Bob Brown"))
+        self.assertEqual(ds.label_alts("Bob Brown"), ["Bob Brown"])
+        self.assertFalse([a for a in ds.label_alts("Alice Adams, Bob Brown") if "+" in a])
 
     def test_thread_id_unreadable_falls_back_to_the_exact_title(self):
         f = self.fake(rail=["Ann Lee"], thread_ids={})

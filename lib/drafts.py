@@ -995,11 +995,35 @@ def chat_thread_id(m: dict, ws: Path | None) -> str | None:
         import teams_cache
         if not teams_cache._leveldb(teams_cache.cache_dir()).is_dir():
             return None
-        names = teams_cache.name_chats(teams_cache.load(), Path(ws) if ws else None)
+        data = teams_cache.load()
+        names = teams_cache.name_chats(data, Path(ws) if ws else None)
     except Exception:  # noqa: BLE001 - the cache is a bonus, never a reason to fail
         return None
-    ids = [cid for cid, n in names.items() if (n or "").strip().lower() == (m.get("to") or "").strip().lower()]
-    return ids[0] if len(ids) == 1 else None
+    return resolve_chat_id(m.get("to") or "", names, data.get("rosters") or {})
+
+
+def resolve_chat_id(to: str, names: dict[str, str], rosters: dict[str, dict]) -> str | None:
+    """The one chat id TO means, else None (the stager then checks the title instead).
+    1. A chat ingest names TO that its roster fits, or the only one ingest names TO when no roster fits
+       TO at all (an alias of the user's own). A group where one person posted is named like the 1:1
+       with them, so a 1:1 draft goes to the chat whose roster fits, never to that group.
+    2. Else the one chat whose topic, Teams title or member set TO describes (members in any order,
+       full or unique first names): an untitled group is never named by a member list anywhere else.
+    Several candidates: None, never a guess."""
+    import teams_cache
+    want = (to or "").strip().lower()
+    if not want:
+        return None
+    ids = [cid for cid, n in names.items() if (n or "").strip().lower() == want]
+    hits = [cid for cid, r in rosters.items() if teams_cache.roster_fits(r, to)]
+    fit = [cid for cid in ids if cid in hits]
+    if len(fit) == 1:
+        return fit[0]
+    if len(ids) == 1 and not hits:
+        return ids[0]  # a name of the user's own ([teams.chat_names]) that no roster contradicts
+    if len(ids) > 1:
+        return None
+    return hits[0] if len(hits) == 1 else None
 
 
 def _ms(iso: str | None) -> int | None:

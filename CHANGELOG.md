@@ -6,6 +6,11 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ## [Unreleased]
 
+### Fixed
+- (#219) `whosaid drafts stage` could not find an untitled group chat addressed by its members ("no chat named Ann Lee, Bo Chen (rail or search; ...)"), because every step matched one exact string: Teams shows such a group as its short title ("Ann and Bo Chen"), the Teams cache built a chat's members only from who had posted (a group where one person posted looked like the 1:1 with them), and the draft's thread id was looked up by exact name only. Now the cache also keeps each chat's full roster and Teams titles (ingest names are unchanged), a draft's recipient resolves to the one chat whose topic, title or member set it describes (any order, full or unique first names; a single name only ever to the 1:1; several candidates: no id), and the stager matches rail and search rows by those labels.
+- (#219) In the Teams desktop app the stager never found a rail row by thread id: the row's tree value is a folder path ending in "|<thread id>", and it compared the whole value. It now compares the last segment.
+- (#219) Every "stopping before touching the compose box" error now ends with where the stager is and where it meant to go: `[open: "<title>" (thread <id>); meant: <chat> (thread <id>)]`.
+
 ## [1.41.1] - 2026-11-12
 
 ### Fixed

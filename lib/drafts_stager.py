@@ -55,8 +55,10 @@ $WHOSAID_STAGER_TIME_SCALE (float, default 1; tests use a small one).
 FAKE-CDP CONTRACT (frozen; wave 2 extends it). Every Runtime.evaluate expression starts with
 `/*op:NAME*/` followed by `/*args:JSON*/` (the JSON of the op's arguments, "*/" escaped as "*\\/",
 so it stays valid JSON). A fake dispatches on NAME. Ops and their return values:
-  rail_find    args {name}        {"total": n treeitems in the left rail, "matches": [{x,y}] of items whose
-                                  first line equals name exactly}
+  rail_find    args {name, id, alts} {"total": n treeitems in the left rail, "matches": [{x,y,name}]: the row whose
+                                  tree value ends in "|<id>" (or is id), else rows whose first line is one of alts
+                                  (case and spacing aside; label_alts(name): the member list in any order, full or
+                                  first names, Teams' "A and B" short titles), the one named name exactly winning}
   title        {}                 document.title (string)
   editor_ready {}                 bool, the compose box exists
   compose_len  {}                 int, trimmed innerText length of the compose box
@@ -64,7 +66,7 @@ so it stays valid JSON). A fake dispatches on NAME. Ops and their return values:
   editor_select {}                null, selects the compose box contents with a range
   paste        {html, plain}      {"len": int, "links": int} after a synthetic paste event
   search_box   {}                 {x,y} of the search box, or null
-  search_find  {name}             {"total": n options, "matches": [{x,y}] with first line == name exactly}
+  search_find  {name, id, alts}   {"total": n options, "matches": [{x,y,name}]: data-tid holding id, else first line in alts}
   hit_test     {x, y, sel}        bool, true when the element at x,y is (inside) a match of the CSS selector
                                   sel (SEND_GUARD: real send controls only, not the Attach button)
   attach_btn   {}                 {x,y} of the Attach files button, or null
@@ -403,8 +405,12 @@ class CDP:
 
 JS_RAIL = """const items=[...document.querySelectorAll('[role=treeitem]')];
 const tid=e=>e.getAttribute('data-fui-tree-item-value')||e.querySelector('[data-fui-tree-item-value]')?.getAttribute('data-fui-tree-item-value');
-const byId=A.id?items.filter(e=>tid(e)===A.id):[];
-const m=byId.length?byId:items.filter(e=>e.innerText.trim().split('\\n')[0].trim()===A.name);
+const last=v=>(v||'').split('|').pop();const nm=t=>(t||'').replace(/\\s+/g,' ').trim();
+const alts=new Set((A.alts||[A.name]).map(a=>nm(a).toLowerCase()));
+const byId=A.id?items.filter(e=>last(tid(e))===A.id):[];
+const first=e=>nm(e.innerText.trim().split('\\n')[0]);
+const any=byId.length?byId:items.filter(e=>alts.has(first(e).toLowerCase()));
+const ex=byId.length?[]:any.filter(e=>first(e).toLowerCase()===nm(A.name).toLowerCase());const m=ex.length?ex:any;
 if(m.length===1)m[0].scrollIntoView({block:'center'});
 return {total:items.length,matches:m.map(t=>{const r=t.getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2,name:t.innerText.trim().split('\\n')[0].trim()}})}"""
 JS_SEARCH_BOX = ("const b=document.querySelector(" + json.dumps(SEARCH_SEL) + ");"
@@ -425,7 +431,8 @@ JS_SEARCH_SELECT = ("const b=document.querySelector(A.sel);if(!b)return false;b.
 JS_FOCUS_IS = "const b=document.querySelector(A.sel);const f=document.activeElement;return !!b&&!!f&&(f===b||b.contains(f))"
 JS_SEARCH_FIND = """const o=[...document.querySelectorAll('[role=option]')];
 const byId=A.id?o.filter(e=>(e.getAttribute('data-tid')||'').includes(A.id)):[];
-const m=byId.length?byId:o.filter(e=>e.innerText.trim().split('\\n')[0].trim()===A.name);
+const nm=t=>(t||'').replace(/\\s+/g,' ').trim();const alts=new Set((A.alts||[A.name]).map(a=>nm(a).toLowerCase()));
+const m=byId.length?byId:o.filter(e=>alts.has(nm(e.innerText.trim().split('\\n')[0]).toLowerCase()));
 return {total:o.length,matches:m.map(t=>{const r=t.getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2,name:t.innerText.trim().split('\\n')[0].trim()}})}"""
 JS_SELECT = """const e=ED();e.focus();const r=document.createRange();r.selectNodeContents(e);
 const x=getSelection();x.removeAllRanges();x.addRange(r);return null"""
@@ -650,6 +657,12 @@ def names_ok(title: str, names: list[str]) -> bool:
     return any(n and title_names(title, n) for n in names)
 
 
+def where(title: str, got: str | None, chat: str, thread_id: str | None) -> str:
+    """Where the stager is and where it meant to go, for every "stopping" error."""
+    meant = chat + (f" (thread {thread_id})" if thread_id else "")
+    return f' [open: "{title}"' + (f" (thread {got})" if got else "") + f"; meant: {meant}]"
+
+
 async def check_open(c: CDP, chat: str, thread_id: str | None) -> str:
     """Right before the compose box is cleared or typed into: the chat that opened is still the one.
     Returns the title. Raises naming what is open instead."""
@@ -658,13 +671,45 @@ async def check_open(c: CDP, chat: str, thread_id: str | None) -> str:
     if thread_id and got:
         if got != thread_id:
             raise StagerError(f"the open chat's thread id is {got}, not {thread_id} ({chat}); stopping before "
-                              "touching the compose box")
+                              "touching the compose box" + where(title, got, chat, thread_id))
         if not names_ok(title, [chat] + list(getattr(c, "opened_names", []))):
             raise StagerError(f'the window title is "{title}", not {chat}, though the thread id matches; '
-                              "stopping before touching the compose box")
+                              "stopping before touching the compose box" + where(title, got, chat, thread_id))
     elif not any(title_matches(title, n) for n in [chat] + list(getattr(c, "opened_names", []))):
-        raise StagerError(f'title is "{title}", not {chat}; stopping before touching the compose box')
+        raise StagerError(f'title is "{title}", not {chat}; stopping before touching the compose box' + where(title, got, chat, thread_id))
     return title
+
+
+def split_members(chat: str) -> list[str]:
+    """The people a group's name lists: "Ann Lee, Bo Chen", "Ann and Bo Chen", "Ann, Bo, and Cy Dee"."""
+    return [w.strip() for w in re.split(r",\s*(?:and\s+)?|\s+and\s+", chat or "") if w.strip()]
+
+
+def label_alts(chat: str) -> list[str]:
+    """Every rail or search label Teams could show for CHAT, CHAT itself first. An untitled group is shown
+    by its short title: members in any order, each by full or first name, joined with ", " and a final
+    " and " / ", and " ("Ann and Bo Chen" for "Bo Chen, Ann Lee"). A label cut with "+N" is never one: it
+    is the group's own id that finds it. These only find candidates; the open chat is checked after."""
+    import itertools
+    out = [chat]
+    ms = split_members(chat)
+    if not 2 <= len(ms) <= 4:
+        return out
+    forms = [sorted({m, m.split()[0]}, key=len, reverse=True) for m in ms]
+    for perm in itertools.permutations(range(len(ms))):
+        for names in itertools.product(*(forms[i] for i in perm)):
+            head, tail = ", ".join(names[:-1]), names[-1]
+            for lab in (", ".join(names), f"{head} and {tail}", f"{head}, and {tail}"):
+                if lab not in out:
+                    out.append(lab)
+    return out
+
+
+def pick_row(matches: list[dict], chat: str) -> list[dict]:
+    """Of the rows a label matched, the ones named CHAT exactly win; otherwise all of them stay (several
+    is "ambiguous")."""
+    exact = [m for m in matches if (m.get("name") or "").strip().lower() == chat.strip().lower()]
+    return exact or matches
 
 
 def search_queries(chat: str) -> list[str]:
@@ -706,8 +751,8 @@ async def open_chat(c: CDP, chat: str, thread_id: str | None = None) -> str:
     matches: list[dict] = []
     rendered = 0  # polls since the rail first showed any item
     for _ in range(45):  # wait for the rail, then give the exact row up to 15 polls (~15s) to appear
-        r = await c.ev(op("rail_find", JS_RAIL, name=chat, id=thread_id))
-        matches = r["matches"]
+        r = await c.ev(op("rail_find", JS_RAIL, name=chat, id=thread_id, alts=label_alts(chat)))
+        matches = pick_row(r["matches"], chat)
         if matches:
             break
         if r["total"] > 0:
@@ -728,8 +773,8 @@ async def open_chat(c: CDP, chat: str, thread_id: str | None = None) -> str:
             last = -1
             for _ in range(20):
                 await nap(0.5)
-                r = await c.ev(op("search_find", JS_SEARCH_FIND, name=chat, id=thread_id))
-                matches = r["matches"]
+                r = await c.ev(op("search_find", JS_SEARCH_FIND, name=chat, id=thread_id, alts=label_alts(chat)))
+                matches = pick_row(r["matches"], chat)
                 if matches and len(matches) == last:
                     break
                 last = len(matches)
@@ -767,18 +812,18 @@ async def open_chat(c: CDP, chat: str, thread_id: str | None = None) -> str:
             break
     if thread_id and id_ok:
         raise StagerError(f'the open chat\'s thread id is {thread_id}, but the window title is "{title}", not '
-                          f'{chat}; stopping before touching the compose box ({source})')
+                          f'{chat}; stopping before touching the compose box ({source})' + where(title, got, chat, thread_id))
     if thread_id and got and got != thread_id:
-        raise StagerError(f'the open chat\'s thread id is {got}, not {thread_id} ({chat}); stopping ({source})')
-    raise StagerError(f'title is "{title}", not {chat}; stopping ({source})')
+        raise StagerError(f'the open chat\'s thread id is {got}, not {thread_id} ({chat}); stopping ({source})' + where(title, got, chat, thread_id))
+    raise StagerError(f'title is "{title}", not {chat}; stopping ({source})' + where(title, got if thread_id else None, chat, thread_id))
 
 
 async def settled_rail_xy(c: CDP, chat: str, matches: list[dict], thread_id: str | None = None) -> list[dict]:
     """rail_find scrolls the row into view; read its position again until two reads agree (max ~2s)."""
     for _ in range(8):
         await nap(0.25)
-        r = await c.ev(op("rail_find", JS_RAIL, name=chat, id=thread_id))
-        now = r["matches"]
+        r = await c.ev(op("rail_find", JS_RAIL, name=chat, id=thread_id, alts=label_alts(chat)))
+        now = pick_row(r["matches"], chat)
         if len(now) != 1:
             raise StagerError(f"chat {chat} left the rail while scrolling to it ({len(now)} rows match)")
         if abs(now[0]["x"] - matches[0]["x"]) < 1 and abs(now[0]["y"] - matches[0]["y"]) < 1:

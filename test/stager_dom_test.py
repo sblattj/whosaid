@@ -273,10 +273,10 @@ class OpenChatAgainstFixtureDom(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
-    def run_stager(self, f, *extra):
+    def run_stager(self, f, *extra, chat="Ann Lee", tid="19:ann@thread.v2"):
         env = {**os.environ, "WHOSAID_STAGER_TIME_SCALE": "0.02", "TEAMS_OUTBOX_LOCK": str(self.lockd)}
-        return subprocess.run([sys.executable, SCRIPT, "--chat", "Ann Lee", "--thread-id", "19:ann@thread.v2",
-                               "--md", str(self.md), "--cdp-port", str(f.port), *extra],
+        return subprocess.run([sys.executable, SCRIPT, "--chat", chat] + (["--thread-id", tid] if tid else [])
+                              + ["--md", str(self.md), "--cdp-port", str(f.port), *extra],
                               capture_output=True, text=True, env=env, timeout=90)
 
     def test_the_result_names_the_chat_it_typed_into_when_the_title_lags_the_id(self):
@@ -306,6 +306,31 @@ class OpenChatAgainstFixtureDom(unittest.TestCase):
         self.assertEqual(st["compose"], "<p>the text staged for Bo</p>", "another chat's staged text was replaced")
         self.assertFalse(st["sent"])
 
+
+    def test_desktop_rail_row_found_by_the_thread_id_at_the_end_of_its_tree_value(self):
+        # #219: the desktop app's tree value is "<folder path>|<thread id>"; an exact compare never hit
+        f = DomTeams(mode="onegql=1")
+        try:
+            r = self.run_stager(f, chat="Bo Chen, Ann Lee", tid="19:grp@thread.v2")
+            st = f.state()
+        finally:
+            f.close()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        out = json.loads(r.stdout.strip().splitlines()[-1])
+        self.assertEqual(out["chat"], "Chat | Ann Lee, Bo Chen | Microsoft Teams")
+        self.assertIn('href="https://example.com/rb"', st["compose"])
+        self.assertFalse(st["sent"])
+
+    def test_desktop_group_found_by_its_short_title_without_an_id(self):
+        f = DomTeams(mode="onegql=1")
+        try:
+            r = self.run_stager(f, chat="Bo Chen, Ann Lee", tid=None)
+            st = f.state()
+        finally:
+            f.close()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(json.loads(r.stdout.strip().splitlines()[-1])["chat"], "Chat | Ann Lee, Bo Chen | Microsoft Teams")
+        self.assertFalse(st["sent"])
 
 if __name__ == "__main__":
     unittest.main()

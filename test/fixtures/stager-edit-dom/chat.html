@@ -57,10 +57,26 @@
     s.setAttribute("data-tid", "callingSidePanel-send"); s.setAttribute("data-track-thread-id", "19:ann@thread.v2");
     document.body.prepend(s);
   }
+  // ?onegql=1 is the desktop app's rail (#219): each row's tree value is a folder path ending in
+  // "|<thread id>", and an untitled group shows its short title ("Ann and Bo Chen") while the window
+  // title lists the members ("Chat | Ann Lee, Bo Chen").
+  if (q.get("onegql") === "1") {
+    const tree = document.querySelector('[role=tree]');
+    const g = document.createElement("div");
+    g.setAttribute("role", "treeitem"); g.setAttribute("data-fui-tree-item-value", "19:grp@thread.v2");
+    g.setAttribute("data-rect", "0,120,200,40"); g.setAttribute("data-title", "Ann Lee, Bo Chen");
+    g.textContent = "Ann and Bo Chen";
+    tree.appendChild(g);
+    tree.querySelectorAll('[role=treeitem]').forEach(t => {
+      const kind = t.getAttribute("data-title") ? "GroupChatConversation" : "OneOnOneChatConversation";
+      t.setAttribute("data-fui-tree-item-value",
+        `OneGQL_SystemDefinedConversationFolder|t0~u0~RecentChats/OneGQL_${kind}|${t.getAttribute("data-fui-tree-item-value")}`);
+    });
+  }
   document.querySelectorAll('[role=treeitem]').forEach(t => t.addEventListener("click", () => {
     if (q.get("stray") === "1") return;
-    send.setAttribute("data-track-thread-id", t.getAttribute("data-fui-tree-item-value"));
-    const title = () => { document.title = `Chat | ${t.textContent.trim()} | Microsoft Teams`; };
+    send.setAttribute("data-track-thread-id", t.getAttribute("data-fui-tree-item-value").split("|").pop());
+    const title = () => { document.title = `Chat | ${t.getAttribute("data-title") || t.textContent.trim()} | Microsoft Teams`; };
     if (q.get("lag") === "1") setTimeout(title, 150); else title();
   }));
   // the one floating toolbar follows the pointer: it sits on the top edge of the item last hovered

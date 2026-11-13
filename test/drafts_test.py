@@ -1278,6 +1278,38 @@ class ThreadIdTest(DraftsBase):
             with self.assertRaises(drafts.DraftsError):
                 drafts.new("Ann", "t", thread_id=bad)
 
+    def test_member_list_resolves_an_untitled_group_by_roster(self):
+        # #219: ingest named the group by its raw id (no member had posted yet), the rail shows
+        # "Alice and Bob Brown", and the draft lists the members in another order
+        names = {"19:grp@thread.v2": "19:grp@thread.v2", "19:dm@unq.gbl.spaces": "Bob Brown"}
+        rosters = {"19:grp@thread.v2": {"members": ["Alice Adams", "Bob Brown"], "short_title": "Alice and Bob Brown"},
+                   "19:dm@unq.gbl.spaces": {"members": ["Bob Brown"], "one_on_one": True}}
+        for to in ("Bob Brown, Alice Adams", "Alice Adams, Bob Brown", "Alice and Bob Brown"):
+            self.assertEqual(drafts.resolve_chat_id(to, names, rosters), "19:grp@thread.v2", to)
+
+    def test_custom_group_title_resolves_by_members_and_by_title(self):
+        names = {"19:grp@thread.v2": "Launch Plan"}
+        rosters = {"19:grp@thread.v2": {"topic": "Launch Plan", "members": ["Alice Adams", "Bob Brown"]}}
+        self.assertEqual(drafts.resolve_chat_id("Alice Adams, Bob Brown", names, rosters), "19:grp@thread.v2")
+        self.assertEqual(drafts.resolve_chat_id("Launch Plan", names, rosters), "19:grp@thread.v2")
+
+    def test_one_on_one_never_takes_the_id_of_a_group_named_like_it(self):
+        # only Bob has posted in the group, so ingest named it "Bob Brown" and the 1:1 got the suffix
+        names = {"19:grp@thread.v2": "Bob Brown", "19:dm@unq.gbl.spaces": "Bob Brown (chat 1a2b3c)"}
+        rosters = {"19:grp@thread.v2": {"members": ["Alice Adams", "Bob Brown"]},
+                   "19:dm@unq.gbl.spaces": {"members": ["Bob Brown"], "one_on_one": True}}
+        self.assertEqual(drafts.resolve_chat_id("Bob Brown", names, rosters), "19:dm@unq.gbl.spaces")
+
+    def test_two_groups_with_one_member_set_get_no_id(self):
+        rosters = {"19:a@thread.v2": {"members": ["Alice Adams", "Bob Brown"]},
+                   "19:b@thread.v2": {"members": ["Bob Brown", "Alice Adams"]}}
+        self.assertIsNone(drafts.resolve_chat_id("Alice Adams, Bob Brown", {}, rosters))
+
+    def test_a_users_own_alias_still_resolves(self):
+        names = {"19:grp@thread.v2": "the launch chat"}
+        rosters = {"19:grp@thread.v2": {"members": ["Alice Adams", "Bob Brown"]}}
+        self.assertEqual(drafts.resolve_chat_id("the launch chat", names, rosters), "19:grp@thread.v2")
+
     def test_new_fills_the_thread_id_from_one_cached_chat(self):
         import teams_cache
         names = {"19:abc@thread.v2": "Ann and Bo Chen", "19:zzz@thread.v2": "Someone Else"}

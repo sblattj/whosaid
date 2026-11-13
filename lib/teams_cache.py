@@ -389,7 +389,73 @@ def decode(raw: dict, channels: bool = False) -> dict:
         c["members"] = member_names
         c["name"] = rail_name(c)
     out.sort(key=lambda x: (x["epoch_ms"], x["message_id"]))
-    return {"self": me, "chats": chats, "messages": out}
+    return {"self": me, "chats": chats, "messages": out, "rosters": rosters(convs, names, self_mri)}
+
+
+def rosters(convs: dict, names: dict, self_mri: str) -> dict:
+    """chat id -> {id, topic, members, short_title, long_title, one_on_one} for every plain chat the
+    store knows, from the conversation record itself: members[] and Teams' own titles. Unlike "chats"
+    (built from cached messages, so a group where one person has posted looks like a 1:1 with them),
+    this is the full roster, the user excluded. Ingest names stay on "chats"; this is for finding a chat."""
+    out = {}
+    me = _oid(self_mri) if self_mri else ""
+    for cid, conv in convs.items():
+        kind = conv.get("type") or ("Chat" if str(cid).endswith("@unq.gbl.spaces") else "")
+        if kind != "Chat" or str(cid).startswith(SKIP_IDS):
+            continue
+        ct = conv.get("chatTitle") if isinstance(conv.get("chatTitle"), dict) else {}
+        avatars = {a.get("mri"): a.get("displayName") for a in ct.get("avatarUsersInfo") or []
+                   if isinstance(a, dict) and a.get("mri") and a.get("displayName")}
+        members = []
+        for x in conv.get("members") or []:
+            mri = x.get("id") if isinstance(x, dict) else x if isinstance(x, str) else None
+            if not mri or mri == self_mri or (me and _oid(mri) == me):
+                continue
+            members.append(names.get(mri) or avatars.get(mri) or mri)
+        out[cid] = {"id": cid, "topic": ((conv.get("threadProperties") or {}).get("topic") or "").strip(),
+                    "members": sorted(members), "short_title": (ct.get("shortTitle") or "").strip(),
+                    "long_title": (ct.get("longTitle") or "").strip(),
+                    "one_on_one": str(cid).endswith("@unq.gbl.spaces")}
+    return out
+
+
+def split_members(name: str) -> list[str]:
+    """The people a chat name lists: "Ann Lee, Bo Chen", "Ann and Bo Chen", "Ann, Bo, and Cy Dee"."""
+    return [w.strip() for w in re.split(r",\s*(?:and\s+)?|\s+and\s+", name or "") if w.strip()]
+
+
+def same_people(want: list[str], members: list[str]) -> bool:
+    """WANT names exactly MEMBERS, in any order: one each, by full name or (when only one member has it)
+    first name."""
+    if not want or len(want) != len(members):
+        return False
+    left = [m.lower() for m in members]
+    for w in (x.lower() for x in want):
+        hits = [m for m in left if m == w] or [m for m in left if m.startswith(w + " ")]
+        if len(hits) != 1:
+            return False
+        left.remove(hits[0])
+    return True
+
+
+def roster_fits(r: dict | None, name: str) -> bool:
+    """NAME (a draft's recipient) describes this chat: its topic or a Teams title, or for an untitled chat
+    its member set (one person: the 1:1 only, never a group where only they posted)."""
+    if not r:
+        return False
+    n = (name or "").strip().lower()
+    if not n:
+        return False
+    if r.get("topic") and r["topic"].lower() == n:
+        return True
+    want = split_members(name)
+    if len(want) == 1:
+        return bool(r.get("one_on_one")) and same_people(want, r.get("members") or [])
+    if r.get("one_on_one"):
+        return False
+    if (r.get("short_title") or "").lower() == n and "+" not in n:
+        return True
+    return same_people(want, r.get("members") or [])
 
 
 def rail_name(chat: dict) -> str:
@@ -417,7 +483,7 @@ def load(path=None, channels: bool = False, use_cache: bool = True) -> dict:
     d = cache_dir(path)
     if not _leveldb(d).is_dir():
         raise CacheError(f"no Teams cache at {_leveldb(d)} (set WHOSAID_TEAMS_CACHE)")
-    fp = fingerprint(d) + (":channels" if channels else "")
+    fp = fingerprint(d) + (":channels" if channels else "") + ":rosters1"  # bump when decode()'s output grows
     cf = _cache_file()
     if use_cache:
         try:
