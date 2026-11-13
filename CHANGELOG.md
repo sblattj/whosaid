@@ -6,6 +6,11 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ## [Unreleased]
 
+## [1.41.3] - 2026-11-13
+
+### Fixed
+- (#219) A draft's chat history (`drafts stage` context, `mark-sent --check`, the sent-edit checks) was read by chat name only, so an untitled group that ingest had filed under its raw thread id or under the one member who had posted showed "0 ingested message(s)" and a sent draft to it never turned `sent`. It now also reads every ingested folder and cached message recorded with the draft's thread id.
+
 ## [1.41.2] - 2026-11-13
 
 ### Fixed
