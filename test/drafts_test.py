@@ -650,6 +650,19 @@ class ChatHistoryTest(DraftsBase):
                   chat="19:grp@thread.v2", chat_id="19:grp@thread.v2")
         self.assertEqual([x["id"] for x in drafts.sent_check(self.ws)["sent"]], [did])
 
+    def test_a_one_on_one_never_reads_the_group_named_like_it(self):
+        # ingest gave the group the person's name and the 1:1 the suffix: by id, each reads only its own
+        did = self.ready(to="Bob Brown", thread_id="19:dm@unq.gbl.spaces")
+        later = datetime.now() + timedelta(seconds=5)
+        self.chat([(later - timedelta(minutes=3), "Bob_Brown", "in the 1:1")], chat="Bob Brown (chat 1a2b3c)",
+                  chat_id="19:dm@unq.gbl.spaces")
+        self.chat([(later - timedelta(minutes=2), "Me_Self", "Hi, can you add the two DNS records?")],
+                  chat="Bob Brown", chat_id="19:grp@thread.v2", when=datetime.now() - timedelta(minutes=1))
+        ctx = drafts.stage([did], ws=self.ws)["context"][did]
+        self.assertEqual(ctx["ingested"], 1)
+        self.assertEqual(ctx["recent"][0]["text"], "in the 1:1")
+        self.assertIsNone(ctx["already_sent"], "the group's message counted as this 1:1 draft sent")
+
     # ---- stage --edit / edit-sent (#176, #209) ----
     def edit_env(self):
         return patch.dict(os.environ, {"WHOSAID_DRAFTS_EDIT_STAGER": os.environ["WHOSAID_DRAFTS_STAGER"]})
@@ -1324,6 +1337,42 @@ class ThreadIdTest(DraftsBase):
         names = {"19:grp@thread.v2": "the launch chat"}
         rosters = {"19:grp@thread.v2": {"members": ["Alice Adams", "Bob Brown"]}}
         self.assertEqual(drafts.resolve_chat_id("the launch chat", names, rosters), "19:grp@thread.v2")
+
+    def staging_stager(self, tid):
+        """The fake stager reports the chat it typed into, like the real one."""
+        stager = self.root / "fake-stager-tid.py"
+        stager.write_text("import json\nprint(json.dumps({'sent': False, 'thread_id': %r}))\n" % tid)
+        return patch.dict(os.environ, {"WHOSAID_DRAFTS_STAGER": f"{sys.executable} {stager}"})
+
+    def test_a_stage_keeps_the_thread_id_it_typed_into(self):
+        # #219: with the cache off the next stage still knows the chat by id, not by text
+        did = self.ready(to="Alice Adams, Bob Brown")
+        with self.staging_stager("19:grp@thread.v2"):
+            self.assertEqual(len(drafts.stage([did])["staged"]), 1)
+        m = drafts.load(did)
+        self.assertEqual((m["thread_id"], m["thread_id_source"]), ("19:grp@thread.v2", "staged"))
+        drafts.write(did, text="Hi, can you add the two DNS records? Thanks")
+        drafts.verify(did)
+        argv = drafts.stage([did], dry_run=True)["would_run"][0]["argv"]
+        self.assertEqual(argv[argv.index("--thread-id") + 1], "19:grp@thread.v2")
+
+    def test_a_given_thread_id_is_not_overwritten_by_a_stage(self):
+        did = self.ready(to="Alice Adams, Bob Brown", thread_id="19:given@thread.v2")
+        with self.staging_stager("19:other@thread.v2"):
+            drafts.stage([did])
+        self.assertEqual(drafts.load(did)["thread_id"], "19:given@thread.v2")
+
+    def test_a_new_draft_reuses_the_id_other_drafts_to_that_chat_agree_on(self):
+        a = self.ready(to="Alice Adams, Bob Brown")
+        with self.staging_stager("19:grp@thread.v2"):
+            drafts.stage([a])
+        b = self.ready(to="alice adams, bob brown", topic="second", separate=True)
+        argv = drafts.stage([b], dry_run=True)["would_run"][0]["argv"]
+        self.assertEqual(argv[argv.index("--thread-id") + 1], "19:grp@thread.v2")
+        c = self.ready(to="Alice Adams, Bob Brown", topic="third", thread_id="19:another@thread.v2", separate=True)
+        self.assertTrue(c)
+        d = self.ready(to="Alice Adams, Bob Brown", topic="fourth", separate=True)
+        self.assertIsNone(drafts.chat_thread_id(drafts.load(d), None), "two drafts disagree on the id: no guess")
 
     def test_new_fills_the_thread_id_from_one_cached_chat(self):
         import teams_cache

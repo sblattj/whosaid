@@ -393,7 +393,7 @@ def _join(m: dict, me: dict, topic: str, pages: list[str], mentions: list[str], 
             m["mentions"].append(x)
     m["new_chat"] = bool(m.get("new_chat") or new_chat)
     if thread_id and thread_id != m.get("thread_id"):
-        if m.get("thread_id") and m.get("thread_id_source") != "teams cache":
+        if m.get("thread_id") and m.get("thread_id_source") not in ("teams cache", "staged"):
             raise DraftsError(f"{m['id']} already goes to thread {m['thread_id']}, not {thread_id}; "
                               "change it with write/thread-id if that one is wrong")
         m["thread_id"], m["thread_id_source"] = thread_id, "given"
@@ -946,8 +946,14 @@ def chat_messages(ws: Path, chat: str, since_ms: int | None = None, days: int = 
         except (OSError, ValueError):
             continue
         src = data.get("source") or {}
-        if src.get("kind") != CHAT_KIND or not (same_chat(src.get("chat_name") or "", chat)
-                                                or (thread_id and src.get("chat_id") == thread_id)):
+        if src.get("kind") != CHAT_KIND:
+            continue
+        # a folder that records its chat id counts by id alone once the draft's id is known: a 1:1 and a
+        # group named alike ("Name" / "Name (chat 1a2b3c)") must not read each other's messages
+        if thread_id and src.get("chat_id"):
+            if src["chat_id"] != thread_id:
+                continue
+        elif not same_chat(src.get("chat_name") or "", chat):
             continue
         mine = _self_speakers(data)
         for seg in data.get("segments") or []:
@@ -977,12 +983,12 @@ def _live_chat_messages(ws: Path, chat: str, floor_ms: int, thread_id: str | Non
         import teams_cache
         if not teams_cache._leveldb(teams_cache.cache_dir()).is_dir():
             return []
-        rows = [m for m in teams_cache.messages(chat, floor_ms, None, Path(ws)).get("messages") or []
-                if same_chat(m.get("chat", ""), chat)]
-        if thread_id:  # the chat by its id, whatever ingest calls it
-            seen = {m["message_id"] for m in rows}
-            rows += [m for m in teams_cache.messages(thread_id, floor_ms, None, Path(ws)).get("messages") or []
-                     if m.get("chat_id") == thread_id and m["message_id"] not in seen]
+        if thread_id:  # the chat by its id alone, whatever ingest calls it
+            rows = [m for m in teams_cache.messages(thread_id, floor_ms, None, Path(ws)).get("messages") or []
+                    if m.get("chat_id") == thread_id]
+        else:
+            rows = [m for m in teams_cache.messages(chat, floor_ms, None, Path(ws)).get("messages") or []
+                    if same_chat(m.get("chat", ""), chat)]
     except Exception:  # noqa: BLE001 - the cache is a bonus, never a reason to fail
         return []
     return [{"epoch_ms": m["epoch_ms"], "at": m["at"], "speaker": m["author"].replace(" ", "_"),
@@ -1003,7 +1009,7 @@ def chat_thread_id(m: dict, ws: Path | None) -> str | None:
     if m.get("thread_id"):
         return str(m["thread_id"])
     if (os.environ.get("WHOSAID_TEAMS_CACHE") or "").strip().lower() in ("off", "0", "none"):
-        return None
+        return _thread_id_from_other_drafts(m)
     try:
         import teams_cache
         if not teams_cache._leveldb(teams_cache.cache_dir()).is_dir():
@@ -1011,8 +1017,22 @@ def chat_thread_id(m: dict, ws: Path | None) -> str | None:
         data = teams_cache.load()
         names = teams_cache.name_chats(data, Path(ws) if ws else None)
     except Exception:  # noqa: BLE001 - the cache is a bonus, never a reason to fail
+        return _thread_id_from_other_drafts(m)
+    return resolve_chat_id(m.get("to") or "", names, data.get("rosters") or {}) or _thread_id_from_other_drafts(m)
+
+
+def _thread_id_from_other_drafts(m: dict) -> str | None:
+    """The thread id other drafts to the same recipient were given or staged into, when they all agree."""
+    want = (m.get("to") or "").strip().lower()
+    if not want:
         return None
-    return resolve_chat_id(m.get("to") or "", names, data.get("rosters") or {})
+    try:
+        ids = {str(x["thread_id"]) for x in all_drafts() if x.get("id") != m.get("id") and not x.get("new_chat")
+               and (x.get("to") or "").strip().lower() == want and x.get("thread_id")
+               and x.get("thread_id_source") in ("given", "staged")}
+    except Exception:  # noqa: BLE001
+        return None
+    return ids.pop() if len(ids) == 1 else None
 
 
 def resolve_chat_id(to: str, names: dict[str, str], rosters: dict[str, dict]) -> str | None:
@@ -1521,6 +1541,12 @@ def stage(ids: list[str] | None = None, all_ready: bool = False, dry_run: bool =
                 res["failed"].append({"id": draft_id, "why": f"stager exit {r.returncode}: {msg}"})
                 break
             m["status"], m["staged_hash"], m["staged_at"] = "staged", content_hash(m), now()
+            try:  # the stager proved this id is the chat it typed into: keep it for the next stage (#219)
+                got = (json.loads(tail[0]) or {}).get("thread_id") if tail[0].startswith("{") else None
+            except ValueError:
+                got = None
+            if got and not m.get("new_chat") and m.get("thread_id_source") != "given":
+                m["thread_id"], m["thread_id_source"] = str(got), "staged"
             _event(m, "staged", out=(r.stdout or "")[-500:])
             save(m)
             if sup and sup["status"] in OPEN:
