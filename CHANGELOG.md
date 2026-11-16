@@ -6,6 +6,14 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ## [Unreleased]
 
+## [1.42.1] - 2026-11-16
+
+### Fixed
+- (#218) `whosaid live` splits a line where the speaker changes mid-segment: each side is re-transcribed on its own and gets its own voice (kept whole and marked `(mixed, ...)` only when that fails). A short reply at a turn boundary ("right", "exactly") is placed by its own voice and voted again once the next line is known. A far-mic or dial-in voice of an enrolled person is named instead of left as a stranger. On the eval's 5 synthetic calls, live names the right speaker for 92.0% of talk time (76.7% in 1.42.0), splits 97.3% of handoffs (69.4%) and places 68.4% of short replies (3.2%).
+
+### Added
+- (#218) `test/live_diarize_eval.py`: scores `whosaid live` speaker labels against the retroactive pass on synthetic calls (ElevenLabs voices, fake names) from recorded Whisper output, so `--fast` needs no network. `--gate --max-gap N --baseline-ref last-tag` fails when live trails retroactive by more than N points or regresses against the last release; it runs in CI on pull requests. `--realtime --device <loopback>` plays a call through a virtual audio device (BlackHole) and scores the real capture; any device that is not a known loopback is refused.
+
 ## [1.42.0] - 2026-11-16
 
 ### Added
