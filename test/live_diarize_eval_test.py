@@ -113,7 +113,9 @@ try:
     import numpy  # noqa: F401  run_realtime assembles the call
 except ImportError:
     numpy = None
-if numpy is None:
+if sys.platform != "darwin":
+    print("skip: --realtime capture pinning is macOS only (whosaid record --app)")
+elif numpy is None:
     print("skip: --realtime capture pinning needs numpy (uv run --with numpy python test/live_diarize_eval_test.py)")
 else:
     import os
