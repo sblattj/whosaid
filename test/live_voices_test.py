@@ -69,7 +69,12 @@ w.sums = [unit(1, 0.02, 0, 0) * 5, unit(1, 0.3, 0, 0) * 5]
 check(w.names() == {"v1": ("Ada_Lovelace", "boss"), "v2": ("Ada_Lovelace", "boss")},
       f"one speaker split into two voices: both named: {w.names()}")
 w.sums = [unit(1, 0.02, 0, 0) * 5, unit(1, 0, 1.2, 0) * 5]
-check(w.names() == {"v1": ("Ada_Lovelace", "boss")}, f"a different voice that also looks like Ada: unnamed: {w.names()}")
+check(w.names() == {"v1": ("Ada_Lovelace", "boss"), "v2": ("Ada_Lovelace", "boss")},
+      f"a second voice clearly like Ada and nobody else shares her name (near and far mic, #218): {w.names()}")
+w.sums = [unit(1, 0.02, 0, 0) * 5, unit(1, 0.9, 1.2, 0) * 5]
+check(w.names() == {"v1": ("Ada_Lovelace", "boss")}, f"a voice between Ada and Grace: unnamed: {w.names()}")
+w.sums = [unit(1, 0.02, 0, 0) * 5, unit(1, 0, 2.5, 0) * 5]
+check(w.names() == {"v1": ("Ada_Lovelace", "boss")}, f"a voice only faintly like Ada: unnamed: {w.names()}")
 # too close to call between two voiceprints: no name
 amb = lv.Voices(KNOWN, fake_embed)
 amb.sums = [unit(1, 1, 0, 0)]
@@ -150,5 +155,69 @@ except ImportError:
 # the launcher brings sherpa-onnx (pinned) into the live run env
 check('--with "$SHERPA_SPEC" --with mlx-whisper' in (ROOT / "whosaid").read_text(),
       "whosaid live run: sherpa-onnx in its uv env")
+
+# ------------------------------------------------------------ short replies (#218)
+w = lv.Voices(KNOWN, fake_embed)
+w.sums = [unit(1, 0, 0, 0) * 5]
+check(w.short_vote(unit(1, 0.1, 0, 0)) is None, "one running voice is no vote: the speaker may not have a voice yet")
+w.sums = [unit(1, 0, 0, 0) * 5, unit(0, 1, 0, 0) * 5, unit(0, 0, 1, 0) * 5]
+check(w.short_vote(unit(1, 0.3, 0, 0)) == "v1", "a short reply goes to the voice it is clearly closest to")
+near_two = unit(1, 0.92, 0.6, 0)  # about 0.68 to v1, 0.63 to v2: too close to call
+check(w.short_vote(near_two) is None, "two voices about as close: no vote")
+check(w.short_vote(near_two, around="v1") == "v2",
+      "the voice talking on both sides is left out: the reply goes to the next closest")
+
+# a short line no voice wins yet is voted again once its speaker has a voice
+w = lv.Voices(KNOWN, fake_embed)
+w.sums = [unit(1, 0, 0, 0) * 5, unit(0, 1, 0, 0) * 5]
+SHORT = {9: unit(0.25, 0.05, 1, 0)}
+w.embed = lambda x: SHORT[9] if int(round(float(x[0]))) == 9 else fake_embed(x)
+check(w.place(say(9, 0.6), key=(10.0, "Right.")) is None and w.last_short, "a short reply like no voice yet: none, flagged")
+w.sums.append(unit(0, 0, 1, 0) * 5)  # its speaker talks at length later
+lines = [{"t": 8.0, "who": "them", "text": "So the plan holds.", "voice": "v1"},
+         {"t": 10.0, "who": "them", "text": "Right.", "mixed_why": "short reply"},
+         {"t": 11.0, "who": "them", "text": "And we ship Friday.", "voice": "v1"}]
+w.annotate(lines)
+check(lines[1].get("voice") == "v3" and not lines[1].get("mixed"),
+      f"voted again later: the short reply gets the new voice and loses its flag: {lines[1]}")
+
+# "close voices" is only a doubt when the voices it matched are different people
+w = lv.Voices(KNOWN, fake_embed)
+w.sums = [unit(1, 0.02, 0, 0) * 5, unit(1, 0.3, 0, 0) * 5]  # Ada near and far
+w.embed = lambda x: unit(1, 0.15, 0, 0)
+check(w.place(say(1, 3), key=(1.0, "x")) in ("v1", "v2") and w.last_close, "a line close to two running voices")
+ln = [{"t": 1.0, "who": "them", "text": "x", "voice": "v1", "mixed_why": "close voices"}]
+w.annotate(ln)
+check(ln[0].get("name") == "Ada Lovelace" and not ln[0].get("mixed"),
+      f"both voices are Ada: named, not flagged: {ln}")
+w.sums = [unit(1, 0.05, 0, 0) * 5, unit(0.6, 1, 0, 0) * 5]  # Ada and Grace, close to each other
+w.embed = lambda x: unit(1, 0.7, 0, 0)
+w.close.clear()
+got = w.place(say(1, 3), key=(2.0, "y"))
+ln = [{"t": 2.0, "who": "them", "text": "y", "voice": got, "mixed_why": "close voices" if w.last_close else None}]
+w.annotate(ln)
+check(w.last_close and ln[0].get("mixed") is True, f"close to Ada and to Grace: flagged: {ln}")
+
+# change_point finds A-B-A: someone talks over a long segment, the first speaker carries on
+w = lv.Voices(KNOWN, fake_embed)
+seg = np.concatenate([say(1, 4), say(2, 3), say(1, 4)])
+cp = w.change_point(seg)
+check(cp is not None and abs(cp - 4.0) <= 0.8, f"A-B-A: the first change (about 4 s): {cp}")
+check(w.change_point(say(1, 11)) is None, "one voice throughout: no change")
+
+# speech_island: a clipped one-word segment is embedded with the speech around it
+x = np.zeros(3 * lv.RATE, dtype=np.float32)
+x[lv.RATE:int(1.5 * lv.RATE)] = 0.5
+got = live.speech_island(x, int(1.1 * lv.RATE), int(0.2 * lv.RATE))
+check(abs(len(got) / lv.RATE - 0.5) <= 0.05, f"grown to the 0.5 s of speech it sits in: {len(got) / lv.RATE:.2f} s")
+
+# backchannel_cut: "Agreed. ..." at the start of a segment is split off at the word gap
+words = [{"start": 0.0, "end": 0.5, "word": " Agreed."}, {"start": 0.8, "end": 1.2, "word": " We"},
+         {"start": 1.2, "end": 1.6, "word": " ship"}, {"start": 1.6, "end": 2.4, "word": " Friday."}]
+bc = live.backchannel_cut({"start": 0.0, "end": 2.5, "words": words}, "Agreed. We ship Friday.", np.zeros(int(2.5 * lv.RATE)))
+check(bc is not None and bc[:3] == ("leading", "Agreed.", "We ship Friday.") and abs(bc[3] - 0.65) < 0.01,
+      f"a leading reply split off between the words: {bc}")
+bc = live.backchannel_cut({"start": 0.0, "end": 2.5}, "We ship Friday, right?", np.zeros(int(2.5 * lv.RATE)))
+check(bc is None, f"no reply set off by a full stop: no cut: {bc}")
 
 print(f"PASS: live_voices_test ({CHECKS} checks)")
