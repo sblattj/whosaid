@@ -114,6 +114,12 @@ check(guide["topic"] != parser["topic"] and gt["flags"] == [] and guide["status"
 check(not any("keep it moving" in d["text"].lower() for d in res["decisions"]), "meeting navigation is not a decision")
 check(len(res["decisions"]) == 3, f"three decisions in the fixture: {[d['text'] for d in res['decisions']]}")
 
+check(all("role" not in t for t in turns) and turns[0] == dc.turns_from_transcript(FIXTURE.read_text(), meeting=MEETING)[0],
+      "ledger() leaves the caller's turns alone")
+raw = [{"t": 5, "speaker": "A", "text": "hello there everyone"}]
+dc.ledger(raw)
+check(raw == [{"t": 5, "speaker": "A", "text": "hello there everyone"}], "ledger() does not add keys to the caller's dicts")
+
 # determinism
 check(json.dumps(dc.ledger(turns, meeting=MEETING), sort_keys=True) == json.dumps(res, sort_keys=True),
       "same turns, same ledger")

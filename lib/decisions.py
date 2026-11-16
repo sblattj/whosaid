@@ -393,7 +393,7 @@ def ledger(turns: list[dict], meeting: str = "", engine: str = "local", client=N
            cfg: dict | None = None) -> dict:
     """The decisions ledger for one call. engine "claude" asks Claude once (client, or a
     ClaudeCLI from cfg's [summarizer] claude_* keys) and falls back to local on any failure."""
-    turns = sorted(turns, key=lambda t: float(t["t"]))
+    turns = sorted((dict(t) for t in turns), key=lambda t: float(t["t"]))   # never the caller's dicts
     for t in turns:
         t["t"] = float(t["t"])
         t.setdefault("meeting", meeting)
