@@ -6,6 +6,20 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ## [Unreleased]
 
+## [1.42.0] - 2026-11-16
+
+### Added
+- (#213) `whosaid decisions <meeting>` and the `whosaid_decisions` MCP tool: one ledger per call, one row per decision with every supporting turn across all visits of its topic, flagged `agreed` / `proposed` / `contested`, and topics marked "split across visits" when two visits decide different things. `--live` / `--follow` update it during a call.
+- (#214) Drafts: a `said` claim kind whose evidence must be real transcript turns (`{meeting, t, quote}` or `{message_id, quote}`). Verify resolves each ref through the index, fuzzy-matches the quote, and refuses paraphrases and summary-only evidence (commitments, recaps, items). `drafts claims --ws` prints the resolved turns.
+- (#215) Drafts verify checks a reply against the recipient's own recap ("I heard: A, B, C..."): it splits the points, searches each in the recipient's recent meetings, requires a claim per point, fails a disagreement with no cited turn, and `whosaid_draft_verify` returns the per-point turns.
+- (#216) Workspace vocabulary (`[transcribe] vocabulary`) passed as the Whisper prompt, with mishearing corrections that keep the raw text. Short replies at a turn boundary ("exactly, right") are split out and reassigned to the closer voice or flagged `attribution_uncertain`; the flag reaches search hits, and drafts refuse a confirmed or `said` claim that cites only uncertain turns.
+- (#217) `whosaid live follow --agent` (alias `--events`): utterance, `topic_revisit`, `for_me`, `decision`, `call_started` / `call_ended` and `alive` events, a resumable `--cursor-file` that emits every utterance exactly once across restarts, and `--heartbeat`.
+- (#220) `whosaid live explain`: a local explainer page for the call being recorded, newest-first sections with sketches, S-T lines and asks for you, pushed over SSE behind a "load updates" button, corrections shown as before/after, final recap. MCP `whosaid_live_explain_add` / `_correct` / `_recap`. Fully local by default; LAN access is opt-in and token-gated.
+- (#180) `whosaid backup`, `backup restore`, `share` and `share pull`: tiered, incremental copies of a workspace to a local path, S3-compatible or rclone target, with optional `age` encryption. Shares never include voiceprints or audio unless asked, honor `_noshare` and `_retired`, and the watcher can run backups on a `[backup] interval`.
+
+### Changed
+- (#100) `calibrate.py` judges the over-split and blend cosine rows on clusters inside the real by-ear selection window (best absorb 0.70 to 0.85), matching how the real side was measured; all-cluster rows are still printed, unjudged. The realistic roster batch now has 0 of 20 judged metrics outside tolerance.
+
 ## [1.41.4] - 2026-11-13
 
 ### Fixed
