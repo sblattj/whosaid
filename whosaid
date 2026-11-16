@@ -955,7 +955,8 @@ Diarization writes <base>.rttm and merges with the Whisper output into
 <base>.speakers.txt (the speaker-labeled transcript). Diarization failure never
 loses the plain transcript — it warns and the transcript stands on its own.
 
-Nothing — audio, text, or embeddings — ever leaves the machine.
+Nothing (audio, text, or embeddings) leaves the machine unless you run
+`whosaid backup` or `whosaid share` (opt-in; see BACKUP AND SHARE).
 EOF
 }
 

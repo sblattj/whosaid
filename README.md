@@ -142,6 +142,8 @@ the models as usual.
 | `whosaid graph <ws> items\|item AI-NNN\|person [Name]\|prs\|meetings\|speakers\|commitments [--json]` | Entity views: action items with filters, one item's history, a person's commitments and asks, PR mentions, meeting coverage, talk share. `commitments` lists the unified CM table (`--owner`, `--source transcript\|action-items`, `--status` filters) — one model behind the worklist, `whosaid commitments`, and the wiki since #23: the roll-up folds self-owned action-items bullets into the same CM-NNN corpus as the spoken clauses (one item, occurrences from both sources, the bullet's timestamp included), and `graph build` loads that corpus instead of re-parsing the bullets. |
 | `whosaid wiki <ws> [--stdout] [-o FILE]` | Regenerate `<ws>/_WIKI.md` from the graph. |
 | `whosaid watch run\|install\|uninstall\|status --into <ws>` | Hands-free ingest of new recordings via a launchd agent. See [Hands-free ingest](#hands-free-ingest-whosaid-watch). |
+| `whosaid backup <ws> --to TARGET [--tier text,index,audio,biometric] [--dry-run]` | Incremental personal backup of a workspace, age-encrypted by default, to a path, `s3://bucket/prefix` or `rclone:REMOTE:path`; `whosaid backup restore TARGET <ws>` brings it back. See [Back up and share a workspace](#back-up-and-share-a-workspace). |
+| `whosaid share <ws> --to TARGET [--meetings A,B] [--since DATE] [--exclude-chat] [--yes]` | Read-only text export for teammates, never voiceprints; `whosaid share pull TARGET <dir>` on their side. See [Back up and share a workspace](#back-up-and-share-a-workspace). |
 | `whosaid memos list\|pull\|delete "<title>"\|shortcut-recipe` | Voice Memos helpers that never touch the app's files or database. See [Voice Memos helpers](#voice-memos-helpers-whosaid-memos). |
 | `whosaid doctor` | Read-only environment report, including Ollama reachability and the index status of `$WHOSAID_WORKSPACE`, and the default workspace `whosaid mcp` resolves to with its source. |
 | `whosaid version` \| `whosaid --version` \| `whosaid -V` | Print the installed version (plus a `git describe` suffix when run from a git checkout). |
@@ -1283,6 +1285,121 @@ Older caches without source fingerprints remain readable but are marked stale.
 Historical queries cannot substitute a current cached answer. Live worklists use
 source identity and do not probe or call an embedding model.
 
+## Back up and share a workspace
+
+A workspace is one folder on one disk. `whosaid backup` keeps a copy of it somewhere else, and
+`whosaid share` gives teammates a searchable copy of the meetings you choose. Both are off until you
+run them; nothing is copied anywhere by default.
+
+**Backup vs. share.** A backup is yours: everything you pick, encrypted before it leaves the
+machine, restorable byte for byte. A share is for other people: plain text they can search, with
+every voiceprint removed, and only the meetings you allow.
+
+| | `whosaid backup` | `whosaid share` |
+|---|---|---|
+| Who reads it | you | teammates |
+| Encryption | client-side [age](https://age-encryption.org) by default (`--plaintext` opts out) | none: the receiver has to read it |
+| Default tiers | text | text |
+| Audio | `--tier text,audio` | `--tier text,audio` |
+| Voiceprints | the registry only with `--tier biometric`, and only encrypted | never: stripped and refused |
+| Files deleted locally | stay in the backup until `--prune-older-than` | removed from the target on the next run |
+| Restore | `whosaid backup restore TARGET <ws>` | `whosaid share pull TARGET <dir>` |
+
+**Tiers.**
+
+| Tier | What it holds | Default |
+|---|---|---|
+| `text` | everything in the workspace that is not below: transcripts (`*.speakers.txt`, `transcript.*`), sidecars (`*.diarization.json`), per-meeting `action-items.*` and `commitments.*`, the roll-ups (`_ACTION-ITEMS`, `_COMMITMENTS`, `_WIKI`, `_INDEX`, `_WORKLIST-*`, `_tracking.json`), Teams chat-day folders, `whosaid.toml` | included |
+| `index` | `_search.db` (rebuildable: `whosaid index` on the receiving side) | skipped |
+| `audio` | recordings (`.m4a`, `.wav`, `.mp3`, ...) and `<base>.samples/` clips | off, opt-in |
+| `biometric` | the speaker registry (`WHOSAID_SPEAKER_DB`, default `~/.config/whosaid/speakers.json`), which lives outside the workspace | off; encrypted backups only, never shared |
+
+The watcher's working state (`.watch_state.json`, `.watch_staging/`, `.watch.log`, any dotfile) is
+never copied. The `text` tier of a backup keeps sidecars whole, and a sidecar carries that meeting's
+per-cluster voiceprints (`cluster_emb`), so a `--plaintext` backup warns that it holds them
+unencrypted.
+
+### `whosaid backup`
+
+```sh
+age-keygen -o ~/.config/whosaid/backup.key          # once; prints the public key (age1...)
+whosaid backup ~/meetings --to /Volumes/nas/whosaid --recipient age1... --dry-run
+whosaid backup ~/meetings --to /Volumes/nas/whosaid --recipient age1...
+whosaid backup ~/meetings --to s3://my-bucket/whosaid --recipient age1... --tier text,audio,biometric
+whosaid backup restore s3://my-bucket/whosaid ~/meetings-restored --identity ~/.config/whosaid/backup.key
+whosaid index ~/meetings-restored
+```
+
+- **Encrypted at rest, client-side.** Each file is encrypted with `age` before upload and stored as
+  `objects/<sha256>.age`; the manifest (file names, sizes, hashes, tiers) is
+  `_whosaid-backup.json.age`. The target sees content hashes and sizes, not names or text. The
+  provider's own encryption is not relied on. `--plaintext` writes a browsable copy instead and is
+  refused with `--tier biometric`.
+- **Incremental.** Files are hashed (cached by size and mtime in `<ws>/.backup/`), and only content
+  the target lacks is uploaded. `--dry-run` prints one `would upload PATH (tier, size)` line per
+  file, exactly the set a real run sends, plus totals per tier; `--json` gives the same plan as JSON.
+- **Additive.** A meeting deleted locally stays in the backup. `--prune-older-than 1y` (also `90d`,
+  `12w`, `6m`) drops meetings dated before the cutoff from the target.
+- **Restore** verifies every file's sha256 against the manifest. A file in the destination with
+  different content is a conflict: restore lists it and stops unless you pass `--force`. A backed-up
+  registry is written to `WHOSAID_SPEAKER_DB` when none exists there, or to `--registry-out FILE`
+  (then `whosaid speakers import FILE --merge`).
+
+### `whosaid share`
+
+```sh
+whosaid share ~/meetings --to /Volumes/team/whosaid-alice --since 2026-10-01 --exclude-chat
+#  -> prints the consent notice, what would leave (tiers, file counts, bytes), and exits 3
+whosaid share ~/meetings --to /Volumes/team/whosaid-alice --since 2026-10-01 --exclude-chat --yes
+
+# on the teammate's machine
+whosaid share pull /Volumes/team/whosaid-alice ~/alice-meetings
+whosaid index ~/alice-meetings --no-embed
+WHOSAID_WORKSPACE=~/alice-meetings whosaid search "release date"   # and the MCP search tools
+```
+
+- **What leaves.** Text tier only unless `--tier text,audio` (or `index`). `--meetings A,B`,
+  `--since YYYY-MM-DD` and `--exclude-chat` (Teams chat days) narrow the selection.
+- **Voiceprints never leave.** `--tier biometric` is refused. Every shared JSON file has its
+  voiceprint keys (`cluster_emb`, `embedding`, `centroid`, ...) stripped, and `_voice-groups.json`
+  and `_reprocess-backups/` are never sent. A JSON file that cannot be parsed is skipped rather
+  than sent unchecked.
+- **Meetings that stay home.** An empty `_noshare` file in a meeting folder keeps it out of every
+  share, as does `[share] never = ["2026-09-16-0703"]` in `whosaid.toml`. A `_retired` marker
+  file, or a folder moved under `<ws>/_retired/`, is skipped too. Workspace roll-ups mention every
+  meeting, so they are only sent when no meeting is held back. Otherwise the teammate rebuilds them
+  from the shared meetings (`whosaid index` writes `_WIKI.md`).
+- **First run.** The first share to a target prints a one-time notice that recording-consent and
+  chat-export rules differ by organization and jurisdiction, then the plan, and sends nothing
+  without `--yes`. Check your organization's policy before sharing recordings or chats.
+- **A mirror.** Each run makes the target match the current selection: a meeting you later mark
+  `_noshare` is deleted from the target. `_whosaid-share.json` on the target records which meetings
+  were shared, what was held back (counts only), and a run history. `--prune-older-than` drops old
+  meetings from the share.
+
+### Targets
+
+| Target | Form | Notes |
+|---|---|---|
+| Local disk, NAS mount | `/path` or `file:///path` | Must be outside the workspace. |
+| S3-compatible | `s3://bucket/prefix` | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` (+ `AWS_SESSION_TOKEN`), `AWS_REGION` (default `us-east-1`). For MinIO, Ceph, R2 and other S3-compatible stores set `WHOSAID_S3_ENDPOINT` (or `AWS_ENDPOINT_URL`, or `[backup] s3_endpoint`), which switches to path-style URLs. Signed with SigV4 in the standard library; no boto3. |
+| rclone | `rclone:REMOTE:path` | Anything `rclone config` knows: OneDrive, SharePoint, Google Drive, Dropbox, ... Needs the `rclone` binary (`WHOSAID_RCLONE` to point at one). |
+
+### Scheduled backups from the watcher
+
+```toml
+[backup]
+to = "s3://my-bucket/whosaid"
+interval = "daily"            # hourly | daily | weekly | "12h" | "3d"; unset = off
+tier = "text"                 # tiers for the scheduled pass
+recipients = ["age1..."]      # or WHOSAID_BACKUP_AGE_RECIPIENT; plaintext = true opts out
+# prune_older_than = "1y"
+```
+
+With `interval` and `to` set, each `whosaid watch run` pass (the launchd agent) runs one backup
+after ingest once the last backup to that target is older than the interval. A failed backup is
+logged to `.watch.log` and retried on the next pass; it never blocks ingest.
+
 ## Use it from an AI agent (MCP)
 
 whosaid's local, private, GPU transcription and speaker diarization are also exposed as MCP tools,
@@ -1490,6 +1607,9 @@ voices absent from the backup. Export refuses an existing output path. Registry 
 atomic and backup/import files have owner-only permissions. These files contain private
 voiceprints: keep them out of source control and use a private, encrypted transfer when moving
 them between machines. Enrollment audio in `voices/` is separate from the registry backup.
+For an off-machine copy alongside the workspace, `whosaid backup <ws> --to TARGET --tier
+text,biometric --recipient age1...` stores the registry age-encrypted, and `whosaid backup restore`
+puts it back (see [Back up and share a workspace](#back-up-and-share-a-workspace)).
 
 **Which one actually names a cluster.** `name_clusters()` (`lib/diarize_sherpa.py`) runs three
 passes in order, and a later pass only touches a cluster the earlier ones left unnamed: (1)
@@ -1802,6 +1922,15 @@ placeholder speakers and `--no-embed` so Ollama is never contacted:
 - `./test/cli_test.sh` checks the launcher: every new command in `whosaid help`, usage hints and
   `--help` paths, then an end-to-end `roll-up`, `index`, `search`, `context`, `graph`, `wiki`,
   `roll-up --index`, `doctor`, and a stub `ingest --index` over a two-meeting workspace.
+- `python3 test/backup_test.py` covers `whosaid backup`, `restore` and `share` on a synthetic
+  workspace: tier classification, `--dry-run` listing exactly the upload set, incremental passes,
+  byte-identical text-tier round trips (plaintext and age), the `--force` conflict guard, pruning,
+  every share exclusion (`_noshare`, `_retired`, `[share] never`, `--since`, `--meetings`,
+  `--exclude-chat`), that a share never holds voiceprints, the registry or audio unless asked, and
+  that a pulled share answers `whosaid_search` after `whosaid index`. SigV4 is checked against
+  AWS's published example and the rclone adapter's commands through a fake runner. Set
+  `WHOSAID_TEST_S3_ENDPOINT=http://127.0.0.1:PORT` to a local MinIO or `moto_server` to add the
+  S3 round trips; the age tests need `brew install age`.
 - `./test/search_test.sh` covers `lib/search.py`: the FTS5 build, exact queries with filters,
   `context`, `speakers`, `status`, and the no-Ollama fallback.
 - `python3 test/graph_test.py` covers `lib/graph.py`: the entity tables, each view, and the wiki.
