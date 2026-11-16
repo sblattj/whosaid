@@ -32,6 +32,7 @@
 #   whosaid autorecord <sub>        run | install | uninstall | status: record every call unattended.
 #   whosaid live [show]             Live me/them transcript of the call being recorded.
 #   whosaid topics build [WS]       Topics across meetings into <WS>/_topics.json (the app's Topics).
+#   whosaid decisions [WS] <mtg>    One decisions ledger per call, joined across topic revisits.
 #   whosaid drafts <sub>            Offline outbox of verified chat drafts: new | verify | list | stage ...
 #   whosaid help                  This message.
 #
@@ -814,6 +815,25 @@ TOPICS
   by number of meetings, then the latest one. Ids stay put as meetings are added.
   Teams chats and mail are left out unless --chats. Local, no model, no network; the
   macOS app's Topics page reads the file and can rebuild it.
+
+DECISIONS
+  whosaid decisions [WS] <meeting> [--json] [--engine auto|local|claude] [--out F]
+  whosaid decisions --live [--into DIR] [--ws WS] [--json]
+  whosaid decisions --live --follow [--into DIR] [--once] [--poll S] [--json]
+  One row per decision in a call, with every supporting turn [meeting, time, speaker,
+  verbatim text] across all visits of its topic (the live insights clustering; a topic
+  back after 2+ minutes away is a new visit). Each decision is agreed (someone else
+  said yes), proposed (no reply) or contested (push-back nobody resolved). When two
+  visits of one topic decide different things the topic is marked
+  "split across visits" (also "refined across visits", "reversed across visits"), so
+  a summary keeps both. <meeting> is a folder name in WS (default $WHOSAID_WORKSPACE; a unique
+  substring is enough), a meeting folder, or a *.speakers.txt path. --live reads the
+  newest live session; --follow keeps <stem>.decisions.json next to it current and
+  prints each new decision, status change and flag (--json: one event per line).
+  Local by default, no model, no network. --engine claude, or [decisions] / [summarizer]
+  engine = "claude" in the workspace's whosaid.toml, sends the transcript to Claude
+  (CLOUD) once; any failure falls back to the local ledger. --follow and the
+  whosaid_decisions MCP tool are always local.
 
 DRAFTS
   whosaid drafts new --to "First Last" --topic T [--page /abs/page.html] [--mention NAME] [--supersedes ID] [--new-chat] [--new]
@@ -2979,6 +2999,11 @@ case "${1:-}" in
     if want_help "${@:2}"; then help_section "TOPICS"; exit 0; fi
     require_module "$REPO_DIR/lib/topics.py" topics
     exec "$WHOSAID_PY" "$REPO_DIR/lib/topics.py" "${@:2}"
+    ;;
+  decisions)
+    if want_help "${@:2}"; then help_section "DECISIONS"; exit 0; fi
+    require_module "$REPO_DIR/lib/decisions.py" decisions
+    exec "$WHOSAID_PY" "$REPO_DIR/lib/decisions.py" "${@:2}"
     ;;
   drafts)
     if want_help "${@:2}"; then help_section "DRAFTS"; exit 0; fi
