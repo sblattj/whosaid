@@ -18,6 +18,8 @@
   "gap": {"median_s": 0.74, "share_under_0.3s": 0.26, "threshold_s": 0.3},
   "overlap_share": {"min": 0.01, "max": 0.08, "median": 0.04},
   "embedding": {
+    "selection": {"score_min": 0.70, "score_max": 0.85, "pass": "absorb", "source": "sblattj/whosaid#77 by-ear table",
+                  "note": "The 23 by-ear clusters are every unnamed cluster whose best absorb score fell in 0.70-0.85. The over-split, blend and purity numbers below describe that window, not every split."},
     "correct_pass1": {"min": 0.72, "max": 0.89},
     "over_split": {"min": 0.70, "max": 0.83, "checked_by_ear": 23, "single_speaker_splits": 21},
     "blend": {"min": 0.75, "max": 0.84, "values": [0.75, 0.84], "of_checked": 2},

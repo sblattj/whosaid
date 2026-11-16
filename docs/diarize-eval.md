@@ -255,14 +255,50 @@ the planner.
 | 2-4 s turns, share of talk | 18.4% | 16.0% | 14% |
 | >8 s turns, share of talk | 38.5% | 44.4% | 47% |
 | cosine, correct pass-1 | 0.894 | 0.889 | 0.72-0.89 |
-| cosine, over-split second cluster | 0.68 (n=11) | 0.65 (n=12) | 0.70-0.83 |
+| cosine, over-split second cluster, score 0.70-0.85 (#100) | | 0.75 (n=4) | 0.70-0.83 |
+| cosine, over-split second cluster, all clusters (not judged) | 0.68 (n=11) | 0.65 (n=12) | |
 | cosine, blend best candidate | 0.65 (n=3) | none | 0.75-0.84 |
-| **outside ±20%** | **7 of 21** | **1 of 20** | |
+| **outside ±20%** | **7 of 21** | **0 of 20** (#100; 1 of 20 before) | |
 
-The one miss is the over-split cosine. Its 12 clusters run from 0.32 to 0.81. The three that
-come from a device-switched stretch score 0.64 to 0.81. Most of the rest are fragments of 1 to
-40 s at 0.32 to 0.68, and they pull the median down. This batch had no blend cluster, so the blend row is not judged; add
-`--blends K` to test that case.
+#### Over-split cosine: judged inside the real selection window (#100)
+
+The real over-split, blend and split-purity numbers come from the #77 by-ear table. That table
+covers every unnamed cluster whose best absorb score fell in **0.70-0.85**, and nothing below
+0.70 was listened to. So the real 0.70 floor is a selection cutoff, not a measured level. Until
+#100, `calibrate.py` compared that window to every synthetic over-split cluster, and the
+row missed at 0.65 (n=12).
+
+`real_stats.json` now records the window (`embedding.selection`). `calibrate.py` judges the
+over-split and blend cosine rows, and the purity rows, on the synthetic clusters whose score
+lies in that window. It filters on the score whatever pass recorded it; on seed 406 every
+over-split score comes from the absorb pass. An unjudged "(all clusters)" row keeps the full
+median, range and n, so nothing is hidden. The window is a little wider than the real ranges
+(over-split 0.70-0.83, blend 0.75-0.84), so an in-window median can still miss. Mostly,
+though, the judged row checks that true splits reach the window at all. When a batch has
+over-split clusters but none in the window, the row is **NO**. When it has none at all, the
+row is n/a.
+
+This passes by matching the real side's selection, not by changing the synthetic audio. 8 of
+the 12 splits still score below 0.70. The real side never measured below 0.70, so that tail
+is neither confirmed nor ruled out by the real data.
+
+On seed 406 the 12 over-split clusters, all scored by the absorb pass, are:
+
+| cosine | talk (s) | in a device-switched epoch | in window |
+|---|---|---|---|
+| 0.32, 0.43 | 1, 11 | no | no |
+| 0.61 | 112 | no (enrollment from another device) | no |
+| 0.62, 0.64, 0.68 | 33 to 40 | 0 to 10% | no |
+| 0.64, 0.66 | 231, 304 | 89%, 99% | no |
+| 0.72, 0.72 | 193, 220 | 15%, 19% | yes |
+| 0.77 | 117 | no | yes |
+| 0.81 | 501 | 98% | yes |
+
+Short fragments are not the whole story. Three clusters of 112 to 304 s also score 0.61 to
+0.66, and two of them are device-switched stretches. A talk-time floor would therefore need a
+cutoff picked after the fact: 60 s passes at 0.72 (n=7), while 30 s still misses at 0.67. The
+real side never measured such a floor. This batch had no blend cluster, so the blend row is not
+judged; add `--blends K` to test that case.
 
 ### The #77 failure, reproduced
 
@@ -401,7 +437,7 @@ The synthetic voices are harder on this gate than real meetings. The #80 calibra
 an unenrolled speaker's best cosine to a known voice at 0.17–0.45 on real recordings, below the
 0.70 bar where the placed-voice absorb starts. At the time the roster batch's calibration
 missed 7 of 21 metrics by more than ±20%; see [Calibrated realistic meetings (#80)](#calibrated-realistic-meetings-80)
-for the retuned batch (1 of 20).
+for the retuned batch (0 of 20 since #100).
 
 ## Blends (v1.13.2)
 
