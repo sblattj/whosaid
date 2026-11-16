@@ -770,8 +770,8 @@ def note_text(n: dict) -> str:
 
 def load_follow_cursor(path) -> tuple:
     """(stem, cursor, done) saved by a plain `follow --cursor-file`; (None, None, False) if none."""
-    if not path or not Path(path).exists():
-        return None, None, False
+    if not path or not Path(path).exists() or not Path(path).read_text().strip():
+        return None, None, False    # none yet, or an empty file (`mktemp`): start fresh
     try:
         obj = json.loads(Path(path).read_text())
         if not isinstance(obj, dict) or "agent" in obj or "version" in obj:

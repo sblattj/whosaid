@@ -94,7 +94,8 @@ class Cursor:
         return set(self.consumed)
 
     def position(self) -> str:
-        """`<stem>:n<N>`: every line up to N emitted (`+K` more past it)."""
+        """`<stem>:n<N>`: every line up to N emitted (`+K` more past it). Informational:
+        resume with the cursor file, not this string."""
         ints = sorted(k for k in self.consumed if isinstance(k, int))
         w = -1
         for k in ints:
@@ -138,8 +139,8 @@ class Cursor:
 def load_cursor(path: Path | None) -> Cursor:
     """The saved cursor, a fresh one when the file does not exist; ValueError when it
     is not a cursor (never a silent replay)."""
-    if path is None or not Path(path).exists():
-        return Cursor()
+    if path is None or not Path(path).exists() or not Path(path).read_text().strip():
+        return Cursor()     # none yet, or an empty file (`mktemp`): start fresh
     try:
         return Cursor.from_json(json.loads(Path(path).read_text()))
     except json.JSONDecodeError as err:

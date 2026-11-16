@@ -82,13 +82,17 @@ def fixture_entries(started: float) -> list[dict]:
 
 
 def write_progressively(into: Path, started: float, entries: list[dict], batch: int = 4, pause: float = 0.12,
-                        ended: bool = True) -> None:
+                        ended: bool = True, gate=None) -> None:
     """The writer: the whole file rewritten per batch; Carol's voice gets a name halfway
-    (the earlier lines are renamed in place, as voices.annotate does)."""
+    (the earlier lines are renamed in place, as voices.annotate does). gate = (half, go):
+    at halfway set `half` and wait for `go` (the test kills the follower in between)."""
     md, jl = live.session_paths(into, started)
     live.write_session(md, jl, started, [], ended=False)
     shown: list[dict] = []
     for i in range(0, len(entries), batch):
+        if gate and i >= len(entries) // 2 and not gate[0].is_set():
+            gate[0].set()
+            gate[1].wait(60)
         shown = [dict(e) for e in entries[: i + batch]]
         if i >= len(entries) // 2:
             for e in shown:
@@ -176,32 +180,38 @@ def test_kill_restart():
     with tempfile.TemporaryDirectory() as d:
         into = Path(d)
         cf = into / "cursor.json"
-        th = threading.Thread(target=write_progressively, args=(into, STARTED, ENTRIES), kwargs={"pause": 0.25})
+        half, go = threading.Event(), threading.Event()
+        th = threading.Thread(target=write_progressively, args=(into, STARTED, ENTRIES),
+                              kwargs={"pause": 0.05, "gate": (half, go)})
         th.start()
         p = subprocess.Popen(agent_cmd(into, cf), stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, env=env)
-        before = []
-        while len(utter(before)) < 8:
-            line = p.stdout.readline()
-            check(line, f"the first follower stopped early: {before}")
-            before.append(json.loads(line))
-        last = utter(before)[-1]["n"]
-        for _ in range(200):  # the cursor file holds the last utterance: kill it now, mid-call
+        before: list[dict] = []
+        reader = threading.Thread(target=lambda: before.extend(json.loads(ln) for ln in p.stdout if ln.strip()))
+        reader.start()
+        check(half.wait(30), "the writer reached halfway")
+        seen, quiet_since, deadline = -1, time.monotonic(), time.monotonic() + 30
+        while time.monotonic() < deadline:  # the follower has caught up with half the call and saved it
+            if len(before) != seen:
+                seen, quiet_since = len(before), time.monotonic()
             try:
-                if set(last) <= la.load_cursor(cf).consumed_set():
-                    break
+                saved = la.load_cursor(cf).consumed_set()
             except (OSError, ValueError):
-                pass
-            time.sleep(0.01)
-        os.kill(p.pid, signal.SIGKILL)
+                saved = set()
+            done = {n for u in utter(before) for n in u["n"]}
+            if before and done and done <= saved and time.monotonic() - quiet_since > 0.6:
+                break
+            time.sleep(0.02)
+        os.kill(p.pid, signal.SIGKILL)  # mid-call: half the lines not even written yet
         p.wait()
-        before += [json.loads(ln) for ln in p.stdout.read().splitlines() if ln.strip()]
+        reader.join()
         p.stdout.close()
+        go.set()
         out = subprocess.run(agent_cmd(into, cf), capture_output=True, text=True, env=env, timeout=60)
         th.join()
         after = [json.loads(ln) for ln in out.stdout.splitlines()]
     both = utter(before) + utter(after)
     got = [n for u in both for n in u["n"]]
-    check(len(utter(before)) >= 8 and len(utter(after)) >= 3, f"killed mid-call: {len(utter(before))} + {len(utter(after))}")
+    check(len(utter(before)) >= 3 and len(utter(after)) >= 3, f"killed mid-call: {len(utter(before))} + {len(utter(after))}")
     check(len(got) == len(set(got)) and sorted(got) == list(range(len(ENTRIES))),
           f"kill + restart: every line exactly once: {got}")
     check([(u["n"], u["text"]) for u in both] == [(u["n"], u["text"]) for u in utter(ref)],
@@ -338,6 +348,13 @@ def test_plain_cursor_file():
         live.follow_stream(into, live.turn_filter(), "jsonl", once=True, poll=0.02, out=b, cursor_file=cf)
         got = [json.loads(x)["n"] for x in (a.getvalue() + b.getvalue()).splitlines() if '"turn"' in x]
         check(got == list(range(8)), f"plain follow + --cursor-file: each line once across a restart: {got}")
+        empty = into / "empty.cursor"
+        empty.write_text("")
+        for argv in (["--agent"], []):
+            with contextlib.redirect_stderr(io.StringIO()), contextlib.redirect_stdout(io.StringIO()):
+                rc = live.main(["follow", *argv, "--once", "--into", d, "--cursor-file", str(empty), "--poll", "0.02"])
+            check(rc == 0 and empty.read_text().strip(), f"an empty cursor file (mktemp) starts fresh {argv}: {rc}")
+            empty.write_text("")
         bad = into / "bad.cursor"
         bad.write_text("{not json")
         err = io.StringIO()
