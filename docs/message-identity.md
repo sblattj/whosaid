@@ -83,6 +83,12 @@ header and the quote boundary cannot be recovered, `assertion_text` is empty
 and `attribution_uncertain` is true. Such text is searchable but must not be
 treated as the current author's promise.
 
+Audio transcripts have the same flag. A short reply split off at a diarization
+turn boundary that neither the word timing nor the voiceprints could place
+(`attribution_uncertain_turns` in `<base>.diarization.json`) is indexed with an
+empty `assertion_text` and `attribution_uncertain` true, matched by its
+timestamp and text.
+
 Search JSON includes `message_id`, `provenance`, `assertion_text`, `quoted`, and
 `attribution_uncertain`. Each provenance pointer identifies the original
 meeting folder, file, transcript line, and timestamp. Filtering search to a
