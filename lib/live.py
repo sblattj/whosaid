@@ -768,21 +768,54 @@ def note_text(n: dict) -> str:
     return f"# {n['voice']} is now {n['name']}"
 
 
+def load_follow_cursor(path) -> tuple:
+    """(stem, cursor, done) saved by a plain `follow --cursor-file`; (None, None, False) if none."""
+    if not path or not Path(path).exists():
+        return None, None, False
+    try:
+        obj = json.loads(Path(path).read_text())
+        if not isinstance(obj, dict) or "agent" in obj or "version" in obj:
+            raise ValueError("an --agent cursor file; plain follow keeps its own")
+        cur = obj.get("cursor")
+        if cur is not None:
+            parse_cursor(cur)
+        return obj.get("session") or None, cur, bool(obj.get("done"))
+    except ValueError as err:
+        raise ValueError(f"cursor file {path}: {err}") from None
+
+
+def save_follow_cursor(path, stem, cursor, done: bool) -> None:
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(json.dumps({"session": stem, "cursor": cursor, "done": done}) + "\n")
+    os.replace(tmp, path)
+
+
 def follow_stream(into: Path, keep, fmt: str = "text", once: bool = False, poll: float = 5.0,
                   stale_seconds: float = STALE_SECONDS, deadline: float | None = None,
-                  out=None, sleep=time.sleep) -> int:
+                  out=None, sleep=time.sleep, cursor_file: Path | None = None,
+                  heartbeat: float | None = None, now=time.time) -> int:
     """Print each new line of the newest live session once, as it is written; an `ended`
     line when the call is over (meta ended, or no write for stale_seconds), then exit
-    (once) or wait for the next session. Returns 0."""
+    (once) or wait for the next session. cursor_file: resume from (and save after each
+    line) {"session", "cursor", "done"} (#217); heartbeat: an `alive` line after that many
+    quiet seconds. Returns 0; ValueError for a cursor file that is not one."""
     out = out or sys.stdout
+    last = {"at": now()}
 
     def emit(text: str, obj: dict) -> None:
         print(json.dumps(obj) if fmt == "jsonl" else text, file=out, flush=True)
+        last["at"] = now()
+        if cursor_file and obj["event"] != "alive":
+            save_follow_cursor(cursor_file, obj.get("session"), obj.get("cursor"), obj["event"] == "ended")
 
-    stem = cursor = None
-    done = False
+    stem, cursor, done = load_follow_cursor(cursor_file)
     notes = Notes(keep)
     while deadline is None or time.monotonic() < deadline:
+        if heartbeat and now() - last["at"] >= heartbeat:
+            emit(f"# alive {cursor or ''}".rstrip(), {"event": "alive", "session": stem, "cursor": cursor,
+                                                       "at": round(now(), 3)})
         found = sessions(into)
         jl = found[-1] if found else None
         if jl is not None and jl.stem != stem:
@@ -889,9 +922,18 @@ def cmd_follow(a: argparse.Namespace) -> int:
         except (AttributeError, ValueError, OSError):
             pass
     deadline = time.monotonic() + a.max_hours * 3600
+    cf = Path(a.cursor_file).expanduser() if a.cursor_file else None
     try:
+        if a.agent:
+            import live_agent  # lazily: plain follow stays as it was
+            return live_agent.follow_agent(Path(a.into).expanduser(), a.format, a.once, a.poll, a.stale_seconds,
+                                           deadline, cursor_file=cf, heartbeat=a.heartbeat, self_names=a.self_name,
+                                           flush_seconds=a.flush_seconds)
         return follow_stream(Path(a.into).expanduser(), keep, a.format, a.once, a.poll,
-                             a.stale_seconds, deadline)
+                             a.stale_seconds, deadline, cursor_file=cf, heartbeat=a.heartbeat)
+    except ValueError as err:
+        print(f"live follow: {err}", file=sys.stderr)
+        return 2
     except (KeyboardInterrupt, BrokenPipeError):
         return 0
 
@@ -947,6 +989,16 @@ def main(argv: list[str] | None = None) -> int:
     f.add_argument("--stale-seconds", type=float, default=STALE_SECONDS,
                    help=f"a session not written for this long is over (default {STALE_SECONDS:.0f})")
     f.add_argument("--max-hours", type=float, default=12.0)
+    f.add_argument("--agent", "--events", dest="agent", action="store_true",
+                   help="events for an agent monitor instead of lines: utterance, topic_revisit, for_me, "
+                   "decision, call_started / call_ended (#217)")
+    f.add_argument("--cursor-file", metavar="PATH",
+                   help="save the place after each event and resume from it on restart (no gap, no duplicate)")
+    f.add_argument("--heartbeat", type=float, metavar="S", help="an `alive` event after S quiet seconds")
+    f.add_argument("--self", dest="self_name", action="append", metavar="NAME",
+                   help="--agent: your name for for_me (repeatable; default: the registry's self-roled voice)")
+    f.add_argument("--flush-seconds", type=float, metavar="S", default=45.0,
+                   help="--agent: the file not written for S seconds finishes the last utterance (default 45)")
     argv = list(sys.argv[1:] if argv is None else argv)
     if not argv or argv[0] not in ("run", "show", "status", "follow", "-h", "--help"):
         argv.insert(0, "run")  # bare `whosaid live [flags]` means run
@@ -954,6 +1006,10 @@ def main(argv: list[str] | None = None) -> int:
     if a.cmd == "follow":
         if a.poll <= 0:
             p.error("--poll must be > 0")
+        if a.heartbeat is not None and a.heartbeat <= 0:
+            p.error("--heartbeat must be > 0")
+        if a.agent and a.speaker or a.agent and (a.exclude_self or a.named_only):
+            p.error("--agent emits every voice; --speaker, --exclude-self and --named-only are for line mode")
         return cmd_follow(a)
     if a.cmd == "show":
         return cmd_show(a)
