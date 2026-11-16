@@ -1,0 +1,401 @@
+{
+ "schema": 1,
+ "far_profile": {
+  "kind": "remote",
+  "codec": "telephone",
+  "bitrate_k": 0,
+  "comp_ratio": 3.383,
+  "comp_threshold_db": -22.12,
+  "comp_attack_ms": 10.95,
+  "comp_release_ms": 240.1,
+  "hp_hz": 174.1,
+  "lp_hz": 5557.4,
+  "peak_hz": 757.9,
+  "peak_db": 5.1,
+  "peak_q": 2.46,
+  "room_seed": 1566169312,
+  "room_rt60": 0.358,
+  "room_wet": 0.448,
+  "level_db": -3.17
+ },
+ "clips": [
+  {
+   "voice": "abel",
+   "person": "Abel",
+   "line": "L008",
+   "kind": "short",
+   "text": "Agreed.",
+   "seconds": 0.57,
+   "path": "clips/abel/L008.wav"
+  },
+  {
+   "voice": "abel",
+   "person": "Abel",
+   "line": "L010",
+   "kind": "short",
+   "text": "Exactly.",
+   "seconds": 0.69,
+   "path": "clips/abel/L010.wav"
+  },
+  {
+   "voice": "abel",
+   "person": "Abel",
+   "line": "L023",
+   "kind": "short",
+   "text": "Totally.",
+   "seconds": 0.51,
+   "path": "clips/abel/L023.wav"
+  },
+  {
+   "voice": "abel",
+   "person": "Abel",
+   "line": "L088",
+   "kind": "medium",
+   "text": "We have a few open questions, but none of them should block us from starting.",
+   "seconds": 3.66,
+   "path": "clips/abel/L088.wav"
+  },
+  {
+   "voice": "abel",
+   "person": "Abel",
+   "line": "L079",
+   "kind": "medium",
+   "text": "Can somebody remind me what we decided about the rollout plan last time?",
+   "seconds": 3.92,
+   "path": "clips/abel/L079.wav"
+  },
+  {
+   "voice": "abel",
+   "person": "Abel",
+   "line": "L048",
+   "kind": "medium",
+   "text": "The customer support queue has been quieter this week, which is a nice change.",
+   "seconds": 3.97,
+   "path": "clips/abel/L048.wav"
+  },
+  {
+   "voice": "abel",
+   "person": "Abel",
+   "line": "L046",
+   "kind": "medium",
+   "text": "Last time we tried this approach, it took twice as long as anyone expected.",
+   "seconds": 4.07,
+   "path": "clips/abel/L046.wav"
+  },
+  {
+   "voice": "bea",
+   "person": "Bea",
+   "line": "L006",
+   "kind": "short",
+   "text": "Got it.",
+   "seconds": 0.6,
+   "path": "clips/bea/L006.wav"
+  },
+  {
+   "voice": "bea-far",
+   "person": "Bea",
+   "line": "L006",
+   "kind": "short",
+   "text": "Got it.",
+   "seconds": 0.6,
+   "path": "clips/bea-far/L006.wav"
+  },
+  {
+   "voice": "bea",
+   "person": "Bea",
+   "line": "L017",
+   "kind": "short",
+   "text": "Right.",
+   "seconds": 0.41,
+   "path": "clips/bea/L017.wav"
+  },
+  {
+   "voice": "bea-far",
+   "person": "Bea",
+   "line": "L017",
+   "kind": "short",
+   "text": "Right.",
+   "seconds": 0.41,
+   "path": "clips/bea-far/L017.wav"
+  },
+  {
+   "voice": "bea",
+   "person": "Bea",
+   "line": "L019",
+   "kind": "short",
+   "text": "I can do that.",
+   "seconds": 0.78,
+   "path": "clips/bea/L019.wav"
+  },
+  {
+   "voice": "bea-far",
+   "person": "Bea",
+   "line": "L019",
+   "kind": "short",
+   "text": "I can do that.",
+   "seconds": 0.78,
+   "path": "clips/bea-far/L019.wav"
+  },
+  {
+   "voice": "bea",
+   "person": "Bea",
+   "line": "L071",
+   "kind": "medium",
+   "text": "We got a lot done this sprint, but the carryover work is starting to pile up.",
+   "seconds": 4.24,
+   "path": "clips/bea/L071.wav"
+  },
+  {
+   "voice": "bea-far",
+   "person": "Bea",
+   "line": "L071",
+   "kind": "medium",
+   "text": "We got a lot done this sprint, but the carryover work is starting to pile up.",
+   "seconds": 4.24,
+   "path": "clips/bea-far/L071.wav"
+  },
+  {
+   "voice": "bea",
+   "person": "Bea",
+   "line": "L036",
+   "kind": "medium",
+   "text": "Does anyone have a strong opinion on whether we ship the smaller version first?",
+   "seconds": 4.29,
+   "path": "clips/bea/L036.wav"
+  },
+  {
+   "voice": "bea-far",
+   "person": "Bea",
+   "line": "L036",
+   "kind": "medium",
+   "text": "Does anyone have a strong opinion on whether we ship the smaller version first?",
+   "seconds": 4.29,
+   "path": "clips/bea-far/L036.wav"
+  },
+  {
+   "voice": "bea",
+   "person": "Bea",
+   "line": "L073",
+   "kind": "medium",
+   "text": "It might be worth asking the client whether they would prefer weekly or monthly updates.",
+   "seconds": 4.38,
+   "path": "clips/bea/L073.wav"
+  },
+  {
+   "voice": "bea-far",
+   "person": "Bea",
+   "line": "L073",
+   "kind": "medium",
+   "text": "It might be worth asking the client whether they would prefer weekly or monthly updates.",
+   "seconds": 4.38,
+   "path": "clips/bea-far/L073.wav"
+  },
+  {
+   "voice": "bea",
+   "person": "Bea",
+   "line": "L043",
+   "kind": "medium",
+   "text": "The main blocker right now is that we are still waiting on access to the shared environment.",
+   "seconds": 4.43,
+   "path": "clips/bea/L043.wav"
+  },
+  {
+   "voice": "bea-far",
+   "person": "Bea",
+   "line": "L043",
+   "kind": "medium",
+   "text": "The main blocker right now is that we are still waiting on access to the shared environment.",
+   "seconds": 4.43,
+   "path": "clips/bea-far/L043.wav"
+  },
+  {
+   "voice": "cyd",
+   "person": "Cyd",
+   "line": "L003",
+   "kind": "short",
+   "text": "Mm-hm.",
+   "seconds": 0.54,
+   "path": "clips/cyd/L003.wav"
+  },
+  {
+   "voice": "cyd",
+   "person": "Cyd",
+   "line": "L016",
+   "kind": "short",
+   "text": "That works.",
+   "seconds": 0.73,
+   "path": "clips/cyd/L016.wav"
+  },
+  {
+   "voice": "cyd",
+   "person": "Cyd",
+   "line": "L017",
+   "kind": "short",
+   "text": "Right.",
+   "seconds": 0.35,
+   "path": "clips/cyd/L017.wav"
+  },
+  {
+   "voice": "cyd",
+   "person": "Cyd",
+   "line": "L055",
+   "kind": "medium",
+   "text": "I would suggest we put a pin in that and come back to it after the break.",
+   "seconds": 3.2,
+   "path": "clips/cyd/L055.wav"
+  },
+  {
+   "voice": "cyd",
+   "person": "Cyd",
+   "line": "L079",
+   "kind": "medium",
+   "text": "Can somebody remind me what we decided about the rollout plan last time?",
+   "seconds": 3.56,
+   "path": "clips/cyd/L079.wav"
+  },
+  {
+   "voice": "cyd",
+   "person": "Cyd",
+   "line": "L085",
+   "kind": "medium",
+   "text": "I think the timeline is realistic as long as nothing unexpected comes up.",
+   "seconds": 3.62,
+   "path": "clips/cyd/L085.wav"
+  },
+  {
+   "voice": "cyd",
+   "person": "Cyd",
+   "line": "L082",
+   "kind": "medium",
+   "text": "Let's make sure that whoever joins late gets a quick summary of what we covered.",
+   "seconds": 3.79,
+   "path": "clips/cyd/L082.wav"
+  },
+  {
+   "voice": "dora",
+   "person": "Dora",
+   "line": "L004",
+   "kind": "short",
+   "text": "Okay.",
+   "seconds": 0.54,
+   "path": "clips/dora/L004.wav"
+  },
+  {
+   "voice": "dora",
+   "person": "Dora",
+   "line": "L022",
+   "kind": "short",
+   "text": "Perfect.",
+   "seconds": 0.58,
+   "path": "clips/dora/L022.wav"
+  },
+  {
+   "voice": "dora",
+   "person": "Dora",
+   "line": "L028",
+   "kind": "short",
+   "text": "That's fine.",
+   "seconds": 0.77,
+   "path": "clips/dora/L028.wav"
+  },
+  {
+   "voice": "dora",
+   "person": "Dora",
+   "line": "L047",
+   "kind": "medium",
+   "text": "Could you send me the notes from that meeting so I can catch up before tomorrow?",
+   "seconds": 3.67,
+   "path": "clips/dora/L047.wav"
+  },
+  {
+   "voice": "dora",
+   "person": "Dora",
+   "line": "L071",
+   "kind": "medium",
+   "text": "We got a lot done this sprint, but the carryover work is starting to pile up.",
+   "seconds": 3.75,
+   "path": "clips/dora/L071.wav"
+  },
+  {
+   "voice": "dora",
+   "person": "Dora",
+   "line": "L084",
+   "kind": "medium",
+   "text": "We could try a smaller experiment first and see whether it makes a difference.",
+   "seconds": 3.82,
+   "path": "clips/dora/L084.wav"
+  },
+  {
+   "voice": "dora",
+   "person": "Dora",
+   "line": "L068",
+   "kind": "medium",
+   "text": "I would like to revisit the decision about the schedule once we have more data.",
+   "seconds": 3.83,
+   "path": "clips/dora/L068.wav"
+  },
+  {
+   "voice": "gus",
+   "person": "Gus",
+   "line": "L004",
+   "kind": "short",
+   "text": "Okay.",
+   "seconds": 0.55,
+   "path": "clips/gus/L004.wav"
+  },
+  {
+   "voice": "gus",
+   "person": "Gus",
+   "line": "L006",
+   "kind": "short",
+   "text": "Got it.",
+   "seconds": 0.64,
+   "path": "clips/gus/L006.wav"
+  },
+  {
+   "voice": "gus",
+   "person": "Gus",
+   "line": "L017",
+   "kind": "short",
+   "text": "Right.",
+   "seconds": 0.65,
+   "path": "clips/gus/L017.wav"
+  },
+  {
+   "voice": "gus",
+   "person": "Gus",
+   "line": "L047",
+   "kind": "medium",
+   "text": "Could you send me the notes from that meeting so I can catch up before tomorrow?",
+   "seconds": 4.43,
+   "path": "clips/gus/L047.wav"
+  },
+  {
+   "voice": "gus",
+   "person": "Gus",
+   "line": "L068",
+   "kind": "medium",
+   "text": "I would like to revisit the decision about the schedule once we have more data.",
+   "seconds": 4.95,
+   "path": "clips/gus/L068.wav"
+  },
+  {
+   "voice": "gus",
+   "person": "Gus",
+   "line": "L079",
+   "kind": "medium",
+   "text": "Can somebody remind me what we decided about the rollout plan last time?",
+   "seconds": 4.96,
+   "path": "clips/gus/L079.wav"
+  },
+  {
+   "voice": "gus",
+   "person": "Gus",
+   "line": "L066",
+   "kind": "medium",
+   "text": "Somebody mentioned earlier that the deadline might slip, and I want to understand why.",
+   "seconds": 5.78,
+   "path": "clips/gus/L066.wav"
+  }
+ ]
+}

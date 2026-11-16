@@ -1,0 +1,64 @@
+{
+ "schema": 1,
+ "about": "Synthetic calls for test/live_diarize_eval.py (#218). Each event is [voice, line, gap] or [voice, line, gap, {\"head\": share}]: a clip from bank.json placed `gap` seconds after the previous clip ends (negative = overlap); with head, only the first share of the sentence (cut at a gap between words), the speaker cut off mid-sentence. Voices are fake people; bea-far is Bea dialed in by phone; gus is a guest nobody enrolled. `expect` lists the checks that reproduce one real-call failure each.",
+ "calls": [
+  {
+   "name": "handoff",
+   "failure": "a segment held the end of one speaker's sentence and the start of the next speaker's reply; the live view gave all of it to one person",
+   "events": [
+    ["abel", "L088", 0.8, {"head": 0.6}], ["cyd", "L085", 0.05], ["abel", "L079", 0.9, {"head": 0.55}],
+    ["dora", "L084", 0.05], ["cyd", "L055", 0.9, {"head": 0.6}], ["abel", "L048", 0.05],
+    ["dora", "L047", 0.9, {"head": 0.65}], ["cyd", "L082", 0.05], ["abel", "L046", 0.9, {"head": 0.6}],
+    ["dora", "L068", 0.05], ["cyd", "L079", 0.9, {"head": 0.55}], ["abel", "L088", 0.05],
+    ["dora", "L071", 0.9, {"head": 0.6}], ["abel", "L079", 0.05], ["cyd", "L085", 0.9, {"head": 0.6}],
+    ["dora", "L084", 0.05]
+   ],
+   "expect": [{"metric": "handoff_acc", "min": 0.8}]
+  },
+  {
+   "name": "backchannel",
+   "failure": "a short reply (\"exactly\", \"right\") at a turn boundary went on the wrong person",
+   "events": [
+    ["abel", "L088", 0.8], ["bea", "L017", 0.12], ["abel", "L079", 0.15],
+    ["cyd", "L085", 0.9], ["abel", "L010", 0.1], ["cyd", "L055", 0.15],
+    ["dora", "L084", 0.9], ["cyd", "L003", 0.12], ["dora", "L047", 0.15],
+    ["bea", "L071", 0.9], ["dora", "L022", 0.1], ["bea", "L036", 0.15],
+    ["abel", "L046", 0.9], ["bea", "L006", 0.12], ["abel", "L048", 0.15],
+    ["cyd", "L082", 0.9], ["abel", "L008", 0.1], ["cyd", "L079", 0.15],
+    ["dora", "L068", 0.9], ["abel", "L023", 0.12], ["dora", "L071", 0.15]
+   ],
+   "expect": [{"metric": "backchannel_acc", "min": 0.75}]
+  },
+  {
+   "name": "near_far",
+   "failure": "one known person showed as a named voice plus an unnamed `them` (near mic, then far mic)",
+   "events": [
+    ["bea", "L071", 0.8], ["dora", "L084", 0.7], ["bea", "L036", 0.6], ["cyd", "L085", 0.7],
+    ["bea", "L073", 0.6], ["dora", "L047", 0.7], ["bea", "L043", 0.6],
+    ["bea-far", "L071", 1.5], ["dora", "L068", 0.7], ["bea-far", "L036", 0.6], ["cyd", "L055", 0.7],
+    ["bea-far", "L073", 0.6], ["dora", "L071", 0.7], ["bea-far", "L043", 0.6], ["cyd", "L082", 0.7],
+    ["bea-far", "L019", 0.6], ["dora", "L084", 0.7], ["bea-far", "L036", 0.6]
+   ],
+   "expect": [{"metric": "split_voice", "max": 0.0}, {"metric": "unnamed", "max": 0.1}]
+  },
+  {
+   "name": "agree",
+   "failure": "the same turn was labeled one way live and another way after the call",
+   "events": [
+    ["abel", "L088", 0.8], ["gus", "L066", 0.7], ["dora", "L084", 0.6, {"head": 0.6}], ["cyd", "L085", 0.05],
+    ["gus", "L047", 0.8], ["abel", "L079", 0.07], ["dora", "L068", 0.6], ["cyd", "L003", 0.12],
+    ["dora", "L047", 0.15], ["cyd", "L055", 0.8, {"head": 0.55}], ["abel", "L048", 0.05], ["gus", "L068", 0.7],
+    ["abel", "L046", 0.6], ["dora", "L071", -0.5], ["bea", "L071", 0.8], ["abel", "L010", 0.1],
+    ["bea", "L036", 0.15], ["cyd", "L082", 0.7], ["gus", "L079", 0.06], ["abel", "L079", 0.7, {"head": 0.6}],
+    ["dora", "L084", 0.05], ["bea", "L017", 0.12], ["dora", "L047", 0.15], ["cyd", "L016", 0.9]
+   ],
+   "expect": [{"metric": "disagree_live_off", "max": 0.05}]
+  },
+  {
+   "name": "long",
+   "failure": "a 40+ minute call that returns to topics (and people) after long stretches",
+   "generate": {"seed": 218, "minutes": 42, "topics": 9},
+   "expect": []
+  }
+ ]
+}
