@@ -1333,7 +1333,9 @@ whosaid index ~/meetings-restored
 - **Encrypted at rest, client-side.** Each file is encrypted with `age` before upload and stored as
   `objects/<sha256>.age`; the manifest (file names, sizes, hashes, tiers) is
   `_whosaid-backup.json.age`. The target sees content hashes and sizes, not names or text. The
-  provider's own encryption is not relied on. `--plaintext` writes a browsable copy instead and is
+  provider's own encryption is not relied on. `_whosaid-backup.recipients` holds a hash of the
+  public keys the objects were encrypted to; back up with a different key set and every object is
+  re-encrypted to it, so restore always needs the newest identity. `--plaintext` writes a browsable copy instead and is
   refused with `--tier biometric`.
 - **Incremental.** Files are hashed (cached by size and mtime in `<ws>/.backup/`), and only content
   the target lacks is uploaded. `--dry-run` prints one `would upload PATH (tier, size)` line per
@@ -1342,8 +1344,10 @@ whosaid index ~/meetings-restored
   `12w`, `6m`) drops meetings dated before the cutoff from the target.
 - **Restore** verifies every file's sha256 against the manifest. A file in the destination with
   different content is a conflict: restore lists it and stops unless you pass `--force`. A backed-up
-  registry is written to `WHOSAID_SPEAKER_DB` when none exists there, or to `--registry-out FILE`
-  (then `whosaid speakers import FILE --merge`).
+  registry is written to `WHOSAID_SPEAKER_DB` when none exists there, or to `--registry-out FILE`.
+  That file is a raw registry, not an export: use it as is with `WHOSAID_SPEAKER_DB=FILE`, or merge
+  it into yours with `WHOSAID_SPEAKER_DB=FILE whosaid speakers export --out X.json` and then
+  `whosaid speakers import X.json --merge`.
 
 ### `whosaid share`
 

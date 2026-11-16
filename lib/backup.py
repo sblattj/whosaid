@@ -99,7 +99,9 @@ from wsconfig import load_config  # noqa: E402
 SCHEMA = "whosaid.backup/1"
 BACKUP_MANIFEST = "_whosaid-backup.json"
 SHARE_MANIFEST = "_whosaid-share.json"
-STATE_DIR = ".backup"                       # dot-dir: never itself backed up
+STATE_DIR = ".backup"
+# plaintext on the target: sha256 of the age recipient set the objects are encrypted to
+RECIPIENTS_KEY = "_whosaid-backup.recipients"                       # dot-dir: never itself backed up
 NOTICE_ACK = Path.home() / ".config" / "whosaid" / "share-notice-acknowledged"
 
 TIERS = ("text", "index", "audio", "biometric")
@@ -776,6 +778,16 @@ def recipients_from(args, cfg: dict) -> tuple[list[str], str | None]:
     return recips, rfile
 
 
+def recipients_fingerprint(recips: list[str], rfile: str | None) -> str:
+    """Hash of the age recipient set. Content-addressed objects are only reusable when they were
+    encrypted to the same recipients; a changed set re-encrypts everything."""
+    parts = sorted(r.strip() for r in recips if r.strip())
+    if rfile:
+        parts += sorted(ln.strip() for ln in Path(rfile).expanduser().read_text().splitlines()
+                        if ln.strip() and not ln.lstrip().startswith("#"))
+    return hashlib.sha256("\n".join(parts).encode()).hexdigest()
+
+
 def plan_backup(ws: Path, target: Target, tiers: list[str], encrypted: bool,
                 prev: dict | None, keys: set[str], cache: HashCache) -> tuple[Plan, dict]:
     plan = Plan("backup", target.describe(), tiers, encrypted)
@@ -847,8 +859,18 @@ def cmd_backup(args) -> int:
                     "deleted locally since the last backup will drop out of the new manifest")
     else:
         prev = read_manifest(target) if BACKUP_MANIFEST in keys else None
+    reuse = keys
+    if encrypted:
+        fp = recipients_fingerprint(recips, rfile)
+        old_fp = (target.get_bytes(RECIPIENTS_KEY) or b"").decode().strip()
+        if any(k.startswith("objects/") for k in keys) and old_fp != fp:
+            # objects on the target were encrypted to other keys: none can be reused
+            reuse = {k for k in keys if not k.startswith("objects/")}
     cache = HashCache(ws)
-    plan, files = plan_backup(ws, target, tiers, encrypted, prev, keys, cache)
+    plan, files = plan_backup(ws, target, tiers, encrypted, prev, reuse, cache)
+    if reuse is not keys:
+        plan.notes.append("age recipients differ from the ones this backup was written with: "
+                          "re-encrypting every object (restore needs the new identity)")
     cache.save()
     if not encrypted and any(r.endswith(".diarization.json") or r == "_voice-groups.json" for r in files):
         plan.notes.append("plaintext: diarization sidecars and _voice-groups.json carry per-meeting "
@@ -916,6 +938,7 @@ def cmd_backup(args) -> int:
             plain.write_bytes(body)
             age_encrypt(plain, enc, recips, rfile)
             target.put_file(BACKUP_MANIFEST + ".age", enc)
+            target.put_bytes(RECIPIENTS_KEY, (fp + "\n").encode())
         else:
             target.put_bytes(BACKUP_MANIFEST, body)
         for k in plan.delete:
@@ -933,7 +956,8 @@ def cmd_backup(args) -> int:
 
 def cmd_restore(args) -> int:
     ws = Path(args.ws).expanduser().resolve()
-    target = open_target(args.target)
+    # an existing destination's [backup] table (e.g. s3_endpoint) applies to the read too
+    target = open_target(args.target, load_config(ws).get("backup") or {})
     if target.local_root() and target.local_root() == ws:
         raise BackupError("restore target and workspace are the same folder")
     identity = args.identity or os.environ.get("WHOSAID_BACKUP_AGE_IDENTITY") or None
@@ -968,8 +992,9 @@ def cmd_restore(args) -> int:
     if bio:
         bio_dest = Path(args.registry_out).expanduser() if args.registry_out else registry_path()
         if bio_dest.exists() and not args.registry_out:
-            log(f"registry {bio_dest} exists; not overwritten. Pass --registry-out FILE, then "
-                "`whosaid speakers import FILE --merge`")
+            log(f"registry {bio_dest} exists; not overwritten. Pass --registry-out FILE, then merge it with "
+                "`WHOSAID_SPEAKER_DB=FILE whosaid speakers export --out X.json && "
+                "whosaid speakers import X.json --merge`")
             bio_dest = None
         elif bio_dest.exists():
             raise BackupError(f"--registry-out {bio_dest} exists; pick a new path")

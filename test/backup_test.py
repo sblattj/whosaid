@@ -266,7 +266,8 @@ class AgeBackupTest(Base):
         self.assertEqual(rc, 0, err)
         names = {p.relative_to(tgt).as_posix() for p in tgt.rglob("*") if p.is_file()}
         self.assertIn(backup.BACKUP_MANIFEST + ".age", names)
-        self.assertTrue(all(n == backup.BACKUP_MANIFEST + ".age" or n.startswith("objects/") for n in names),
+        self.assertTrue(all(n in (backup.BACKUP_MANIFEST + ".age", backup.RECIPIENTS_KEY)
+                            or n.startswith("objects/") for n in names),
                         "no plaintext file names on the target")
         blob = b"".join(p.read_bytes() for p in tgt.rglob("*") if p.is_file())
         for needle in (b"zebra", b"Alice_Example", b"cluster_emb", b"0.4567"):
@@ -287,6 +288,29 @@ class AgeBackupTest(Base):
         # incremental: unchanged content is not re-encrypted or re-uploaded
         rc, out, _ = run(["backup", str(self.ws), "--to", str(tgt), "--recipient", self.pub,
                           "--tier", "text,biometric", "--dry-run"])
+        self.assertEqual([ln for ln in out.splitlines() if ln.startswith("would upload")], [])
+
+    def test_new_recipient_reencrypts_instead_of_reusing_objects(self):
+        # content-addressed objects encrypted to key A must not count as "unchanged" for key B
+        tgt = self.tmp / "enc-rotate"
+        rc, _, err = run(["backup", str(self.ws), "--to", str(tgt), "--recipient", self.pub])
+        self.assertEqual(rc, 0, err)
+        key_b = self.tmp / "b.key"
+        subprocess.run([shutil.which("age-keygen") or "age-keygen", "-o", str(key_b)],
+                       check=True, capture_output=True)
+        pub_b = [ln.split(": ", 1)[1] for ln in key_b.read_text().splitlines()
+                 if ln.startswith("# public key: ")][0]
+        shutil.rmtree(self.ws / backup.STATE_DIR)   # e.g. a new machine: no local record
+        rc, out, err = run(["backup", str(self.ws), "--to", str(tgt), "--recipient", pub_b])
+        self.assertEqual(rc, 0, err)
+        self.assertIn("re-encrypting every object", err)
+        self.assertEqual(sum(ln.startswith("upload ") for ln in out.splitlines()), len(text_tier_files(self.ws)))
+        rc, _, err = run(["backup", "restore", str(tgt), str(self.tmp / "rb"), "--identity", str(key_b)])
+        self.assertEqual(rc, 0, err)
+        got = {rel: backup.sha256_file(p) for rel, p, tier in backup.walk_workspace(self.tmp / "rb")}
+        self.assertEqual(got, text_tier_files(self.ws))
+        # same recipients again: nothing to re-upload
+        rc, out, _ = run(["backup", str(self.ws), "--to", str(tgt), "--recipient", pub_b, "--dry-run"])
         self.assertEqual([ln for ln in out.splitlines() if ln.startswith("would upload")], [])
 
 
@@ -473,7 +497,8 @@ class S3RoundTripTest(Base):
         pub = [ln.split(": ", 1)[1] for ln in key.read_text().splitlines() if ln.startswith("# public key: ")][0]
         spec = self.round_trip(["--recipient", pub], ["--identity", str(key)])
         keys = backup.open_target(spec).list_keys()
-        self.assertTrue(all(k.startswith("objects/") or k == backup.BACKUP_MANIFEST + ".age" for k in keys))
+        self.assertTrue(all(k.startswith("objects/") or k in (backup.BACKUP_MANIFEST + ".age", backup.RECIPIENTS_KEY)
+                            for k in keys))
 
     def test_share_via_s3(self):
         spec = f"s3://{self.bucket}/share"
