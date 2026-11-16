@@ -350,21 +350,36 @@ def _sidecar_message(ws: Path, mid: str) -> dict | None:
                 if isinstance(seg, dict) and mid in (str(seg.get("mid") or ""), str(seg.get("message_id") or "")):
                     sec = int(seg.get("start") or 0)
                     return {"meeting": f.name, "t_sec": sec, "t_str": _hms(sec), "speaker": seg.get("speaker") or "",
-                            "text": seg.get("text") or "", "message_id": mid}
+                            "text": seg.get("text") or "", "message_id": mid,
+                            "attribution_uncertain": bool(seg.get("attribution_uncertain"))}
     return None
 
 
+def _uncertain(conn, rowid: int) -> bool:
+    """#216: the index row's attribution_uncertain flag, the same source search hits read
+    (search.annotate_hit): a short reply the diarizer split off at a turn boundary but could not place."""
+    import search
+    if not search.has_table(conn, "seg_message"):
+        return False
+    row = conn.execute("SELECT attribution FROM seg_message WHERE rowid = ?", (rowid,)).fetchone()
+    try:
+        return bool(row and json.loads(row[0] or "{}").get("attribution_uncertain"))
+    except (ValueError, AttributeError):
+        return False
+
+
 def _resolve_ref(conn, ws: Path, ref: dict) -> tuple[list[dict], str | None]:
-    """The candidate turns REF points at (by meeting + time, or by message id), or an error."""
+    """The candidate turns REF points at (by meeting + time, or by message id), or an error. Each turn
+    carries attribution_uncertain (#216) from the index, so a said claim never rests on one alone."""
     import search
     mid = str(ref.get("message_id") or ref.get("mid") or "")
     if mid:
         rows = []
         if search.has_table(conn, "seg_message"):
-            rows = conn.execute("SELECT s.meeting, s.t_sec, s.t_str, s.speaker, s.text FROM seg_message m "
+            rows = conn.execute("SELECT s.meeting, s.t_sec, s.t_str, s.speaker, s.text, s.rowid FROM seg_message m "
                                 "JOIN seg s ON s.rowid = m.rowid WHERE m.message_id = ?", (mid,)).fetchall()
-        turns = [{"meeting": a, "t_sec": int(b), "t_str": c, "speaker": d, "text": e, "message_id": mid}
-                 for a, b, c, d, e in rows]
+        turns = [{"meeting": a, "t_sec": int(b), "t_str": c, "speaker": d, "text": e, "message_id": mid,
+                  "attribution_uncertain": _uncertain(conn, rid)} for a, b, c, d, e, rid in rows]
         if not turns:
             hit = _sidecar_message(ws, mid)
             turns = [hit] if hit else []
@@ -377,11 +392,12 @@ def _resolve_ref(conn, ws: Path, ref: dict) -> tuple[list[dict], str | None]:
         sec = int(ref["t_sec"]) if ref.get("t_sec") is not None else search.parse_at(str(ref["t"]))
     except (ValueError, TypeError) as e:
         return [], f"bad time in {ref}: {e}"
-    rows = conn.execute("SELECT meeting, t_sec, t_str, speaker, text FROM seg WHERE meeting = ? AND t_sec = ?",
+    rows = conn.execute("SELECT meeting, t_sec, t_str, speaker, text, rowid FROM seg WHERE meeting = ? AND t_sec = ?",
                         (name, sec)).fetchall()
     if not rows:
         return [], f"no turn at {_hms(sec)} in {name}"
-    return [{"meeting": a, "t_sec": int(b), "t_str": c, "speaker": d, "text": e} for a, b, c, d, e in rows], None
+    return [{"meeting": a, "t_sec": int(b), "t_str": c, "speaker": d, "text": e,
+             "attribution_uncertain": _uncertain(conn, rid)} for a, b, c, d, e, rid in rows], None
 
 
 def said_check(claims: dict, ws=None) -> dict:
@@ -443,6 +459,12 @@ def said_check(claims: dict, ws=None) -> dict:
                     row["errors"].append(f"{where}: spoken by {best['speaker']}, not {r['speaker']}")
                     continue
                 row["turns"].append({**best, "quote": quote, "score": score})
+            if row["turns"] and all(t.get("attribution_uncertain") for t in row["turns"]):
+                row["errors"].append("only cites turns whose speaker is uncertain (attribution_uncertain: a short "
+                                     "reply split off at a turn boundary, " + ", ".join(
+                                         f"{t['meeting']} @ {t['t_str']}" for t in row["turns"]) +
+                                     "); a yes nobody can place is not their agreement: cite a turn whose "
+                                     "speaker is certain, or mark the claim unverified")
             out["errors"] += [f"said claim {kid}: {e}" for e in row["errors"]]
     finally:
         if conn is not None:

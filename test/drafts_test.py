@@ -1652,6 +1652,32 @@ class SaidClaimTest(DraftsBase):
             drafts.main(["claims", self.did, "--file", str(f), "--ws", str(self.ws)])
         self.assertIn("said s: cites only a summary", out.getvalue())
 
+    def test_a_flagged_backchannel_is_nobodys_agreement(self):
+        """#214 x #216: a said claim whose only cited turn is a short reply the diarizer could not
+        place (attribution_uncertain in the meeting sidecar, hence in the index) fails verify, even
+        though the ref carries no flag of its own; citing a certain turn as well passes."""
+        bc = self.ws / "2026-03-04-1000"
+        bc.mkdir()
+        turns = [("00:00:10", 10, "Other_Voice", "we keep the old resolver up until march and cut over after"),
+                 ("00:00:14", 14, "Test_Person", "Yeah, exactly, right.")]
+        (bc / "call.speakers.txt").write_text("".join(f"[{t}] {s}: {x}\n" for t, _sec, s, x in turns))
+        (bc / "call.diarization.json").write_text(json.dumps({
+            "base": "call", "names": {}, "source": {"kind": "audio"},
+            "segments": [{"start": sec, "end": sec + 3, "speaker": s, "text": x} for _t, sec, s, x in turns],
+            "attribution_uncertain_turns": [{"t_str": "00:00:14", "speaker": "Test_Person",
+                                             "text": "Yeah, exactly, right."}]}))
+        search.build(self.ws, embed=False)
+        backchannel = {"meeting": "2026-03-04-1000", "t": "00:00:14", "quote": "yeah exactly right"}
+        self.claims([backchannel])
+        self.fails("said claim s: only cites turns whose speaker is uncertain")
+        certain = {"meeting": SAID_MEETING, "t": "00:02:05", "quote": "the old resolver stays up until march"}
+        self.claims([backchannel, certain])
+        r = drafts.verify(self.did, ws=self.ws)
+        flags = {t["t_str"]: t.get("attribution_uncertain", False) for t in r["said"][0]["turns"]}
+        self.assertEqual(flags, {"00:00:14": True, "00:02:05": False})
+        self.claims([certain])
+        drafts.verify(self.did, ws=self.ws)
+
 RECAP = ("I heard: the old resolver stays up until march, staging needs two dns records, the wildcard cert "
          "waits for the records, and the rollout starts on monday. Does that match your understanding?")
 RECAP_TID = "19:dm@unq.gbl.spaces"

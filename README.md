@@ -341,8 +341,10 @@ whosaid drafts html                             # review page of every open draf
   for a chat or mail message (the index id or the raw Teams id). `verify` resolves each ref through
   the workspace index (`--ws`, else `WHOSAID_WORKSPACE`), takes the turn at exactly that time, and
   fails when the ref does not resolve, when the quote (3 or more words, matched fuzzily so ASR
-  noise survives) is not in that turn, when an optional `speaker` on the ref did not say it, or
-  when the claim cites only a summary (`commitments.md`, a live recap, items). `drafts claims
+  noise survives) is not in that turn, when an optional `speaker` on the ref did not say it, when
+  every turn it cites is flagged `attribution_uncertain` in the index (a short "yeah, exactly" the
+  diarizer split off at a turn boundary but could not place; the ref itself need not carry the
+  flag, and one certain turn among the refs is enough), or when the claim cites only a summary (`commitments.md`, a live recap, items). `drafts claims
   <id> --file F --ws WS` prints the resolved turns, so you read the real words before the prose.
 
   ```json
