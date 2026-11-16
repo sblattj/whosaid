@@ -458,6 +458,21 @@ def whosaid_transcribe(
             if ws_args:
                 args += ws_args
                 speaker_hints_from = f"{ws / wsconfig.CONFIG_NAME} [diarize]: {' '.join(ws_args)}"
+    # Workspace vocabulary + corrections ([transcribe], issue #216): the same default
+    # `whosaid ingest` applies, for an output folder inside a workspace.
+    vocabulary_from: Optional[str] = None
+    ws_tr = wsconfig.find_workspace(Path(out))
+    if ws_tr is not None:
+        tr_args, tr_err = wsconfig.workspace_transcribe_args(ws_tr)
+        if tr_err:
+            return {
+                "ok": False,
+                "error": f"{ws_tr / wsconfig.CONFIG_NAME}: {tr_err}",
+                "fix": "fix the [transcribe] section of whosaid.toml",
+            }
+        if tr_args:
+            args += tr_args
+            vocabulary_from = f"{ws_tr / wsconfig.CONFIG_NAME} [transcribe]: {' '.join(tr_args)}"
     if not diarize:
         args.append("--no-diarize")
     if match_threshold is not None:
@@ -609,6 +624,7 @@ def whosaid_transcribe(
         "unnamed_clusters": unnamed_clusters,
         "speaker_cards": speaker_cards,
         "speaker_hints_from": speaker_hints_from,
+        "vocabulary_from": vocabulary_from,
         "next_step": next_step,
         "summary": summary,
     }

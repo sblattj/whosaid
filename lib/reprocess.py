@@ -580,6 +580,18 @@ def cmd_run(args) -> int:
     if args.match_threshold is not None:
         speaker_args = [*speaker_args, "--match-threshold", str(args.match_threshold)]
 
+    # the workspace vocabulary corrections ([transcribe], issue #216) ride along so the
+    # re-diarized transcript carries them, whatever speaker flags were given
+    import wsconfig  # sibling module in lib/
+
+    tr_args, err = wsconfig.workspace_transcribe_args(ws)
+    if err:
+        log(f"reprocess: fix [transcribe] in {ws}/whosaid.toml: {err}")
+        return 1
+    if tr_args:
+        log(f"reprocess: vocabulary from whosaid.toml [transcribe]: {' '.join(tr_args)}")
+        speaker_args = [*speaker_args, *tr_args]
+
     plan, skipped = [], []
     for name in selected:
         info, reason = locate_meeting(ws / name)

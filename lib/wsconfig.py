@@ -44,6 +44,12 @@ Per-workspace config is an optional TOML file, <workspace>/whosaid.toml:
   max_speakers = 8               # also speakers / min_speakers / expected_speakers;
                                  # skipped when the command passes its own speaker flags
 
+  [transcribe]                   # workspace vocabulary for every ingest into this workspace
+  vocabulary = ["blob store lib", "S3"]   # Whisper initial prompt (first ~30 s window only)
+  [transcribe.corrections]       # known mishearings fixed over the whole transcript; the
+  blobser = "blob store"         # raw text stays in <base>.json segment raw_text. An all-lowercase
+  SD = "S3"                      # key matches case-insensitively, a key with a capital exactly.
+
   [drafts]
   voice_lint = "warn"            # enforce | warn | off: enforce makes `drafts verify` refuse a
                                  # message with more than one paragraph, a greeting opener or an
@@ -81,6 +87,7 @@ DEFAULTS: dict = {
     "search": {"ollama": "http://127.0.0.1:11434", "embed_model": "nomic-embed-text", "embed": True},
     "watch": {"source": "", "stable_seconds": 120, "max_wait_seconds": 900, "interval_seconds": 900},
     "diarize": {},
+    "transcribe": {},
     # an open item whose newest meeting is older than this, with no tracking event, reads as
     # stale: old backlog stays visible without crowding today's open items (a view, not a status)
     "tracking": {"stale_after_days": 14},
@@ -251,11 +258,50 @@ def workspace_speaker_args(ws: Path) -> tuple[list[str], str | None]:
     return diarize_hints(load_config(ws).get("diarize") or {}, "diarize")
 
 
+def transcribe_args(tcfg: dict) -> tuple[list[str], str | None]:
+    """Extra transcribe/ingest args for `[transcribe]`: `vocabulary` (list of non-empty
+    strings) becomes repeated `--vocabulary TERM`; `[transcribe.corrections]` (WRONG = "RIGHT",
+    both non-empty strings) becomes repeated `--correct WRONG=RIGHT`. Returns (args, error)."""
+    args: list[str] = []
+    vocab = tcfg.get("vocabulary")
+    if vocab is not None:
+        if not isinstance(vocab, list):
+            return [], f"[transcribe] vocabulary must be a list of strings (got {vocab!r})"
+        for term in vocab:
+            if not isinstance(term, str) or not term.strip():
+                return [], f"[transcribe] vocabulary has a non-string or empty term (got {term!r})"
+            args += ["--vocabulary", term.strip()]
+    corr = tcfg.get("corrections")
+    if corr is not None:
+        if not isinstance(corr, dict):
+            return [], f"[transcribe.corrections] must be a table of WRONG = \"RIGHT\" (got {corr!r})"
+        for wrong, right in corr.items():
+            if not str(wrong).strip() or "=" in str(wrong):
+                return [], f"[transcribe.corrections] bad key {wrong!r} (non-empty, no '=')"
+            if not isinstance(right, str) or not right.strip():
+                return [], f"[transcribe.corrections] {wrong} must map to a non-empty string (got {right!r})"
+            args += ["--correct", f"{str(wrong).strip()}={right.strip()}"]
+    return args, None
+
+
+def workspace_transcribe_args(ws: Path) -> tuple[list[str], str | None]:
+    """The workspace's `[transcribe]` vocabulary + corrections as transcribe args."""
+    return transcribe_args(load_config(ws).get("transcribe") or {})
+
+
 def _cli(argv: list[str]) -> int:
     """`wsconfig.py speaker-args <ws>`: one arg per line, or exit 1 with the error.
+    `wsconfig.py transcribe-args <ws>`: the [transcribe] vocabulary/corrections args.
     `wsconfig.py owner <ws>`: the workspace owner label ("" when unset)."""
     if len(argv) == 2 and argv[0] == "speaker-args":
         args, err = workspace_speaker_args(Path(argv[1]))
+        if err:
+            log(err)
+            return 1
+        print("\n".join(args))
+        return 0
+    if len(argv) == 2 and argv[0] == "transcribe-args":
+        args, err = workspace_transcribe_args(Path(argv[1]))
         if err:
             log(err)
             return 1
@@ -265,7 +311,7 @@ def _cli(argv: list[str]) -> int:
         # the owner label ingest passes as --me for stereo `record --app` files
         print(str(load_config(Path(argv[1])).get("workspace", {}).get("owner") or ""))
         return 0
-    log("usage: wsconfig.py speaker-args|owner <workspace>")
+    log("usage: wsconfig.py speaker-args|transcribe-args|owner <workspace>")
     return 2
 
 

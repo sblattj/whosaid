@@ -439,6 +439,14 @@ TRANSCRIBE FLAGS
                        label. Default 0.50 (WHOSAID_MATCH_THRESHOLD); raise it if
                        you see wrong names, lower it to catch more.
       --no-diarize     Skip speaker diarization.
+      --vocabulary TERM  A workspace term Whisper should spell right (repeatable); the
+                       terms join into Whisper's initial prompt. Only the first ~30 s
+                       window sees it, so pair it with --correct.
+      --correct WRONG=RIGHT  Fix a known mishearing over the whole transcript (repeatable),
+                       e.g. --correct "blobser=blob store". Whole words, longest first;
+                       a key with a capital matches exactly, an all-lowercase key ignores
+                       case. Runs on --reuse-asr too; the raw text stays in <base>.json
+                       segment raw_text. whosaid.toml [transcribe] supplies both for ingest.
       --reuse-asr      Skip Whisper when <out>/<base>.json already exists and go straight
                        to diarization (re-diarize without re-transcribing; errors if the
                        json is missing; incompatible with --no-diarize).
@@ -1985,11 +1993,14 @@ cmd_transcribe() {
   local EXPECTED_SPEAKERS=()
   local ANCHOR_THRESHOLD=""
   local ME="${WHOSAID_OWNER:-}"
+  local VOCAB=() CORRECTIONS=()
   local AUDIO=()
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
       -o|--outdir)  OUTDIR="$2"; shift 2 ;;
+      --vocabulary) VOCAB+=("$2"); shift 2 ;;
+      --correct)    CORRECTIONS+=("$2"); shift 2 ;;
       -m|--model)   MODEL="$2"; shift 2 ;;
       --accurate)   MODEL="mlx-community/whisper-large-v3-mlx"; shift ;;
       --fast)       MODEL="mlx-community/whisper-large-v3-turbo"; shift ;;
@@ -2053,6 +2064,12 @@ cmd_transcribe() {
     fi
 
     local helper_args=("$audio" --model "$MODEL" --outdir "$out" --lang "$LANG_CODE" --format "$FORMAT" --name "$base")
+    if [[ ${#VOCAB[@]} -gt 0 ]]; then
+      # workspace vocabulary -> Whisper's initial prompt (first ~30 s window only)
+      local vocab_prompt="" vterm=""
+      for vterm in "${VOCAB[@]}"; do vocab_prompt="${vocab_prompt:+$vocab_prompt, }$vterm"; done
+      helper_args+=(--initial-prompt "$vocab_prompt")
+    fi
 
     local uv_err uv_rc=0 uv_status=()
     if [[ "$REUSE_ASR" == "1" ]]; then
@@ -2077,6 +2094,15 @@ cmd_transcribe() {
         exit "$uv_rc"
       fi
       rm -f "$uv_err"
+    fi
+
+    # Known-mishearing corrections run over the whole transcript, on a fresh ASR run
+    # and on --reuse-asr alike, before diarization reads the segment text.
+    if [[ ${#CORRECTIONS[@]} -gt 0 && -f "$out/$base.json" ]]; then
+      local vargs=(apply "$out/$base.json" --txt "$out/$base.txt") corr=""
+      for corr in "${CORRECTIONS[@]}"; do vargs+=(--correct "$corr"); done
+      "$WHOSAID_PY" "$REPO_DIR/lib/vocabulary.py" "${vargs[@]}" >&2 \
+        || { log "ERROR applying [transcribe] corrections to $out/$base.json"; exit 1; }
     fi
 
     local txt="$out/$base.txt"
@@ -2377,7 +2403,7 @@ cmd_ingest() {
       -o|--outdir) log "ingest: -o/--outdir is not allowed — ingest places each meeting itself"; exit 1 ;;
       -n|--name)   log "ingest: -n/--name is not allowed — ingest names its outputs 'transcript'"; exit 1 ;;
       # transcribe flags that pass straight through
-      -m|--model|-l|--lang|-f|--format|--speakers|--min-speakers|--max-speakers|--expected-speakers|--anchor-threshold|-j|--jobs|--chunk-seconds|--absorb-threshold|--placed-absorb-threshold|--match-threshold|--ref-threshold|--me)
+      -m|--model|-l|--lang|-f|--format|--speakers|--min-speakers|--max-speakers|--expected-speakers|--anchor-threshold|-j|--jobs|--chunk-seconds|--absorb-threshold|--placed-absorb-threshold|--match-threshold|--ref-threshold|--me|--vocabulary|--correct)
                       passthrough+=("$1" "$2"); shift 2 ;;
       --accurate|--fast|--diarize|--no-diarize|--no-chunk)
                       passthrough+=("$1"); shift ;;
@@ -2413,6 +2439,17 @@ cmd_ingest() {
     done <<< "$ws_hints"
     [[ -n "$ws_hints" ]] && log "speaker hints from whosaid.toml [diarize]: $(tr '\n' ' ' <<< "$ws_hints")"
   fi
+
+  # Workspace vocabulary (whosaid.toml [transcribe], issue #216): the Whisper initial
+  # prompt plus known-mishearing corrections. Unlike speaker hints these add to any
+  # --vocabulary/--correct on the command line.
+  local ws_tr line
+  ws_tr="$("$WHOSAID_PY" "$REPO_DIR/lib/wsconfig.py" transcribe-args "$into")" \
+    || { log "ingest: fix [transcribe] in $into/whosaid.toml"; exit 1; }
+  while IFS= read -r line; do
+    [[ -n "$line" ]] && passthrough+=("$line")
+  done <<< "$ws_tr"
+  [[ -n "$ws_tr" ]] && log "vocabulary from whosaid.toml [transcribe]: $(tr '\n' ' ' <<< "$ws_tr")"
 
   # Stereo `record --app` files name the mic-only voice after the owner: an
   # explicit --me or $WHOSAID_OWNER wins, else the workspace's [workspace] owner.
