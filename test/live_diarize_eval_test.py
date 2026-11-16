@@ -57,6 +57,11 @@ check("never to speakers" in why, f"the refusal says why: {why}")
 for d in ev.audio_devices():  # this Mac, read-only: whatever it has, speakers are never allowed
     if "speaker" in d["name"].lower() or d["transport"] == "bltn":
         check(not ok(d["name"], ev.audio_devices()), f"this Mac's {d['name']!r}: refused")
+here = ev.audio_devices()
+if any(d["name"] == "BlackHole 2ch" for d in here):  # installed on this Mac: the one device allowed
+    check(ok("BlackHole 2ch", here), "this Mac's BlackHole 2ch: allowed")
+    check([d["name"] for d in here if ok(d["name"], here)] == ["BlackHole 2ch"],
+          f"BlackHole 2ch is the only device allowed here: {[d['name'] for d in here]}")
 rc = ev.main(["--realtime", "--device", "MacBook Pro Speakers", "--app", "com.apple.Terminal", "--only", "handoff"])
 check(rc == 3, f"--realtime to speakers exits 3 before anything loads or plays: {rc}")
 
@@ -105,6 +110,13 @@ except ev.CassetteMiss:
     caught = "raised"
 check(caught == "raised", f"a cassette miss is not an Exception live.py would skip past: {caught}")
 
+# ---------------------------------------------------------------- realtime lines on the call's clock
+got = ev.realtime_lines([{"t": 12.0, "who": "them", "name": "Abel", "text": "a" * 20},
+                         {"t": 2.0, "who": "me", "text": "mine"},
+                         {"t": 15.5, "who": "them", "voice": "v2", "text": "b" * 10}], 2.0)
+check([(round(x["a"], 2), round(x["b"], 2), x["label"]) for x in got] == [(10.0, 13.5, "Abel"), (13.5, 14.15, "them:v2")],
+      f"them lines shifted by the capture offset, each to the next line's start: {got}")
+
 # ---------------------------------------------------------------- --realtime follows only its own capture
 # A fake `whosaid`: record makes a capture folder the way the real one does (mktemp -d -t),
 # live run writes down its arguments. A real capture folder made just before must not be the
@@ -123,6 +135,19 @@ else:
     import tempfile
     import time
     import types
+    import wave
+    rng = numpy.random.default_rng(218)  # the call found 1.37 s into a capture with noise before it
+    call_x = (rng.standard_normal(ev.RATE * 6) * 3000 * numpy.repeat(rng.random(60) > 0.5, ev.RATE // 10)).astype("<i2")
+    lead = (rng.standard_normal(int(ev.RATE * 1.37)) * 30).astype("<i2")
+    off_dir = Path(tempfile.mkdtemp(prefix="live-eval-offset-"))
+    with wave.open(str(off_dir / "app.wav"), "wb") as w:
+        w.setnchannels(1), w.setsampwidth(2), w.setframerate(ev.RATE)
+        w.writeframes(numpy.concatenate([lead, call_x]).tobytes())
+    sys.path.insert(0, str(ev.ROOT / "lib"))
+    off = ev.capture_offset(off_dir / "app.wav", call_x.astype(numpy.int32))
+    check(off is not None and abs(off - 1.37) <= 0.02, f"capture offset found by cross-correlation: {off}")
+    (off_dir / "app.wav").unlink()
+    off_dir.rmdir()
     work = Path(tempfile.mkdtemp(prefix="live-eval-test-"))
     fake = work / "whosaid"
     fake.write_text('#!/bin/bash\nif [[ "$1" == record ]]; then d=$(mktemp -d -t whosaid-record-app); '

@@ -5,7 +5,7 @@ against the retroactive pass (transcribe, diarize, name), on the same synthetic 
     python3 test/live_diarize_eval.py --fast [--only handoff,near_far] [--out results.json]
         [--gate [--max-gap 5] [--baseline scores.json | --baseline-ref last-tag] [--tolerance 0.5]]
     python3 test/live_diarize_eval.py --record            # re-record the Whisper cassette (dev, local model)
-    python3 test/live_diarize_eval.py --realtime --device "BlackHole 2ch" --app BUNDLE_ID [--only agree]
+    python3 test/live_diarize_eval.py --realtime --device "BlackHole 2ch" [--app BUNDLE_ID] [--only agree]
     python3 test/live_diarize_eval.py --list-devices
 
 Calls (test/fixtures/live_diarize/calls.json) are assembled at run time from a small clip
@@ -20,8 +20,10 @@ model returned for exactly those chunks (keyed by the chunk's samples; a miss is
 never a guess). The retroactive pass runs lib/diarize_sherpa.py on the whole call with the
 cassette's whole-file Whisper JSON. Both are scored per 20 ms frame and printed side by side.
 
---realtime: plays one call through the actual capture path (a loopback output device that
-`whosaid record --app` captures, `whosaid live run` following it) at 1x. It refuses any output
+--realtime: plays one call at 1x into a loopback output device, captures the device's input
+side into the two legs `whosaid record --app` writes (or, with --app, runs `record --app`),
+follows it with `whosaid live run --once --capture` and scores it next to the retroactive
+pass. It refuses any output
 device that is not a known loopback driver (BlackHole, Loopback, Soundflower, VB-Cable), so
 nothing is ever played to speakers or headphones.
 
@@ -901,39 +903,139 @@ def check_output_device(name: str, devices: list[dict]) -> tuple[bool, str]:
     return True, "loopback"
 
 
+# Runs under `uv run --with sounddevice --with numpy`: PortAudio reads the loopback's input at
+# the device's own clock. ffmpeg's avfoundation input dropped about 12% of BlackHole's samples
+# (8 s of wall time gave 6.8 s of audio), which shrank the live timeline against the call.
+CAPTURE_SCRIPT = r"""
+import queue, signal, struct, sys, sounddevice as sd
+name, app_path, mic_path, rate = sys.argv[1], sys.argv[2], sys.argv[3], int(sys.argv[4])
+devs = [i for i, d in enumerate(sd.query_devices()) if d["name"] == name and d["max_input_channels"] > 0]
+if len(devs) != 1:
+    sys.exit(f"capture: want one input named {name!r}, found {len(devs)}")
+def header(n):
+    return b"RIFF" + struct.pack("<I", 36 + n) + b"WAVEfmt " + struct.pack("<IHHIIHH", 16, 1, 1, rate, 2 * rate, 2, 16) \
+        + b"data" + struct.pack("<I", n)
+legs = [open(app_path, "wb"), open(mic_path, "wb")]
+for f in legs:
+    f.write(header(0xFFFFFFFF - 36)); f.flush()
+q, stop, n = queue.Queue(), [], 0
+signal.signal(signal.SIGTERM, lambda *_: stop.append(1))
+signal.signal(signal.SIGINT, lambda *_: stop.append(1))
+with sd.InputStream(device=devs[0], channels=1, samplerate=rate, dtype="int16",
+                    callback=lambda x, *_: q.put(bytes(x))):
+    while not stop:
+        try:
+            b = q.get(timeout=0.2)
+        except queue.Empty:
+            continue
+        legs[0].write(b); legs[1].write(bytes(len(b))); n += len(b)
+        for f in legs:
+            f.flush()
+for f in legs:
+    f.seek(0); f.write(header(n)); f.close()
+"""
+
+
+def loopback_capture(device: str, cap: Path, env: dict) -> list:
+    """Capture the loopback device's input side into cap/app.wav and a silent cap/mic.wav on
+    the same clock: the two growing 16 kHz mono legs `whosaid record --app` writes, so
+    `live run --capture` follows them. Only the loopback's own input is opened (the name
+    already passed check_output_device); never a microphone."""
+    cap.mkdir(parents=True)
+    uv = shutil.which("uv")
+    if not uv:
+        raise SystemExit("live-eval: --realtime capture needs uv (sounddevice)")
+    return [subprocess.Popen([uv, "run", "--quiet", "--with", "sounddevice", "--with", "numpy", "python", "-I", "-c",
+                              CAPTURE_SCRIPT, device, str(cap / "app.wav"), str(cap / "mic.wav"), str(RATE)],
+                             env=env)]
+
+
+def capture_offset(cap_wav: Path, app) -> float | None:
+    """Seconds into the captured leg where the played call starts: the peak of the
+    normalized cross-correlation of the call's first 10 s with the capture, on the raw
+    waveform (a digital loopback gives back nearly the same samples, so the peak is sharp)."""
+    import numpy as np
+    got = read_pcm(cap_wav)
+    if got is None or len(got) < RATE:
+        return None
+    a = np.asarray(app[: 10 * RATE], dtype=np.float64)
+    x = np.asarray(got, dtype=np.float64)
+    if len(x) < len(a) or not a.any():
+        return None
+    m = 1 << int(np.ceil(np.log2(len(x) + len(a))))
+    c = np.fft.irfft(np.fft.rfft(x, m) * np.conj(np.fft.rfft(a, m)), m)[: len(x) - len(a) + 1]
+    e = np.concatenate([[0.0], np.cumsum(x * x)])
+    energy = np.sqrt(np.maximum(e[len(a):] - e[: len(x) - len(a) + 1], 1e-9))
+    return float(np.argmax(c / energy)) / RATE
+
+
+def read_pcm(path: Path):
+    import numpy as np
+    import live
+    raw = path.read_bytes()
+    off = live.data_offset(raw[:4096])
+    if off is None:
+        return None
+    body = raw[off:]
+    return np.frombuffer(body[: len(body) // 2 * 2], dtype="<i2").astype(np.int32)
+
+
+def realtime_lines(entries: list, offset: float) -> list:
+    """Live lines on the call's clock. The jsonl has each line's start only, so a line runs
+    to the next "them" line (or ~65 ms a character for the last one, at most 30 s)."""
+    them = sorted((e for e in entries if e.get("who") == "them"), key=lambda e: float(e["t"]))
+    out = []
+    for k, e in enumerate(them):
+        a = float(e["t"]) - offset
+        b = float(them[k + 1]["t"]) - offset if k + 1 < len(them) else a + 0.065 * len(e.get("text") or "")
+        out.append({"a": a, "b": min(b, a + 30.0), "label": live_label(e), "mixed": bool(e.get("mixed")),
+                    "n": e.get("n"), "voice": e.get("voice"), "why": e.get("mixed_why"), "text": e.get("text")})
+    return out
+
+
 def run_realtime(a, call: dict, bank: dict) -> int:
-    """Play one call at 1x to a loopback device while `whosaid record --app` captures the
-    player and `whosaid live run --once` transcribes it, then print the live lines per
-    person next to the call's turns. The device is checked again right before ffmpeg
-    starts, and ffmpeg gets the index CoreAudio has for that name at that moment."""
-    if not a.app:
-        log("--realtime needs --app BUNDLE_ID: the app whose audio `whosaid record --app` captures "
-            "(the one running ffmpeg, e.g. your terminal)")
-        return 2
+    """Play one call at 1x into a loopback output device and follow it with
+    `whosaid live run --once --capture` (real Whisper, the live naming code), then score it
+    like --fast, next to the retroactive pass on the same call. The capture is the
+    loopback's input side (default), or with --app, `whosaid record --app` capturing the
+    player app. The device is checked again right before ffmpeg starts, and ffmpeg gets the
+    index CoreAudio has for that name at that moment."""
     app, truth = assemble(call, bank)
+    tag_events(truth)
     tmp = Path(tempfile.mkdtemp(prefix="whosaid-live-eval-rt-"))
     wav = tmp / f"{call['name']}.wav"
     write_wav(wav, app)
     whosaid = os.environ.get("WHOSAID_LIVE_EVAL_BIN") or str(ROOT / "whosaid")  # the test swaps in a fake
-    env = dict(os.environ)  # main() pointed WHOSAID_SPEAKER_DB at the throwaway registry
-    # `live run` is pinned with --capture to the one capture folder this recorder made, so a
-    # real call autorecord is capturing at the same time is never followed. The recorder's
-    # folder comes from `mktemp -d -t` (macOS puts it in the user temp dir, not $TMPDIR).
-    probe = Path(subprocess.check_output(["mktemp", "-d", "-t", "whosaid-live-eval-probe"], text=True).strip())
-    probe.rmdir()
-    before = set(probe.parent.glob("whosaid-record-app.*"))
-    rec = subprocess.Popen([whosaid, "record", "--app", a.app, "--no-mic", "--into", str(tmp / "rec")], env=env)
-    follow = None
+    env = dict(os.environ, HF_HUB_OFFLINE="1")  # main() pointed WHOSAID_SPEAKER_DB at the throwaway registry
+    writers, follow, play, idx, cap, play_wall, cap_started = [], None, None, None, None, 0.0, 0.0
     try:
-        new, deadline = [], time.time() + 30
-        while not new and time.time() < deadline and rec.poll() is None:
-            time.sleep(0.5)
-            new = sorted(set(probe.parent.glob("whosaid-record-app.*")) - before)
-        if len(new) != 1:
-            log(f"expected one new capture folder in {probe.parent} from `whosaid record --app {a.app}`, "
-                f"found {len(new)} (record rc {rec.poll()}); not following a capture that may be a real call")
-            return 2
-        cap = new[0]
+        if a.app:
+            # `live run` is pinned with --capture to the one capture folder this recorder made, so
+            # a real call autorecord is capturing at the same time is never followed. The folder
+            # comes from `mktemp -d -t` (macOS puts it in the user temp dir, not $TMPDIR).
+            probe = Path(subprocess.check_output(["mktemp", "-d", "-t", "whosaid-live-eval-probe"], text=True).strip())
+            probe.rmdir()
+            before = set(probe.parent.glob("whosaid-record-app.*"))
+            writers.append(subprocess.Popen([whosaid, "record", "--app", a.app, "--no-mic", "--into",
+                                             str(tmp / "rec")], env=env))
+            new, deadline = [], time.time() + 30
+            while not new and time.time() < deadline and writers[0].poll() is None:
+                time.sleep(0.5)
+                new = sorted(set(probe.parent.glob("whosaid-record-app.*")) - before)
+            if len(new) != 1:
+                log(f"expected one new capture folder in {probe.parent} from `whosaid record --app {a.app}`, "
+                    f"found {len(new)} (record rc {writers[0].poll()}); not following a capture that may be a real call")
+                return 2
+            cap = new[0]
+        else:
+            cap = tmp / "capture"
+            writers = loopback_capture(a.device, cap, env)
+            deadline = time.time() + 10
+            while not ((cap / "app.wav").exists() and (cap / "mic.wav").exists()) and time.time() < deadline:
+                time.sleep(0.2)
+            if not (cap / "app.wav").exists():
+                log(f"could not capture the input side of {a.device!r} (microphone permission?)")
+                return 2
         follow = subprocess.Popen([whosaid, "live", "run", "--once", "--capture", str(cap),
                                    "--into", str(tmp / "ws")], env=env)
         time.sleep(3)
@@ -944,31 +1046,66 @@ def run_realtime(a, call: dict, bank: dict) -> int:
             follow.terminate()
             return 3
         idx = next(d["index"] for d in devices if d["name"].strip().lower() == a.device.strip().lower())
-        play = subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-re", "-i", str(wav), "-f",
-                               "audiotoolbox", "-audio_device_index", str(idx), "-"],
+        log(f"playing {call['name']} ({len(app) / RATE:.0f} s) to {a.device} (CoreAudio index {idx})")
+        cap_started = (cap / "app.wav").stat().st_birthtime
+        play_wall = time.time()
+        play = subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-re", "-i", str(wav),
+                               "-f", "audiotoolbox", "-audio_device_index", str(idx), "-"],
                               timeout=len(app) / RATE + 120)
+        time.sleep(2)  # the device's tail
     finally:
-        rec.terminate()
-    if follow is None:
+        offset = capture_offset(cap / "app.wav", app) if cap is not None and (cap / "app.wav").exists() else None
+        for w in writers:
+            w.terminate()
+        for w in writers:
+            try:
+                w.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                w.kill()
+    if follow is None or play is None:
         return 2
     try:
-        follow.wait(timeout=600)
+        follow.wait(timeout=len(app) / RATE + 600)
     except subprocess.TimeoutExpired:
         follow.terminate()
+        log("live run did not finish in time")
     sessions = sorted((tmp / "ws" / ".live").glob("*.jsonl"))
-    lines = [json.loads(x) for x in sessions[-1].read_text().splitlines() if x.strip()] if sessions else []
-    said: dict = {}
-    for e in truth:
-        said[e["person"]] = said.get(e["person"], 0) + 1
-    shown: dict = {}
-    for e in lines:
-        if e.get("who") == "them":
-            k = e.get("name") or "them"
-            shown[k] = shown.get(k, 0) + 1
-    log(f"played {wav} to {a.device} (index {idx}, rc {play.returncode}); "
-        f"{len(lines)} live line(s) in {sessions[-1] if sessions else tmp / 'ws'}")
-    print(f"turns per person {said}\nlive lines per name {shown}")
-    return 0 if play.returncode == 0 and lines else 1
+    entries = [json.loads(x) for x in sessions[-1].read_text().splitlines() if x.strip()] if sessions else []
+    entries = [e for e in entries if "t" in e and "text" in e]
+    log(f"played {wav.name} to {a.device} (index {idx}, rc {play.returncode}); {len(entries)} live line(s); "
+        f"call starts {offset if offset is None else round(offset, 2)} s into the capture")
+    wall = play_wall - cap_started
+    if offset is None or abs(offset - wall) > 3.0:  # the correlation found something else: say so, use the clock
+        log(f"capture offset by correlation {offset} s is not near the wall clock's {wall:.2f} s; using the clock")
+        offset = wall
+    if play.returncode != 0 or not entries:
+        return 1
+
+    registry = json.loads((FIX / "registry.json").read_text())
+    n = frames(len(app) / RATE) + 1
+    enrolled = {x["name"] for x in registry["speakers"]}
+    guests = {e["person"] for e in truth} - enrolled
+    ll = realtime_lines(entries, offset)
+    cas = load_cassette(call["name"])
+    retro = run_retro(wav, cas["retro"], Path(os.environ["WHOSAID_SPEAKER_DB"]), tmp, call["name"])
+    res = {"seconds": len(app) / RATE, "events": len(truth), "offset": offset, "lines": len(ll),
+           "live": score_system(ll, truth, n, enrolled, guests),
+           "retro": score_system(retro["lines"], truth, n, enrolled, guests)}
+    dz = disagreement(ll, retro["lines"], truth, n, enrolled)
+    res["_disagree"] = dz
+    res["disagree"], res["disagree_turns"] = ratio(*dz["frames"]), ratio(*dz["turns"])
+    res["disagree_live_wrong"] = ratio(dz["live_wrong"], dz["frames"][0])
+    res["disagree_live_off"] = ratio(*dz["live_off"])
+    res["timing"] = {"ttn_mean": "-", "ttn": {}, "never_named": [], "flips": None, "lines": len(ll),
+                     "label_changes": 0}
+    res["checks"] = []
+    print_call(f"{call['name']} (realtime through {a.device}, real Whisper)", res)
+    if a.out:
+        Path(a.out).write_text(json.dumps({"realtime": {call["name"]: {k: v for k, v in res.items()
+                                                                     if not k.startswith("_")}},
+                                           "lines": ll}, indent=1, default=str) + "\n")
+    shutil.rmtree(tmp, ignore_errors=True)
+    return 0
 
 
 # ---------------------------------------------------------------- main
@@ -1042,7 +1179,8 @@ def main(argv: list[str] | None = None) -> int:
     mode.add_argument("--realtime", action="store_true", help="play one call through the capture path at 1x")
     mode.add_argument("--list-devices", action="store_true", help="print output devices and whether each is allowed")
     ap.add_argument("--device", help="with --realtime: the loopback output device name")
-    ap.add_argument("--app", help="with --realtime: bundle ID of the player `whosaid record --app` captures")
+    ap.add_argument("--app", help="with --realtime: capture with `whosaid record --app BUNDLE_ID` (the app "
+                                  "running this eval) instead of the loopback device's input side")
     ap.add_argument("--only", help="comma-separated call names")
     ap.add_argument("--split-words", choices=("default", "on", "off"), default="default",
                     help="live Whisper word times: as `whosaid live run` does (default), or forced")

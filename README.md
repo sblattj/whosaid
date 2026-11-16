@@ -1902,7 +1902,7 @@ needs no network and prints both passes side by side; one call per real-call fai
 handoff inside one segment, a short reply at a turn boundary, one person on a near and a far
 mic, live and retro disagreeing) and a 42-minute call. `--gate` fails when live is more than
 `--max-gap` points under retroactive or worse than the last release tag
-(`--baseline-ref last-tag`). `--realtime` plays a call through `record --app` and `live run`,
+(`--baseline-ref last-tag`). `--realtime` plays a call through a loopback capture and `live run`,
 only into a virtual loopback device such as BlackHole, never speakers or headphones. See
 [docs/live-diarize-eval.md](docs/live-diarize-eval.md).
 

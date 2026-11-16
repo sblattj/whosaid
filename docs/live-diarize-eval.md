@@ -115,7 +115,7 @@ Each output line says which baseline it compared against, e.g.
 `baseline lib/ at v1.41.4: live name_acc 76.7%, handoffs 69.4%, backchannels 3.2%`.
 
 Exit codes: 0 pass, 1 a check or the gate failed, 2 setup (missing models, a cassette miss,
-`--realtime` without `--app`), 3 `--realtime` refused the device.
+a `--realtime` capture that didn't start), 3 `--realtime` refused the device.
 
 `.github/workflows/live-eval.yml` runs the eval's unit test and
 `--fast --gate --max-gap 5 --baseline-ref last-tag` on pull requests that touch `lib/` or
@@ -139,13 +139,45 @@ writes `test/fixtures/live_diarize/cassette/<call>.json`. Nothing leaves the Mac
 ## `--realtime`: through the capture path
 
 ```bash
-python3 test/live_diarize_eval.py --realtime --device "BlackHole 2ch" --app com.apple.Terminal --only agree
+python3 test/live_diarize_eval.py --realtime --device "BlackHole 2ch" --only agree [--out rt.json]
 ```
 
-This plays one call at 1x into a loopback output device. `whosaid record --app <app> --no-mic`
-captures it and `whosaid live run --once` follows it, against the throwaway registry. It
-prints the truth turns and the live lines per name. `--app` is the app that runs ffmpeg
-(your terminal), because that is the app whose audio `record --app` captures.
+This plays one call at 1x into a loopback output device and captures the same device's
+input side into the two growing legs `whosaid record --app` writes (`app.wav` with the call,
+`mic.wav` silent, 16 kHz mono). `whosaid live run --once --capture <that folder>` follows it
+with real Whisper and the live naming code, against the throwaway registry. Then it scores
+the live lines next to the retroactive pass on the same call and prints them side by side,
+like `--fast`.
+
+- **The capture.** PortAudio (`sounddevice`, via `uv`) reads the loopback's input at the
+  device's clock. ffmpeg's avfoundation input was tried first and dropped about 12% of the
+  samples (8 s of wall time gave 6.8 s of audio), which shrank the live timeline.
+- **Only its own capture.** `live run` is always pinned with `--capture` to the folder this run
+  made, so a real call that autorecord is capturing at the same time is never followed. With
+  `--app <bundle id>` the capture is `whosaid record --app <app> --no-mic` instead (the app
+  whose audio ScreenCaptureKit takes; it needs an app bundle, so it doesn't work from a
+  process with none, like a background agent). The eval takes the one capture folder that
+  recorder made, and stops with exit 2 when it isn't exactly one.
+- **The call's clock.** Live lines carry the seconds since the capture started. The call's
+  start inside the capture is found by cross-correlating the call's first 10 s with the
+  captured audio (a loopback gives back nearly the same samples). If that lands more than 3 s
+  from the wall clock, the wall clock is used and it says so.
+- **Line spans.** A live line has a start, not an end, so each `them` line is scored from its
+  start to the next line's start (the last one gets about 65 ms per character, at most 30 s).
+  Gaps between turns count against the line before, so `--realtime` scores read a few points
+  under `--fast`, which knows each chunk's end.
+
+On `agree` through BlackHole 2ch (macOS arm64, real `whisper-large-v3-turbo`), the call
+started 3.19 s into the capture and live showed 25 lines:
+
+| metric | live | retro |
+|---|---|---|
+| correct name (talk time) | 90.6% | 88.2% |
+| enrolled but unnamed | 0.4% | 0.0% |
+| guest given a name | 0.0% | 0.3% |
+| handoffs right | 100.0% (n=4) | 75.0% |
+| backchannels right | 66.7% (n=3) | 33.3% |
+| turns live got wrong, retro right | 0.0% | |
 
 It only plays to a device that passes every one of these, read straight from CoreAudio
 (read-only, nothing is opened):
