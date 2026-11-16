@@ -107,4 +107,36 @@ with tempfile.TemporaryDirectory() as d:
     check(nc["reset"] is True and [t["text"] for t in nc["turns"]] == ["new call"]
           and nc["cursor"] == "20261030T160000:n0", f"a cursor from the previous call: all of the new one: {nc}")
 
+# ---- live explainer writers (#220)
+import os  # noqa: E402
+os.environ["WHOSAID_EXPLAIN_CLIPBOARD"] = "0"
+with tempfile.TemporaryDirectory() as d:
+    out = mcp_server.whosaid_live_explain_add("x", recordings=d)
+    check(out["ok"] is False and out["hint"], f"explain_add, no session: {out}")
+    into = Path(d)
+    jl = into / live.LIVE_DIR / "20261116T090000.jsonl"
+    jl.parent.mkdir()
+    jl.write_text(json.dumps({"meta": {"started": time.time() - 600, "ended": False, "updated": time.time()}}) + "\n")
+    out = mcp_server.whosaid_live_explain_add(
+        "Paging the export", explain=["Ben wants pages of 500 rows."], from_t="0", to_t="300",
+        sketch='<svg viewBox="0 0 100 40"><rect x="5" y="5" width="40" height="30" stroke="currentColor" fill="none"/></svg>',
+        claims=[{"who": "Ben", "text": "pages of 500 rows"}], questions=["Is 500 enough?"],
+        suggested=["Measure the slowest account first."], recordings=d)
+    check(out["ok"] and out["id"] == "001" and Path(out["file"]).is_file(), f"explain_add: {out}")
+    bad = mcp_server.whosaid_live_explain_add("y", sketch="<svg><script>1</script></svg>", recordings=d)
+    check(bad["ok"] is False and "not allowed" in bad["error"], f"unsafe sketch refused: {bad}")
+    cor = mcp_server.whosaid_live_explain_correct("001", before="pages of 500 rows", after="pages of 1000 rows",
+                                                  quote="make that a thousand", who="Ben", at="120",
+                                                  changes={"claims": [{"who": "Ben", "text": "pages of 1000 rows"}]},
+                                                  recordings=d)
+    frag = Path(out["file"]).read_text()
+    check(cor["ok"] and cor["rev"] == 2 and "<s>pages of 500 rows</s>" in frag and "make that a thousand" in frag,
+          f"explain_correct: {cor}")
+    check(mcp_server.whosaid_live_explain_correct("042", before="a", after="b", recordings=d)["ok"] is False,
+          "unknown id refused")
+    rc = mcp_server.whosaid_live_explain_recap(decisions=["Use pages of 1000"], recordings=d)
+    check(rc["ok"] and 'id="s-recap"' in (jl.with_name("20261116T090000.explain") / "index.html").read_text(),
+          f"explain_recap: {rc}")
+    check(mcp_server.whosaid_live_explain_recap(recordings=d)["ok"] is False, "empty recap refused")
+
 print(f"PASS: mcp_live_tools_test ({CHECKS} checks)")

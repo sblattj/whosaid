@@ -88,6 +88,9 @@ def main() -> None:
         "whosaid_live",
         "whosaid_live_insights",
         "whosaid_live_ask",
+        "whosaid_live_explain_add",
+        "whosaid_live_explain_correct",
+        "whosaid_live_explain_recap",
         "whosaid_set_status",
         "whosaid_voice_groups",
         "whosaid_name_voice_group",
@@ -337,6 +340,25 @@ def main() -> None:
     check(all(t in d_ss for t in ("ONE curated status event", "done (= delivered)", "Unknown ids are refused")),
           "set_status desc: one event, done alias, refusal")
     check("whosaid_set_status" in mcp_server.SERVER_INSTRUCTIONS, "instructions name the one writing workspace tool")
+
+    # --- live explainer (#220): three local writers, documented fields ---
+    for name in ("whosaid_live_explain_add", "whosaid_live_explain_correct", "whosaid_live_explain_recap"):
+        ann = dumps[name].get("annotations") or {}
+        check(ann.get("readOnlyHint") is False and ann.get("destructiveHint") is False
+              and ann.get("openWorldHint") is False, f"{name} annotations: {ann}")
+        check("Local files only" in (by_name[name].description or ""), f"{name} says local only")
+        check(name in mcp_server.SERVER_INSTRUCTIONS, f"instructions name {name}")
+    ex_add = dumps["whosaid_live_explain_add"]["inputSchema"]
+    check(set(ex_add.get("required", [])) == {"title"}, f"explain_add required: {ex_add.get('required')}")
+    check({"explain", "from_t", "to_t", "sketch", "claims", "jargon", "questions", "asks", "for_you",
+           "suggested", "low_confidence", "copy", "session"} <= set(ex_add["properties"]),
+          f"explain_add params: {sorted(ex_add['properties'])}")
+    d_ex_add = by_name["whosaid_live_explain_add"].description or ""
+    check("my ideas, not said on the call" in d_ex_add and "S-T:" in d_ex_add and "rich text" in d_ex_add,
+          "explain_add desc: suggested label, S-T, clipboard")
+    ex_cor = dumps["whosaid_live_explain_correct"]["inputSchema"]
+    check(set(ex_cor.get("required", [])) == {"id", "before", "after"}, f"explain_correct required: {ex_cor.get('required')}")
+    check('[live] explain = "claude"' in mcp_server.SERVER_INSTRUCTIONS, "instructions disclose the explain opt-in")
 
     # --- drafts outbox (#165): writers, readers, one stage tool, no send over MCP ---
     for name in ("whosaid_draft_new", "whosaid_draft_write", "whosaid_draft_verify", "whosaid_draft_close",

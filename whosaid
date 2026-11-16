@@ -31,6 +31,7 @@
 #   whosaid memos <sub>             list | pull | delete | shortcut-recipe: Voice Memos helpers.
 #   whosaid autorecord <sub>        run | install | uninstall | status: record every call unattended.
 #   whosaid live [show]             Live me/them transcript of the call being recorded.
+#   whosaid live explain serve      Live explainer page: plain sections + sketches, pushed over SSE.
 #   whosaid topics build [WS]       Topics across meetings into <WS>/_topics.json (the app's Topics).
 #   whosaid drafts <sub>            Offline outbox of verified chat drafts: new | verify | list | stage ...
 #   whosaid help                  This message.
@@ -779,6 +780,9 @@ LIVE
   whosaid live insights build --jsonl F [--out F] [--if-stale] [--ws WS]   (--ws: an ended call gets its final AI pass)
   whosaid live insights follow [--into DIR] [--poll S] [--once] [--max-hours N]
   whosaid live ask --question Q [--into DIR] [--ws WS] [--minutes N] [--json]
+  whosaid live explain serve [--into DIR] [--session STEM] [--port N] [--lan] [--ws WS]
+  whosaid live explain add|recap [--file F] [--no-copy] | correct NNN --before T --after T [--quote Q] [--who W] [--at T]
+  whosaid live explain render|status [--into DIR] [--session STEM] [--dir D] [--ws WS]
   run follows the call `record --app` / autorecord is capturing and transcribes it as
   it happens, locally (default model whisper-large-v3-turbo, or WHOSAID_LIVE_MODEL):
   every ~20 s it appends "me:" (your mic) and "them:" (the app) lines with times to
@@ -805,6 +809,22 @@ LIVE
   (--once: exits after the call ends). ask answers from the newest session by
   local search; only a --ws whose whosaid.toml sets [summarizer] engine = "claude"
   sends the transcript to Claude (on failure: the search answer, engine_error set).
+  explain (#220) is a live explainer page: every few minutes of talk becomes a section
+  on top (time range, plain explanation, an inline SVG sketch, "S-T:" translations,
+  claims by speaker, open questions, asks, a "For you" reply, a "Suggested" box that is
+  never something said, a low-confidence footnote); a final recap goes on top when the
+  call ends. Sections live in <into>/.live/<stem>.explain/NNN-<slug>.html (+ .json with
+  every earlier revision) and index.html, a static page with a 30 s refresh. serve puts
+  it on http://127.0.0.1:8765 (--port 0: any free port) and pushes changes over SSE: a
+  "new updates" button appears, nothing moves until you click it, and a correction loads
+  beside the old version with the changed words highlighted. --lan binds all interfaces;
+  other devices need the printed ?token= link (then an HttpOnly cookie) or get 403.
+  Sections come from an agent (MCP whosaid_live_explain_add / _correct / _recap), from
+  add / correct / recap (JSON on stdin or --file), or from Claude when --ws sets
+  [live] explain = "claude" (CLOUD; explain_every, explain_max_calls, explain_timeout,
+  explain_max_tokens). Nothing configured: the page stays empty, nothing is sent. A For
+  you answer is put on the clipboard as rich text (--no-copy, WHOSAID_EXPLAIN_CLIPBOARD=0:
+  never). Glossary terms: [live.explain_glossary] in whosaid.toml or <dir>/glossary.json.
 
 TOPICS
   whosaid topics build [WS] [--out F] [--chats] [--json]
@@ -2859,6 +2879,12 @@ cmd_app() {
 cmd_live() {
   if want_help "$@"; then help_section "LIVE"; exit 0; fi
   require_module "$REPO_DIR/lib/live.py" live
+  # explain (#220): the live explainer page, stdlib only, no uv
+  if [[ "${1:-}" == explain ]]; then
+    if want_help "${@:2}"; then help_section "LIVE"; exit 0; fi
+    require_module "$REPO_DIR/lib/live_explain.py" "live explain"
+    exec "$WHOSAID_PY" "$REPO_DIR/lib/live_explain.py" "${@:2}"
+  fi
   # insights build|follow and ask: stdlib only, no uv
   if [[ "${1:-}" == insights || "${1:-}" == ask ]]; then
     require_module "$REPO_DIR/lib/live_insights.py" "live $1"
