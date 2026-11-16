@@ -27,6 +27,7 @@ import concurrent.futures
 import json
 import math
 import os
+import re
 import subprocess
 import sys
 import tarfile
@@ -1154,35 +1155,211 @@ def diarize_parallel(audio: str, total_dur: float, num_speakers: int, jobs: int,
                             span_out=span_out)
 
 
-def build_turns(segs: list, whisper_json: str | None) -> list:
-    """Merge diarization segments with a whisper .json into (speaker, start, [texts]) turns."""
+# ---- boundary backchannels (#216) ----------------------------------------------
+# Whisper segments often run across a speaker change, so a short reply from the
+# NEXT speaker ("Exactly, right.") ends up glued onto the previous speaker's line
+# and segment-level assignment hands it to the wrong person. build_turns checks
+# the 1-3 words at either end of each segment: when they are all backchannel words,
+# set off by sentence punctuation, and another voice speaks within
+# BACKCHANNEL_GAP_SECONDS on that side, the reply becomes its own turn. It is then
+# reassigned when the diarization covers its words with the other voice, or when
+# its voiceprint is clearly closer to the other speaker (voice_vote); otherwise it
+# keeps its speaker and is flagged attribution_uncertain, so no consumer cites it
+# as that person's agreement. The long turn it came from is never flagged.
+BACKCHANNEL_WORDS = frozenset({
+    "yeah", "yes", "yep", "yup", "yea", "right", "exactly", "agreed", "sure", "okay", "ok",
+    "correct", "true", "totally", "absolutely", "definitely", "indeed", "precisely",
+    "mhm", "mm-hm", "mm-hmm", "uh-huh", "great", "perfect", "cool", "nice",
+})
+BACKCHANNEL_MAX_WORDS = 3
+BACKCHANNEL_GAP_SECONDS = 2.0      # the other voice must speak this close to the reply
+BACKCHANNEL_MIN_EMBED_SECONDS = 0.5  # shorter spans are not embedded (same floor as diarize_window)
+BACKCHANNEL_MARGIN = 0.10          # cosine lead one voice needs over the other to decide
+
+
+def _bc_norm(token: str) -> str:
+    return re.sub(r"^\W+|\W+$", "", token.lower())
+
+
+def _ends_sentence(token: str) -> bool:
+    return bool(re.search(r"[.?!]['\")\]]*$", token))
+
+
+def make_voice_vote(audio: str, cluster_emb: dict, embed=None, margin: float = BACKCHANNEL_MARGIN):
+    """vote(start, end, current, other) -> the closer cluster id, or None when the
+    span is too short to embed, a voiceprint is missing, or the margin is too small.
+    The scores of the last call are kept on vote.last for the sidecar record."""
+    state: dict = {}
+
+    def vote(start: float, end: float, current: str, other: str):
+        vote.last = None
+        if end - start < BACKCHANNEL_MIN_EMBED_SECONDS:
+            vote.last = {"skipped": "too short to embed"}
+            return None
+        a, b = cluster_emb.get(current), cluster_emb.get(other)
+        if a is None or b is None:
+            vote.last = {"skipped": "no voiceprint"}
+            return None
+        try:
+            if "fn" not in state:
+                state["fn"] = embed or make_ref_embedder()
+            v = state["fn"](load_audio(audio, start=start, dur=end - start))
+        except Exception as e:  # never fatal: an undecided reply is flagged instead
+            log(f"WARN backchannel voice check failed at {hms(start)}: {e}")
+            vote.last = {"skipped": "embedding failed"}
+            return None
+        sa, sb = _cos(v, np.asarray(a)), _cos(v, np.asarray(b))
+        vote.last = {"current": round(sa, 4), "other": round(sb, 4)}
+        if sb - sa >= margin:
+            return other
+        if sa - sb >= margin:
+            return current
+        return None
+    vote.last = None
+    return vote
+
+
+def build_turns(segs: list, whisper_json: str | None, *, voice_vote=None, stored: list | None = None,
+                decisions_out: dict | None = None) -> list:
+    """Merge diarization segments with a whisper .json into (speaker, start, [texts]) turns.
+
+    Boundary backchannels are split out as described above. `stored` replays the
+    decisions of an earlier run (a relabel has no audio to embed); every decision
+    made is written to decisions_out["backchannel"] for the sidecar."""
     turns = []
+    decisions: list = []
+    if decisions_out is not None:
+        decisions_out["backchannel"] = decisions
     if not whisper_json:
         return turns
     wj = json.loads(Path(whisper_json).read_text())
+    replay = {(round(float(x.get("start", 0)), 3), x.get("text")): x
+              for x in (stored or []) if isinstance(x, dict)}
 
-    def speaker_for(a: float, b: float) -> str:
-        overlaps = {}
+    def overlaps(a: float, b: float) -> dict:
+        out = {}
         for s in segs:
             ov = min(b, s["end"]) - max(a, s["start"])
             if ov > 0:
-                overlaps[s["speaker"]] = overlaps.get(s["speaker"], 0.0) + ov
-        if overlaps:
-            return max(overlaps, key=overlaps.get)
+                out[s["speaker"]] = out.get(s["speaker"], 0.0) + ov
+        return out
+
+    def speaker_for(a: float, b: float) -> str:
+        ov = overlaps(a, b)
+        if ov:
+            return max(ov, key=ov.get)
         mid = (a + b) / 2  # no overlap (silence-gap segment): nearest turn wins
         nearest = min(segs, key=lambda s: min(abs(mid - s["start"]), abs(mid - s["end"])))
         return nearest["speaker"]
 
+    def other_voice(sp: str, a: float, b: float, side: str) -> str | None:
+        """The nearest other speaker's segment on that side of the reply, if close enough."""
+        best = None
+        for s in segs:
+            if s["speaker"] == sp:
+                continue
+            if side == "trailing":
+                gap = s["start"] - b
+                ok = s["end"] > a and gap <= BACKCHANNEL_GAP_SECONDS
+            else:
+                gap = a - s["end"]
+                ok = s["start"] < b and gap <= BACKCHANNEL_GAP_SECONDS
+            if ok and (best is None or abs(gap) < best[0]):
+                best = (abs(gap), s["speaker"])
+        return best[1] if best else None
+
+    def backchannel(w: dict, sp: str, txt: str):
+        """[(speaker, start, text, sealed)] pieces for one whisper segment, or None."""
+        words = [x for x in (w.get("words") or []) if str(x.get("word", "")).strip()]
+        tokens = txt.split()
+        if len(words) < 2 or len(tokens) < 2:
+            return None
+        norm_w = [_bc_norm(x["word"]) for x in words]
+        for side in ("trailing", "leading"):
+            seq = norm_w[::-1] if side == "trailing" else norm_w
+            k = 0
+            while k < len(seq) and seq[k] in BACKCHANNEL_WORDS:
+                k += 1
+            if not 1 <= k <= BACKCHANNEL_MAX_WORDS or k >= len(words) or k >= len(tokens):
+                continue
+            if side == "trailing":
+                bc_tok, rest_tok, bc_words = tokens[-k:], tokens[:-k], words[-k:]
+                if not _ends_sentence(rest_tok[-1]):
+                    continue
+            else:
+                bc_tok, rest_tok, bc_words = tokens[:k], tokens[k:], words[:k]
+                if not _ends_sentence(bc_tok[-1]):
+                    continue
+            if [_bc_norm(t) for t in bc_tok] != [_bc_norm(x["word"]) for x in bc_words]:
+                continue  # the text no longer lines up with the word timings
+            a, b = float(bc_words[0]["start"]), float(bc_words[-1]["end"])
+            other = other_voice(sp, a, b, side)
+            if other is None:
+                continue
+            bc_text = " ".join(bc_tok)
+            rec = {"side": side, "start": round(a, 3), "end": round(b, 3), "text": bc_text,
+                   "from": sp, "to": other}
+            ov = overlaps(a, b)
+            prior = replay.get((rec["start"], bc_text))
+            if ov and max(ov, key=ov.get) == other:
+                rec.update(action="reassigned", reason="diarization")
+            elif prior and prior.get("from") == sp and prior.get("to") == other \
+                    and prior.get("action") in ("reassigned", "kept", "flagged"):
+                rec.update(action=prior["action"], reason=prior.get("reason", "stored"))
+                if "scores" in prior:
+                    rec["scores"] = prior["scores"]
+            elif voice_vote is not None:
+                winner = voice_vote(a, b, sp, other)
+                scores = getattr(voice_vote, "last", None)
+                if scores:
+                    rec["scores"] = scores
+                if winner == other:
+                    rec.update(action="reassigned", reason="voice")
+                elif winner == sp:
+                    rec.update(action="kept", reason="voice")
+                else:
+                    rec.update(action="flagged", reason="voice unclear")
+            else:
+                rec.update(action="flagged", reason="no voice evidence")
+            decisions.append(rec)
+            if rec["action"] == "kept":
+                return None
+            rest_text = " ".join(rest_tok)
+            rest_start = float(w["start"]) if side == "trailing" else float(words[k]["start"])
+            bc_piece = (other, a, bc_text, False) if rec["action"] == "reassigned" else (sp, a, bc_text, True)
+            rest_piece = (sp, rest_start, rest_text, False)
+            return [rest_piece, bc_piece] if side == "trailing" else [bc_piece, rest_piece]
+        return None
+
+    sealed = False  # the last turn is a flagged reply: nothing merges into it
     for w in wj.get("segments", []):
         txt = (w.get("text") or "").strip()
         if not txt:
             continue
         sp = speaker_for(w["start"], w["end"])
-        if turns and turns[-1][0] == sp:
-            turns[-1][2].append(txt)
-        else:
-            turns.append((sp, w["start"], [txt]))
+        pieces = backchannel(w, sp, txt) or [(sp, w["start"], txt, False)]
+        for psp, pstart, ptxt, pseal in pieces:
+            if turns and turns[-1][0] == psp and not sealed and not pseal:
+                turns[-1][2].append(ptxt)
+            else:
+                turns.append((psp, pstart, [ptxt]))
+            sealed = pseal
     return turns
+
+
+def uncertain_turns(turns: list, decisions: list, names: dict) -> list:
+    """Sidecar records of the turns a flagged backchannel became, keyed the way the
+    speaker transcript prints them ([t_str] + text), for search and evidence filters."""
+    out = []
+    for rec in decisions or []:
+        if rec.get("action") != "flagged":
+            continue
+        for sp, start, texts in turns:
+            if round(float(start), 3) == rec["start"] and " ".join(texts) == rec["text"]:
+                out.append({"t_str": hms(start), "speaker": names.get(sp, sp), "text": rec["text"],
+                            "candidate": names.get(rec["to"], rec["to"])})
+                break
+    return out
 
 
 def render_outputs(outdir: Path, base: str, segs: list, speakers: list, names: dict,
@@ -2212,8 +2389,13 @@ def do_relabel(args) -> None:
     else:
         data.pop("roles", None)  # never leave a stale roles map behind
     data["local_labels"] = local_labels
+    # #216: replay the transcribe run's backchannel decisions (no audio here).
+    bc: dict = {}
+    turns = build_turns(segs, data.get("whisper_json"), stored=data.get("backchannel"), decisions_out=bc)
+    if turns:
+        data["backchannel"] = bc["backchannel"]
+        data["attribution_uncertain_turns"] = uncertain_turns(turns, bc["backchannel"], names)
     sidecar.write_text(json.dumps(data, indent=2))
-    turns = build_turns(segs, data.get("whisper_json"))
     render_outputs(outdir, base, segs, speakers, names, turns, args.snippets,
                    detect_mode, emb_name=emb_model,
                    count_warning=data.get("count_warning"), roles=roles or None,
@@ -2638,7 +2820,12 @@ def main() -> None:
     num_counted = len(speakers) - len(uncounted)
 
     # ---- render RTTM + speaker-labeled transcript + snippet cards ----
-    turns = build_turns(segs, args.whisper_json)
+    bc: dict = {}
+    turns = build_turns(segs, args.whisper_json, decisions_out=bc,
+                        voice_vote=make_voice_vote(args.audio, cluster_emb))
+    for rec in bc["backchannel"]:
+        log(f"backchannel at {hms(rec['start'])} \"{rec['text']}\": {rec['action']} "
+            f"({names.get(rec['from'], rec['from'])} -> {names.get(rec['to'], rec['to'])}, {rec['reason']})")
     render_outputs(outdir, base, segs, speakers, names, turns, args.snippets, detect_mode,
                    count_warning=count_warning, roles=roles or None,
                    local_names={v["name"] for v in local_labels.values()},
@@ -2669,6 +2856,8 @@ def main() -> None:
         "fold_note": fold_note,
         "anchors": (anchor_info["names"] if anchor_info else None),
         "segments": segs,
+        "backchannel": bc["backchannel"],
+        "attribution_uncertain_turns": uncertain_turns(turns, bc["backchannel"], names),
         "cluster_emb": {sp: cluster_emb[sp].tolist() for sp in cluster_emb},
         "whisper_json": str(Path(args.whisper_json).resolve()) if args.whisper_json else None,
     }

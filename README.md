@@ -124,6 +124,7 @@ the models as usual.
 | `whosaid record --app A [--no-mic] [--label L]` | Capture one app's audio (Zoom, a browser, ...) through ScreenCaptureKit, plus the mic, to a stereo `recordings/<timestamp>[-label].m4a` (left = mic, right = the app), then transcribe it. `A` is a bundle ID, an app name, or a unique part of either; `whosaid record --list-apps` lists them. Needs macOS 15+, Xcode Command Line Tools (a small Swift helper, `lib/record_app.swift`, is built on first use into `~/.cache/whosaid`) and Screen & System Audio Recording permission for your terminal. No virtual audio device. `--no-mic` records the app alone. With `--me NAME` (or `$WHOSAID_OWNER`), the voice heard only on the mic is named NAME and app-side voices never are. If macOS kills the capture it restarts in place. |
 | `whosaid record --browser [--cdp-port P] [--target T] [--leave-selector CSS] [--max-seconds N] [--leave] [--no-mic] [--into DIR] [--label L]` | Record one browser meeting tab (Teams web, Meet, Zoom web) through the Chrome DevTools port to a stereo `.m4a` (left = mic, right = the tab). Needs no Screen Recording permission and stops by itself when the call ends. Without `--into` it saves under `recordings/` and transcribes; with `--into DIR` it only saves and prints the path. See [Record a browser meeting tab](#record-a-browser-meeting-tab-no-permissions). |
 | `whosaid <audio>… [flags]` | The default command: transcribe + diarize + label one or more audio files. `--reuse-asr` skips Whisper when `<out>/<base>.json` already exists and re-diarizes only (errors if the json is missing; not valid with `--no-diarize`). `whosaid transcribe <audio>…` is the same command written explicitly (matching the `whosaid_transcribe` MCP tool name). |
+| `whosaid <audio>… --vocabulary TERM … --correct WRONG=RIGHT …` | Workspace vocabulary (issue #216). Each `--vocabulary TERM` (repeatable) joins into Whisper's initial prompt; each `--correct WRONG=RIGHT` (repeatable, e.g. `--correct "blobser=blob store"`) rewrites a known mishearing over the whole transcript before diarization, on `--reuse-asr` too. The raw text stays in `<base>.json` as each segment's `raw_text`. See [Hands-free ingest](#hands-free-ingest-whosaid-watch). |
 | `whosaid relabel <base> SPEAKER_02=Jane …` | Put real names on clusters after reading the speaker cards. Rewrites the transcript + cards and saves each named voiceprint to the local registry for future transcripts — refusing (unless `--force`) to overwrite an existing registry entry the new cluster doesn't match (similarity below the match threshold, default 0.50). No re-transcription. |
 | `whosaid relabel <base> SPEAKER_04=Alice --blend` | Average the cluster into Alice's saved print instead of replacing it, to strengthen the print from a new recording. Same similarity guard as a normal relabel. See [Speaker identity: enrollment clips vs. the registry](#speaker-identity-enrollment-clips-vs-the-registry). |
 | `whosaid relabel <base> SPEAKER_04=Alice --no-save [--note TEXT]` | Transcript-only label: renames the cluster in the transcript + cards and never writes to the registry. For a speaker the conversation makes obvious but whose cluster is a poor voiceprint — a long mixed cluster saved as that person would degrade their enrolled print. The label is kept in the sidecar (`local_labels`), survives `relabel --auto` and `whosaid samples`, and each card is marked `Alice_Example  (transcript-only label; registry untouched)`. See [Speaker identity: enrollment clips vs. the registry](#speaker-identity-enrollment-clips-vs-the-registry). |
@@ -331,8 +332,10 @@ whosaid drafts html                             # review page of every open draf
 - **Claims first.** Each claim in `claims.json` has a `kind` (code, tech, people, status, said), a
   `verdict` (confirmed, refuted, unverified) and `evidence`. `verify` refuses a draft with an
   unchecked claim, a refuted claim not marked `dropped`, a confirmed claim without evidence, a
-  confirmed tech claim without a doc URL, no stakeholders, a stakeholder with no searched topics,
-  or an em dash. It stamps a hash of the message, claims and pages; any later edit reads as stale.
+  confirmed tech claim without a doc URL, a confirmed claim whose evidence cites a search hit
+  with `attribution_uncertain: true` (a turn whose speaker is in doubt, see
+  [Short replies at turn boundaries](#short-replies-at-turn-boundaries)), no stakeholders, a
+  stakeholder with no searched topics, or an em dash. It stamps a hash of the message, claims and pages; any later edit reads as stale.
 - **What someone said cites the turn.** A `said` claim (who said, agreed or decided what) carries
   turn refs, not a paraphrase: `{meeting, t, quote}` for a meeting turn or `{message_id, quote}`
   for a chat or mail message (the index id or the raw Teams id). `verify` resolves each ref through
@@ -1023,6 +1026,30 @@ both `run` and `install` refuse, naming the bad key.
 workspace. It is a default, not a merge: any speaker flag on the command (including the
 watcher's own `[watch]` hints) replaces the whole `[diarize]` set for that run. A bad value
 makes ingest, MCP transcribe, `run` and `install` refuse, naming the bad key.
+
+`[transcribe]` is the workspace vocabulary (issue #216), set in `whosaid.toml`, and teaches the workspace its own terms:
+
+```toml
+[transcribe]
+vocabulary = ["blob store lib", "S3"]
+
+[transcribe.corrections]
+blobser = "blob store"
+SD = "S3"
+```
+
+`vocabulary` is passed to Whisper as its initial prompt, wrapped in an ordinary sentence
+(`Hello, and welcome to the meeting. Terms we use: blob store lib, S3.`): Whisper copies its
+prompt's style, and on a test clip a bare lowercase term list made the first window lose its
+capitals and full stops. Whisper only applies that prompt to
+the first ~30 s window (`condition_on_previous_text` stays off to avoid repeat loops), so the
+corrections do the rest: they run over the whole transcript, whole words only, longest key
+first. A key with a capital letter matches exactly (`SD` never hits `sd`); an all-lowercase key
+ignores case. Each corrected segment keeps its original wording as `raw_text` in `<base>.json`,
+and a re-run (including `whosaid reprocess`) recomputes from that raw text. Both settings apply
+to every `whosaid ingest --into` the workspace and to MCP `whosaid_transcribe` into it, and
+add to any `--vocabulary` / `--correct` on the command. A bad value makes ingest, MCP
+transcribe and reprocess refuse, naming the key.
 
 Reinstall preserves saved environment settings, including custom tool paths. Current exported
 certificate settings and explicit `--env` values can override saved values; `--env` takes final
@@ -1812,6 +1839,8 @@ The sidecar's machine-readable extras, so a consumer never has to scrape stderr 
 | `source` | Recording provenance: `{"path": "/abs/path.m4a", "duration_seconds": 1834.2, "creation_time": "2026-09-14T18:02:11.000000Z"}`. `creation_time` is the container tag, or `null` when the file carries none. |
 | `roles` | Optional — present only when at least one speaker carries a registry role: `{"Karen": "boss"}`. Read by downstream consumers such as the commitments extractor. |
 | `uncounted` | `["SPEAKER_NN", ...]` (empty when none): anonymous clusters (no name) with under 1 s of total talk. They are not in `num_speakers`, the speaker cards or the transcript's `# Speakers (N)` header (a `# Uncounted` line names them instead), and they are not workspace attendees; their words stay in the transcript under the `SPEAKER_NN` label and `relabel SPEAKER_NN=Name` still works (a named cluster always counts). `relabel --auto` re-applies the rule to existing meetings. |
+| `backchannel` | One record per short reply split off at a turn boundary (issue #216): `{"side": "trailing", "start": 19.94, "end": 21.06, "text": "Exactly, right.", "from": "SPEAKER_00", "to": "SPEAKER_01", "action": "reassigned", "reason": "diarization"}`. `action` is `reassigned`, `kept` or `flagged`; `reason` is `diarization`, `voice` (with `scores`), `voice unclear` or `no voice evidence`. `relabel` replays these decisions, so a rename never re-decides a reply. Empty when none. |
+| `attribution_uncertain_turns` | The flagged replies as transcript turns: `{"t_str": "00:00:19", "speaker": "Alice_Example", "text": "Exactly, right.", "candidate": "Bob_Example"}`. Search marks these turns `attribution_uncertain`. Rewritten by `relabel` with the current names. |
 | `count_before_fold`, `count_after_fold`, `fold_note` | Physical speaker-cluster counts before and after the anonymous-phantom check, plus a note when it ran. Equal counts and `fold_note: null` mean no fold was applied. These counts do not claim that the remaining speakers were identified. Older sidecars are read as their observed `num_speakers` for both counts. |
 
 In a meeting workspace, `ingest --commitments` additionally writes per-meeting
@@ -1827,6 +1856,27 @@ matches score far higher — in the end-to-end test the enrolled reference match
 **0.986**, against **0.194** for the nearest stranger, so 0.50 sits in a wide empty gap. Use
 `registry_matches` to see exactly how close every near-miss came, then lower the threshold
 deliberately if a real speaker is being missed.
+
+### Short replies at turn boundaries
+
+Whisper often glues a quick reply onto the end (or start) of the other speaker's segment:
+`...every service imports it. Exactly, right.` all lands on one speaker. When a segment ends
+(or begins) with 1 to 3 reply words (`yeah`, `right`, `exactly`, `sure`, `okay`, `mhm` and
+similar), set off by sentence punctuation, and another speaker's diarization turn sits within
+2 s on that side, the reply is split into its own turn and decided:
+
+1. Its word timestamps fall in the other speaker's diarization turn: **reassigned** to them.
+2. Otherwise the two voiceprints vote on the reply's own audio (needs 0.5 s and a 0.10
+   cosine margin): **reassigned** or **kept**.
+3. No clear vote: the reply stays with the original speaker as its own turn, **flagged**
+   `attribution_uncertain`.
+
+Every decision is logged (`diarize: backchannel at 00:00:19 "Exactly, right.": reassigned
+(SPEAKER_00 -> SPEAKER_01, diarization)`) and stored in the sidecar's `backchannel` key. A flagged
+turn is listed in `attribution_uncertain_turns`, so `whosaid search` hits on it carry
+`attribution_uncertain: true` with an empty `assertion_text`, commitments skip it, and a draft's
+`verify` refuses a confirmed claim that cites it. Re-run `whosaid <audio> --reuse-asr` to apply
+this to an existing transcript.
 
 ## Troubleshooting
 

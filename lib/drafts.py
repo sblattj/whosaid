@@ -646,6 +646,16 @@ def recap_check(ws, m: dict, said: dict, days: int = 14, k: int = 3) -> dict:
     return {"recap": recap, "errors": errs}
 
 
+def _cites_uncertain(evidence) -> bool:
+    """True when claim evidence includes a whosaid hit flagged attribution_uncertain (#216):
+    a "yes" whose speaker the transcript could not place is nobody's agreement."""
+    if isinstance(evidence, dict):
+        return evidence.get("attribution_uncertain") is True or any(_cites_uncertain(v) for v in evidence.values())
+    if isinstance(evidence, list):
+        return any(_cites_uncertain(v) for v in evidence)
+    return False
+
+
 def gate(m: dict, ws=None, said: bool = True) -> list[str]:
     """Every open gate. said=False skips resolving said claims' turns (stage and edit without a
     workspace: the verify stamp already covers them)."""
@@ -680,6 +690,9 @@ def _gate(m: dict, ws=None, check_said: bool = True) -> tuple[list[str], dict]:
             errs.append(f"claim {kid}: confirmed without evidence")
         if k.get("kind") == "tech" and v == "confirmed" and not re.search(r"https?://", json.dumps(k.get("evidence"))):
             errs.append(f"claim {kid}: tech claim needs a doc URL in evidence")
+        if v == "confirmed" and _cites_uncertain(k.get("evidence")):
+            errs.append(f"claim {kid}: confirmed on a turn whose speaker is uncertain (attribution_uncertain, "
+                        f"e.g. a short reply split off at a turn boundary); cite another turn or mark it unverified")
     sh = c.get("stakeholders") or []
     if not sh:
         errs.append("stakeholders[] empty: who has opinions on this, and what did whosaid say")

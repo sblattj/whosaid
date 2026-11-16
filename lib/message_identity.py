@@ -170,6 +170,11 @@ class MessageIndex:
                 if alias and not meta.get("chat_id") and not meta.get("conversation_id"):
                     meta["chat_name"] = str(alias)
                 segments = [s for s in (sidecar.get("segments") or []) if isinstance(s, dict)]
+                # #216: short replies the diarizer split off at a turn boundary but
+                # could not place. Keyed by printed time + text, so a relabel that
+                # renames the speaker keeps the flag.
+                uncertain = {(str(u.get("t_str")), normalized(u.get("text", "")))
+                             for u in (sidecar.get("attribution_uncertain_turns") or []) if isinstance(u, dict)}
                 by_turn = defaultdict(list)
                 for segment in segments:
                     by_turn[(segment.get("speaker"), segment.get("start"),
@@ -191,6 +196,8 @@ class MessageIndex:
                     row = {**pointer, "message_id": key, "source_kind": meta.get("kind"),
                            "speaker": turn.speaker, "text": turn.text,
                            **assertion_parts(turn.text, segment)}
+                    if (turn.t_str, normalized(turn.text)) in uncertain:
+                        row.update(assertion_text="", attribution_uncertain=True)
                     self.by_meeting[meeting].append(row)
                     self.by_id[key].append(pointer)
                     if meta.get("kind") in TEXT_KINDS and segment.get("epoch_ms") is not None and len(normalized(turn.text)) >= 80:
