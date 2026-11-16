@@ -63,6 +63,7 @@ import wsconfig  # noqa: E402
 import watch as watch_mod  # noqa: E402
 import live as live_mod  # noqa: E402
 import live_insights  # noqa: E402
+import live_explain  # noqa: E402
 
 # Single source of truth: lib/__init__.py (pyproject.toml reads it too, via
 # hatch's dynamic version). Import both ways so the file works as a package
@@ -201,7 +202,7 @@ def _time_to_seconds(value: str) -> float:
 # ---------------------------------------------------------------------------
 # Server instructions (loaded once — cross-cutting semantics, NOT per tool).
 # ---------------------------------------------------------------------------
-SERVER_INSTRUCTIONS = """whosaid turns audio into a transcript where every turn is labeled with who spoke. It runs 100% locally on Apple Silicon via the MLX Whisper GPU pipeline plus sherpa-onnx diarization — audio, text, and voice embeddings NEVER leave the machine; there are no API keys and no cloud calls. (One opt-in exception, never made by these tools: a workspace configured with [summarizer] engine = "claude" has its action items drafted by Claude, so ingest sends transcript text to Anthropic; the item notes say so. A second, separate opt-in, [live] ai = "claude", makes the app's live insights follower send the newest lines of a call in progress to Claude every few minutes for topic labels, a recap and next steps; whosaid_live_insights then shows labelSource "ai" and an `ai` block.)
+SERVER_INSTRUCTIONS = """whosaid turns audio into a transcript where every turn is labeled with who spoke. It runs 100% locally on Apple Silicon via the MLX Whisper GPU pipeline plus sherpa-onnx diarization — audio, text, and voice embeddings NEVER leave the machine; there are no API keys and no cloud calls. (One opt-in exception, never made by these tools: a workspace configured with [summarizer] engine = "claude" has its action items drafted by Claude, so ingest sends transcript text to Anthropic; the item notes say so. A second, separate opt-in, [live] ai = "claude", makes the app's live insights follower send the newest lines of a call in progress to Claude every few minutes for topic labels, a recap and next steps; whosaid_live_insights then shows labelSource "ai" and an `ai` block.) A third, [live] explain = "claude", lets `whosaid live explain serve --ws` send the newest lines to Claude every few minutes to write live explainer sections; without it the explainer page is written only by an agent through whosaid_live_explain_add, whosaid_live_explain_correct and whosaid_live_explain_recap, which write local files only.
 
 Output-file contract: each transcribe writes, using <base> = the input's basename (or your `name`, with any character outside [A-Za-z0-9_-] mapped to '_'): <base>.txt (plain transcript), <base>.speakers.txt (speaker-labeled), <base>.speaker-cards.txt (one card per speaker: turn count, talk time, sample snippets — to tell who each SPEAKER_NN is), and <base>.diarization.json (a sidecar that whosaid_relabel reuses). Diarization results include `count_before_fold`, `count_after_fold`, and `fold_note`; these are physical speaker-cluster counts before and after the anonymous-phantom check, not identity claims.
 
@@ -2124,6 +2125,109 @@ def whosaid_decisions(meeting: Optional[str] = None, workspace: Optional[str] = 
                 "hint": "pass meeting=<folder> for a recorded meeting, or start `whosaid live` during a call"}
     _meta, res = decisions.live_ledger(found[-1])
     return dict(ok=True, source="live", session=res["meeting"], **res)
+
+
+_EXPLAIN_COMMON = (
+    "The live explainer page (`whosaid live explain serve`, #220) shows the call being recorded "
+    "as plain-language sections, newest on top; the user's open page gets a 'new updates' button "
+    "over SSE and nothing moves until they click it. Write to the newest live session (or "
+    "`session`, a stem); `recordings` defaults to ~/Recordings. Local files only: nothing is sent "
+    "anywhere. Returns ok, id (NNN, stable), rev, file and page."
+)
+_DESC_EXPLAIN_ADD = (
+    "Add one section to the live explainer for a few minutes of substantive talk you just read with "
+    "whosaid_live (keep its cursor). Fields: title; from_t/to_t (seconds since the call started, the "
+    "turns' t, or HH:MM); explain (plain paragraphs for a smart outsider); sketch (one small inline "
+    "<svg>, hand-drawn style, stroke='currentColor', shapes and text only: a flow, before/after or "
+    "who-does-what; scripts, event handlers and external links are refused); claims [{who, text}] "
+    "attributed to the named speaker; jargon [{term, st}] one-line simple translations shown as "
+    "'S-T:'; questions (open); asks [{who, text}] what the user is asked or owes; for_you [{who, ask, "
+    "answer, source}] for an ask aimed at the user, answered from earlier meetings and chats (look "
+    "it up with whosaid_search first) and put on the clipboard as rich text for the call chat; "
+    "suggested (your own ideas, shown as 'my ideas, not said on the call'); low_confidence (weak "
+    "voice matches, likely mis-hears). " + _EXPLAIN_COMMON
+)
+_DESC_EXPLAIN_CORRECT = (
+    "Correct an earlier live explainer section when later talk contradicts it (for example 'no, "
+    "that fallback is not on by default'). Never re-add it: the section keeps its id, its earlier "
+    "revision is kept, and it gains a before/after box with `before` (the old claim, struck "
+    "through), `after` (the corrected claim) at `at` (seconds or HH:MM), the source `quote` and "
+    "`who`. `changes` optionally replaces section fields (same names as whosaid_live_explain_add). "
+    "The open page loads the corrected version beside the old one with the changed words "
+    "highlighted. " + _EXPLAIN_COMMON
+)
+_DESC_EXPLAIN_RECAP = (
+    "Write the final recap on top of the live explainer when the call has ended (whosaid_live "
+    "says ended): decisions, open questions, and owes [{who, text}] (who owes what). Calling it "
+    "again replaces the recap. " + _EXPLAIN_COMMON
+)
+
+
+def _explain_dir(recordings: Optional[str], session: Optional[str]):
+    into = Path(recordings).expanduser() if recordings else live_mod.DEFAULT_INTO
+    try:
+        return live_explain.store_dir(into, session), None
+    except live_explain.ExplainError as err:
+        return None, {"ok": False, "error": str(err),
+                      "hint": "start `whosaid live` while a call is recorded, or pass session"}
+
+
+def _explain_write() -> ToolAnnotations:
+    return ToolAnnotations(read_only_hint=False, destructive_hint=False, idempotent_hint=False,
+                           open_world_hint=False)
+
+
+@mcp.tool(name="whosaid_live_explain_add", description=_DESC_EXPLAIN_ADD, annotations=_explain_write())
+def whosaid_live_explain_add(title: str, explain: Optional[list[str]] = None, from_t: Optional[str] = None,
+                             to_t: Optional[str] = None, sketch: Optional[str] = None,
+                             claims: Optional[list[dict]] = None, jargon: Optional[list[dict]] = None,
+                             questions: Optional[list[str]] = None, asks: Optional[list[dict]] = None,
+                             for_you: Optional[list[dict]] = None, suggested: Optional[list[str]] = None,
+                             low_confidence: Optional[list[str]] = None, copy: bool = True,
+                             recordings: Optional[str] = None, session: Optional[str] = None) -> dict:
+    """One new section on top of the newest session's explainer page."""
+    d, err = _explain_dir(recordings, session)
+    if err:
+        return err
+    data = {"title": title, "explain": explain or [], "from": from_t, "to": to_t, "sketch": sketch or "",
+            "claims": claims or [], "jargon": jargon or [], "questions": questions or [], "asks": asks or [],
+            "for_you": for_you or [], "suggested": suggested or [], "low_confidence": low_confidence or []}
+    try:
+        return live_explain.add(d, data, copy=None if copy else (lambda *_: False))
+    except live_explain.ExplainError as err:
+        return {"ok": False, "error": str(err), "hint": "fix the field named in the error and call again"}
+
+
+@mcp.tool(name="whosaid_live_explain_correct", description=_DESC_EXPLAIN_CORRECT, annotations=_explain_write())
+def whosaid_live_explain_correct(id: str, before: str, after: str, quote: str = "", who: str = "",
+                                 at: Optional[str] = None, changes: Optional[dict] = None,
+                                 recordings: Optional[str] = None, session: Optional[str] = None) -> dict:
+    """Correct one section in place with a before/after box."""
+    d, err = _explain_dir(recordings, session)
+    if err:
+        return err
+    if changes:
+        changes = {("from" if k == "from_t" else "to" if k == "to_t" else k): v for k, v in changes.items()}
+    try:
+        return live_explain.correct(d, id, before, after, quote, who, at, changes or None)
+    except live_explain.ExplainError as err:
+        return {"ok": False, "error": str(err), "hint": "pass an id the add call returned"}
+
+
+@mcp.tool(name="whosaid_live_explain_recap", description=_DESC_EXPLAIN_RECAP, annotations=_explain_write())
+def whosaid_live_explain_recap(decisions: Optional[list[str]] = None, questions: Optional[list[str]] = None,
+                               owes: Optional[list[dict]] = None, recordings: Optional[str] = None,
+                               session: Optional[str] = None) -> dict:
+    """The final recap on top of the explainer page."""
+    d, err = _explain_dir(recordings, session)
+    if err:
+        return err
+    try:
+        return live_explain.recap(d, {"decisions": decisions or [], "questions": questions or [],
+                                      "owes": owes or []})
+    except live_explain.ExplainError as err:
+        return {"ok": False, "error": str(err), "hint": "give at least one decision, question or owe"}
+
 
 _DESC_SET_STATUS = (
     "Mark one action item or commitment (AI-NNN or CM-NNN) with a status, for example done when "
