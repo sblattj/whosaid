@@ -401,6 +401,22 @@ def teams_live_sync(ws: Path, cfg: dict, dry: bool) -> int:
     return 0 if dry else n
 
 
+def backup_pass(ws: Path, cfg: dict, dry: bool) -> str:
+    """[backup] interval + to in whosaid.toml: one scheduled `whosaid backup` pass (#180),
+    after ingest and inside the run lock. Never raises: a failed backup is logged and
+    retried on the next pass, and never blocks recordings."""
+    if not (cfg.get("backup") or {}).get("interval"):
+        return ""
+    try:
+        import backup
+        msg = backup.scheduled_pass(ws, cfg, dry)
+    except Exception as e:  # noqa: BLE001
+        msg = f"backup: failed ({e}); will retry next pass"
+    if msg:
+        tlog(msg)
+    return msg
+
+
 def watch_pass(ws: Path, source: Path, cfg: dict, whosaid: str, engine: str | None,
                accurate: bool, offline: bool, dry: bool) -> int:
     chats_new = teams_live_sync(ws, cfg, dry)
@@ -500,8 +516,10 @@ def cmd_run(args: argparse.Namespace) -> int:
         try:
             if args.seed:
                 return seed(ws, source, args.dry_run)
-            return watch_pass(ws, source, cfg, whosaid, args.engine, accurate,
-                              args.offline, args.dry_run)
+            rc = watch_pass(ws, source, cfg, whosaid, args.engine, accurate,
+                            args.offline, args.dry_run)
+            backup_pass(ws, cfg, args.dry_run)
+            return rc
         except (FileNotFoundError, PermissionError) as e:
             # PermissionError (Errno 1, "Operation not permitted") is what macOS TCC
             # raises when the running binary lacks Full Disk Access; FileNotFoundError
