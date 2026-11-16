@@ -44,6 +44,17 @@ time). Categories, tried in this order per cluster:
     blend        purity_time < 0.7: best similarity over all records and its candidate.
 If a record carries per-turn `turns` [{start,end,score,best}], time-weighted
 purity = seconds of turns with score >= 0.70 / seconds of all turns.
+
+Selection window (#100). The real over-split, blend and purity numbers come
+from listening to every unnamed cluster whose best absorb score fell in a
+window (real_stats.json embedding.selection, 0.70-0.85 from #77). Clusters
+below 0.70 were never sampled, so the real 0.70 floor is a cutoff, not a
+measured level. The judged over-split / blend rows therefore use only the
+synthetic clusters whose similarity is inside that window; "(all clusters)"
+rows report the unwindowed values and are not judged. Inside the window the
+median is in range by construction, so what the judged row really checks is
+that true splits (or blends) reach the window at all: when the batch has
+clusters of that category but none inside the window the row is NO.
 Enrolled names for a meeting = stems of RUNDIR/<id>/<mode>-refs/*.wav plus
 every name in a `pass: ref` record of the meeting's sidecar; when neither exists
 every truth speaker counts as enrolled.
@@ -308,18 +319,36 @@ def classify_clusters(truth, doc, enrolled):
     return out
 
 
-def embedding_stats(rows):
-    def sims(cat):
-        return [r["similarity"] for r in rows if r["category"] == cat]
+def selection_window(real):
+    """(lo, hi) absorb-score window the real split/blend sample was drawn from, or None."""
+    sel = ((real or {}).get("embedding") or {}).get("selection")
+    if not sel:
+        return None
+    return float(sel["score_min"]), float(sel["score_max"])
+
+
+def in_window(row, window):
+    if window is None:
+        return True
+    return row["similarity"] is not None and window[0] - 1e-9 <= row["similarity"] <= window[1] + 1e-9
+
+
+def embedding_stats(rows, window=None):
+    def sims(cat, windowed=True):
+        return [r["similarity"] for r in rows if r["category"] == cat
+                and (not windowed or in_window(r, window))]
 
     def pur(cat, key):
-        return [r[key] for r in rows if r["category"] == cat and r[key] is not None]
+        return [r[key] for r in rows if r["category"] == cat and r[key] is not None
+                and in_window(r, window)]
 
     return {
-        "emb_correct_pass1": stat(sims("correct")),
+        "emb_correct_pass1": stat(sims("correct", False)),
         "emb_over_split": stat(sims("over_split")),
+        "emb_over_split_all": stat(sims("over_split", False)),
         "emb_blend": stat(sims("blend")),
-        "emb_unenrolled": stat(sims("unenrolled")),
+        "emb_blend_all": stat(sims("blend", False)),
+        "emb_unenrolled": stat(sims("unenrolled", False)),
         "emb_purity_split": stat(pur("over_split", "purity")),
         "emb_purity_blend": stat(pur("blend", "purity")),
         "emb_purity_tw_split": stat(pur("over_split", "purity_tw")),
@@ -375,7 +404,7 @@ def compute(meetings, real):
             emb_rows.append(r)
     sd = aggregate_side(diar, edges, gap_thr)
     st = aggregate_side(tru, edges, gap_thr)
-    sd.update(embedding_stats(emb_rows))
+    sd.update(embedding_stats(emb_rows, selection_window(real)))
     return sd, st, emb_rows
 
 
@@ -422,9 +451,13 @@ def metric_list(real):
         rows.append(("turns %s: share of turns" % b, "turn_share_%d" % i, "pct"))
     for i, b in enumerate(bins):
         rows.append(("turns %s: share of talk" % b, "talk_share_%d" % i, "pct"))
+    win = selection_window(real)
+    tag = " (absorb %.2f-%.2f)" % win if win else ""
     rows += [("cosine, correct pass-1", "emb_correct_pass1", "num"),
-             ("cosine, over-split second cluster", "emb_over_split", "num"),
-             ("cosine, blend best candidate", "emb_blend", "num"),
+             ("cosine, over-split second cluster" + tag, "emb_over_split", "num"),
+             ("cosine, over-split second cluster (all clusters)", "emb_over_split_all", "num"),
+             ("cosine, blend best candidate" + tag, "emb_blend", "num"),
+             ("cosine, blend best candidate (all clusters)", "emb_blend_all", "num"),
              ("cosine, unenrolled best", "emb_unenrolled", "num"),
              ("purity (recorded), splits", "emb_purity_split", "num"),
              ("purity (recorded), blends", "emb_purity_blend", "num"),
@@ -462,11 +495,16 @@ def fmt_real(s, kind):
 def build_report(sd, st, real):
     tol = real.get("tolerance", 0.2)
     rows = []
+    window = selection_window(real)
     for label, key, kind in metric_list(real):
         r = real_stat(real, key)
+        flag = within(sd.get(key), r, tol)
+        if (window is not None and key in ("emb_over_split", "emb_blend") and flag == "n/a"
+                and r is not None and (sd.get(key + "_all") or {}).get("n")):
+            flag = "NO"  # clusters of this kind exist, but none reaches the real window
         rows.append({"metric": label, "key": key, "kind": kind,
                      "synthetic_diarizer": sd.get(key), "synthetic_truth": st.get(key),
-                     "real": r, "within": within(sd.get(key), r, tol)})
+                     "real": r, "within": flag})
     return rows
 
 

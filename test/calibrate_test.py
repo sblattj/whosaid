@@ -189,9 +189,13 @@ def test_real_stats(real):
     check((e["purity_split"]["min"], e["purity_split"]["max"]) == (0.03, 0.35), "split purity")
     check((e["purity_blend"]["min"], e["purity_blend"]["max"]) == (0.02, 0.09), "blend purity")
     # every metric calibrate.py reports resolves against the file (time-weighted purity has no real value)
+    sel = e["selection"]
+    check((sel["score_min"], sel["score_max"], sel["pass"]) == (0.70, 0.85, "absorb"),
+          "#77 by-ear window recorded: %r" % (sel,))
+    check(cal.selection_window(real) == (0.70, 0.85), "calibrate reads the window from the file")
     for label, key, kind in cal.metric_list(real):
         r = cal.real_stat(real, key)
-        if key.startswith("emb_purity_tw_"):
+        if key.startswith("emb_purity_tw_") or key.endswith("_all"):
             check(r is None, key + " has no real counterpart")
         else:
             check(r is not None, "real_stat resolves %s" % key)
@@ -217,6 +221,55 @@ def test_flag_logic():
     check(cal.within(s(None), withmed) == "n/a", "no synthetic data")
     check(cal.within(s(1.0), None) == "n/a", "no real counterpart")
     check(cal.within(s(1.0), {"value": None, "min": None, "max": None}) == "n/a", "empty real")
+
+
+def split_meeting(sims):
+    """One truth speaker X: S0 holds the name at pass ref, S1..Sn are over-split
+    second clusters whose absorb records score `sims`."""
+    turns = [turn("X", 0, 10)]
+    segs = [seg("S0", 0, 10)]
+    recs = [rec("S0", "X", 0.9, "ref", True)]
+    for i, v in enumerate(sims, 1):
+        a = 10.0 * i + 5
+        turns.append(turn("X", a, a + 5))
+        segs.append(seg("S%d" % i, a, a + 5))
+        recs.append(rec("S%d" % i, "X", v, "absorb", False))
+    return [("m", {"duration": 100.0, "turns": turns},
+             {"segments": segs, "registry_matches": recs, "source": {"duration_seconds": 100.0}}, {"X"})]
+
+
+def report(sims, real):
+    sd, st, _ = cal.compute(split_meeting(sims), real)
+    return {r["key"]: r for r in cal.build_report(sd, st, real)}
+
+
+def test_selection_window(real):
+    """#100: the real over-split range is the 0.70-0.85 window the by-ear sample
+    was drawn from, so the judged row uses only in-window synthetic clusters."""
+    unwindowed = json.loads(json.dumps(real))
+    del unwindowed["embedding"]["selection"]
+    sims = [0.32, 0.61, 0.64, 0.72, 0.81]  # the #100 shape: a long tail under 0.70
+    old = report(sims, unwindowed)["emb_over_split"]
+    check(old["within"] == "NO", "before #100: unwindowed median 0.64 is flagged, got %r" % old["within"])
+    near(old["synthetic_diarizer"]["value"], 0.64, "unwindowed median")
+    new = report(sims, real)
+    row = new["emb_over_split"]
+    check(row["within"] == "yes", "after #100: in-window median is judged, got %r" % row["within"])
+    near(row["synthetic_diarizer"]["value"], 0.765, "in-window median of 0.72, 0.81")
+    check(row["synthetic_diarizer"]["n"] == 2, "sub-window clusters excluded from the judged row")
+    allr = new["emb_over_split_all"]
+    check(allr["within"] == "n/a", "all-clusters row is reported, not judged")
+    near(allr["synthetic_diarizer"]["value"], 0.64, "all-clusters row keeps the unwindowed median")
+    check(allr["synthetic_diarizer"]["n"] == 5, "all-clusters row keeps every split")
+    check("absorb 0.70-0.85" in row["metric"], "judged row names its window: %r" % row["metric"])
+    # above the window is excluded too (the by-ear sample stopped at the 0.85 absorb bar)
+    near(report([0.72, 0.95], real)["emb_over_split"]["synthetic_diarizer"]["value"], 0.72, "0.95 excluded")
+    # splits exist but none reaches the window: the row fails, it does not go quiet
+    empty = report([0.32, 0.55, 0.66], real)["emb_over_split"]
+    check(empty["synthetic_diarizer"]["n"] == 0, "empty window")
+    check(empty["within"] == "NO", "splits present, none in window -> NO, got %r" % empty["within"])
+    # no splits at all: nothing to judge, like a batch without blends
+    check(report([], real)["emb_over_split"]["within"] == "n/a", "no splits at all -> n/a")
 
 
 def test_cli(meet, run, tmp):
@@ -249,6 +302,7 @@ def main():
         test_no_turns_tolerated(real)
         test_real_stats(real)
         test_flag_logic()
+        test_selection_window(real)
         test_cli(meet, run, tmp)
     print("calibrate_test: %d checks passed" % CHECKS)
 
