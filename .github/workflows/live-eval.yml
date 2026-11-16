@@ -1,0 +1,54 @@
+# Live diarization eval (#218): scores `whosaid live` speaker labels against the
+# retroactive pass on synthetic calls, from recorded Whisper output (a cassette), so
+# no model download beyond the cached sherpa-onnx models and no network while it runs.
+#
+# The gate fails when live is more than 5 points under retroactive or worse than the
+# last release tag's lib/ on the same calls (see docs/live-diarize-eval.md).
+name: live eval
+
+on:
+  pull_request:
+    paths:
+      - "lib/**"
+      - "test/live_diarize_eval*.py"
+      - "test/fixtures/live_diarize/**"
+      - ".github/workflows/live-eval.yml"
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  live-eval:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # --baseline-ref last-tag needs the tags
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+      - name: Install ffmpeg
+        run: sudo apt-get update -q && sudo apt-get install -y -q ffmpeg
+      - name: Cache sherpa-onnx models
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/sherpa-diarization
+          key: sherpa-models-${{ hashFiles('lib/diarize_sherpa.py') }}
+      # The only steps with network: models (when the cache misses) and the uv env.
+      - name: Fetch models and warm the uv env
+        working-directory: lib
+        run: uv run --quiet --with sherpa-onnx==1.13.8 --with numpy python diarize_sherpa.py --ensure-models-only
+      - name: Unit test (device guard, gate, cassette miss)
+        run: uv run --quiet --offline --with numpy python test/live_diarize_eval_test.py
+      - name: Live vs retroactive, gated
+        run: python3 test/live_diarize_eval.py --fast --gate --max-gap 5 --baseline-ref last-tag --out live-eval.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: live-eval
+          path: live-eval.json
+          if-no-files-found: ignore

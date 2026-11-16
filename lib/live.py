@@ -48,6 +48,7 @@ NO_SPEECH_MAX = 0.6      # segments Whisper itself rates as probably silence are
 LOGPROB_MIN = -1.0       # Whisper's own fallback bar: a lower average log-prob is a guess
 COMPRESSION_MAX = 2.4    # Whisper's own fallback bar: text this repetitive is a loop
 MIN_LOCAL_SECONDS = 0.8  # a mic chunk with less of your own voice than this is not sent
+MIN_PLACE_SECONDS = 0.6  # a line shorter than this is embedded with the speech around it (speech_island)
 GAP_KEEP = 0.3           # silence kept between your speech islands once the rest is cut out
 REPEAT_WINDOW = 4        # the same short text as one of a leg's last few lines is a loop
 # what Whisper says to silence and noise; never kept on its own
@@ -300,7 +301,7 @@ def transcribe_chunks(chunks: dict, transcribe, prior: list[dict], voices=None) 
             if voices is None or who != "them":
                 out.append({"t": round(t, 2), "who": who, "text": text})
                 continue
-            out.extend(placed_lines(seg, text, off, start / RATE, samples, voices))
+            out.extend(placed_lines(seg, text, off, start / RATE, samples, voices, transcribe))
     return out
 
 
@@ -318,23 +319,90 @@ def split_words(seg: dict, at: float) -> list[tuple[float, float, str]] | None:
     return parts if all(sum(c.isalpha() for c in p[2]) >= 2 for p in parts) else None
 
 
-def placed_lines(seg: dict, text: str, off: float, base: float, samples, voices) -> list[dict]:
+def backchannel_cut(seg: dict, text: str, seg_samples) -> tuple[str, str, str, float] | None:
+    """(side, reply, rest, cut) when the segment starts or ends with a short reply set off by
+    sentence punctuation ("Agreed. Can somebody...", "...after the break. Exactly."), using
+    #216's backchannel words; cut is seconds into the segment, from word times or else the
+    quietest moment between the reply and the rest."""
+    import numpy as np
+    from diarize_sherpa import BACKCHANNEL_MAX_WORDS, BACKCHANNEL_WORDS, _bc_norm, _ends_sentence
+    tokens = text.split()
+    dur = len(seg_samples) / RATE
+    if len(tokens) < 2 or dur < 1.0:
+        return None
+    words = [w for w in (seg.get("words") or []) if (w.get("word") or "").strip()]
+    off = float(seg.get("start") or 0)
+    for side in ("leading", "trailing"):
+        seq = tokens if side == "leading" else tokens[::-1]
+        k = 0
+        while k < len(seq) and _bc_norm(seq[k]) in BACKCHANNEL_WORDS:
+            k += 1
+        if not 1 <= k <= BACKCHANNEL_MAX_WORDS or k >= len(tokens):
+            continue
+        if side == "leading":
+            reply, rest = tokens[:k], tokens[k:]
+            if not _ends_sentence(reply[-1]):
+                continue
+        else:
+            reply, rest = tokens[-k:], tokens[:-k]
+            if not _ends_sentence(rest[-1]):
+                continue
+        if len(words) == len(tokens):  # word times line up with the text: cut between the words
+            w = words[k - 1] if side == "leading" else words[-k - 1]
+            nxt = words[k] if side == "leading" else words[-k]
+            cut = (float(w["end"]) + float(nxt["start"])) / 2 - off
+        else:
+            win = RATE // 25  # 40 ms
+            lo, hi = (0.25, min(1.6, dur - 0.5)) if side == "leading" else (max(0.5, dur - 1.6), dur - 0.25)
+            if hi <= lo:
+                continue
+            e = [(float(np.abs(seg_samples[i:i + win]).mean()), i + win // 2)
+                 for i in range(int(lo * RATE), int(hi * RATE) - win, win // 2)]
+            if not e:
+                continue
+            cut = min(e)[1] / RATE
+        if 0.2 <= cut <= dur - 0.2:
+            return side, " ".join(reply), " ".join(rest), cut
+    return None
+
+
+def placed_lines(seg: dict, text: str, off: float, base: float, samples, voices, transcribe=None) -> list[dict]:
     """One "them" segment as line(s) with their running voice (#187). A speaker change
-    inside the segment splits it at the nearest word when Whisper gave word times;
-    without them the line is kept whole, placed on its longer side and marked
-    mixed_why="change" with change_at (seconds since the call start)."""
+    inside the segment splits it at the nearest word when Whisper gave word times, else
+    each side is transcribed again on its own (#218); only when that fails is the line kept
+    whole, placed on its longer side and marked mixed_why="change" with change_at (seconds
+    since the call start). A short reply at either end ("Agreed. ...") is split off when it
+    sounds like another running voice (#216's boundary backchannels, live); a short line
+    no voice clearly wins is marked mixed_why="short reply"."""
     end = float(seg.get("end") or off)
     seg_samples = samples[int(off * RATE):int(end * RATE)]
 
     def place(e: dict, part) -> dict:
         try:
-            if (v := voices.place(part)):
+            if len(part) < MIN_PLACE_SECONDS * RATE:
+                part = speech_island(samples, int(round((e["t"] - base) * RATE)), len(part))
+            try:
+                v = voices.place(part, key=(e["t"], e["text"]))
+            except TypeError:  # a Voices without short-line keys
+                v = voices.place(part)
+            if v:
                 e["voice"] = v
             if getattr(voices, "last_close", False) is True:
                 e["mixed_why"] = "close voices"
+            elif getattr(voices, "last_short", False) is True:
+                e["mixed_why"] = "short reply"
         except Exception as err:  # noqa: BLE001  a name is never worth the transcript
             log(f"live names: {err}")
         return e
+
+    def two(parts) -> list[dict] | None:
+        """Lines for [(start, end, text)] parts (segment clock), or None when both sides
+        are one running voice (a false change)."""
+        lines = [place({"t": round(base + a, 2), "who": "them", "text": words},
+                       samples[int(a * RATE):int(b * RATE)]) for a, b, words in parts]
+        if lines[0].get("voice") and lines[0].get("voice") == lines[1].get("voice"):
+            return None
+        return lines
 
     cp = None
     finder = getattr(voices, "change_point", None)
@@ -344,20 +412,93 @@ def placed_lines(seg: dict, text: str, off: float, base: float, samples, voices)
         except Exception as err:  # noqa: BLE001
             log(f"live speaker change: {err}")
     if cp is None:
+        try:
+            bc = backchannel_cut(seg, text, seg_samples)
+        except Exception as err:  # noqa: BLE001
+            log(f"live backchannel: {err}")
+            bc = None
+        if bc:
+            side, reply, rest, cut = bc
+            parts = [(off, off + cut, reply), (off + cut, end, rest)] if side == "leading" else \
+                [(off, off + cut, rest), (off + cut, end, reply)]
+            lines = two(parts)
+            if lines:
+                return lines
         return [place({"t": round(base + off, 2), "who": "them", "text": text}, seg_samples)]
     parts = split_words(seg, off + cp)
     if parts:
+        lines = two(parts)
+        return lines if lines else [place({"t": round(base + off, 2), "who": "them", "text": text}, seg_samples)]
+    pieces = retranscribed(seg_samples, off, cp, transcribe, finder) if transcribe is not None else None
+    if pieces == []:  # one side has no words: the change was a breath or noise, not a person
+        return [place({"t": round(base + off, 2), "who": "them", "text": text}, seg_samples)]
+    if pieces:
         lines = [place({"t": round(base + a, 2), "who": "them", "text": words},
-                       samples[int(a * RATE):int(b * RATE)]) for a, b, words in parts]
-        if lines[0].get("voice") and lines[0].get("voice") == lines[1].get("voice"):
-            return [dict(lines[0], text=text)]  # both sides are one running voice: a false change, keep it whole
-        return lines
+                       samples[int(a * RATE):int(b * RATE)]) for a, b, words in pieces]
+        if len({ln.get("voice") for ln in lines}) > 1 or not lines[0].get("voice"):
+            return lines
+        return [place({"t": round(base + off, 2), "who": "them", "text": text}, seg_samples)]  # one voice: a false change
     cut = int(cp * RATE)
     longer = seg_samples[:cut] if cut >= len(seg_samples) - cut else seg_samples[cut:]
     e = place({"t": round(base + off, 2), "who": "them", "text": text}, longer)
     e["mixed_why"] = "change"
     e["change_at"] = round(base + off + cp, 2)
     return [e]
+
+
+def retranscribed(seg_samples, off: float, cp: float, transcribe, finder=None,
+                  depth: int = 5) -> list[tuple[float, float, str]] | None:
+    """A segment with a speaker change at cp as (start, end, text) pieces (segment clock),
+    each transcribed on its own: without word times the text can't be cut at the change.
+    A piece holding another change is split again (a long segment can pass between three
+    people), up to `depth` levels while a piece is 3 s or longer. [] when fewer than two
+    pieces hold words (no real change), None when transcription failed."""
+    def cuts(a: int, b: int, at: float | None, level: int) -> list[tuple[int, int]]:
+        if at is None and finder is not None and level < depth and b - a >= 3 * RATE:
+            try:
+                at = finder(seg_samples[a:b])
+            except Exception:  # noqa: BLE001
+                at = None
+        if at is None:
+            return [(a, b)]
+        m = a + int(at * RATE)
+        return cuts(a, m, None, level + 1) + cuts(m, b, None, level + 1)
+    out = []
+    for a, b in cuts(0, len(seg_samples), cp, 1):
+        try:
+            got = transcribe(seg_samples[a:b])
+        except Exception as err:  # noqa: BLE001
+            log(f"live re-transcribe: {err}")
+            return None
+        text = " ".join((g.get("text") or "").strip() for g in got if keep_segment(g)).strip()
+        if sum(c.isalpha() for c in text) < 2:
+            continue  # a sliver with no words: its neighbours keep the text
+        out.append((off + a / RATE, off + b / RATE, text))
+    return out if len(out) >= 2 else []
+
+
+def speech_island(samples, at: int, n: int, reach: float = 0.4):
+    """The speech around a short segment [at, at+n): Whisper's timestamps for a one-word
+    reply often clip it to a few hundred ms, too little to embed. Grows the span while
+    20 ms frames stay above a tenth of its loudest frame, at most `reach` s each side."""
+    import numpy as np
+    fr = RATE // 50
+    seg = samples[at:at + n]
+    if len(seg) < fr:
+        return seg
+    peak = float(np.abs(seg).max()) or 1.0
+    floor = 0.1 * peak
+
+    def loud(i: int) -> bool:
+        x = samples[i:i + fr]
+        return len(x) == fr and float(np.abs(x).mean()) * 3 >= floor
+    a, b = at, at + n
+    lim = int(reach * RATE)
+    while a - fr >= max(0, at - lim) and loud(a - fr):
+        a -= fr
+    while b + fr <= min(len(samples), at + n + lim) and loud(b):
+        b += fr
+    return samples[a:b]
 
 
 def db(x) -> float:

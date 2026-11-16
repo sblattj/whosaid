@@ -341,11 +341,37 @@ def test_handoff_in_one_segment():
     check([e.get("name") for e in got] == ["Alice Ng", "Bob Builder"], f"each half gets its own voice: {got}")
     check(got[1]["t"] == 3.1, f"the second line starts at its first word: {got[1]}")
 
+    def by_side(s):  # Whisper without word times: the whole chunk, or one side on its own
+        if len(s) == len(samples):
+            return [dict(seg)]
+        return [{"start": 0.0, "end": len(s) / rate,
+                 "text": " so that's mine." if float(np.mean(s)) < 1.5 else " Right, agreed."}]
     v = lv.Voices(known, embed)
-    got = live.transcribe_chunks({"them": (0, samples)}, lambda s: [dict(seg)], [], v)
+    got = live.transcribe_chunks({"them": (0, samples)}, by_side, [], v)
+    v.annotate(got)
+    check([(e["t"], e["text"], e.get("name"), e.get("mixed")) for e in got]
+          == [(0.0, "so that's mine.", "Alice Ng", None), (3.0, "Right, agreed.", "Bob Builder", None)],
+          f"no word times: each side transcribed again on its own, two named lines (#218): {got}")
+
+    def whole_only(s):
+        if len(s) == len(samples):
+            return [dict(seg)]
+        raise RuntimeError("model gone")
+    v = lv.Voices(known, embed)
+    got = live.transcribe_chunks({"them": (0, samples)}, whole_only, [], v)
     v.annotate(got)
     check(len(got) == 1 and got[0]["mixed"] is True and got[0]["change_at"] == 3.0,
-          f"no word times: one line, flagged mixed, with the change point: {got}")
+          f"no word times and the sides can't be transcribed: one line, flagged mixed, with the change point: {got}")
+
+    def silent_side(s):
+        if len(s) == len(samples):
+            return [dict(seg)]
+        return [{"start": 0.0, "end": 1.0, "text": " so that's mine. Right, agreed." if float(np.mean(s)) < 1.5 else ""}]
+    v = lv.Voices(known, embed)
+    quiet = live.transcribe_chunks({"them": (0, samples)}, silent_side, [], v)
+    v.annotate(quiet)
+    check(len(quiet) == 1 and not quiet[0].get("mixed") and "change_at" not in quiet[0],
+          f"one side holds no words: no change after all, one unflagged line: {quiet}")
     with tempfile.TemporaryDirectory() as d:
         started = time.time() - 60
         got[0]["clock"] = datetime.fromtimestamp(started).strftime("%H:%M:%S")
