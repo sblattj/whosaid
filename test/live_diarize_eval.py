@@ -3,7 +3,7 @@
 against the retroactive pass (transcribe, diarize, name), on the same synthetic calls (#218).
 
     python3 test/live_diarize_eval.py --fast [--only handoff,near_far] [--out results.json]
-        [--gate [--max-gap 5] [--baseline last-release.json]]
+        [--gate [--max-gap 5] [--baseline scores.json | --baseline-ref last-tag] [--tolerance 0.5]]
     python3 test/live_diarize_eval.py --record            # re-record the Whisper cassette (dev, local model)
     python3 test/live_diarize_eval.py --realtime --device "BlackHole 2ch" --app BUNDLE_ID [--only agree]
     python3 test/live_diarize_eval.py --list-devices
@@ -43,7 +43,12 @@ Metrics (per system, per call and for the suite):
   flips            live only: label changes of an already named line, per line
 Every check in a call's `expect` must hold for the live pass; the exit code is 1 otherwise.
 --gate also fails when the suite's live name_acc is more than --max-gap points under the
-retroactive one, or under --baseline's live name_acc by more than 0.5 points.
+retroactive one, or when any gated live metric (name_acc, handoff_acc, backchannel_acc up;
+unnamed, split_voice, guest_named, disagree_live_off down) is more than --tolerance points
+worse than the baseline: --baseline reads a saved --out file, --baseline-ref runs this same
+eval on a git ref's lib/ (last-tag = the newest release tag) in a throwaway worktree. A
+baseline scored over other calls fails too. Exit codes: 0 pass, 1 a check or the gate
+failed, 2 setup (missing models or cassette), 3 --realtime refused the device.
 """
 from __future__ import annotations
 
@@ -821,6 +826,8 @@ def audio_devices() -> list[dict]:
     (-audio_device_index counts input devices too). Read-only, through CoreAudio's
     property API with ctypes: listing devices with ffmpeg itself would open the default
     output. [] when CoreAudio can't be read (not macOS)."""
+    if sys.platform != "darwin":
+        return []
     import ctypes
     import ctypes.util
     import struct
