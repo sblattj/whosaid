@@ -322,7 +322,8 @@ whosaid drafts html                             # review page of every open draf
   understanding?", "to recap", a bullet list), `verify` splits it into points and searches each one
   over the meetings the recipient spoke in during the last `--recap-days` (14; the chat itself never
   counts). Every point then needs a claim with `"point": N` and `"stance"`: `agree` or `disagree` (a
-  `said` claim citing the turn) or `skip` (the draft leaves it alone). A `disagree` without a resolved
+  `said` claim citing the turn) or `skip` (the draft leaves it alone; refused when the draft names the
+  point, as in "point 1" or "points 3 and 4", or shares its words). A `disagree` without a resolved
   turn fails, and so does citing the recap message itself. The failure lists the turns behind each
   point, so you see what supports the recipient before you tell them they are wrong; a passing verify
   returns them too (and `whosaid_draft_verify` returns them as `recap.points[].turns` either way).
@@ -435,7 +436,8 @@ Agents use the same outbox over MCP: `whosaid_draft_new`, `whosaid_draft_write`,
 `whosaid_draft_verify`, `whosaid_draft_close`, `whosaid_drafts`, `whosaid_draft_stakeholders`,
 `whosaid_draft_stale`, `whosaid_draft_sent_check`: create, read (with `rev` and `diff`),
 update and close. `whosaid_draft_verify` takes `voice` and `reason` for the override and
-returns `voice_warnings`; `whosaid_drafts(action="lint")` is the read-only lint.
+`recap_days` for a recap reply, and returns `voice_warnings`, `said` (each said claim's resolved
+turns) and `recap` (the per-point turns, also on `ok=false`); `whosaid_drafts(action="lint")` is the read-only lint.
 `whosaid_draft_stage` stages (and with `edit=true` loads a correction into Teams' Edit box); there
 is no send tool.
 

@@ -50,7 +50,8 @@ Recap replies (#215): when the draft's chat thread id is known and the recipient
 (since our own last one before the draft) hold a recap ("I heard: A, B, C, D. Does that match your
 understanding?", "to recap", a bullet list), verify splits it into points, searches each one over the
 meetings the recipient spoke in during the last --recap-days (14; the chat itself never counts), and
-requires a claim per point with `point: N` and `stance` agree|disagree|skip. Agree and disagree are
+requires a claim per point with `point: N` and `stance` agree|disagree|skip (skip is refused when the
+draft text names the point or shares its words). Agree and disagree are
 said claims; a disagree fails without a resolved turn, and the recap message is never a turn behind
 its own point. The per-point turns come back from verify (and on failure in DraftsError.detail, which
 the MCP tool returns), so the author fixes the draft against what was actually said.
@@ -537,6 +538,46 @@ def _attended(conn, speaker: str, days: int) -> set[str]:
     return {mt for (mt,) in rows if (_meeting_time(mt) or floor) >= floor}
 
 
+def _point_turns(wsp: Path, q: str, meetings: set[str], rc: dict, k: int) -> list[dict]:
+    """The top K turns for one point, searched inside each attended meeting (FTS5 OR over the point's
+    content words) and merged best first: a global search filtered afterwards loses the supporting
+    turn once older or unattended meetings fill its result list."""
+    if not q or not meetings:
+        return []
+    import search
+    try:
+        conn = search.open_index(wsp)
+    except search.SearchError:
+        return []
+    hits = []
+    try:
+        for mt in sorted(meetings):
+            try:
+                hits += [h for h in search.exact_hits(conn, q, k * 3, meeting=mt)
+                         if h.meeting == mt and not _is_recap(h.text, rc)]  # meeting= is a substring filter
+            except search.SearchError:
+                continue
+    finally:
+        conn.close()
+    hits.sort(key=lambda h: (-h.score, h.meeting, h.t_sec))
+    return [{"meeting": h.meeting, "t_str": h.t_str, "speaker": h.speaker, "text": h.text} for h in hits[:k]]
+
+
+_NUM_WORDS = {1: "first", 2: "second", 3: "third", 4: "fourth", 5: "fifth", 6: "sixth", 7: "seventh", 8: "eighth"}
+
+
+def _mentions_point(draft: str, n: int, point: str) -> bool:
+    """The draft text refers to recap point N: by number ("point 1", "points 3 and 4", "#1", "the
+    first point") or by sharing two or more of its content words."""
+    d = (draft or "").lower()
+    if re.search(rf"\bpoints?\s+(?:\d+\s*(?:,|and|&|or)\s*)*{n}\b", d) or re.search(rf"(?:^|\s)#{n}\b", d):
+        return True
+    if n in _NUM_WORDS and re.search(rf"\b{_NUM_WORDS[n]} (?:point|one)\b", d):
+        return True
+    words = {w for w in _words(point) if w not in STOP and len(w) > 3}
+    return len(words & set(_words(draft))) >= 2
+
+
 def recap_check(ws, m: dict, said: dict, days: int = 14, k: int = 3) -> dict:
     """#215: the draft replies in a chat whose newest message from the recipient is a recap ("I heard:
     A, B, C, D. Does that match?"). Each point gets the top turns from meetings the recipient spoke in
@@ -565,20 +606,10 @@ def recap_check(ws, m: dict, said: dict, days: int = 14, k: int = 3) -> dict:
             conn.close()
     claims = [x for x in claims_of(m).get("claims") or [] if not x.get("dropped")]
     resolved = {x["key"]: x for x in said.get("said") or []}
+    draft_text = _draft_text(m)
     points, errs = [], []
     for n, text in enumerate(rc["points"], 1):
-        turns = []
-        q = _point_query(text)
-        if q and meetings:
-            try:
-                _engine, hits = _search(wsp, q, 50)
-            except Exception:  # noqa: BLE001 - no index: the point still needs its claim
-                hits = []
-            for h in hits:
-                if h.meeting in meetings and not _is_recap(h.text, rc):
-                    turns.append({"meeting": h.meeting, "t_str": h.t_str, "speaker": h.speaker, "text": h.text})
-                if len(turns) >= k:
-                    break
+        turns = _point_turns(wsp, _point_query(text), meetings, rc, k)
         mine = [x for x in claims if str(x.get("point")) == str(n)]
         stance = next((x.get("stance") for x in mine if x.get("stance")), None)
         row = {"n": n, "text": text, "turns": turns, "claims": [x.get("key") for x in mine], "stance": stance}
@@ -594,6 +625,8 @@ def recap_check(ws, m: dict, said: dict, days: int = 14, k: int = 3) -> dict:
                 why.append(f"claim {kid}: stance must be agree, disagree or skip")
                 continue
             if st == "skip":
+                if _mentions_point(draft_text, n, text):
+                    why.append(f"claim {kid}: skip, but the draft talks about point {n}: agree or disagree with a said claim")
                 continue
             if x.get("kind") != "said":
                 why.append(f"claim {kid}: {st} needs a said claim (kind said) citing the turn")
@@ -2260,7 +2293,7 @@ def main(argv: list[str] | None = None) -> int:
             data = json.loads(_read_arg_file(args.file))
             r = write(args.id, claims=data.get("claims", []), stakeholders=data.get("stakeholders", []),
                       docs=data.get("docs", []), force=args.force)
-            print(f"{r['id']}: {r['state']}; gate: {len(r['gate'])} open")
+            print(f"{r['id']}: {r['state']}; gate: {len(gate(load(args.id), args.ws))} open")
             for k in said_check(claims_of(load(args.id)), args.ws)["said"]:  # the real words, before the prose
                 for t in k["turns"]:
                     print(f"  said {k['key']}: [{t['meeting']} @ {t['t_str']}] {t['speaker']}: {t['text']}")

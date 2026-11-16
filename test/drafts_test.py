@@ -1720,6 +1720,9 @@ class RecapTest(DraftsBase):
         self.claims(self.point(1, "disagree", [{"message_id": "r2", "quote": "the old resolver stays up until march"}]),
                     *self.rest())
         self.fails("recap point 1", "cites the recipient's own recap")
+        # skipping a point the draft text answers is not a way out
+        self.claims(self.point(1, "skip", "not addressed", kind="status"), *self.rest())
+        self.fails("recap point 1", "skip, but the draft talks about point 1")
         # a real turn: verify passes and still reports the turn that supports the recipient
         self.claims(self.point(1, "disagree", [{"meeting": self.other_folder, "t": "00:00:30",
                                                 "quote": "the old resolver can go away this week"}]), *self.rest())
@@ -1728,6 +1731,23 @@ class RecapTest(DraftsBase):
         self.assertEqual((p1["stance"], p1["claims"]), ("disagree", ["p1"]))
         self.assertEqual(p1["turns"][0]["t_str"], "00:01:00")
         self.assertEqual(p1["turns"][0]["meeting"], self.call_folder)
+
+    def test_the_supporting_turn_survives_many_matches_outside_the_window(self):
+        old = datetime.now() - timedelta(days=60)
+        for i in range(70):  # older and unattended meetings full of the point's words
+            self.meet((old - timedelta(hours=i)).strftime("%Y-%m-%d-%H%M"),
+                      [f"[00:00:{i % 60:02d}] {'Test_Person' if i % 2 else 'Fourth_Voice'}: the old resolver stays "
+                       "up until march, the old resolver stays up until march"])
+        search.build(self.ws, embed=False)
+        e = self.fails("recap point 1")
+        t = e.detail["recap"]["points"][0]["turns"][0]
+        self.assertEqual((t["meeting"], t["t_str"]), (self.call_folder, "00:01:00"))
+
+    def test_mentions_point(self):
+        d = "Points 3 and 4 match, but point 1 does not: the old resolver goes away this week."
+        self.assertEqual([n for n in range(1, 5) if drafts._mentions_point(d, n, "x y")], [1, 3, 4])
+        self.assertTrue(drafts._mentions_point("On the first point, no.", 1, "x y"))
+        self.assertTrue(drafts._mentions_point("The wildcard cert can go first.", 3, "the wildcard cert waits for the records"))
 
     def test_an_agreement_must_be_a_said_claim_and_stance_must_be_known(self):
         self.claims(self.point(1, "agree", "matches", kind="status"), *self.rest())
