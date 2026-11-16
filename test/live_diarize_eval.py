@@ -34,7 +34,10 @@ Metrics (per system, per call and for the suite):
   handoff_acc      handoffs (a reply < 0.3 s after another person) where both the last 1.5 s
                    before it and the first 1.5 s of the reply carry the right name
   backchannel_acc  short replies at a turn boundary under the right name
-  mixed_p/mixed_r  `mixed` flag precision / recall against lines that hold two people
+  mixed_p/mixed_r  `mixed` flag precision / recall. Recall is over lines holding two people
+                   (the second >= MIXED_MIN s and MIXED_SHARE of the line); a flag is
+                   precise on such a line or on a line whose label is wrong, since the
+                   flag tells the reader not to trust the label
   disagree         talk time where live and retroactive show different labels
   ttn              live only: seconds from a person's first word to their name showing
   flips            live only: label changes of an already named line, per line
@@ -69,16 +72,18 @@ NOISE = 6                      # +-int16 dither so silence is not digital zero
 HANDOFF_GAP = 0.3              # a reply this soon after another person is a handoff
 HANDOFF_HEAD = 1.5             # ...and its first (and the previous line's last) this-many seconds are scored
 SPLIT_SHARE = 0.05             # a label covering this share of a person counts as one of theirs
-MIXED_MIN = 0.3                # seconds of each of two people that make a line mixed
+MIXED_MIN = 0.3                # seconds of each of two people that make a line mixed...
+MIXED_SHARE = 0.2              # ...and the second person's least share of the line
 SHERPA_SPEC = os.environ.get("WHOSAID_SHERPA_SPEC", "sherpa-onnx==1.13.8")
 LIVE_MODEL = "mlx-community/whisper-large-v3-turbo"   # lib/live.py DEFAULT_MODEL
 RETRO_MODEL = "mlx-community/whisper-large-v3-mlx"    # whosaid transcribe's default
 REAL_REGISTRY = Path.home() / ".config" / "whosaid" / "speakers.json"
-# Output devices --realtime may play to: loopback drivers only. A device whose transport is
-# "Virtual" is not enough (a meeting app's own virtual device would send the call audio
-# into a meeting).
-LOOPBACK_NAMES = ("blackhole", "loopback audio", "soundflower", "vb-cable", "vb-audio")
-
+# Output devices --realtime may play to: loopback drivers only, matched by name prefix, with
+# a "virtual" CoreAudio transport. A virtual transport alone is not enough (a meeting app's
+# own virtual device would send the call audio into a meeting), and an aggregate or
+# multi-output device ("BlackHole + Speakers") is refused: part of it is a speaker.
+LOOPBACK_PREFIXES = ("blackhole", "loopback audio", "soundflower", "vb-cable")
+COMBINED_WORDS = ("+", "multi-output", "aggregate", "speaker", "headphone", "airpods")
 
 def log(msg: str) -> None:
     print(f"live-eval: {msg}", file=sys.stderr, flush=True)
@@ -248,8 +253,9 @@ def write_wav(path: Path, x) -> None:
 
 # ---------------------------------------------------------------- cassette (recorded Whisper)
 
-class CassetteMiss(RuntimeError):
-    pass
+class CassetteMiss(BaseException):
+    """Not an Exception: live.py keeps going past a failed transcription (`except
+    Exception`), and a --fast run must stop on audio the cassette doesn't hold."""
 
 
 def chunk_key(samples) -> str:
@@ -387,6 +393,18 @@ def run_live(app, transcribe, voices, tmp: Path) -> dict:
                                  base=state["base"]))
         return out
 
+    spans: dict = {}  # (t, text) -> (start, end) seconds since the call start, of each line made
+
+    orig_pl = live.placed_lines
+
+    def pl(seg, text, off, base, samples, voices_, *rest):
+        lines = orig_pl(seg, text, off, base, samples, voices_, *rest)
+        end = base + float(seg.get("end") or off)
+        for k, ln in enumerate(lines):
+            b = lines[k + 1]["t"] if k + 1 < len(lines) else end
+            spans[(round(float(ln["t"]), 2), ln["text"])] = (float(ln["t"]), float(b))
+        return lines
+
     orig_tc, orig_ws, orig_log = live.transcribe_chunks, live.write_session, live.log
 
     def tc(chunks, tr, prior, v=None):
@@ -401,14 +419,14 @@ def run_live(app, transcribe, voices, tmp: Path) -> dict:
         snapshots.append({"clock": round(state["fed"] / RATE, 2),
                           "entries": json.loads(json.dumps(entries))})
 
-    live.transcribe_chunks, live.write_session, live.log = tc, ws, (lambda m: None)
+    live.transcribe_chunks, live.write_session, live.log, live.placed_lines = tc, ws, (lambda m: None), pl
     try:
         live.follow(cap, into, logged, chunk_seconds=CHUNK_SECONDS, poll_seconds=0.0, stop=stop,
                     voices=voices)
     finally:
-        live.transcribe_chunks, live.write_session, live.log = orig_tc, orig_ws, orig_log
+        live.transcribe_chunks, live.write_session, live.log, live.placed_lines = orig_tc, orig_ws, orig_log, orig_pl
     final = snapshots[-1]["entries"] if snapshots else []
-    return {"entries": final, "snapshots": snapshots, "segs": segs_log, "chunks": chunk_lens}
+    return {"entries": final, "snapshots": snapshots, "segs": segs_log, "chunks": chunk_lens, "spans": spans}
 
 
 def live_label(e: dict) -> str:
@@ -418,31 +436,19 @@ def live_label(e: dict) -> str:
 
 
 def live_lines(run: dict, entries: list | None = None) -> list:
-    """Each live line with the time span of the Whisper segment (or split part) it came from."""
-    by_start = {}
-    by_word = {}
+    """Each live line with the time span it covers: captured where placed_lines made it
+    (a whole Whisper segment, or each part of a split one), else its segment's span."""
+    by_start: dict = {}
     for s in run["segs"]:
         by_start.setdefault(s["abs_start"], []).append(s)
-        for j, w in enumerate(s.get("words") or []):
-            by_word.setdefault(round(s["base"] + float(w["start"]), 2), []).append((s, j))
     out = []
     for e in (run["entries"] if entries is None else entries):
         t = round(float(e["t"]), 2)
-        span = None
-        for s in by_start.get(t, []):
-            if (s.get("text") or "").strip() == e["text"]:
-                span = (s["abs_start"], s["abs_end"])
-                break
+        span = run["spans"].get((t, e["text"]))
         if span is None:
-            for s, j in by_word.get(t, []):
-                k = max(1, len(e["text"].split()))
-                ws = s["words"][j:j + k]
-                span = (round(s["base"] + float(ws[0]["start"]), 3), round(s["base"] + float(ws[-1]["end"]), 3))
-                break
-        if span is None:
-            for s in by_start.get(t, []):  # same start, text changed (a split part kept whole)
-                span = (s["abs_start"], s["abs_end"])
-                break
+            got = by_start.get(t) or []
+            same = [s for s in got if (s.get("text") or "").strip() == e["text"]] or got
+            span = (same[0]["abs_start"], same[0]["abs_end"]) if same else None
         if span is None:
             continue
         out.append({"a": span[0], "b": span[1], "label": live_label(e), "mixed": bool(e.get("mixed")),
@@ -467,7 +473,11 @@ def run_retro(wav: Path, whisper: dict, registry_db: Path, tmp: Path, name: str)
     if r.returncode != 0:
         raise RuntimeError(f"diarize_sherpa failed ({r.returncode}): {r.stderr[-2000:]}")
     sc = json.loads((out / f"{name}.diarization.json").read_text())
-    turns = ds.build_turns(sc["segments"], str(wj), stored=sc.get("backchannel") or [])
+    import inspect
+    if "stored" in inspect.signature(ds.build_turns).parameters:
+        turns = ds.build_turns(sc["segments"], str(wj), stored=sc.get("backchannel") or [])
+    else:  # lib/ before #216 (a --baseline-ref): no boundary backchannels
+        turns = ds.build_turns(sc["segments"], str(wj))
     names = dict(sc.get("names") or {})
     for c, lab in (sc.get("local_labels") or {}).items():
         names[c] = lab.get("name") if isinstance(lab, dict) else lab
@@ -562,17 +572,24 @@ def score_system(lines: list, truth: list, n: int, enrolled: set, guests: set) -
     # the first HANDOFF_HEAD s of who replied (one label over both gets one of them wrong)
     hand = []
     for k, e in enumerate(truth):
-        if e["handoff"] and e["person"] in enrolled and truth[k - 1]["person"] in enrolled:
+        if e["handoff"] and e["person"] in enrolled and truth[k - 1]["person"] in enrolled \
+                and truth[k - 1]["kind"] != "short":  # a reply after a backchannel is scored as one
             p = truth[k - 1]
             hand.append(event_ok(e, HANDOFF_HEAD) and span_ok(p["person"], max(p["start"], p["end"] - HANDOFF_HEAD), p["end"]))
     bc = [event_ok(e, None) for e in truth if e["backchannel"] and e["person"] in enrolled]
     tp = fp = fn = 0
     for ln in lines:
         a, b = frames(ln["a"]), max(frames(ln["a"]) + 1, frames(ln["b"]))
-        held = sum(int(m[a:b].sum()) >= MIXED_MIN * FPS for m in who.values())
-        real = held >= 2
-        tp += ln["mixed"] and real
-        fp += ln["mixed"] and not real
+        held = {p: int(m[a:b].sum()) for p, m in who.items()}
+        ranked = sorted(held.items(), key=lambda kv: kv[1], reverse=True)
+        # two people: the second holds MIXED_MIN s and MIXED_SHARE of the line (a split
+        # line whose cut is a few hundred ms off is not a line holding two people)
+        real = len(ranked) > 1 and ranked[1][1] >= MIXED_MIN * FPS and ranked[1][1] >= MIXED_SHARE * (b - a)
+        top = ranked[0][0] if ranked and ranked[0][1] else None
+        wrong = top is not None and not (ln["label"] == top or (top in guests and ln["label"].startswith("them")))
+        # the flag says "don't trust this label": right on a mixed line or a wrong label
+        tp += ln["mixed"] and (real or wrong)
+        fp += ln["mixed"] and not (real or wrong)
         fn += real and not ln["mixed"]
     return {"name_acc": ratio(num["name"], num["den"]),
             "name_acc_shown": ratio(num["name"], num["den"] - num["missing"]),
@@ -721,79 +738,210 @@ def aggregate(results: dict) -> dict:
     return out
 
 
-def gate(suite: dict, max_gap: float, baseline: dict | None) -> list[str]:
-    """Reasons the suite fails the release gate (empty = pass)."""
+# metrics the gate holds against the baseline: (key, higher is better)
+GATED = (("name_acc", True), ("handoff_acc", True), ("backchannel_acc", True), ("unnamed", False),
+         ("split_voice", False), ("guest_named", False), ("disagree_live_off", False))
+
+
+def gate(suite: dict, max_gap: float, baseline: dict | None, tolerance: float = 0.5) -> list[str]:
+    """Reasons the suite fails the release gate (empty = pass): live's correct-name share
+    more than `max_gap` points under retroactive's, or any GATED metric more than
+    `tolerance` points worse than in `baseline` (an --out JSON, e.g. of the last tag)."""
     bad = []
     lv, rt = suite["live"]["name_acc"] or 0.0, suite["retro"]["name_acc"] or 0.0
     if 100 * (rt - lv) > max_gap:
         bad.append(f"live name_acc {100 * lv:.1f}% is {100 * (rt - lv):.1f} points under retroactive "
                    f"{100 * rt:.1f}% (max gap {max_gap:g})")
     if baseline:
-        old = ((baseline.get("suite") or {}).get("live") or {}).get("name_acc")
-        if old is not None and 100 * (old - lv) > 0.5:
-            bad.append(f"live name_acc {100 * lv:.1f}% regressed from the baseline's {100 * old:.1f}%")
+        old_suite = baseline.get("suite") or {}
+        if sorted(baseline.get("calls") or []) != sorted(suite.get("_calls") or baseline.get("calls") or []):
+            bad.append(f"the baseline scored other calls ({', '.join(sorted(baseline.get('calls') or []))}); "
+                       f"compare the same --only")
+        for key, up in GATED:
+            new = suite[key] if key.startswith("disagree") else suite["live"].get(key)
+            old = old_suite.get(key) if key.startswith("disagree") else (old_suite.get("live") or {}).get(key)
+            if new is None or old is None:
+                continue
+            worse = 100 * ((old - new) if up else (new - old))
+            if worse > tolerance:
+                bad.append(f"live {key} {100 * new:.1f}% regressed from the baseline's {100 * old:.1f}% "
+                           f"({worse:.1f} points, tolerance {tolerance:g})")
     return bad
+
+
+def baseline_at(ref: str, argv: list[str]) -> tuple[dict | None, str]:
+    """Scores of lib/ at git `ref` ("last-tag": the newest tag HEAD contains) on this
+    eval, its fixtures and cassettes: a detached worktree of ref with today's test/
+    copied over runs --fast --out. (None, why) when it can't run."""
+    def git(*args) -> subprocess.CompletedProcess:
+        return subprocess.run(["git", "-C", str(ROOT), *args], capture_output=True, text=True)
+    if ref == "last-tag":
+        r = git("describe", "--tags", "--abbrev=0")
+        if r.returncode != 0:
+            return None, "no tag to compare with"
+        ref = r.stdout.strip()
+    tmp = Path(tempfile.mkdtemp(prefix="whosaid-live-eval-base-"))
+    wt = tmp / "wt"
+    r = git("worktree", "add", "--detach", str(wt), ref)
+    if r.returncode != 0:
+        shutil.rmtree(tmp, ignore_errors=True)
+        return None, f"git worktree add {ref}: {r.stderr.strip()}"
+    try:
+        shutil.rmtree(wt / "test", ignore_errors=True)
+        shutil.copytree(HERE, wt / "test", ignore=shutil.ignore_patterns("__pycache__"))
+        out = tmp / "base.json"
+        keep = []
+        skip = {"--gate", "--baseline", "--baseline-ref", "--out", "--max-gap", "--tolerance"}
+        it = iter(argv)
+        for x in it:
+            if x.split("=")[0] in skip:
+                if "=" not in x and x != "--gate":
+                    next(it, None)
+                continue
+            keep.append(x)
+        log(f"baseline: lib/ at {ref}")
+        env = {k: v for k, v in os.environ.items() if k != "WHOSAID_LIVE_EVAL_CHILD"}
+        r = subprocess.run([sys.executable, str(wt / "test" / "live_diarize_eval.py"), *keep, "--out", str(out)],
+                           capture_output=True, text=True, env=env, timeout=3600)
+        if not out.exists():
+            return None, f"the eval at {ref} wrote no scores (rc {r.returncode}): {r.stderr.strip()[-400:]}"
+        data = json.loads(out.read_text())
+        data["ref"] = ref
+        return data, ref
+    finally:
+        git("worktree", "remove", "--force", str(wt))
+        shutil.rmtree(tmp, ignore_errors=True)
 
 
 # ---------------------------------------------------------------- realtime
 
-def audio_devices(raw: str | None = None) -> list[dict]:
-    """[{name, transport, outputs}] from system_profiler (or its JSON in `raw`)."""
-    if raw is None:
-        try:
-            raw = subprocess.run(["system_profiler", "SPAudioDataType", "-json"], capture_output=True,
-                                 text=True, timeout=60).stdout
-        except (OSError, subprocess.TimeoutExpired):
-            return []
+def audio_devices() -> list[dict]:
+    """[{index, name, transport, outputs}] for every CoreAudio device, in the order of
+    kAudioHardwarePropertyDevices: the order ffmpeg's audiotoolbox output numbers them
+    (-audio_device_index counts input devices too). Read-only, through CoreAudio's
+    property API with ctypes: listing devices with ffmpeg itself would open the default
+    output. [] when CoreAudio can't be read (not macOS)."""
+    import ctypes
+    import ctypes.util
+    import struct
     try:
-        data = json.loads(raw or "{}")
-    except json.JSONDecodeError:
+        ca = ctypes.CDLL(ctypes.util.find_library("CoreAudio") or "")
+        cf = ctypes.CDLL(ctypes.util.find_library("CoreFoundation") or "")
+    except OSError:
+        return []
+
+    class Addr(ctypes.Structure):
+        _fields_ = [("sel", ctypes.c_uint32), ("scope", ctypes.c_uint32), ("elem", ctypes.c_uint32)]
+
+    def cc(code: str) -> int:
+        return struct.unpack(">I", code.encode())[0]
+    u32p = ctypes.POINTER(ctypes.c_uint32)
+    ca.AudioObjectGetPropertyDataSize.argtypes = [ctypes.c_uint32, ctypes.POINTER(Addr), ctypes.c_uint32,
+                                                  ctypes.c_void_p, u32p]
+    ca.AudioObjectGetPropertyData.argtypes = [ctypes.c_uint32, ctypes.POINTER(Addr), ctypes.c_uint32,
+                                              ctypes.c_void_p, u32p, ctypes.c_void_p]
+    cf.CFStringGetCString.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_long, ctypes.c_uint32]
+    cf.CFRelease.argtypes = [ctypes.c_void_p]
+
+    def size(obj: int, sel: str, scope: str = "glob") -> int:
+        n = ctypes.c_uint32(0)
+        st = ca.AudioObjectGetPropertyDataSize(obj, ctypes.byref(Addr(cc(sel), cc(scope), 0)), 0, None, ctypes.byref(n))
+        return n.value if st == 0 else 0
+
+    def get(obj: int, sel: str, buf) -> bool:
+        n = ctypes.c_uint32(ctypes.sizeof(buf))
+        return ca.AudioObjectGetPropertyData(obj, ctypes.byref(Addr(cc(sel), cc("glob"), 0)), 0, None,
+                                             ctypes.byref(n), ctypes.byref(buf)) == 0
+    count = size(1, "dev#") // 4  # 1 = kAudioObjectSystemObject
+    ids = (ctypes.c_uint32 * max(1, count))()
+    if not count or not get(1, "dev#", ids):
         return []
     out = []
-    for grp in data.get("SPAudioDataType") or []:
-        for d in grp.get("_items") or []:
-            out.append({"name": d.get("_name", ""), "transport": d.get("coreaudio_device_transport", ""),
-                        "outputs": int(d.get("coreaudio_device_output") or 0)})
+    for i, dev in enumerate(ids[:count]):
+        name, ref = "", ctypes.c_void_p()
+        if get(dev, "lnam", ref) and ref.value:
+            buf = ctypes.create_string_buffer(1024)
+            if cf.CFStringGetCString(ref, buf, 1024, 0x08000100):  # UTF-8
+                name = buf.value.decode("utf-8", "replace")
+            cf.CFRelease(ref)
+        tran = ctypes.c_uint32(0)
+        get(dev, "tran", tran)
+        out.append({"index": i, "name": name, "outputs": size(dev, "stm#", "outp") // 4,
+                    "transport": struct.pack(">I", tran.value).decode("latin-1") if tran.value else ""})
     return out
 
 
 def check_output_device(name: str, devices: list[dict]) -> tuple[bool, str]:
-    """(ok, reason): only an installed loopback driver with output channels may be played to."""
-    d = next((x for x in devices if x["name"].lower() == (name or "").lower()), None)
-    if d is None:
+    """(ok, reason): only one installed loopback driver with output streams may be played to.
+    The name must match one device exactly, start with a LOOPBACK_PREFIXES entry, name no
+    speaker or combination (COMBINED_WORDS), and the device's transport must be virtual."""
+    want = (name or "").strip().lower()
+    found = [d for d in devices if d["name"].strip().lower() == want]
+    if not found:
         return False, f"no output device named {name!r}"
+    if len(found) > 1:
+        return False, f"{len(found)} devices are named {name!r}; can't tell which one ffmpeg would get"
+    d = found[0]
+    low = d["name"].lower()
     if d["outputs"] <= 0:
-        return False, f"{d['name']!r} has no output channels"
-    if not any(k in d["name"].lower() for k in LOOPBACK_NAMES):
-        return False, (f"{d['name']!r} is not a loopback device (transport {d['transport'] or 'unknown'}); "
-                       f"--realtime only plays to {', '.join(LOOPBACK_NAMES)}, never to speakers or headphones")
+        return False, f"{d['name']!r} has no output streams"
+    if not low.startswith(LOOPBACK_PREFIXES) or any(w in low for w in COMBINED_WORDS):
+        return False, (f"{d['name']!r} is not a loopback device; --realtime only plays to a device whose "
+                       f"name starts with {', '.join(LOOPBACK_PREFIXES)}, never to speakers, headphones "
+                       f"or a combination of them")
+    if d["transport"] != "virt":
+        return False, f"{d['name']!r} has transport {d['transport'] or 'unknown'!r}, not a virtual (loopback) driver"
     return True, "loopback"
 
 
 def run_realtime(a, call: dict, bank: dict) -> int:
-    ok, why = check_output_device(a.device, audio_devices())
-    if not ok:
-        log(f"refusing to play: {why}")
-        return 3
+    """Play one call at 1x to a loopback device while `whosaid record --app` captures the
+    player and `whosaid live run --once` transcribes it, then print the live lines per
+    person next to the call's turns. The device is checked again right before ffmpeg
+    starts, and ffmpeg gets the index CoreAudio has for that name at that moment."""
     if not a.app:
-        log("--realtime needs --app BUNDLE_ID: the player app whose output `whosaid record --app` captures")
+        log("--realtime needs --app BUNDLE_ID: the app whose audio `whosaid record --app` captures "
+            "(the one running ffmpeg, e.g. your terminal)")
         return 2
-    devs = [d for d in audio_devices() if d["outputs"] > 0]
-    idx = next(i for i, d in enumerate(devs) if d["name"].lower() == a.device.lower())
     app, truth = assemble(call, bank)
     tmp = Path(tempfile.mkdtemp(prefix="whosaid-live-eval-rt-"))
     wav = tmp / f"{call['name']}.wav"
     write_wav(wav, app)
     whosaid = str(ROOT / "whosaid")
-    rec = subprocess.Popen([whosaid, "record", "--app", a.app, "--no-mic", "--into", str(tmp / "rec")])
-    follow = subprocess.Popen([whosaid, "live", "run", "--once", "--into", str(tmp / "ws")])
-    time.sleep(5)
-    play = subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-re", "-i", str(wav), "-f",
-                           "audiotoolbox", "-audio_device_index", str(idx), "-"], timeout=len(app) / RATE + 120)
-    rec.terminate()
-    follow.wait(timeout=600)
-    log(f"played {wav} to {a.device} (rc {play.returncode}); live session under {tmp / 'ws'}")
-    return 0 if play.returncode == 0 else 1
+    env = dict(os.environ)  # main() pointed WHOSAID_SPEAKER_DB at the throwaway registry
+    rec = subprocess.Popen([whosaid, "record", "--app", a.app, "--no-mic", "--into", str(tmp / "rec")], env=env)
+    follow = subprocess.Popen([whosaid, "live", "run", "--once", "--into", str(tmp / "ws")], env=env)
+    try:
+        time.sleep(5)
+        devices = audio_devices()
+        ok, why = check_output_device(a.device, devices)
+        if not ok:
+            log(f"refusing to play: {why}")
+            return 3
+        idx = next(d["index"] for d in devices if d["name"].strip().lower() == a.device.strip().lower())
+        play = subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-re", "-i", str(wav), "-f",
+                               "audiotoolbox", "-audio_device_index", str(idx), "-"],
+                              timeout=len(app) / RATE + 120)
+    finally:
+        rec.terminate()
+    try:
+        follow.wait(timeout=600)
+    except subprocess.TimeoutExpired:
+        follow.terminate()
+    sessions = sorted((tmp / "ws" / ".live").glob("*.jsonl"))
+    lines = [json.loads(x) for x in sessions[-1].read_text().splitlines() if x.strip()] if sessions else []
+    said: dict = {}
+    for e in truth:
+        said[e["person"]] = said.get(e["person"], 0) + 1
+    shown: dict = {}
+    for e in lines:
+        if e.get("who") == "them":
+            k = e.get("name") or "them"
+            shown[k] = shown.get(k, 0) + 1
+    log(f"played {wav} to {a.device} (index {idx}, rc {play.returncode}); "
+        f"{len(lines)} live line(s) in {sessions[-1] if sessions else tmp / 'ws'}")
+    print(f"turns per person {said}\nlive lines per name {shown}")
+    return 0 if play.returncode == 0 and lines else 1
 
 
 # ---------------------------------------------------------------- main
@@ -874,14 +1022,18 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--out", help="write the scores as JSON")
     ap.add_argument("--gate", action="store_true", help="exit 1 when live falls too far under retroactive")
     ap.add_argument("--max-gap", type=float, default=5.0, help="points live name_acc may trail retroactive")
-    ap.add_argument("--baseline", help="--out JSON of the last tagged release; live must not regress")
+    ap.add_argument("--baseline", help="with --gate: an --out JSON to hold live to (no metric worse)")
+    ap.add_argument("--baseline-ref", help="with --gate: score lib/ at this git ref (or last-tag) with this "
+                                           "eval and cassettes, and hold live to it")
+    ap.add_argument("--tolerance", type=float, default=0.5, help="points a gated metric may slip vs the baseline")
     a = ap.parse_args(argv)
 
     if a.list_devices:
-        for d in audio_devices():
+        devices = audio_devices()
+        for d in devices:
             if d["outputs"]:
-                ok, why = check_output_device(d["name"], [d])
-                print(f"{'ALLOW' if ok else 'REFUSE'} {d['name']}: {why}")
+                ok, why = check_output_device(d["name"], devices)
+                print(f"[{d['index']}] {'ALLOW' if ok else 'REFUSE'} {d['name']}: {why}")
         return 0
     calls = json.loads((FIX / "calls.json").read_text())["calls"]
     if a.only:
@@ -940,14 +1092,27 @@ def main(argv: list[str] | None = None) -> int:
     failed = [f"{n}: {c['metric']}" for n, r in results.items() for c in r["checks"] if not c["ok"]]
     print(f"\nchecks: {sum(len(r['checks']) for r in results.values()) - len(failed)} pass, {len(failed)} fail"
           + (f" ({'; '.join(failed)})" if failed else ""))
-    bad = gate(suite, a.max_gap, json.loads(Path(a.baseline).read_text()) if a.baseline else None) if a.gate else []
+    suite["_calls"] = sorted(results)
+    base = None
+    if a.gate and a.baseline:
+        base = json.loads(Path(a.baseline).read_text())
+    elif a.gate and a.baseline_ref:
+        base, why = baseline_at(a.baseline_ref, argv)
+        if base is None:
+            log(f"baseline: {why}")
+            print(f"GATE FAIL no baseline: {why}")
+            return 1
+        print(f"baseline lib/ at {why}: live name_acc {pct(base['suite']['live']['name_acc']).strip()}, "
+              f"handoffs {pct(base['suite']['live']['handoff_acc']).strip()}, "
+              f"backchannels {pct(base['suite']['live']['backchannel_acc']).strip()}")
+    bad = gate(suite, a.max_gap, base, a.tolerance) if a.gate else []
     for b in bad:
         print(f"GATE FAIL {b}")
     if a.gate and not bad:
         print("GATE PASS")
     if a.out:
         strip = lambda d: {k: v for k, v in d.items() if not k.startswith("_")}  # noqa: E731
-        Path(a.out).write_text(json.dumps({"suite": suite, "calls": {
+        Path(a.out).write_text(json.dumps({"suite": {k: v for k, v in suite.items() if k != "_calls"}, "calls": {
             n: dict(strip(r), live=strip(r["live"]), retro=strip(r["retro"])) for n, r in results.items()}},
             indent=1) + "\n")
     shutil.rmtree(tmp_reg.parent, ignore_errors=True)
