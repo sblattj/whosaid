@@ -6,6 +6,9 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ## [Unreleased]
 
+### Fixed
+- `whosaid live` (and `autorecord --browser --live`) never followed a `record --browser` capture: it only looked for `whosaid-record-app.*` folders with `app.wav`/`mic.wav`, while the browser recorder writes one stereo `capture.webm` under `whosaid-browser-*`, so live sat at "no call is being recorded" for the whole call. Live now finds browser captures too and decodes the growing webm with an `ffmpeg -follow` bridge into the same two 16 kHz legs (left = mic = me, right = tab = them; a `--no-mic` capture gives the tab only), in a private temp folder that is removed when the call ends. The recorder's folder is still only read.
+
 ## [1.42.0] - 2026-11-16
 
 ### Added

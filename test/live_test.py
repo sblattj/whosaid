@@ -166,6 +166,66 @@ with tempfile.TemporaryDirectory() as d:
     check(r["active"] and r["lines"] == 2 and "at 0" not in r["transcript"], f"last N minutes, live: {r}")
     check(not live.latest_session(d / "none")["ok"], "no session: ok=false with a hint")
 
+# ---- browser capture (#record --browser): discovered, bridged from webm, cleaned up ----
+import shutil as _sh  # noqa: E402
+import subprocess as _sp  # noqa: E402
+
+with tempfile.TemporaryDirectory() as d:
+    d = Path(d)
+    old_tmp = live.os.environ.get("TMPDIR")
+    live.os.environ["TMPDIR"] = str(d)
+    try:
+        app_dir, br = d / "whosaid-record-app.A", d / "whosaid-browser-abc"
+        app_dir.mkdir(); br.mkdir()
+        (br / "capture.webm").write_bytes(b"\x1aE\xdf\xa3")
+        check(set(live.capture_dirs()) == {app_dir, br}, f"both recorder kinds found: {live.capture_dirs()}")
+        check(live.is_browser_capture(br) and not live.is_browser_capture(app_dir), "browser capture told apart")
+        check(live.active_capture() == br, "a fresh webm is the active capture")
+    finally:
+        if old_tmp is None:
+            live.os.environ.pop("TMPDIR", None)
+        else:
+            live.os.environ["TMPDIR"] = old_tmp
+
+argv = live.bridge_cmd(Path("/c/capture.webm"), Path("/b"), 2)
+check(argv[argv.index("-follow") + 1] == "1" and "file:/c/capture.webm" in argv, f"ffmpeg follows the growing webm: {argv}")
+check("pan=mono|c0=c1" in argv[argv.index("-filter_complex") + 1] and argv.index("/b/app.wav") < argv.index("/b/mic.wav"),
+      "right channel (tab) -> app.wav, left (mic) -> mic.wav")
+mono = live.bridge_cmd(Path("/c/capture.webm"), Path("/b"), 1)
+check("/b/app.wav" in mono and "/b/mic.wav" not in mono, "--no-mic capture: tab only, as app.wav")
+
+if _sh.which("ffmpeg"):
+    with tempfile.TemporaryDirectory() as d:
+        d = Path(d)
+        br, into = d / "whosaid-browser-xyz", d / "rec"
+        br.mkdir()
+        # 6 s stereo webm/opus: left (mic) = tone, right (tab) = silence
+        _sp.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+                 "-f", "lavfi", "-i", "sine=f=220:d=6:sample_rate=48000",
+                 "-f", "lavfi", "-i", "anullsrc=r=48000:cl=mono:d=6",
+                 "-filter_complex", "[0:a][1:a]amerge=inputs=2[a]", "-map", "[a]", "-t", "6",
+                 "-c:a", "libopus", str(br / "capture.webm")], check=True)
+        check(live.webm_channels(br / "capture.webm") == 2, "stereo browser capture probed")
+        seen, bridges = [], []
+        real_popen = live.subprocess.Popen
+
+        def spy_popen(argv, **kw):
+            bridges.append(Path(argv[-1]).parent)
+            return real_popen(argv, **kw)
+
+        def tx(samples):
+            seen.append(len(samples))
+            return [{"start": 0.2, "text": " hello from the mic", "no_speech_prob": 0.01}]
+
+        md = live.follow_browser(br, into, tx, chunk_seconds=3, poll_seconds=0.05,
+                                 ended_after=1.5, popen=spy_popen)
+        check(md is not None and "me: hello from the mic" in md.read_text(), f"browser mic leg transcribed as me: {md and md.read_text()}")
+        check("them:" not in md.read_text(), "silent tab leg adds nothing")
+        check(bridges and not bridges[0].exists(), "bridge folder removed after the call")
+        check((br / "capture.webm").exists(), "the recorder's webm is left untouched")
+        check(not bridges[0].name.startswith(("whosaid-record-app.", "whosaid-browser-")),
+              "bridge folder is never mistaken for a recorder capture")
+
 # ---- live status --json (macOS app): newest session, no text, exit 0 ----
 import contextlib, io  # noqa: E402
 with tempfile.TemporaryDirectory() as d:
