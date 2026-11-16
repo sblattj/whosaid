@@ -88,6 +88,7 @@ def main() -> None:
         "whosaid_live",
         "whosaid_live_insights",
         "whosaid_live_ask",
+        "whosaid_decisions",
         "whosaid_set_status",
         "whosaid_voice_groups",
         "whosaid_name_voice_group",
