@@ -2,8 +2,10 @@
 """
 live.py: a live transcript of the call being recorded (`whosaid live`, issue #131).
 
-  run    Follow the active `record --app` capture (autorecord included): every
-         --chunk-seconds read the new audio from its growing mic.wav and app.wav,
+  run    Follow the active `record --app` or `record --browser` capture (autorecord
+         included): every --chunk-seconds read the new audio from its growing
+         mic.wav and app.wav (a browser capture's capture.webm is decoded into
+         those two legs by an ffmpeg -follow bridge),
          transcribe it locally with MLX Whisper (the model loads once), and append
          "me:" / "them:" lines with wall-clock times to
          <into>/.live/<start>.md and <start>.jsonl. Keeps following until the
@@ -31,8 +33,11 @@ import argparse
 import glob
 import json
 import os
+import shutil
 import signal
+import subprocess
 import sys
+import tempfile
 import time
 from datetime import datetime
 from pathlib import Path
@@ -66,17 +71,27 @@ def log(msg: str) -> None:
 
 # ---------------------------------------------------------------- capture discovery
 
+BROWSER_WEBM = "capture.webm"  # record_browser.py: one stereo webm/opus, L = mic, R = tab audio
+
+
 def capture_dirs() -> list[Path]:
+    """Recorder temp folders: `record --app` (whosaid-record-app.*, two WAV legs) and
+    `record --browser` (whosaid-browser-*, one growing capture.webm)."""
     tmp = os.environ.get("TMPDIR") or "/tmp"
-    return [Path(p) for p in glob.glob(os.path.join(tmp, "whosaid-record-app.*")) if os.path.isdir(p)]
+    pats = ("whosaid-record-app.*", "whosaid-browser-*")
+    return [Path(p) for pat in pats for p in glob.glob(os.path.join(tmp, pat)) if os.path.isdir(p)]
+
+
+def is_browser_capture(d: Path) -> bool:
+    return (d / BROWSER_WEBM).exists() and not (d / "app.wav").exists()
 
 
 def active_capture(fresh: float = 15.0) -> Path | None:
-    """The newest recorder temp folder whose WAVs grew in the last `fresh` seconds."""
+    """The newest recorder temp folder whose audio grew in the last `fresh` seconds."""
     now = time.time()
     best, best_m = None, 0.0
     for d in capture_dirs():
-        for name in ("app.wav", "mic.wav"):
+        for name in ("app.wav", "mic.wav", BROWSER_WEBM):
             try:
                 m = (d / name).stat().st_mtime
             except OSError:
@@ -594,12 +609,81 @@ def write_session(md: Path, jl: Path, started: float, entries: list[dict], ended
 
 # ---------------------------------------------------------------- follow one capture
 
+def webm_channels(webm: Path) -> int:
+    """Channel count of the browser capture: 2 (mic + tab) or 1 (--no-mic)."""
+    try:
+        out = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "a:0", "-show_entries",
+                              "stream=channels", "-of", "csv=p=0", str(webm)],
+                             capture_output=True, text=True, timeout=30).stdout.strip()
+        return int(out.splitlines()[0]) if out else 2
+    except (OSError, subprocess.SubprocessError, ValueError, IndexError):
+        return 2
+
+
+def bridge_cmd(webm: Path, out: Path, channels: int = 2) -> list[str]:
+    """ffmpeg argv that decodes the growing browser webm (-follow keeps reading
+    as the recorder appends) into the two 16 kHz mono legs follow() reads:
+    left = mic -> mic.wav, right = tab audio -> app.wav. A mono (--no-mic)
+    capture has only the tab, so only app.wav is written."""
+    cmd = ["ffmpeg", "-hide_banner", "-nostats", "-loglevel", "error", "-y",
+           "-follow", "1", "-i", f"file:{webm}"]
+    pcm = ["-c:a", "pcm_s16le", "-flush_packets", "1"]
+    if channels < 2:
+        return cmd + ["-ac", "1", "-ar", str(RATE)] + pcm + [str(out / "app.wav")]
+    graph = (f"[0:a]pan=mono|c0=c1,aresample={RATE}[app];"
+             f"[0:a]pan=mono|c0=c0,aresample={RATE}[mic]")
+    return cmd + ["-filter_complex", graph,
+                  "-map", "[app]", *pcm, str(out / "app.wav"),
+                  "-map", "[mic]", *pcm, str(out / "mic.wav")]
+
+
+def follow_browser(capture: Path, into: Path, transcribe, chunk_seconds: float = 20.0,
+                   poll_seconds: float = 2.0, stop=lambda: False, ended_after: float = ENDED_AFTER,
+                   voices=None, popen=subprocess.Popen) -> Path | None:
+    """Follow a `record --browser` capture: bridge its webm into WAV legs in a
+    private temp folder (never named like a recorder folder, so discovery does
+    not pick it up twice), follow those, then stop ffmpeg and remove the bridge.
+    The capture folder itself is only read."""
+    webm = capture / BROWSER_WEBM
+    try:
+        st = webm.stat()
+    except OSError:
+        return None
+    started = getattr(st, "st_birthtime", st.st_mtime)
+    bridge = Path(tempfile.mkdtemp(prefix="whosaid-live-bridge-"))
+    proc = None
+    try:
+        proc = popen(bridge_cmd(webm, bridge, webm_channels(webm)),
+                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        deadline = time.monotonic() + 30
+        while not (bridge / "app.wav").exists() and time.monotonic() < deadline:
+            if proc.poll() is not None or stop():
+                log(f"browser capture bridge failed (ffmpeg exit {proc.poll()})")
+                return None
+            time.sleep(0.2)
+        log(f"browser capture {capture}: decoding {webm.name} live")
+        return follow(bridge, into, transcribe, chunk_seconds, poll_seconds, stop, ended_after,
+                      voices, started=started, label=capture)
+    finally:
+        if proc is not None and proc.poll() is None:
+            proc.terminate()
+            try:
+                proc.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+        shutil.rmtree(bridge, ignore_errors=True)
+
+
 def follow(capture: Path, into: Path, transcribe, chunk_seconds: float = 20.0,
            poll_seconds: float = 2.0, stop=lambda: False, ended_after: float = ENDED_AFTER,
-           voices=None) -> Path | None:
+           voices=None, started: float | None = None, label: Path | None = None) -> Path | None:
+    if is_browser_capture(capture):
+        return follow_browser(capture, into, transcribe, chunk_seconds, poll_seconds, stop,
+                              ended_after, voices)
     legs = [Leg(capture / f"{name}.wav", who) for name, who in LEGS]
-    started = None
     for name in ("app.wav", "mic.wav"):
+        if started is not None:
+            break
         try:
             st = (capture / name).stat()
             started = getattr(st, "st_birthtime", st.st_mtime)
@@ -610,7 +694,7 @@ def follow(capture: Path, into: Path, transcribe, chunk_seconds: float = 20.0,
         return None
     md, jl = session_paths(into, started)
     entries: list[dict] = []
-    log(f"following {capture} -> {md}")
+    log(f"following {label or capture} -> {md}")
     write_session(md, jl, started, entries, ended=False)
     while True:
         grew = sum(leg.poll() for leg in legs)
