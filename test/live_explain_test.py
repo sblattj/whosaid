@@ -301,8 +301,13 @@ with tempfile.TemporaryDirectory() as tmp:
     (d / "glossary.json").write_text(json.dumps({"canary": "a small first rollout"}))
     page = lx.render_page(d, ws)
     gl = json.loads(re.search(r'<script type="application/json" id="xp-glossary">(.*?)</script>', page, re.S).group(1))
-    check(gl == {"SSE": "server-sent events: the server pushes updates", "canary": "a small first rollout"},
-          f"glossary merged: {gl}")
+    check(gl == {"cache miss": "the copy was not there, so it is fetched from the source",
+                 "SSE": "server-sent events: the server pushes updates", "canary": "a small first rollout"},
+          f"glossary merged (section S-T terms + toml + glossary.json): {gl}")
+    (d / "glossary.json").write_text(json.dumps({"cache miss": "override from glossary.json"}))
+    gl = json.loads(re.search(r'id="xp-glossary">(.*?)</script>', lx.render_page(d), re.S).group(1))
+    check(gl.get("cache miss") == "override from glossary.json", f"glossary.json wins over a section term: {gl}")
+    (d / "glossary.json").write_text(json.dumps({"canary": "a small first rollout"}))
 
     # ---- CLI: add / correct / status through `whosaid live explain`
     env = dict(os.environ, WHOSAID_EXPLAIN_CLIPBOARD="0")

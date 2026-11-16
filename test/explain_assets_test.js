@@ -14,7 +14,7 @@ describe('tokenize', () => {
     expect(tokenize('')).toEqual([]);
   });
   test('round-trips', () => {
-    const s = 'Ana said: "ship it" (today) — maybe?';
+    const s = 'Ana said: "ship it" (today) … maybe?';
     expect(tokenize(s).join('')).toBe(s);
   });
 });

@@ -440,8 +440,16 @@ def inline_script(js: str) -> str:
 
 
 def glossary(d: Path, ws: str | Path | None = None) -> dict:
-    """Configurable term map: [live.explain_glossary] in whosaid.toml, then <dir>/glossary.json."""
+    """Term map for the popovers: each section's S-T jargon (oldest first), then
+    [live.explain_glossary] in whosaid.toml, then <dir>/glossary.json (later wins)."""
     terms: dict[str, str] = {}
+    for _, jp in sorted(section_files(d).items()):
+        try:
+            for j in load(jp).get("jargon") or []:
+                if _text(j.get("term")) and _text(j.get("st")):
+                    terms[_text(j["term"])] = _text(j["st"])
+        except (OSError, ValueError, AttributeError) as err:
+            log(f"{jp}: {err}")
     if ws:
         try:
             import wsconfig
