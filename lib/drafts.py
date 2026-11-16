@@ -6,7 +6,7 @@ when the user stages them.
 
     whosaid drafts new --to "First Last" --topic <slug> [--page /abs/page.html ...] [--supersedes ID] [--new-chat]
     whosaid drafts text ID (--file draft.md | -)          write the message
-    whosaid drafts claims ID --file claims.json           write {claims, stakeholders, docs}
+    whosaid drafts claims ID --file claims.json [--ws WS] write {claims, stakeholders, docs}; prints said turns
     whosaid drafts attach|detach ID /abs/page.html
     whosaid drafts verify ID [--voice warn|off|enforce|clear --reason R] [--ws WS]
                                                           check the gates and voice lint, stamp a content hash
@@ -38,6 +38,13 @@ Verify gates: draft.md exists with no em dash; every claim has a verdict (confir
 unverified); a refuted claim is marked dropped; a confirmed claim has evidence and a tech claim
 cites a URL; at least one stakeholder, each with the topics searched. Verify hashes the message,
 claims and pages; any later edit reads as stale until verified again.
+
+Said claims (#214): kind "said" (who said, agreed or decided what) needs evidence that is a list of
+turn refs, {meeting, t, quote} or {message_id, quote} (the index id or the raw Teams mid). Verify
+resolves each ref through the workspace index (--ws, else WHOSAID_WORKSPACE), the exact turn at that
+time, and fails when it does not resolve, when the quote (3+ words, fuzzy so ASR noise survives) is
+not in that turn, or when the claim cites only a paraphrase or a summary (commitments.md, a recap,
+items). `drafts claims ID --file F --ws WS` prints the resolved turns, so the real words come first.
 
 Voice lint (lib/voice_lint.py, DEFAULT_PROFILE): verify also checks the message shape. Group B
 (more than one paragraph, a greeting opener like "Hi Sam", or an implied one like "heads up", "can you review" or "FYI", an "attached page" or "Thanks!"
@@ -77,7 +84,12 @@ from pathlib import Path
 
 OPEN = ("drafting", "verified", "staged")
 VERDICTS = ("confirmed", "refuted", "unverified")
-KINDS = ("code", "tech", "people", "status")
+KINDS = ("code", "tech", "people", "status", "said")
+# evidence that names one of these is a summary of what was said, never the words themselves (#214)
+SUMMARY_REF = re.compile(r"commitments\.md|_wiki\.md|action[-_ ]?items?|items\.json|\brecap\b|summary|insights|"
+                         r"worklist|obligations", re.I)
+QUOTE_MIN_WORDS = 3
+QUOTE_RATIO = 0.8
 UNNAMED = re.compile(r"^SPEAKER_\d+$")
 EM_DASH = "\u2014"
 VOICE_MODES = ("enforce", "warn", "off")
@@ -266,7 +278,170 @@ def claims_of(m: dict) -> dict:
     return _read_json(ddir(m["id"]) / "claims.json", {"claims": [], "stakeholders": [], "docs": []})
 
 
-def gate(m: dict) -> list[str]:
+def _words(s: str) -> list[str]:
+    return re.findall(r"[a-z0-9]+(?:'[a-z]+)?", (s or "").lower())
+
+
+def quote_score(quote: str, text: str) -> float:
+    """How well QUOTE appears in TEXT, 0..1: 1.0 for the words in order, else the best ratio of the
+    quote against any window of the turn about its length (survives ASR noise: a dropped or misheard
+    word), so a short quote inside a long turn is not diluted by the rest of the turn."""
+    q, t = _words(quote), _words(text)
+    if not q or not t:
+        return 0.0
+    qs = " ".join(q)
+    if f" {qs} " in f" {' '.join(t)} ":
+        return 1.0
+    best = 0.0
+    for size in range(max(1, len(q) - 2), len(q) + 3):
+        for i in range(0, max(1, len(t) - size + 1)):
+            best = max(best, difflib.SequenceMatcher(None, qs, " ".join(t[i:i + size]), autojunk=False).ratio())
+    return round(best, 3)
+
+
+def _hms(sec: int) -> str:
+    return f"{sec // 3600:02d}:{sec % 3600 // 60:02d}:{sec % 60:02d}"
+
+
+def _turn_ref(r) -> bool:
+    return isinstance(r, dict) and bool(r.get("message_id") or r.get("mid") or (r.get("meeting") and
+                                        (r.get("t") is not None or r.get("t_sec") is not None)))
+
+
+def _summary_label(r) -> str | None:
+    """The summary a non-turn evidence item names (commitments.md, a live recap, items), else None."""
+    if isinstance(r, dict):
+        r = " ".join(str(v) for k, v in r.items() if k in ("file", "path", "source", "summary", "ref", "kind"))
+    r = str(r or "").strip()
+    return r if r and SUMMARY_REF.search(r) else None
+
+
+def _sidecar_message(ws: Path, mid: str) -> dict | None:
+    """A chat or mail message by its raw source id (the Teams mid) from the ingested sidecars."""
+    from message_identity import TEXT_KINDS
+    try:
+        folders = sorted((p for p in Path(ws).iterdir() if p.is_dir()), reverse=True)
+    except OSError:
+        return None
+    for f in folders:
+        for sc in f.glob("*.diarization.json"):
+            try:
+                data = json.loads(sc.read_text())
+            except (OSError, ValueError):
+                continue
+            if not isinstance(data, dict) or (data.get("source") or {}).get("kind") not in TEXT_KINDS:
+                continue
+            for seg in data.get("segments") or []:
+                if isinstance(seg, dict) and mid in (str(seg.get("mid") or ""), str(seg.get("message_id") or "")):
+                    sec = int(seg.get("start") or 0)
+                    return {"meeting": f.name, "t_sec": sec, "t_str": _hms(sec), "speaker": seg.get("speaker") or "",
+                            "text": seg.get("text") or "", "message_id": mid}
+    return None
+
+
+def _resolve_ref(conn, ws: Path, ref: dict) -> tuple[list[dict], str | None]:
+    """The candidate turns REF points at (by meeting + time, or by message id), or an error."""
+    import search
+    mid = str(ref.get("message_id") or ref.get("mid") or "")
+    if mid:
+        rows = []
+        if search.has_table(conn, "seg_message"):
+            rows = conn.execute("SELECT s.meeting, s.t_sec, s.t_str, s.speaker, s.text FROM seg_message m "
+                                "JOIN seg s ON s.rowid = m.rowid WHERE m.message_id = ?", (mid,)).fetchall()
+        turns = [{"meeting": a, "t_sec": int(b), "t_str": c, "speaker": d, "text": e, "message_id": mid}
+                 for a, b, c, d, e in rows]
+        if not turns:
+            hit = _sidecar_message(ws, mid)
+            turns = [hit] if hit else []
+        return (turns, None) if turns else ([], f"message {mid} not found in the workspace (ingested chats or mail)")
+    try:
+        name = search.resolve_meeting(conn, str(ref["meeting"]))
+    except search.SearchError as e:
+        return [], str(e).split("; known:")[0]
+    try:
+        sec = int(ref["t_sec"]) if ref.get("t_sec") is not None else search.parse_at(str(ref["t"]))
+    except (ValueError, TypeError) as e:
+        return [], f"bad time in {ref}: {e}"
+    rows = conn.execute("SELECT meeting, t_sec, t_str, speaker, text FROM seg WHERE meeting = ? AND t_sec = ?",
+                        (name, sec)).fetchall()
+    if not rows:
+        return [], f"no turn at {_hms(sec)} in {name}"
+    return [{"meeting": a, "t_sec": int(b), "t_str": c, "speaker": d, "text": e} for a, b, c, d, e in rows], None
+
+
+def said_check(claims: dict, ws=None) -> dict:
+    """#214: every confirmed said claim cites real turns. Each turn ref ({meeting, t, quote} or
+    {message_id, quote}) must resolve through the workspace index, and its quote (or the claim's) must
+    appear in that turn, fuzzily. A claim citing only a summary (commitments.md, a recap, items) or a
+    paraphrase fails. Returns {errors: ["said claim K: ..."], said: [{key, text, turns, errors}]}."""
+    out = {"errors": [], "said": []}
+    todo = [k for k in claims.get("claims") or [] if k.get("kind") == "said" and k.get("verdict") == "confirmed"]
+    if not todo:
+        return out
+    wsp = _voice_ws(ws)
+    conn, why = None, None
+    if wsp is None:
+        why = "needs a workspace (--ws or WHOSAID_WORKSPACE) to resolve its turns"
+    else:
+        import search
+        try:
+            conn = search.open_index(wsp)
+        except search.SearchError as e:
+            why = str(e)
+    try:
+        for k in todo:
+            kid = k.get("key") or (k.get("text") or "")[:40]
+            row = {"key": kid, "text": k.get("text"), "point": k.get("point"), "turns": [], "errors": []}
+            out["said"].append(row)
+            ev = k.get("evidence")
+            ev = ev if isinstance(ev, list) else [ev] if ev else []
+            refs = [r for r in ev if _turn_ref(r)]
+            if not refs:
+                labels = [x for x in (_summary_label(r) for r in ev) if x]
+                row["errors"].append(f"cites only a summary ({', '.join(labels)}), not a turn: cite "
+                                     "{meeting, t, quote} or {message_id, quote}" if labels else
+                                     "evidence must cite transcript turns [{meeting, t, quote}] or Teams message ids "
+                                     "[{message_id, quote}], not a paraphrase")
+            elif why:
+                row["errors"].append(why)
+            for r in refs if not why else []:
+                where = r.get("message_id") or r.get("mid") or f"{r.get('meeting')} @ {r.get('t', r.get('t_sec'))}"
+                quote = (r.get("quote") or k.get("quote") or "").strip()
+                if not quote:
+                    row["errors"].append(f"{where}: needs the quoted words (quote), so verify can find them in the turn")
+                    continue
+                if len(_words(quote)) < QUOTE_MIN_WORDS:
+                    row["errors"].append(f"{where}: quote too short ({QUOTE_MIN_WORDS}+ words), it could match anything")
+                    continue
+                turns, err = _resolve_ref(conn, wsp, r)
+                if err:
+                    row["errors"].append(f"{where}: {err}")
+                    continue
+                best = max(turns, key=lambda t: quote_score(quote, t["text"]))
+                score = quote_score(quote, best["text"])
+                said = f"[{best['meeting']} @ {best['t_str']}] {best['speaker']}: {best['text']}"
+                if score < QUOTE_RATIO:
+                    row["errors"].append(f"{where}: quote not found in that turn ({score:.2f} < {QUOTE_RATIO}); "
+                                         f"it says {said[:300]}")
+                    continue
+                if r.get("speaker") and _norm(str(r["speaker"])) != _norm(best["speaker"] or ""):
+                    row["errors"].append(f"{where}: spoken by {best['speaker']}, not {r['speaker']}")
+                    continue
+                row["turns"].append({**best, "quote": quote, "score": score})
+            out["errors"] += [f"said claim {kid}: {e}" for e in row["errors"]]
+    finally:
+        if conn is not None:
+            conn.close()
+    return out
+
+
+def gate(m: dict, ws=None, said: bool = True) -> list[str]:
+    """Every open gate. said=False skips resolving said claims' turns (stage and edit without a
+    workspace: the verify stamp already covers them)."""
+    return _gate(m, ws, said)[0]
+
+
+def _gate(m: dict, ws=None, check_said: bool = True) -> tuple[list[str], dict]:
     d = ddir(m["id"])
     errs: list[str] = []
     md = d / "draft.md"
@@ -279,7 +454,7 @@ def gate(m: dict) -> list[str]:
             errs.append(f"page missing: {p}")
     c = _read_json(d / "claims.json")
     if c is None:
-        return errs + ["claims.json missing"]
+        return errs + ["claims.json missing"], {"errors": [], "said": []}
     claims = c.get("claims") or []
     if not claims:
         errs.append("claims.json has no claims")
@@ -300,7 +475,8 @@ def gate(m: dict) -> list[str]:
     for s in sh:
         if not s.get("searched"):
             errs.append(f"stakeholder {s.get('name')}: no whosaid topics searched")
-    return errs
+    said = said_check(c, ws) if check_said else {"errors": [], "said": []}
+    return errs + said["errors"], said
 
 
 def _event(m: dict, event: str, **kw) -> None:
@@ -639,7 +815,7 @@ def verify(draft_id: str, force: bool = False, voice: str | None = None, reason:
     if voice:
         set_voice_override(m, voice, reason)
         save(m)
-    errs = gate(m)
+    errs, said = _gate(m, ws)
     v = voice_check(m, ws)
     if m.get("merge_text_joined"):
         v["warnings"].append("merged text is still the joined drafts: rewrite it as one message (drafts text)")
@@ -663,7 +839,7 @@ def verify(draft_id: str, force: bool = False, voice: str | None = None, reason:
     c = claims_of(m)
     n = {v_: sum(1 for k in c["claims"] if k.get("verdict") == v_) for v_ in VERDICTS}
     return {"id": draft_id, "state": state(m) if editing else "verified", **n, "stakeholders": len(c.get("stakeholders") or []),
-            "voice_lint": v["mode"], "voice_warnings": v["warnings"]}
+            "voice_lint": v["mode"], "voice_warnings": v["warnings"], "said": said["said"]}
 
 
 def summary(m: dict) -> dict:
@@ -1481,7 +1657,7 @@ def stage(ids: list[str] | None = None, all_ready: bool = False, dry_run: bool =
     try:
         for draft_id in ids:
             m = load(draft_id)
-            st, errs = state(m), gate(m)
+            st, errs = state(m), gate(m, wsp, said=wsp is not None)
             if m["status"] not in OPEN:
                 res["failed"].append({"id": draft_id, "why": f"is {m['status']}"})
                 continue
@@ -1633,7 +1809,7 @@ def _stage_edit(draft_id: str, dry_run: bool, tab: str | None, wsp: Path | None,
     if st == "sent, edit drafting":
         raise DraftsError(f"{draft_id}: the correction is not verified; owner {owner_line(m['owner'])} must "
                           "verify it (drafts verify)")
-    errs = gate(m)
+    errs = gate(m, wsp, said=wsp is not None)
     if errs:
         raise DraftsError("gate fails: " + "; ".join(errs))
     new = _draft_text(m).strip()
@@ -1777,6 +1953,7 @@ def build_parser() -> argparse.ArgumentParser:
     a.add_argument("id")
     a.add_argument("--file", required=True, help="JSON {claims, stakeholders, docs}, or - for stdin")
     a.add_argument("--force", action="store_true", help=force)
+    a.add_argument("--ws", help="workspace whose index resolves said claims' turns (default WHOSAID_WORKSPACE)")
     for name in ("attach", "detach"):
         a = sub.add_parser(name)
         a.add_argument("id")
@@ -1901,6 +2078,11 @@ def main(argv: list[str] | None = None) -> int:
             r = write(args.id, claims=data.get("claims", []), stakeholders=data.get("stakeholders", []),
                       docs=data.get("docs", []), force=args.force)
             print(f"{r['id']}: {r['state']}; gate: {len(r['gate'])} open")
+            for k in said_check(claims_of(load(args.id)), args.ws)["said"]:  # the real words, before the prose
+                for t in k["turns"]:
+                    print(f"  said {k['key']}: [{t['meeting']} @ {t['t_str']}] {t['speaker']}: {t['text']}")
+                for e in k["errors"]:
+                    print(f"  said {k['key']}: {e}")
         elif c in ("attach", "detach"):
             page = os.path.abspath(os.path.expanduser(args.page))
             key = "pages" if c == "attach" else "remove_pages"

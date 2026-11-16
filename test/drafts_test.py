@@ -1509,6 +1509,134 @@ class McpStageTest(DraftsBase):
         r = self.call(id="no-such-draft")
         self.assertFalse(r["ok"])
 
+SAID_MEETING = "2026-03-02-1000"
+SAID_TURNS = (
+    "[00:01:00] Test_Person: the staging cluster still needs the two dns records before friday\n"
+    "[00:01:20] Other_Voice: I can take the wildcard cert once the records exist\n"
+    "[00:02:05] Test_Person: and point one in my list is that the old resolver stays up until march\n"
+)
+
+
+def said_claims(evidence, **extra):
+    """GOOD_CLAIMS plus one confirmed said claim with the given evidence."""
+    return {**GOOD_CLAIMS, "claims": GOOD_CLAIMS["claims"] + [
+        {"key": "s", "text": "Test Person said staging still needs the dns records", "kind": "said",
+         "verdict": "confirmed", "evidence": evidence, **extra}]}
+
+
+class SaidClaimTest(DraftsBase):
+    """#214: a said claim cites a real turn {meeting, t, quote} or message id, never a summary."""
+
+    def setUp(self):
+        super().setUp()
+        self.ws = self.root / "ws"
+        (self.ws / SAID_MEETING).mkdir(parents=True)
+        (self.ws / "whosaid.toml").write_text("[search]\nembed = false\n")
+        (self.ws / SAID_MEETING / "call.speakers.txt").write_text(SAID_TURNS)
+        chat = self.ws / "2026-03-03-0900"
+        chat.mkdir()
+        (chat / "teams.speakers.txt").write_text("[00:00:00] Test_Person: ok to ship the resolver change on monday\n")
+        (chat / "teams.diarization.json").write_text(json.dumps({
+            "base": "teams", "source": {"kind": "teams-chat", "chat_name": "Test Person", "day": "2026-03-03",
+                                        "chat_id": "19:dm@unq.gbl.spaces"},
+            "names": {}, "roles": {}, "segments": [
+                {"start": 0, "end": 0, "speaker": "Test_Person", "epoch_ms": 1772528400000, "mid": "1772528400123",
+                 "text": "ok to ship the resolver change on monday"}]}))
+        search.build(self.ws, embed=False)
+        self.did = drafts.new("Test Person", "dns records", [str(self.page)])["id"]
+        drafts.write(self.did, text="Staging still needs the two DNS records, so I will add them today.")
+
+    def claims(self, evidence, **extra):
+        drafts.write(self.did, **said_claims(evidence, **extra))
+
+    def fails(self, needle):
+        with self.assertRaises(drafts.DraftsError) as cm:
+            drafts.verify(self.did, ws=self.ws)
+        self.assertIn(needle, str(cm.exception))
+        return str(cm.exception)
+
+    def test_done_when_paraphrase_and_summary_fail_and_a_real_turn_passes(self):
+        # the #214 acceptance case: same claim, three kinds of evidence
+        self.claims("on the call Test Person said staging needs dns first")
+        self.fails("said claim s: evidence must cite transcript turns")
+        self.claims(["commitments.md"])
+        self.fails("said claim s: cites only a summary (commitments.md)")
+        self.claims([{"file": "live recap"}])
+        self.fails("said claim s: cites only a summary")
+        self.claims([{"meeting": SAID_MEETING, "t": "00:01:00",
+                      "quote": "staging needs dns records sorted out first"}])  # paraphrase, not the words
+        self.fails("quote not found in that turn")
+        self.claims([{"meeting": SAID_MEETING, "t": "00:01:00",
+                      "quote": "the staging cluster still need the two dns record"}])  # ASR-ish noise passes
+        r = drafts.verify(self.did, ws=self.ws)
+        self.assertEqual(r["confirmed"], 3)
+        self.assertEqual(r["said"][0]["turns"][0]["speaker"], "Test_Person")
+
+    def test_ref_that_does_not_resolve_fails(self):
+        self.claims([{"meeting": "2026-09-09-0900", "t": "00:01:00", "quote": "the staging cluster"}])
+        self.fails("unknown meeting")
+        self.claims([{"meeting": SAID_MEETING, "t": "00:07:00", "quote": "the staging cluster"}])
+        self.fails("no turn at 00:07:00")
+        self.claims([{"meeting": SAID_MEETING, "t": "1:00", "quote": "the staging cluster still needs"}])
+        self.assertEqual(drafts.verify(self.did, ws=self.ws)["said"][0]["turns"][0]["t_str"], "00:01:00")
+        self.claims([{"meeting": SAID_MEETING, "t": "00:01:20", "quote": "the staging cluster still needs"}])
+        self.fails("quote not found in that turn")  # the neighbouring turn's words never count
+
+    def test_a_quote_is_required_and_must_be_more_than_a_word(self):
+        self.claims([{"meeting": SAID_MEETING, "t": "00:01:00"}])
+        self.fails("needs the quoted words")
+        self.claims([{"meeting": SAID_MEETING, "t": "00:01:00", "quote": "dns"}])
+        self.fails("quote too short")
+        self.claims([{"meeting": SAID_MEETING, "t": "00:01:00"}], quote="still needs the two dns records")
+        drafts.verify(self.did, ws=self.ws)  # a claim-level quote covers its refs
+
+    def test_speaker_on_the_ref_must_match_the_turn(self):
+        self.claims([{"meeting": SAID_MEETING, "t": "00:01:00", "speaker": "Other Voice",
+                      "quote": "the staging cluster still needs"}])
+        self.fails("spoken by Test_Person, not Other Voice")
+
+    def test_teams_message_ids_resolve(self):
+        self.claims([{"message_id": "1772528400123", "quote": "ok to ship the resolver change"}])
+        r = drafts.verify(self.did, ws=self.ws)
+        self.assertEqual(r["said"][0]["turns"][0]["meeting"], "2026-03-03-0900")
+        conn = search.open_index(self.ws)
+        mid = conn.execute("SELECT m.message_id FROM seg_message m JOIN seg s ON s.rowid = m.rowid "
+                           "WHERE s.meeting = '2026-03-03-0900'").fetchone()[0]
+        conn.close()
+        self.claims([{"message_id": mid, "quote": "ok to ship the resolver change"}])
+        drafts.verify(self.did, ws=self.ws)
+        self.claims([{"message_id": "no-such-message", "quote": "ok to ship the resolver change"}])
+        self.fails("message no-such-message not found")
+
+    def test_no_workspace_fails_and_unconfirmed_said_claims_are_not_resolved(self):
+        self.claims([{"meeting": SAID_MEETING, "t": "00:01:00", "quote": "the staging cluster still needs"}])
+        with self.assertRaises(drafts.DraftsError) as cm:
+            drafts.verify(self.did)
+        self.assertIn("needs a workspace", str(cm.exception))
+        with patch.dict(os.environ, {"WHOSAID_WORKSPACE": str(self.ws)}):
+            drafts.verify(self.did)
+        c = said_claims("a guess")
+        c["claims"][-1]["verdict"] = "unverified"
+        drafts.write(self.did, **c)
+        drafts.verify(self.did)  # nothing to resolve: an unverified claim makes no statement
+
+    def test_cli_claims_prints_the_resolved_turns(self):
+        import io
+        from contextlib import redirect_stdout
+        f = self.root / "claims.json"
+        f.write_text(json.dumps(said_claims([{"meeting": SAID_MEETING, "t": "00:02:05",
+                                              "quote": "the old resolver stays up until march"}])))
+        out = io.StringIO()
+        with redirect_stdout(out):
+            self.assertEqual(drafts.main(["claims", self.did, "--file", str(f), "--ws", str(self.ws)]), 0)
+        self.assertIn(f"said s: [{SAID_MEETING} @ 00:02:05] Test_Person: and point one in my list is that the old "
+                      "resolver stays up until march", out.getvalue())
+        f.write_text(json.dumps(said_claims(["commitments.md"])))
+        out = io.StringIO()
+        with redirect_stdout(out):
+            drafts.main(["claims", self.did, "--file", str(f), "--ws", str(self.ws)])
+        self.assertIn("said s: cites only a summary", out.getvalue())
+
 
 if __name__ == "__main__":
     unittest.main()

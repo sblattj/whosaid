@@ -281,7 +281,7 @@ lose track of which session wrote which draft, and a draft goes stale as the wor
 ```bash
 whosaid drafts new --to "Test Person" --topic "dns records" --page ~/pages/dns-plan.html
 whosaid drafts stakeholders ~/meetings --topic "dns records" --repo ~/code/infra --path dns/
-whosaid drafts claims <id> --file claims.json   # claims, stakeholders, docs
+whosaid drafts claims <id> --file claims.json --ws ~/meetings   # claims, stakeholders, docs; prints said turns
 whosaid drafts text <id> --file draft.md
 whosaid drafts verify <id>
 whosaid drafts lint --all                       # the voice lint alone, read-only
@@ -299,11 +299,24 @@ whosaid drafts html                             # review page of every open draf
 
 - **Who wrote it.** `new` records the Claude Code session (`CLAUDE_CODE_SESSION_ID`, joined to
   the session registry for its name, cwd and pid) and a resume command. `show` prints it.
-- **Claims first.** Each claim in `claims.json` has a `kind` (code, tech, people, status), a
+- **Claims first.** Each claim in `claims.json` has a `kind` (code, tech, people, status, said), a
   `verdict` (confirmed, refuted, unverified) and `evidence`. `verify` refuses a draft with an
   unchecked claim, a refuted claim not marked `dropped`, a confirmed claim without evidence, a
   confirmed tech claim without a doc URL, no stakeholders, a stakeholder with no searched topics,
   or an em dash. It stamps a hash of the message, claims and pages; any later edit reads as stale.
+- **What someone said cites the turn.** A `said` claim (who said, agreed or decided what) carries
+  turn refs, not a paraphrase: `{meeting, t, quote}` for a meeting turn or `{message_id, quote}`
+  for a chat or mail message (the index id or the raw Teams id). `verify` resolves each ref through
+  the workspace index (`--ws`, else `WHOSAID_WORKSPACE`), takes the turn at exactly that time, and
+  fails when the ref does not resolve, when the quote (3 or more words, matched fuzzily so ASR
+  noise survives) is not in that turn, when an optional `speaker` on the ref did not say it, or
+  when the claim cites only a summary (`commitments.md`, a live recap, items). `drafts claims
+  <id> --file F --ws WS` prints the resolved turns, so you read the real words before the prose.
+
+  ```json
+  {"key": "p1", "kind": "said", "verdict": "confirmed", "text": "Sam asked for the old resolver to stay up",
+   "evidence": [{"meeting": "2026-03-02-1000", "t": "00:02:05", "quote": "the old resolver stays up until march"}]}
+  ```
 - **Voice lint.** `verify` also checks the message shape with `lib/voice_lint.py` (plain rules, no
   model). Shape rules (more than one paragraph, a greeting opener like `Hi Sam,`, or an opener the message already implies (`heads up`, `can you review`, `FYI`, `quick question`, `just wanted to`), an `attached
   page` or `Thanks!` closer) fail verify when the workspace's `whosaid.toml` says so; the rest
