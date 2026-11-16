@@ -914,16 +914,34 @@ def run_realtime(a, call: dict, bank: dict) -> int:
     tmp = Path(tempfile.mkdtemp(prefix="whosaid-live-eval-rt-"))
     wav = tmp / f"{call['name']}.wav"
     write_wav(wav, app)
-    whosaid = str(ROOT / "whosaid")
+    whosaid = os.environ.get("WHOSAID_LIVE_EVAL_BIN") or str(ROOT / "whosaid")  # the test swaps in a fake
     env = dict(os.environ)  # main() pointed WHOSAID_SPEAKER_DB at the throwaway registry
+    # `live run` is pinned with --capture to the one capture folder this recorder made, so a
+    # real call autorecord is capturing at the same time is never followed. The recorder's
+    # folder comes from `mktemp -d -t` (macOS puts it in the user temp dir, not $TMPDIR).
+    probe = Path(subprocess.check_output(["mktemp", "-d", "-t", "whosaid-live-eval-probe"], text=True).strip())
+    probe.rmdir()
+    before = set(probe.parent.glob("whosaid-record-app.*"))
     rec = subprocess.Popen([whosaid, "record", "--app", a.app, "--no-mic", "--into", str(tmp / "rec")], env=env)
-    follow = subprocess.Popen([whosaid, "live", "run", "--once", "--into", str(tmp / "ws")], env=env)
+    follow = None
     try:
-        time.sleep(5)
+        new, deadline = [], time.time() + 30
+        while not new and time.time() < deadline and rec.poll() is None:
+            time.sleep(0.5)
+            new = sorted(set(probe.parent.glob("whosaid-record-app.*")) - before)
+        if len(new) != 1:
+            log(f"expected one new capture folder in {probe.parent} from `whosaid record --app {a.app}`, "
+                f"found {len(new)} (record rc {rec.poll()}); not following a capture that may be a real call")
+            return 2
+        cap = new[0]
+        follow = subprocess.Popen([whosaid, "live", "run", "--once", "--capture", str(cap),
+                                   "--into", str(tmp / "ws")], env=env)
+        time.sleep(3)
         devices = audio_devices()
         ok, why = check_output_device(a.device, devices)
         if not ok:
             log(f"refusing to play: {why}")
+            follow.terminate()
             return 3
         idx = next(d["index"] for d in devices if d["name"].strip().lower() == a.device.strip().lower())
         play = subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-re", "-i", str(wav), "-f",
@@ -931,6 +949,8 @@ def run_realtime(a, call: dict, bank: dict) -> int:
                               timeout=len(app) / RATE + 120)
     finally:
         rec.terminate()
+    if follow is None:
+        return 2
     try:
         follow.wait(timeout=600)
     except subprocess.TimeoutExpired:

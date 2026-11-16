@@ -43,7 +43,7 @@ jobs:
         working-directory: lib
         run: uv run --quiet --with sherpa-onnx==1.13.8 --with numpy python diarize_sherpa.py --ensure-models-only
       - name: Unit test (device guard, gate, cassette miss)
-        run: python3 test/live_diarize_eval_test.py
+        run: uv run --quiet --offline --with numpy python test/live_diarize_eval_test.py
       - name: Live vs retroactive, gated
         run: python3 test/live_diarize_eval.py --fast --gate --max-gap 5 --baseline-ref last-tag --out live-eval.json
       - uses: actions/upload-artifact@v4

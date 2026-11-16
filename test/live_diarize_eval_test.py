@@ -105,4 +105,53 @@ except ev.CassetteMiss:
     caught = "raised"
 check(caught == "raised", f"a cassette miss is not an Exception live.py would skip past: {caught}")
 
+# ---------------------------------------------------------------- --realtime follows only its own capture
+# A fake `whosaid`: record makes a capture folder the way the real one does (mktemp -d -t),
+# live run writes down its arguments. A real capture folder made just before must not be the
+# one followed. The device re-check refuses, so ffmpeg is never reached (and would raise).
+try:
+    import numpy  # noqa: F401  run_realtime assembles the call
+except ImportError:
+    numpy = None
+if numpy is None:
+    print("skip: --realtime capture pinning needs numpy (uv run --with numpy python test/live_diarize_eval_test.py)")
+else:
+    import os
+    import subprocess
+    import tempfile
+    import time
+    import types
+    work = Path(tempfile.mkdtemp(prefix="live-eval-test-"))
+    fake = work / "whosaid"
+    fake.write_text('#!/bin/bash\nif [[ "$1" == record ]]; then d=$(mktemp -d -t whosaid-record-app); '
+                    'echo "$d" > "%s/rec-dir"; exec sleep 60; fi\n'
+                    'echo "$@" > "%s/live-args"; exec sleep 60\n' % (work, work))
+    fake.chmod(0o755)
+    other = Path(subprocess.check_output(["mktemp", "-d", "-t", "whosaid-record-app"], text=True).strip())
+    os.environ["WHOSAID_LIVE_EVAL_BIN"] = str(fake)
+    real_run, real_devices = subprocess.run, ev.audio_devices
+
+    def no_play(cmd, *a, **k):
+        if cmd and cmd[0] == "ffmpeg":
+            raise AssertionError("ffmpeg must not run in this test")
+        return real_run(cmd, *a, **k)
+    subprocess.run = no_play
+    ev.audio_devices = lambda: []  # the device vanished before playback: refuse
+    try:
+        args = types.SimpleNamespace(app="com.example.player", device="BlackHole 2ch")
+        call = next(c for c in __import__("json").loads((ev.FIX / "calls.json").read_text())["calls"] if c["name"] == "backchannel")
+        t0 = time.time()
+        rc = ev.run_realtime(args, call, ev.load_bank())
+        live_args = (work / "live-args").read_text().split() if (work / "live-args").exists() else []
+        rec_dir = (work / "rec-dir").read_text().strip() if (work / "rec-dir").exists() else ""
+    finally:
+        subprocess.run, ev.audio_devices = real_run, real_devices
+        for d in (other, Path(rec_dir) if rec_dir else None):
+            if d and d.is_dir():
+                d.rmdir()
+    check(rc == 3, f"a device gone at the re-check: refused with 3: {rc}")
+    check(rec_dir and "--capture" in live_args and live_args[live_args.index("--capture") + 1] == rec_dir,
+          f"live run follows the recorder's own folder {rec_dir}: {live_args}")
+    check(str(other) not in live_args, "an older capture folder (maybe a real call) is not followed")
+
 print(f"PASS: live_diarize_eval_test ({CHECKS} checks)")
