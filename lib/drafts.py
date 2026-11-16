@@ -266,6 +266,16 @@ def claims_of(m: dict) -> dict:
     return _read_json(ddir(m["id"]) / "claims.json", {"claims": [], "stakeholders": [], "docs": []})
 
 
+def _cites_uncertain(evidence) -> bool:
+    """True when claim evidence includes a whosaid hit flagged attribution_uncertain (#216):
+    a "yes" whose speaker the transcript could not place is nobody's agreement."""
+    if isinstance(evidence, dict):
+        return evidence.get("attribution_uncertain") is True or any(_cites_uncertain(v) for v in evidence.values())
+    if isinstance(evidence, list):
+        return any(_cites_uncertain(v) for v in evidence)
+    return False
+
+
 def gate(m: dict) -> list[str]:
     d = ddir(m["id"])
     errs: list[str] = []
@@ -294,6 +304,9 @@ def gate(m: dict) -> list[str]:
             errs.append(f"claim {kid}: confirmed without evidence")
         if k.get("kind") == "tech" and v == "confirmed" and not re.search(r"https?://", json.dumps(k.get("evidence"))):
             errs.append(f"claim {kid}: tech claim needs a doc URL in evidence")
+        if v == "confirmed" and _cites_uncertain(k.get("evidence")):
+            errs.append(f"claim {kid}: confirmed on a turn whose speaker is uncertain (attribution_uncertain, "
+                        f"e.g. a short reply split off at a turn boundary); cite another turn or mark it unverified")
     sh = c.get("stakeholders") or []
     if not sh:
         errs.append("stakeholders[] empty: who has opinions on this, and what did whosaid say")

@@ -226,6 +226,21 @@ class OutboxTest(DraftsBase):
         self.assertEqual(drafts.verify(did)["confirmed"], 2)
         self.assertEqual(drafts.state(drafts.load(did)), "verified")
 
+    def test_verify_refuses_evidence_with_uncertain_speaker(self):
+        """#216: a search hit flagged attribution_uncertain is not anyone's agreement."""
+        did = drafts.new("Test Person", "dns", [str(self.page)])["id"]
+        claims = json.loads(json.dumps(GOOD_CLAIMS))
+        hit = {"meeting": "2026-01-05_sync", "t_str": "00:00:04", "speaker": "Alice_Example",
+               "text": "Exactly, right.", "attribution_uncertain": True}
+        claims["claims"][0]["evidence"] = [hit]
+        drafts.write(did, text="Hi there", **claims)
+        with self.assertRaises(drafts.DraftsError) as e:
+            drafts.verify(did)
+        self.assertIn("speaker is uncertain", str(e.exception))
+        claims["claims"][0]["evidence"] = [{**hit, "attribution_uncertain": False}]
+        drafts.write(did, text="Hi there", **claims)
+        self.assertEqual(drafts.verify(did)["confirmed"], 2)
+
     def test_edit_after_verify_is_stale_and_stage_refuses(self):
         did = self.ready()
         with open(drafts.ddir(did) / "draft.md", "a") as f:
