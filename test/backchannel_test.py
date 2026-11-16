@@ -180,14 +180,14 @@ class RelabelKeepsTheDecision(unittest.TestCase):
     """`whosaid relabel` re-renders from the sidecar: flags follow the new name, and a
     stored voice decision is replayed rather than lost."""
 
-    def relabel(self, stored):
-        tmp = Path(tempfile.mkdtemp(prefix="whosaid-bc-rl-"))
+    def relabel(self, stored, tmp=None):
+        tmp = tmp or Path(tempfile.mkdtemp(prefix="whosaid-bc-rl-"))
         data, _tail, end = whisper_fixture()
         wj = write_json(tmp, data)
         segs = [{"start": 0.0, "end": end + 0.05, "speaker": A}, {"start": end + 0.4, "end": end + 3, "speaker": B}]
         sidecar = {"base": "transcript", "emb_model": d.EMB_NAME, "names": {A: A, B: B}, "local_labels": {},
                    "segments": segs, "cluster_emb": {A: [1.0, 0.0], B: [0.0, 1.0]}, "whisper_json": wj,
-                   "registry_matches": [], "detect_mode": "test"}
+                   "registry_matches": [], "detect_mode": "test", "source": {"kind": "audio"}}
         if stored is not None:
             sidecar["backchannel"] = stored
         path = tmp / "transcript.diarization.json"
@@ -246,6 +246,20 @@ class FlagReachesSearch(unittest.TestCase):
         _engine, hits, _fb = search.query(ws, "blob store", mode="exact")
         self.assertEqual(len(hits), 1)
         self.assertFalse(hits[0].attribution_uncertain, "the long turn it was split from stays citable")
+
+    def test_relabel_written_sidecar_flags_the_search_hit(self):
+        """No hand-built sidecar: do_relabel writes both files, search reads them."""
+        ws = Path(tempfile.mkdtemp(prefix="whosaid-bc-ws2-"))
+        (ws / "whosaid.toml").write_text('[search]\nembed = false\n')
+        meeting = ws / "2026-01-06_sync"
+        meeting.mkdir()
+        RelabelKeepsTheDecision.relabel(self, stored=None, tmp=meeting)
+        search.build(ws, embed=False)
+        _engine, hits, _fb = search.query(ws, "exactly", mode="exact")
+        reply = [h for h in hits if "Exactly" in h.text]
+        self.assertEqual([(h.speaker, h.text) for h in reply], [("Carol_Example", "Exactly, right.")])
+        self.assertTrue(reply[0].attribution_uncertain)
+        self.assertEqual(reply[0].assertion_text, "")
 
 
 if __name__ == "__main__":
