@@ -215,7 +215,7 @@ Commitment tracking: kind distinguishes explicit promises, requests, standing di
 
 Not exposed here: `enroll` and `record` are interactive microphone operations that need a live terminal. Run them from the `whosaid` CLI. The first transcribe downloads ~1.5 GB of models; run whosaid_doctor to check readiness. Full flag/env/long-audio reference: read the whosaid://guide resource.
 
-Meeting workspace (search across many transcripts): point the server at a workspace directory by launching it with WHOSAID_WORKSPACE=<dir>, or pass `workspace` on each call; with neither, the workspace of the only installed `whosaid watch` agent is used (the response says so in workspace_source); there is no cwd fallback. Flow: whosaid_search (turn-level hits with meeting folder + timestamp) -> whosaid_context (the verbatim minute around one hit; do not read whole transcripts) -> whosaid_items / whosaid_item / whosaid_person for action items and per-person commitments; whosaid_worklist for one person's ranked P1/P2/P3 worklist across both corpora. whosaid_meetings, whosaid_prs and whosaid_speakers list what the graph knows; whosaid_workspace_status says whether the index exists. The index (_search.db, _WIKI.md) is built by `whosaid index <ws>` from the CLI or the watcher, never from here: every workspace tool is read-only except whosaid_set_status, which appends one status event to the tracking ledger (_tracking.json) when the user marks an item, and whosaid_name_voice_group, which names one unnamed voice across all its meetings (groups come from whosaid_voice_groups) and then rebuilds the index. Drafts outbox (not workspace files): whosaid_draft_new, whosaid_draft_write, whosaid_draft_verify, whosaid_draft_close, whosaid_draft_merge and whosaid_draft_sent_check write chat drafts to ~/.drafts; whosaid_draft_stage puts one verified draft into its Teams chat when the user asks (it never sends: the user presses send; edit=true loads a sent draft's verified correction into Teams' Edit box on that message, and the user saves it) (one open draft per recipient: new joins it; whosaid_draft_merge folds rival drafts into one); whosaid_drafts, whosaid_draft_stakeholders and whosaid_draft_stale read. Live Teams chats: whosaid_teams_live reads the newest messages (or chats) straight from the Teams desktop app's local cache, read-only and offline, for what was said in the last minutes or hours before it is ingested. Calendar: whosaid_teams_calendar reads your meetings from the same cache (the weeks the app has synced), with the recorded meeting folder for each when a workspace is set. whosaid_teams_launch starts the Teams desktop app with a DevTools port (or checks it) so whosaid_draft_stage can drive the real app; it quits a running Teams only when its mic is idle. Resources: whosaid://workspace/wiki, whosaid://workspace/action-items, whosaid://workspace/index, whosaid://workspace/meeting/{folder}/transcript and whosaid://workspace/meeting/{folder}/action-items. Everything stays local (SQLite FTS5 plus optional embeddings from a localhost Ollama)."""
+Meeting workspace (search across many transcripts): point the server at a workspace directory by launching it with WHOSAID_WORKSPACE=<dir>, or pass `workspace` on each call; with neither, the workspace of the only installed `whosaid watch` agent is used (the response says so in workspace_source); there is no cwd fallback. Flow: whosaid_search (turn-level hits with meeting folder + timestamp) -> whosaid_context (the verbatim minute around one hit; do not read whole transcripts) -> whosaid_items / whosaid_item / whosaid_person for action items and per-person commitments; whosaid_worklist for one person's ranked P1/P2/P3 worklist across both corpora. whosaid_decisions lists the decisions of one meeting (or, with no meeting, the call being recorded), each with every supporting turn across all visits of its topic and a flag when two visits decide different things ("split across visits"): use it before summarizing what a call decided. whosaid_meetings, whosaid_prs and whosaid_speakers list what the graph knows; whosaid_workspace_status says whether the index exists. The index (_search.db, _WIKI.md) is built by `whosaid index <ws>` from the CLI or the watcher, never from here: every workspace tool is read-only except whosaid_set_status, which appends one status event to the tracking ledger (_tracking.json) when the user marks an item, and whosaid_name_voice_group, which names one unnamed voice across all its meetings (groups come from whosaid_voice_groups) and then rebuilds the index. Drafts outbox (not workspace files): whosaid_draft_new, whosaid_draft_write, whosaid_draft_verify, whosaid_draft_close, whosaid_draft_merge and whosaid_draft_sent_check write chat drafts to ~/.drafts; whosaid_draft_stage puts one verified draft into its Teams chat when the user asks (it never sends: the user presses send; edit=true loads a sent draft's verified correction into Teams' Edit box on that message, and the user saves it) (one open draft per recipient: new joins it; whosaid_draft_merge folds rival drafts into one); whosaid_drafts, whosaid_draft_stakeholders and whosaid_draft_stale read. Live Teams chats: whosaid_teams_live reads the newest messages (or chats) straight from the Teams desktop app's local cache, read-only and offline, for what was said in the last minutes or hours before it is ingested. Calendar: whosaid_teams_calendar reads your meetings from the same cache (the weeks the app has synced), with the recorded meeting folder for each when a workspace is set. whosaid_teams_launch starts the Teams desktop app with a DevTools port (or checks it) so whosaid_draft_stage can drive the real app; it quits a running Teams only when its mic is idle. Resources: whosaid://workspace/wiki, whosaid://workspace/action-items, whosaid://workspace/index, whosaid://workspace/meeting/{folder}/transcript and whosaid://workspace/meeting/{folder}/action-items. Everything stays local (SQLite FTS5 plus optional embeddings from a localhost Ollama)."""
 
 
 try:
@@ -2067,6 +2067,47 @@ def whosaid_live_ask(question: str, minutes: Optional[float] = None, recordings:
     for m in res.get("matches", []):
         m.pop("t", None)
     return res
+
+_DESC_DECISIONS = (
+    "The decisions ledger of one call: one row per decision with EVERY supporting turn "
+    "(meeting, t_str, speaker, verbatim text, role proposal|agree|contest|restate|discuss) across "
+    "all visits of its topic, a status (agreed = someone else said yes, proposed = no reply, "
+    "contested = push-back nobody resolved), and per topic the flags \"split across visits\" "
+    "(two visits decided different things: keep BOTH in any summary), \"refined across visits\" "
+    "or \"reversed across visits\". Pass `meeting` (a folder name from whosaid_meetings or a "
+    "search hit; a unique substring works) for a recorded meeting in the workspace; omit it for "
+    "the call being recorded right now (newest live session; `recordings` overrides "
+    "~/Recordings). Local engine only (no model call); ok=false with a hint when nothing matches."
+)
+
+
+@mcp.tool(name="whosaid_decisions", description=_DESC_DECISIONS, annotations=_read_only())
+def whosaid_decisions(meeting: Optional[str] = None, workspace: Optional[str] = None,
+                      recordings: Optional[str] = None) -> dict:
+    """lib/decisions.py ledger() for a workspace meeting, or the newest live session."""
+    import decisions
+    if (meeting or "").strip():
+        if not _safe_folder(meeting):
+            return _ws_error(f"invalid meeting folder '{meeting}'",
+                             "pass a folder name from whosaid_meetings or a search hit (no path separators)")
+        ws, err = _resolve_ws(workspace)
+        if err:
+            return err
+        try:
+            folder = decisions.find_meeting(ws, meeting.strip())
+            tr = decisions.meeting_transcript(folder)
+        except decisions.DecisionsError as e:
+            return _ws_error(str(e), "list folders with whosaid_meetings")
+        res = decisions.ledger(decisions.turns_from_transcript(tr.read_text(errors="replace"), folder.name),
+                               meeting=folder.name)
+        return dict(ok=True, workspace=str(ws), source="meeting", **res)
+    into = Path(recordings).expanduser() if recordings else live_mod.DEFAULT_INTO
+    found = live_mod.sessions(into)
+    if not found:
+        return {"ok": False, "error": f"no live transcript under {into / live_mod.LIVE_DIR}",
+                "hint": "pass meeting=<folder> for a recorded meeting, or start `whosaid live` during a call"}
+    _meta, res = decisions.live_ledger(found[-1])
+    return dict(ok=True, source="live", session=res["meeting"], **res)
 
 _DESC_SET_STATUS = (
     "Mark one action item or commitment (AI-NNN or CM-NNN) with a status, for example done when "

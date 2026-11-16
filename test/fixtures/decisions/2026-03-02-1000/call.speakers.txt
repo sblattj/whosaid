@@ -1,0 +1,31 @@
+# Synthetic fixture for issue #213 (decisions ledger). Invented people and products.
+# Speakers (3): Alice_Example, Bob_Example, Carol_Example
+[00:00:05] Alice_Example: Morning everyone, quick agenda today: the shared libraries question, the billing export timeouts, and the onboarding docs.
+[00:00:30] Bob_Example: Sounds fine. I have a hard stop at the top of the hour.
+[00:01:00] Carol_Example: Same here, let's keep it moving.
+[00:10:40] Alice_Example: Okay, the shared libraries. The date parser and the retry helpers live in three repos right now and every copy has drifted.
+[00:11:00] Bob_Example: We could put the date parser in a separate platform lib, but nobody owns a platform lib yet and the release process for it does not exist.
+[00:11:20] Carol_Example: Let's keep the date parser in the service lib for now, the service lib already ships with every deploy.
+[00:11:40] Bob_Example: Agreed, the service lib is fine for the date parser until a platform lib has an owner.
+[00:12:00] Alice_Example: Works for me. I'll note that the date parser stays in the service lib.
+[00:12:30] Carol_Example: The retry helpers can wait, they only drift in one repo.
+[00:14:00] Bob_Example: Next, the billing export keeps timing out on large accounts after thirty seconds.
+[00:14:30] Carol_Example: The billing export runs one giant query, the large accounts have millions of invoice rows.
+[00:15:00] Alice_Example: Paging the invoice rows would help, the export could stream pages to the file instead of loading every row.
+[00:15:40] Bob_Example: Paging plus a longer timeout for the billing export, the invoice query needs both.
+[00:16:20] Carol_Example: I'll prototype the paged invoice query this week and measure the billing export on the largest account.
+[00:17:00] Alice_Example: Great, then the export timeout question is parked until the prototype numbers come back.
+[00:24:00] Carol_Example: Onboarding docs. New hires keep asking where the setup guide lives and the wiki page is two years stale.
+[00:24:40] Alice_Example: The setup guide should move into the repo readme, next to the code it describes, so reviews catch stale steps.
+[00:25:20] Bob_Example: Readme for the setup guide makes sense, the wiki page can link to it.
+[00:26:00] Carol_Example: I'll rewrite the setup guide steps and open the readme change by Friday.
+[00:33:00] Bob_Example: One more on the billing side, the finance team asked for the export columns in a fixed order.
+[00:33:40] Carol_Example: Fixed column order is easy once the paged export lands, the writer sets the header once.
+[00:34:20] Alice_Example: Add the column order to the prototype ticket then.
+[00:38:40] Alice_Example: Back to the shared libraries for a minute. The auth client is the other piece that keeps drifting, the token refresh code differs in every repo.
+[00:39:00] Bob_Example: The auth client is different from the date parser, three teams outside ours call it, so the service lib is the wrong home for it.
+[00:39:20] Carol_Example: Then let's move the auth client to a separate platform lib, and I can own the platform lib release process.
+[00:39:40] Alice_Example: Yes, agreed, the auth client goes to the platform lib with Carol as owner.
+[00:40:00] Bob_Example: Agreed. The date parser still stays where we said, this is only the auth client.
+[00:40:30] Carol_Example: I'll set up the platform lib repo and its release pipeline next sprint.
+[00:44:00] Alice_Example: That's everything, thanks all.

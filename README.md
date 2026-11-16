@@ -139,6 +139,7 @@ the models as usual.
 | `whosaid index <ws> [--no-embed] [--rebuild]` | Build `<ws>/_search.db` (full text, optional embeddings, entity graph) and `<ws>/_WIKI.md`. See [Search your meetings](#search-your-meetings). |
 | `whosaid search <ws> "<query>" [--mode exact\|meaning\|hybrid] [--speaker S] [--meeting M] [-k N] [--json]` | Search every speaker-labeled transcript; each hit is a meeting, a timestamp, a speaker, and a snippet. |
 | `whosaid context <ws> <meeting> <HH:MM:SS> [--before S] [--after S] [--json]` | The verbatim turns around a moment, for reading a hit in place. |
+| `whosaid decisions [ws] <meeting> [--json] [--engine auto\|local\|claude]` | One row per decision in a call with every supporting turn across all visits of its topic, agreed / proposed / contested, and a "split across visits" flag when two visits decide different things. `--live [--follow]` for the call being recorded. See [Decisions of a call](#decisions-of-a-call-whosaid-decisions). |
 | `whosaid graph <ws> items\|item AI-NNN\|person [Name]\|prs\|meetings\|speakers\|commitments [--json]` | Entity views: action items with filters, one item's history, a person's commitments and asks, PR mentions, meeting coverage, talk share. `commitments` lists the unified CM table (`--owner`, `--source transcript\|action-items`, `--status` filters) — one model behind the worklist, `whosaid commitments`, and the wiki since #23: the roll-up folds self-owned action-items bullets into the same CM-NNN corpus as the spoken clauses (one item, occurrences from both sources, the bullet's timestamp included), and `graph build` loads that corpus instead of re-parsing the bullets. |
 | `whosaid wiki <ws> [--stdout] [-o FILE]` | Regenerate `<ws>/_WIKI.md` from the graph. |
 | `whosaid watch run\|install\|uninstall\|status --into <ws>` | Hands-free ingest of new recordings via a launchd agent. See [Hands-free ingest](#hands-free-ingest-whosaid-watch). |
@@ -217,6 +218,7 @@ whosaid live follow --speaker 'Alice|Bob' --exclude-self --once   # each new lin
 - **Ask about the meeting.** The `whosaid_live` MCP tool returns the live transcript (or its last N minutes) and whether the call is still going, so an agent can answer "what did they just ask me?" mid-call. It also returns a `cursor`: pass it back as `since` to get only the lines after it, with the same `speaker`, `exclude_self` and `named_only` filters as `live follow`. `whosaid_live_insights` adds the call's topics, rolling summaries and agreed or suggested next steps (the Live page's data), and `whosaid_live_ask` finds the lines that match a question, with their times. whosaid itself sends nothing anywhere; the agent you ask sends the text it reads to its own model.
 - **Topics and next steps.** `whosaid live insights follow` turns the newest live transcript into topic buckets, wordgraph nodes, 5-minute summaries and agreed / suggested next steps in `<start>.insights.json`, locally (`live insights build --jsonl F` for one file). `whosaid live ask --question "..."` answers from the live transcript: a search by default, Claude only when the workspace opts in with `[summarizer] engine = "claude"`.
 - **AI labels and recap (opt-in, CLOUD).** With `[live]` `ai = "claude"` in `<ws>/whosaid.toml`, `whosaid live insights follow --ws <ws>` (the app passes it) also asks Claude (`claude -p`, Sonnet) for topic labels, a short recap and next steps once per `ai_every` seconds of talk (default 180), at most `ai_max_calls` (40) per call, `ai_timeout` 90 s and `ai_max_tokens` 1500 per call. Each call sends the newest ~24k characters of the transcript plus the local topics to Anthropic, about 9k tokens. Answers land in `<start>.ai.json` and are laid over the local insights; every topic keeps its `localLabel`, and a failed call keeps the last good answer. Remove the line (or set `ai = ""`) to turn it off.
+- **Decisions as they happen.** `whosaid decisions --live --follow` keeps a decisions ledger of the call in `<start>.decisions.json` and prints each new decision, status change and "split across visits" flag once. See [Decisions of a call](#decisions-of-a-call-whosaid-decisions).
 - It only reads the recording in progress. The full transcript with names and action items still comes from `whosaid watch` after the call.
 
 ### One status feed for apps and scripts: `whosaid app-state`
@@ -270,6 +272,31 @@ whosaid topics build ~/meetings --chats  # Teams chats and mail too
 ```
 
 It runs the same local topic clustering as `whosaid live insights` over each meeting's speaker transcript, then merges topics across meetings: same label, or terms that match closely enough. A topic keeps its id as meetings are added, so links to it stay put. Each topic lists its meetings (date, the label it had there, talk time, where it starts), its top terms and a wordgraph. Speaker names are not written to the file. Stdlib only: no model, no network.
+
+### Decisions of a call: `whosaid decisions`
+
+```bash
+whosaid decisions ~/meetings 2026-03-02-1000     # one meeting (a unique part of the folder name works)
+whosaid decisions path/to/call.speakers.txt      # any speaker transcript
+whosaid decisions --live                         # the call being recorded right now
+whosaid decisions --live --follow                # print each new decision, status change and flag
+```
+
+A call often settles one subject in two places far apart: at minute 11 the date parser stays in the service lib for now, at minute 39 the auth client moves to a separate platform lib. Read one line at a time, the two look like one decision and the first gets lost. The ledger keeps one row per decision, each with every turn that supports it (`[meeting, time, speaker, verbatim text]`, tagged proposal, agree, contest, restate or discuss), across every visit of its topic:
+
+```
+Date Parser (3 visits): split across visits; a summary must keep each decision below
+  D1 visit 1 [00:11:20] agreed: Let's keep the date parser in the service lib for now, ...
+     [00:11:20] Carol_Example (proposal): Let's keep the date parser in the service lib for now, ...
+     [00:11:40] Bob_Example (agree): Agreed, the service lib is fine for the date parser ...
+  D3 visit 2 [00:39:20] agreed, split from D1: Then let's move the auth client to a separate platform lib, ...
+```
+
+- **Topics and visits** come from the live insights clustering (the same as `whosaid topics build`); a topic back after 2+ minutes away is a new visit.
+- **Status**: `agreed` when someone other than the proposer said yes, `contested` when push-back was left standing, else `proposed`.
+- **Across visits**: two decisions of one topic on different visits that share few terms are a `split` (the topic is marked "split across visits"); one that repeats the earlier decision with more detail is a `refinement` ("refined across visits"); one that undoes it ("actually", "instead", "let's not") is a `reversal` ("reversed across visits").
+- **Live**: `--live` reads the newest `~/Recordings/.live/*.jsonl` (`--into DIR`); `--follow` keeps `<start>.decisions.json` next to it current and prints each change once (`--json`: one event per line; `--once` exits after the call). Ids (`d-<seconds>`) stay put as the call grows. Code that wants the same events calls `decisions.ledger()` and `decisions.changes()` in `lib/decisions.py`.
+- **Engines**: local by default (no model, no network). `--engine claude`, or `engine = "claude"` under `[decisions]` or `[summarizer]` in the workspace's `whosaid.toml` (the [action-items opt-in](#the-claude-engine-opt-in-cloud)), sends the transcript to Anthropic in one `claude -p` call; the script keeps only turn numbers that exist and quotes those turns itself, and any failure falls back to the local ledger (`engine_error` says why). `--follow` and the `whosaid_decisions` MCP tool are always local.
 
 ### A drafts outbox for agent-written chat messages: `whosaid drafts`
 
@@ -1360,6 +1387,7 @@ index` (or the watcher) owns writes, and the tools read the index, corpora, and 
 |---|---|
 | `whosaid_search` | Turn-level hits (meeting folder, timestamp, speaker, snippet) for a query in `exact`, `meaning`, or `hybrid` mode, with speaker/meeting filters. |
 | `whosaid_context` | The verbatim turns around one hit, so an agent reads a minute instead of a transcript. |
+| `whosaid_decisions` | One meeting's decisions (or, with no `meeting`, the call being recorded), each with every supporting turn across all visits of its topic, a status, and the topic's "split across visits" / refined / reversed flags. Local engine only. |
 | `whosaid_items` | Filter by owner, requester, status, type, kind, accepted ownership, or historical date. Numeric ID order, 50 per page by default, with counts, continuation offset, and a snapshot token. Compact rows preserve status and evidence availability. |
 | `whosaid_item` | One item with its occurrences and timestamped commitments. |
 | `whosaid_person` | A person's talk share, the commitments they made, and the asks they received. |
@@ -1797,6 +1825,8 @@ diarize + name pipeline against it end to end — then asserts the speaker-label
 the enrolled speaker and labels the other speaker distinctly. Run `./bootstrap.sh` once first so the
 models are cached locally; the test itself makes no network calls.
 
+`python3 test/decisions_test.py` and `./test/decisions_cli_test.sh` cover `whosaid decisions` (issue #213) on a synthetic call where one topic gets two decisions 28 minutes apart: both rows, each with its own turns, the split flag, agreed / proposed / contested, refinement and reversal, live entries with stable ids, and the Claude engine with a stub client (no process, no network).
+
 `./test/version_test.sh` is a fast, offline unit test that checks `whosaid version`, `--version`,
 and `-V` all print a matching `whosaid X.Y.Z` line and exit 0.
 
@@ -1907,7 +1937,7 @@ Each suite is run directly; the runner depends on what it imports:
   `max_speakers_hint`, `registry_matches`
   import numpy; `local_labels` and `backfill` need it for the CLI they drive):
   `uv run --quiet --with numpy python test/<name>_test.py`.
-- MCP suites (`mcp_descriptions_test.py`, `mcp_workspace_tools_test.py` import `mcp`):
+- MCP suites (`mcp_descriptions_test.py`, `mcp_workspace_tools_test.py`, `mcp_decisions_tool_test.py` import `mcp`):
   `uv run --with "mcp[cli]" python test/<name>.py`.
 
 Couplings to know before editing code:
