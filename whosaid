@@ -817,6 +817,9 @@ LIVE
   whosaid live status [--into DIR] [--json]
   whosaid live follow [--into DIR] [--speaker REGEX ...] [--exclude-self] [--named-only]
                       [--poll S] [--format text|jsonl] [--once] [--stale-seconds N] [--max-hours N]
+                      [--cursor-file F] [--heartbeat S]
+  whosaid live follow --agent [--cursor-file F] [--format jsonl] [--self NAME ...] [--heartbeat S]
+                      [--flush-seconds S] [--once] [--poll S] [--stale-seconds N]
   whosaid live insights build --jsonl F [--out F] [--if-stale] [--ws WS]   (--ws: an ended call gets its final AI pass)
   whosaid live insights follow [--into DIR] [--poll S] [--once] [--max-hours N]
   whosaid live ask --question Q [--into DIR] [--ws WS] [--minutes N] [--json]
@@ -839,7 +842,16 @@ LIVE
   (WHOSAID_LIVE_SPLIT_WORDS=1: word times, slower). When the call ends (or nothing is
   written for --stale-seconds, default 900) it prints "ended <session>" and waits for the
   next call (--once: exits 0). --format jsonl: one object per line (event turn|hint|
-  renamed|ended, with a cursor whosaid_live(since=) takes).
+  renamed|ended, with a cursor whosaid_live(since=) takes). --cursor-file F saves the
+  place after each line and a restarted follow resumes there; --heartbeat S prints an
+  `alive` line after S quiet seconds.
+  follow --agent (alias --events) prints events for an agent monitor instead of lines:
+  call_started, utterance (one voice's consecutive segments joined, with topic and
+  visit), topic_revisit (points to the first visit's first turn), for_me (a turn that
+  names you, or right after you spoke asks "you" a question or a favor; --self NAME,
+  default the registry's self-roled voice), decision (a decisions-ledger row once
+  agreed, citing the proposal and the yes), call_ended, alive. With --cursor-file F a
+  killed and restarted follower prints every utterance exactly once.
   insights writes <stem>.insights.json next to a session's .jsonl: topics (with
   revisits), a topic/term wordgraph, 5-minute summaries and agreed/suggested next
   steps, all computed locally; follow keeps the newest session's file current
