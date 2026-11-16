@@ -261,7 +261,9 @@ def test_selection_window(real):
     check(allr["within"] == "n/a", "all-clusters row is reported, not judged")
     near(allr["synthetic_diarizer"]["value"], 0.64, "all-clusters row keeps the unwindowed median")
     check(allr["synthetic_diarizer"]["n"] == 5, "all-clusters row keeps every split")
-    check("absorb 0.70-0.85" in row["metric"], "judged row names its window: %r" % row["metric"])
+    check("score 0.70-0.85" in row["metric"], "judged row names its window: %r" % row["metric"])
+    # the window (0.70-0.85) is wider than the real range (0.70-0.83): an in-window miss still fails
+    check(report([0.84, 0.85], real)["emb_over_split"]["within"] == "NO", "in-window 0.845 above 0.83 -> NO")
     # above the window is excluded too (the by-ear sample stopped at the 0.85 absorb bar)
     near(report([0.72, 0.95], real)["emb_over_split"]["synthetic_diarizer"]["value"], 0.72, "0.95 excluded")
     # splits exist but none reaches the window: the row fails, it does not go quiet
@@ -270,6 +272,32 @@ def test_selection_window(real):
     check(empty["within"] == "NO", "splits present, none in window -> NO, got %r" % empty["within"])
     # no splits at all: nothing to judge, like a batch without blends
     check(report([], real)["emb_over_split"]["within"] == "n/a", "no splits at all -> n/a")
+
+
+def blend_meeting(sims):
+    """Clusters B1..Bn each half X, half Y (purity_time 0.5 = blend), best record `sims`."""
+    turns, segs, recs = [], [], []
+    for i, v in enumerate(sims, 1):
+        a = 20.0 * i
+        turns += [turn("X", a, a + 5), turn("Y", a + 5, a + 10)]
+        segs.append(seg("B%d" % i, a, a + 10))
+        recs.append(rec("B%d" % i, "X", v, "absorb", False))
+    return [("m", {"duration": 200.0, "turns": turns},
+             {"segments": segs, "registry_matches": recs, "source": {"duration_seconds": 200.0}}, {"X", "Y"})]
+
+
+def test_blend_window(real):
+    def rep(sims):
+        sd, st, rows = cal.compute(blend_meeting(sims), real)
+        check(all(r["category"] == "blend" for r in rows), "fixture clusters are blends: %r" % rows)
+        return {r["key"]: r for r in cal.build_report(sd, st, real)}
+    r = rep([0.40, 0.80])
+    near(r["emb_blend"]["synthetic_diarizer"]["value"], 0.80, "sub-window blend excluded")
+    check(r["emb_blend"]["within"] == "yes", "0.80 inside real blend 0.75-0.84")
+    check(r["emb_blend_all"]["synthetic_diarizer"]["n"] == 2 and r["emb_blend_all"]["within"] == "n/a",
+          "all-clusters blend row keeps both, unjudged")
+    check(rep([0.40, 0.60])["emb_blend"]["within"] == "NO", "blends present, none in window -> NO")
+    check(rep([0.72])["emb_blend"]["within"] == "NO", "in-window 0.72 below real blend 0.75 -> NO")
 
 
 def test_cli(meet, run, tmp):
@@ -303,6 +331,7 @@ def main():
         test_real_stats(real)
         test_flag_logic()
         test_selection_window(real)
+        test_blend_window(real)
         test_cli(meet, run, tmp)
     print("calibrate_test: %d checks passed" % CHECKS)
 

@@ -255,7 +255,7 @@ the planner.
 | 2-4 s turns, share of talk | 18.4% | 16.0% | 14% |
 | >8 s turns, share of talk | 38.5% | 44.4% | 47% |
 | cosine, correct pass-1 | 0.894 | 0.889 | 0.72-0.89 |
-| cosine, over-split second cluster, absorb 0.70-0.85 (#100) | | 0.75 (n=4) | 0.70-0.83 |
+| cosine, over-split second cluster, score 0.70-0.85 (#100) | | 0.75 (n=4) | 0.70-0.83 |
 | cosine, over-split second cluster, all clusters (not judged) | 0.68 (n=11) | 0.65 (n=12) | |
 | cosine, blend best candidate | 0.65 (n=3) | none | 0.75-0.84 |
 | **outside ±20%** | **7 of 21** | **0 of 20** (#100; 1 of 20 before) | |
@@ -269,11 +269,18 @@ covers every unnamed cluster whose best absorb score fell in **0.70-0.85**, and 
 row missed at 0.65 (n=12).
 
 `real_stats.json` now records the window (`embedding.selection`). `calibrate.py` judges the
-over-split and blend cosine rows, and the purity rows, on the synthetic clusters whose absorb
-score lies in that window. An unjudged "(all clusters)" row keeps the full median, range and n,
-so nothing is hidden. Inside the window the median is in range by construction. What the
-judged row checks is that true splits reach the window at all. When a batch has over-split
-clusters but none in the window, the row is **NO**. When it has none at all, the row is n/a.
+over-split and blend cosine rows, and the purity rows, on the synthetic clusters whose score
+lies in that window. It filters on the score whatever pass recorded it; on seed 406 every
+over-split score comes from the absorb pass. An unjudged "(all clusters)" row keeps the full
+median, range and n, so nothing is hidden. The window is a little wider than the real ranges
+(over-split 0.70-0.83, blend 0.75-0.84), so an in-window median can still miss. Mostly,
+though, the judged row checks that true splits reach the window at all. When a batch has
+over-split clusters but none in the window, the row is **NO**. When it has none at all, the
+row is n/a.
+
+This passes by matching the real side's selection, not by changing the synthetic audio. 8 of
+the 12 splits still score below 0.70. The real side never measured below 0.70, so that tail
+is neither confirmed nor ruled out by the real data.
 
 On seed 406 the 12 over-split clusters, all scored by the absorb pass, are:
 

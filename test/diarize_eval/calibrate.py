@@ -51,10 +51,13 @@ window (real_stats.json embedding.selection, 0.70-0.85 from #77). Clusters
 below 0.70 were never sampled, so the real 0.70 floor is a cutoff, not a
 measured level. The judged over-split / blend rows therefore use only the
 synthetic clusters whose similarity is inside that window; "(all clusters)"
-rows report the unwindowed values and are not judged. Inside the window the
-median is in range by construction, so what the judged row really checks is
-that true splits (or blends) reach the window at all: when the batch has
-clusters of that category but none inside the window the row is NO.
+rows report the unwindowed values and are not judged. The window filters on
+the row's similarity whatever pass recorded it (`selection.pass` documents the
+real side; it is not enforced). The window is wider than the real ranges
+(over-split 0.70-0.83, blend 0.75-0.84), so an in-window median can still miss;
+mostly the judged row checks that true splits (or blends) reach the window at
+all: when the batch has clusters of that category but none inside the window
+the row is NO.
 Enrolled names for a meeting = stems of RUNDIR/<id>/<mode>-refs/*.wav plus
 every name in a `pass: ref` record of the meeting's sidecar; when neither exists
 every truth speaker counts as enrolled.
@@ -452,7 +455,7 @@ def metric_list(real):
     for i, b in enumerate(bins):
         rows.append(("turns %s: share of talk" % b, "talk_share_%d" % i, "pct"))
     win = selection_window(real)
-    tag = " (absorb %.2f-%.2f)" % win if win else ""
+    tag = " (score %.2f-%.2f)" % win if win else ""
     rows += [("cosine, correct pass-1", "emb_correct_pass1", "num"),
              ("cosine, over-split second cluster" + tag, "emb_over_split", "num"),
              ("cosine, over-split second cluster (all clusters)", "emb_over_split_all", "num"),
