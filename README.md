@@ -219,6 +219,26 @@ whosaid live follow --speaker 'Alice|Bob' --exclude-self --once   # each new lin
 - **AI labels and recap (opt-in, CLOUD).** With `[live]` `ai = "claude"` in `<ws>/whosaid.toml`, `whosaid live insights follow --ws <ws>` (the app passes it) also asks Claude (`claude -p`, Sonnet) for topic labels, a short recap and next steps once per `ai_every` seconds of talk (default 180), at most `ai_max_calls` (40) per call, `ai_timeout` 90 s and `ai_max_tokens` 1500 per call. Each call sends the newest ~24k characters of the transcript plus the local topics to Anthropic, about 9k tokens. Answers land in `<start>.ai.json` and are laid over the local insights; every topic keeps its `localLabel`, and a failed call keeps the last good answer. Remove the line (or set `ai = ""`) to turn it off.
 - It only reads the recording in progress. The full transcript with names and action items still comes from `whosaid watch` after the call.
 
+#### A live explainer page: `whosaid live explain`
+
+A page that explains the call in plain words while it runs: one section per stretch of talk, newest first, each with a time range, a short explanation, a hand-drawn SVG sketch, `S-T:` lines for jargon, open questions, what was asked of you or what you owe, claims tied to who said them, a low-confidence footnote, a **Suggested** box ("my ideas, not said on the call") and a **For you** box whose reply is copied to the clipboard as rich text.
+
+```bash
+whosaid live explain serve                 # http://127.0.0.1:8765/ for the newest live call
+whosaid live explain add --file s.json     # write a section (JSON on stdin without --file)
+whosaid live explain correct 002 --before "on by default" --after "off by default" --quote "no, it is off" --who Ana
+whosaid live explain recap --file r.json   # final recap, shown on top once the call ends
+whosaid live explain status                # page path, section count, recap, engine
+```
+
+- **Where it goes.** `~/Recordings/.live/<start>.explain/`: `NNN-<slug>.json` and `.html` per section (stable ids like `s-003`), `recap.html`, and a static `index.html` that works opened as a file (it refreshes every 30 s). Sketches are sanitized to an SVG allowlist; the page loads nothing remote.
+- **Live push without reflow.** `serve` streams changes over SSE (S-T: server-sent events, one long HTTP response the server keeps writing to). Nothing on the page moves until you click the sticky "↑ N new updates, click to load" button; new sections then grow in over 1.8 s, older ones slide down, and the new one glows.
+- **Corrections.** A corrected section loads to the right of the old one with word-level highlights (red strikethrough for removed words, green for added ones, a dashed outline on changed paragraphs) under "corrected version: N changes highlighted"; "replace with the correction" slides the old one out over 2.6 s. The diff runs on the stored HTML, not on the page's own highlights.
+- **On the page.** Dark mode by default with a toggle that is remembered, a topic timeline bar, a pinned For-you strip with checkboxes that stay checked, search and filter chips (open questions, my asks, suggestions, corrections), glossary popovers and a phone layout. Glossary terms come from each section's `S-T:` lines, `[live.explain_glossary]` in `<ws>/whosaid.toml`, and `glossary.json` in the explain folder.
+- **Phone or another machine (opt-in).** `serve --lan` listens on every interface and prints a URL with a token. The first visit trades the token for an HttpOnly cookie; anything else from the network gets 403. The token is kept in `.token` (mode 600). Off by default: `serve` binds to 127.0.0.1 only.
+- **Who writes it.** By default nothing does on its own, and nothing is sent anywhere: an agent writes sections through `whosaid_live_explain_add`, `whosaid_live_explain_correct` and `whosaid_live_explain_recap` (or the `add`/`correct`/`recap` commands). Writing a section copies its For-you reply to the clipboard; pass `--no-copy` (or set `WHOSAID_EXPLAIN_CLIPBOARD=0`) to skip that.
+- **AI sections (opt-in, CLOUD).** With `[live]` `explain = "claude"` in `<ws>/whosaid.toml`, `whosaid live explain serve --ws <ws>` sends the newest transcript lines to Claude (`claude -p`) once per `explain_every` seconds of talk (default 240) and writes what comes back as sections. Limits: `explain_max_calls` (30) per call, `explain_timeout` 120 s and `explain_max_tokens` 3000 per call; `explain_model` picks the model. For-you replies are looked up in the local workspace search first. Three failures in a row stop it for that call. Remove the line to turn it off.
+
 ### One status feed for apps and scripts: `whosaid app-state`
 
 ```bash
@@ -1315,6 +1335,7 @@ Add it to your MCP client config:
 | `whosaid_record_browser` | Records a browser meeting tab over the DevTools port. `action` is `start`, `stop` or `status`. Not read-only. Needs a browser started with `--remote-debugging-port`; no Screen Recording permission. Auto-stops when the call ends. |
 | `whosaid_draft_new`, `whosaid_draft_write`, `whosaid_draft_verify`, `whosaid_draft_close`, `whosaid_draft_sent_check` | Write a chat draft into the [drafts outbox](#a-drafts-outbox-for-agent-written-chat-messages-whosaid-drafts) with its claims, stakeholders and pages, then check the gates; `new` joins the recipient's open draft; `sent_check` marks staged drafts sent from the ingested chat. Not read-only. Local files only; never stages or sends. |
 | `whosaid_drafts`, `whosaid_draft_stakeholders`, `whosaid_draft_stale` | List, show or diff drafts and their revisions; rank who spoke about a topic; find drafts whose stakeholders said something new since verify. Read-only. |
+| `whosaid_live_explain_add`, `whosaid_live_explain_correct`, `whosaid_live_explain_recap` | Write a section, a correction or the final recap of the [live explainer page](#a-live-explainer-page-whosaid-live-explain) for the newest live call (or `session`). Local files only; not read-only. |
 | `whosaid_teams_live` | The newest Teams chat messages (or chats, `action="chats"`) read from the Teams desktop app's local cache: offline, nothing to rate-limit, only what the app has synced. Read-only. See [`whosaid teams live`](#whosaid-teams-live-teams-chats-live-from-the-desktop-apps-cache). |
 | `whosaid_teams_calendar` | Your Teams meetings in a window (default today plus 7 days) read from the same local cache: subject, times (UTC and local), organizer, attendees, response, join URL, and with a workspace the recordings made during each. Says which weeks the cache covers. Read-only. See [`whosaid teams calendar`](#whosaid-teams-calendar-your-teams-calendar-from-the-same-cache). |
 
@@ -1772,6 +1793,8 @@ deliberately if a real speaker is being missed.
 diarize + name pipeline against it end to end — then asserts the speaker-labeled transcript names
 the enrolled speaker and labels the other speaker distinctly. Run `./bootstrap.sh` once first so the
 models are cached locally; the test itself makes no network calls.
+
+`python3 test/live_explain_test.py` covers the live explainer (storage, rendering, the SVG sanitizer, corrections, the server's routes and SSE push, LAN tokens, the CLI and the opt-in engine against a fake client); `bun test test/explain_assets_test.js` covers the page's word diff and load logic. Both are offline and use synthetic sections.
 
 `./test/version_test.sh` is a fast, offline unit test that checks `whosaid version`, `--version`,
 and `-V` all print a matching `whosaid X.Y.Z` line and exit 0.
