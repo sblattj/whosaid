@@ -8,7 +8,7 @@ when the user stages them.
     whosaid drafts text ID (--file draft.md | -)          write the message
     whosaid drafts claims ID --file claims.json [--ws WS] write {claims, stakeholders, docs}; prints said turns
     whosaid drafts attach|detach ID /abs/page.html
-    whosaid drafts verify ID [--voice warn|off|enforce|clear --reason R] [--ws WS]
+    whosaid drafts verify ID [--voice warn|off|enforce|clear --reason R] [--ws WS] [--recap-days N]
                                                           check the gates and voice lint, stamp a content hash
     whosaid drafts lint [ID|--all] [--ws WS] [--json]     the voice lint alone, read-only
     whosaid drafts list [--all] [--mine] [--json]
@@ -46,6 +46,15 @@ time, and fails when it does not resolve, when the quote (3+ words, fuzzy so ASR
 not in that turn, or when the claim cites only a paraphrase or a summary (commitments.md, a recap,
 items). `drafts claims ID --file F --ws WS` prints the resolved turns, so the real words come first.
 
+Recap replies (#215): when the draft's chat thread id is known and the recipient's newest messages
+(since our own last one before the draft) hold a recap ("I heard: A, B, C, D. Does that match your
+understanding?", "to recap", a bullet list), verify splits it into points, searches each one over the
+meetings the recipient spoke in during the last --recap-days (14; the chat itself never counts), and
+requires a claim per point with `point: N` and `stance` agree|disagree|skip. Agree and disagree are
+said claims; a disagree fails without a resolved turn, and the recap message is never a turn behind
+its own point. The per-point turns come back from verify (and on failure in DraftsError.detail, which
+the MCP tool returns), so the author fixes the draft against what was actually said.
+
 Voice lint (lib/voice_lint.py, DEFAULT_PROFILE): verify also checks the message shape. Group B
 (more than one paragraph, a greeting opener like "Hi Sam", or an implied one like "heads up", "can you review" or "FYI", an "attached page" or "Thanks!"
 closer) fails verify when the workspace's whosaid.toml sets [drafts] voice_lint = "enforce";
@@ -79,7 +88,7 @@ import shutil
 import subprocess
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 OPEN = ("drafting", "verified", "staged")
@@ -96,7 +105,12 @@ VOICE_MODES = ("enforce", "warn", "off")
 
 
 class DraftsError(Exception):
-    """A refused request: bad id, failed gate, held lock, missing stager."""
+    """A refused request: bad id, failed gate, held lock, missing stager. detail: structured data
+    for the caller (verify's per-point recap turns), merged into the MCP error payload."""
+
+    def __init__(self, msg: str = "", detail: dict | None = None):
+        super().__init__(msg)
+        self.detail = detail or {}
 
 
 # ---- storage -----------------------------------------------------------------------
@@ -433,6 +447,170 @@ def said_check(claims: dict, ws=None) -> dict:
         if conn is not None:
             conn.close()
     return out
+
+
+# ---- recap replies (#215): answer the recipient's own recap point by point ------------------
+
+RECAP_RE = re.compile(r"\bI heard\b|\b(?:does|did) (?:that|this|it) (?:match|sound right)|\bmatch(?:es)? your "
+                      r"understanding|\bto recap\b|^\s*recap\b|\bmy understanding is\b|\bdid I get (?:that|this|it) "
+                      r"right|\bmy takeaways?\b", re.I | re.M)
+_RECAP_LEAD = re.compile(r"^.*?(?:\bI heard|\bto recap|^\s*recap|\bmy understanding is|\bmy takeaways?(?: (?:are|is|were))?)"
+                         r"(?:\s+(?:that|was|is))?\s*[:,-]?\s*", re.I | re.S)
+_RECAP_ASK = re.compile(r"\b(?:does|did) (?:that|this|it) (?:match|sound right)|\bmatch(?:es)? your understanding|"
+                        r"\bdid I get (?:that|this|it) right|\banything I missed\b|\bcorrect me\b", re.I)
+_BULLET = re.compile(r"^\s*(?:[-*\u2022]|\(?\d+[.)])\s+")
+STANCES = ("agree", "disagree", "skip")
+STOP = set("a an and are as at be been but by did do does for from had has have i if in is it its me my of "
+           "on or our so that the their them then there they this to was we were what when which who will "
+           "with you your heard recap understanding match".split())
+
+
+def _drop_asks(s: str) -> str:
+    """The recap without its question ("Does that match your understanding?"), sentence by sentence."""
+    parts = re.split(r"(?<=[.?!;])\s+", s.strip())
+    keep = []
+    for p in parts:
+        m = _RECAP_ASK.search(p)
+        if m:
+            p = p[:m.start()]
+        keep.append(p)
+    return " ".join(x for x in keep if x.strip()).strip()
+
+
+def recap_points(text: str) -> list[str]:
+    """The points of a recap message: its bullet or numbered lines, else inline 1) 2) numbering, else
+    the list after "I heard" / "to recap" split on semicolons or commas (and a final "and")."""
+    lines = [x for x in (text or "").splitlines() if x.strip()]
+    items = [_BULLET.sub("", x).strip() for x in lines if _BULLET.match(x)]
+    if len(items) < 2:
+        flat = _drop_asks(_RECAP_LEAD.sub("", " ".join(x.strip() for x in lines), count=1))
+        nums = re.split(r"(?:^|\s)\(?\d+[.)]\s+", flat)
+        if len(nums) >= 3:
+            items = nums[1:]
+        else:
+            body = flat
+            items = re.split(r"\s*;\s*", body) if ";" in body else re.split(r",\s*", body)
+            if len(items) >= 2:
+                items[-1] = re.sub(r"^and\s+", "", items[-1].strip())
+            elif len(items) == 1:
+                items = re.split(r"\s+and\s+", items[0])
+    out = []
+    for x in items:
+        x = _drop_asks(x).strip().rstrip(".;,:!?").strip()
+        x = re.sub(r"^(?:and|also|then)\s+", "", x, flags=re.I)
+        if len(_words(x)) >= 2:
+            out.append(x)
+    return out
+
+
+def find_recap(ws: Path, m: dict) -> dict | None:
+    """The recipient's newest recap message in the draft's chat, when the thread id is known and it
+    came after our own last message before the draft (an answered recap is not asked again)."""
+    if m.get("new_chat") or not chat_thread_id(m, ws):
+        return None
+    msgs = draft_chat_messages(ws, m)
+    created = _ms(m.get("created_at")) or int(time.time() * 1000)
+    ours = [x["epoch_ms"] for x in msgs if x["self"] and x["epoch_ms"] < created]
+    since = max(ours) if ours else -1
+    theirs = [x for x in msgs if not x["self"] and x["epoch_ms"] > since and RECAP_RE.search(x["text"] or "")]
+    for x in reversed(theirs):
+        pts = recap_points(x["text"])
+        if len(pts) >= 2:
+            return {**{k: x[k] for k in ("at", "speaker", "mid", "folder", "text", "epoch_ms")}, "points": pts,
+                    "chat_folders": sorted({y["folder"] for y in msgs})}
+    return None
+
+
+def _is_recap(text: str, recap: dict) -> bool:
+    a, b = _plain(text), _plain(recap.get("text") or "")
+    return bool(a) and (a == b or (len(a) >= 20 and a in b))
+
+
+def _point_query(point: str) -> str:
+    return " OR ".join(f'"{w}"' for w in dict.fromkeys(_words(point)) if w not in STOP and len(w) > 2)
+
+
+def _attended(conn, speaker: str, days: int) -> set[str]:
+    """Meetings in the last DAYS where SPEAKER has a turn (the index knows who spoke, not who listened)."""
+    floor = datetime.now().astimezone() - timedelta(days=days)
+    rows = conn.execute("SELECT DISTINCT meeting FROM seg WHERE lower(speaker) = lower(?)", (speaker,)).fetchall()
+    return {mt for (mt,) in rows if (_meeting_time(mt) or floor) >= floor}
+
+
+def recap_check(ws, m: dict, said: dict, days: int = 14, k: int = 3) -> dict:
+    """#215: the draft replies in a chat whose newest message from the recipient is a recap ("I heard:
+    A, B, C, D. Does that match?"). Each point gets the top turns from meetings the recipient spoke in
+    over the last DAYS, and needs a claim {point: N, stance: agree|disagree|skip}: agree and disagree
+    are said claims, a disagree must cite a resolved turn, and the recap message never counts as one.
+    Returns {recap: None | {...points: [{n, text, turns, claims, stance}]}, errors}."""
+    wsp = _voice_ws(ws)
+    if wsp is None:
+        return {"recap": None, "errors": []}
+    try:
+        rc = find_recap(wsp, m)
+    except Exception:  # noqa: BLE001 - an unreadable chat is no recap, never a crash
+        rc = None
+    if not rc:
+        return {"recap": None, "errors": []}
+    import search
+    try:
+        conn = search.open_index(wsp)
+    except search.SearchError:
+        conn = None
+    try:
+        # the chat being answered is not where its points were made: its days never count as meetings
+        meetings = (_attended(conn, rc["speaker"], days) - set(rc["chat_folders"])) if conn else set()
+    finally:
+        if conn is not None:
+            conn.close()
+    claims = [x for x in claims_of(m).get("claims") or [] if not x.get("dropped")]
+    resolved = {x["key"]: x for x in said.get("said") or []}
+    points, errs = [], []
+    for n, text in enumerate(rc["points"], 1):
+        turns = []
+        q = _point_query(text)
+        if q and meetings:
+            try:
+                _engine, hits = _search(wsp, q, 50)
+            except Exception:  # noqa: BLE001 - no index: the point still needs its claim
+                hits = []
+            for h in hits:
+                if h.meeting in meetings and not _is_recap(h.text, rc):
+                    turns.append({"meeting": h.meeting, "t_str": h.t_str, "speaker": h.speaker, "text": h.text})
+                if len(turns) >= k:
+                    break
+        mine = [x for x in claims if str(x.get("point")) == str(n)]
+        stance = next((x.get("stance") for x in mine if x.get("stance")), None)
+        row = {"n": n, "text": text, "turns": turns, "claims": [x.get("key") for x in mine], "stance": stance}
+        points.append(row)
+        why = []
+        if not mine:
+            why.append(f"no claim answers it: add a said claim with point {n} and stance agree|disagree "
+                       "(stance skip when the draft leaves it alone)")
+        for x in mine:
+            kid = x.get("key") or (x.get("text") or "")[:40]
+            st = x.get("stance")
+            if st not in STANCES:
+                why.append(f"claim {kid}: stance must be agree, disagree or skip")
+                continue
+            if st == "skip":
+                continue
+            if x.get("kind") != "said":
+                why.append(f"claim {kid}: {st} needs a said claim (kind said) citing the turn")
+                continue
+            got = resolved.get(kid) or {}
+            if any(_is_recap(t["text"], rc) for t in got.get("turns") or []):
+                why.append(f"claim {kid}: cites the recipient's own recap, not a turn behind it")
+            elif st == "disagree" and (x.get("verdict") != "confirmed" or not got.get("turns") or got.get("errors")):
+                why.append(f"claim {kid}: disagrees without a cited turn")
+        if why:
+            shown = "; turns behind the point: " + " | ".join(
+                f"[{t['meeting']} @ {t['t_str']}] {t['speaker']}: {t['text'][:200]}" for t in turns) if turns else \
+                "; no turn found for it in the recipient's meetings of the last {days} days".format(days=days)
+            errs.append(f'recap point {n} "{text}": ' + "; ".join(why) + shown)
+    recap = {"from": rc["speaker"], "at": rc["at"], "mid": rc["mid"], "folder": rc["folder"], "text": rc["text"],
+             "days": days, "points": points}
+    return {"recap": recap, "errors": errs}
 
 
 def gate(m: dict, ws=None, said: bool = True) -> list[str]:
@@ -803,7 +981,7 @@ def set_voice_override(m: dict, mode: str, reason: str | None) -> None:
 
 
 def verify(draft_id: str, force: bool = False, voice: str | None = None, reason: str | None = None,
-           ws=None) -> dict:
+           ws=None, recap_days: int = 14) -> dict:
     m = load(draft_id)
     editing = m["status"] == "sent"
     if editing and not edit_pending(m):
@@ -816,6 +994,8 @@ def verify(draft_id: str, force: bool = False, voice: str | None = None, reason:
         set_voice_override(m, voice, reason)
         save(m)
     errs, said = _gate(m, ws)
+    rc = recap_check(ws, m, said, days=recap_days)
+    errs += rc["errors"]
     v = voice_check(m, ws)
     if m.get("merge_text_joined"):
         v["warnings"].append("merged text is still the joined drafts: rewrite it as one message (drafts text)")
@@ -825,7 +1005,7 @@ def verify(draft_id: str, force: bool = False, voice: str | None = None, reason:
             msg += (f"\n  voice lint is enforced ({v['source']}): rewrite as one short paragraph with no "
                     f"greeting or closer line, or for a real exception: whosaid drafts verify {draft_id} "
                     "--voice warn --reason R")
-        raise DraftsError(msg)
+        raise DraftsError(msg, detail={"recap": rc["recap"], "said": said["said"]})
     if editing:
         m["edit_verified_hash"], m["edit_verified_at"] = edit_hash(m), now()
     else:
@@ -839,7 +1019,7 @@ def verify(draft_id: str, force: bool = False, voice: str | None = None, reason:
     c = claims_of(m)
     n = {v_: sum(1 for k in c["claims"] if k.get("verdict") == v_) for v_ in VERDICTS}
     return {"id": draft_id, "state": state(m) if editing else "verified", **n, "stakeholders": len(c.get("stakeholders") or []),
-            "voice_lint": v["mode"], "voice_warnings": v["warnings"], "said": said["said"]}
+            "voice_lint": v["mode"], "voice_warnings": v["warnings"], "said": said["said"], "recap": rc["recap"]}
 
 
 def summary(m: dict) -> dict:
@@ -1973,7 +2153,10 @@ def build_parser() -> argparse.ArgumentParser:
     a.add_argument("--voice", choices=(*VOICE_MODES, "clear"),
                    help="per-draft voice lint mode for a real exception (needs --reason); clear drops it")
     a.add_argument("--reason", help="why this draft is an exception to the voice lint")
-    a.add_argument("--ws", help="workspace whose whosaid.toml [drafts] voice_lint applies (default WHOSAID_WORKSPACE)")
+    a.add_argument("--ws", help="workspace whose whosaid.toml [drafts] voice_lint applies and whose index and "
+                   "chats said claims and recap replies are checked against (default WHOSAID_WORKSPACE)")
+    a.add_argument("--recap-days", type=int, default=14,
+                   help="a recap reply's points are searched in the recipient's meetings of the last N days (14)")
     a = sub.add_parser("lint", help="the voice lint alone, read-only")
     a.add_argument("id", nargs="?")
     a.add_argument("--all", action="store_true", help="every open draft")
@@ -2095,9 +2278,14 @@ def main(argv: list[str] | None = None) -> int:
             write(args.id, thread_id=args.thread_id, force=args.force)
             print(load(args.id).get("thread_id") or "(no thread id: the stager checks the chat title)")
         elif c == "verify":
-            r = verify(args.id, force=args.force, voice=args.voice, reason=args.reason, ws=args.ws)
+            r = verify(args.id, force=args.force, voice=args.voice, reason=args.reason, ws=args.ws,
+                       recap_days=args.recap_days)
             print(f"verified {r['id']}: {r['confirmed']} confirmed, {r['unverified']} unverified, "
                   f"{r['refuted']} refuted and dropped, {r['stakeholders']} stakeholder(s)")
+            for p in (r["recap"] or {}).get("points") or []:
+                print(f"  recap point {p['n']} ({p['stance']}): {p['text']}")
+                for t in p["turns"]:
+                    print(f"    [{t['meeting']} @ {t['t_str']}] {t['speaker']}: {t['text'][:200]}")
             for w in r["voice_warnings"]:
                 print(f"warning: {w}", file=sys.stderr)
         elif c == "lint":

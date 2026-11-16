@@ -283,7 +283,7 @@ whosaid drafts new --to "Test Person" --topic "dns records" --page ~/pages/dns-p
 whosaid drafts stakeholders ~/meetings --topic "dns records" --repo ~/code/infra --path dns/
 whosaid drafts claims <id> --file claims.json --ws ~/meetings   # claims, stakeholders, docs; prints said turns
 whosaid drafts text <id> --file draft.md
-whosaid drafts verify <id>
+whosaid drafts verify <id> --ws ~/meetings      # --recap-days N: how far back a recap reply's points are searched
 whosaid drafts lint --all                       # the voice lint alone, read-only
 whosaid drafts list                             # state and the session that wrote each one
 whosaid drafts merge <into> <from> [<from> ...] --text-file merged.md   # fold rival drafts into one
@@ -317,6 +317,15 @@ whosaid drafts html                             # review page of every open draf
   {"key": "p1", "kind": "said", "verdict": "confirmed", "text": "Sam asked for the old resolver to stay up",
    "evidence": [{"meeting": "2026-03-02-1000", "t": "00:02:05", "quote": "the old resolver stays up until march"}]}
   ```
+- **A reply to a recap answers each point.** When the draft's chat is known by thread id and the
+  recipient's newest messages hold a recap ("I heard: A, B, C, D. Does that match your
+  understanding?", "to recap", a bullet list), `verify` splits it into points and searches each one
+  over the meetings the recipient spoke in during the last `--recap-days` (14; the chat itself never
+  counts). Every point then needs a claim with `"point": N` and `"stance"`: `agree` or `disagree` (a
+  `said` claim citing the turn) or `skip` (the draft leaves it alone). A `disagree` without a resolved
+  turn fails, and so does citing the recap message itself. The failure lists the turns behind each
+  point, so you see what supports the recipient before you tell them they are wrong; a passing verify
+  returns them too (and `whosaid_draft_verify` returns them as `recap.points[].turns` either way).
 - **Voice lint.** `verify` also checks the message shape with `lib/voice_lint.py` (plain rules, no
   model). Shape rules (more than one paragraph, a greeting opener like `Hi Sam,`, or an opener the message already implies (`heads up`, `can you review`, `FYI`, `quick question`, `just wanted to`), an `attached
   page` or `Thanks!` closer) fail verify when the workspace's `whosaid.toml` says so; the rest

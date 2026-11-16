@@ -1637,6 +1637,158 @@ class SaidClaimTest(DraftsBase):
             drafts.main(["claims", self.did, "--file", str(f), "--ws", str(self.ws)])
         self.assertIn("said s: cites only a summary", out.getvalue())
 
+RECAP = ("I heard: the old resolver stays up until march, staging needs two dns records, the wildcard cert "
+         "waits for the records, and the rollout starts on monday. Does that match your understanding?")
+RECAP_TID = "19:dm@unq.gbl.spaces"
+
+
+class RecapTest(DraftsBase):
+    """#215: a reply to the recipient's own recap answers it point by point, each with real turns."""
+
+    def setUp(self):
+        super().setUp()
+        self.ws = self.root / "ws"
+        self.ws.mkdir()
+        (self.ws / "whosaid.toml").write_text("[search]\nembed = false\n")
+        now = datetime.now()
+        self.call_folder = (now - timedelta(days=3)).strftime("%Y-%m-%d-%H%M")
+        self.meet(self.call_folder, [
+            "[00:01:00] Test_Person: we agreed the old resolver stays up until march so nothing breaks",
+            "[00:02:00] Other_Voice: staging needs two dns records before the cutover",
+            "[00:03:00] Test_Person: the wildcard cert waits until the records exist",
+            "[00:04:00] Other_Voice: the rollout starts on monday after the freeze"])
+        self.other_folder = (now - timedelta(days=2)).strftime("%Y-%m-%d-%H%M")
+        self.meet(self.other_folder, ["[00:00:30] Third_Voice: the old resolver can go away this week, march is too late"])
+        self.meet((now - timedelta(days=40)).strftime("%Y-%m-%d-%H%M"),
+                  ["[00:00:10] Test_Person: the old resolver stays up for now"])  # outside the window
+        self.chat_folder = now.strftime("%Y-%m-%d-%H%M")
+        t0 = int((now - timedelta(minutes=30)).timestamp() * 1000)
+        msgs = [("Me_Self", "can you recap what we decided on the dns call?", "r1", 0),
+                ("Test_Person", RECAP, "r2", 1)]
+        d = self.ws / self.chat_folder
+        d.mkdir()
+        (d / "teams.speakers.txt").write_text("".join(f"[00:00:0{i}] {s}: {t}\n" for s, t, _m, i in msgs))
+        (d / "teams.diarization.json").write_text(json.dumps({
+            "base": "teams", "source": {"kind": "teams-chat", "chat_name": "Test Person",
+                                        "day": now.strftime("%Y-%m-%d"), "chat_id": RECAP_TID},
+            "names": {}, "roles": {"Me_Self": "self"}, "segments": [
+                {"start": i, "end": i, "speaker": s, "epoch_ms": t0 + i * 60000, "mid": mid, "text": t}
+                for s, t, mid, i in msgs]}))
+        search.build(self.ws, embed=False)
+        self.did = drafts.new("Test Person", "dns records", [str(self.page)], thread_id=RECAP_TID)["id"]
+        drafts.write(self.did, text="Points 3 and 4 match, but point 1 does not: the old resolver goes away this week.")
+
+    def meet(self, folder, lines):
+        (self.ws / folder).mkdir()
+        (self.ws / folder / "call.speakers.txt").write_text("\n".join(lines) + "\n")
+
+    def claims(self, *point_claims):
+        drafts.write(self.did, **{**GOOD_CLAIMS, "claims": GOOD_CLAIMS["claims"] + list(point_claims)})
+
+    def point(self, n, stance, evidence=None, verdict="confirmed", kind="said"):
+        return {"key": f"p{n}", "text": f"point {n}", "kind": kind, "point": n, "stance": stance,
+                "verdict": verdict, **({"evidence": evidence} if evidence is not None else {})}
+
+    def rest(self):
+        return [self.point(2, "skip", "not addressed", kind="status"),
+                self.point(3, "agree", [{"meeting": self.call_folder, "t": "00:03:00", "quote": "the wildcard cert waits"}]),
+                self.point(4, "agree", [{"meeting": self.call_folder, "t": "00:04:00", "quote": "the rollout starts on monday"}])]
+
+    def fails(self, *needles):
+        with self.assertRaises(drafts.DraftsError) as cm:
+            drafts.verify(self.did, ws=self.ws)
+        for n in needles:
+            self.assertIn(n, str(cm.exception))
+        return cm.exception
+
+    def test_done_when_disagree_on_point_1_fails_until_it_cites_a_real_turn(self):
+        # no claim per point at all: every point is listed, and point 1 surfaces the turn behind it
+        e = self.fails('recap point 1 "the old resolver stays up until march": no claim answers it',
+                       'recap point 4 "the rollout starts on monday"',
+                       f"[{self.call_folder} @ 00:01:00] Test_Person: we agreed the old resolver stays up until march")
+        pts = e.detail["recap"]["points"]
+        self.assertEqual(len(pts), 4)
+        self.assertEqual((pts[0]["turns"][0]["meeting"], pts[0]["turns"][0]["t_str"]), (self.call_folder, "00:01:00"))
+        self.assertNotIn(self.chat_folder, [t["meeting"] for p in pts for t in p["turns"]],
+                         "the recap message is never the turn behind its own point")
+        self.assertNotIn("00:00:10", [t["t_str"] for t in pts[0]["turns"]], "meetings older than the window are skipped")
+        # disagree with a paraphrase: still fails, and still shows the supporting turn
+        self.claims(self.point(1, "disagree", "I remember it differently"), *self.rest())
+        self.fails("recap point 1", "disagrees without a cited turn", "said claim p1: evidence must cite transcript turns",
+                   f"[{self.call_folder} @ 00:01:00] Test_Person")
+        # citing the recipient's own recap message is not a turn behind the point
+        self.claims(self.point(1, "disagree", [{"message_id": "r2", "quote": "the old resolver stays up until march"}]),
+                    *self.rest())
+        self.fails("recap point 1", "cites the recipient's own recap")
+        # a real turn: verify passes and still reports the turn that supports the recipient
+        self.claims(self.point(1, "disagree", [{"meeting": self.other_folder, "t": "00:00:30",
+                                                "quote": "the old resolver can go away this week"}]), *self.rest())
+        r = drafts.verify(self.did, ws=self.ws)
+        p1 = r["recap"]["points"][0]
+        self.assertEqual((p1["stance"], p1["claims"]), ("disagree", ["p1"]))
+        self.assertEqual(p1["turns"][0]["t_str"], "00:01:00")
+        self.assertEqual(p1["turns"][0]["meeting"], self.call_folder)
+
+    def test_an_agreement_must_be_a_said_claim_and_stance_must_be_known(self):
+        self.claims(self.point(1, "agree", "matches", kind="status"), *self.rest())
+        self.fails("recap point 1", "agree needs a said claim")
+        self.claims(self.point(1, "maybe", [{"meeting": self.call_folder, "t": "00:01:00",
+                                             "quote": "the old resolver stays up"}]), *self.rest())
+        self.fails("recap point 1", "stance must be agree, disagree or skip")
+
+    def test_no_recap_no_thread_or_no_workspace_is_a_no_op(self):
+        drafts.write(self.did, **GOOD_CLAIMS)
+        self.assertIsNone(drafts.verify(self.did)["recap"])  # no workspace
+        other = drafts.new("Second Person", "dns records", [str(self.page)])["id"]
+        drafts.write(other, text="Points 3 and 4 match.", **GOOD_CLAIMS)
+        self.assertIsNone(drafts.verify(other, ws=self.ws)["recap"])  # no thread id, no chat
+        sc = self.ws / self.chat_folder / "teams.diarization.json"
+        data = json.loads(sc.read_text())
+        data["segments"][1]["text"] = "the old resolver stays up until march"
+        sc.write_text(json.dumps(data))
+        drafts.write(self.did, text="Points 3 and 4 match, but point 1 does not.")
+        self.assertIsNone(drafts.verify(self.did, ws=self.ws)["recap"])  # their message is not a recap
+
+    def test_an_older_recap_answered_already_is_not_checked_again(self):
+        sc = self.ws / self.chat_folder / "teams.diarization.json"
+        data = json.loads(sc.read_text())
+        data["segments"].append({"start": 2, "end": 2, "speaker": "Me_Self", "mid": "r3", "text": "yes it all matches",
+                                 "epoch_ms": data["segments"][1]["epoch_ms"] + 60000})
+        sc.write_text(json.dumps(data))
+        drafts.write(self.did, **GOOD_CLAIMS)
+        self.assertIsNone(drafts.verify(self.did, ws=self.ws)["recap"])
+
+    def test_points_split_from_lists_and_numbers(self):
+        self.assertEqual(drafts.recap_points(RECAP), ["the old resolver stays up until march",
+                                                      "staging needs two dns records",
+                                                      "the wildcard cert waits for the records",
+                                                      "the rollout starts on monday"])
+        self.assertEqual(drafts.recap_points("To recap:\n- one thing here\n- second thing there\nDid I get that right?"),
+                         ["one thing here", "second thing there"])
+        self.assertEqual(drafts.recap_points("My understanding is 1) alpha goes first 2) beta waits; does that match?"),
+                         ["alpha goes first", "beta waits"])
+
+    def test_cli_verify_prints_the_turns(self):
+        import io
+        from contextlib import redirect_stderr
+        err = io.StringIO()
+        with redirect_stderr(err):
+            self.assertEqual(drafts.main(["verify", self.did, "--ws", str(self.ws)]), 1)
+        self.assertIn(f"[{self.call_folder} @ 00:01:00] Test_Person", err.getvalue())
+
+    def test_mcp_verify_returns_the_point_turns_on_failure(self):
+        import asyncio
+        import inspect
+        try:
+            import mcp_server
+        except ModuleNotFoundError as e:
+            self.skipTest(f"needs the mcp SDK: {e}")
+        out = mcp_server.whosaid_draft_verify(id=self.did, workspace=str(self.ws))
+        out = asyncio.run(out) if inspect.isawaitable(out) else out
+        self.assertFalse(out["ok"])
+        self.assertEqual(out["recap"]["points"][0]["turns"][0]["t_str"], "00:01:00")
+        self.assertIn("no claim answers it", out["error"])
+
 
 if __name__ == "__main__":
     unittest.main()

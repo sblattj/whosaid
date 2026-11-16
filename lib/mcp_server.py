@@ -3347,14 +3347,17 @@ _DESC_DRAFT_VERIFY = (
     "claim has a verdict, refuted claims dropped, confirmed claims carry evidence, confirmed tech "
     "claims cite a doc URL, at least one stakeholder with the topics searched, pages exist. A confirmed said "
     "claim's refs must resolve in the workspace index to the turn at that time and its quote must appear "
-    "there (fuzzy); a summary or paraphrase fails. Stamps a "
+    "there (fuzzy); a summary or paraphrase fails. A reply to the recipient's recap in the chat (I heard: "
+    "A, B, C. Does that match?) needs a claim per point {point: N, stance: agree|disagree|skip}; a disagree "
+    "must cite a real turn. recap.points[].turns (also on ok=false) are the turns behind each point "
+    "from the recipient's meetings of the last recap_days. Stamps a "
     "hash of the message, claims and pages; a later edit reads as stale. Also runs the voice lint: "
     "with whosaid.toml [drafts] voice_lint = \"enforce\" (workspace argument, else WHOSAID_WORKSPACE) a "
     "message with more than one paragraph, a greeting opener (Hi Sam,) or an attached-page / Thanks! "
     "closer fails, naming the rule and line; length and 'want me to' asks only warn (voice_warnings). "
     "Write the message as one short paragraph of 1 to 3 sentences. For a real exception pass "
     "voice='warn' (or 'off') with a reason; it is kept on the draft, voice='clear' drops it. Returns "
-    "{ok, id, confirmed, unverified, refuted, stakeholders, voice_lint, voice_warnings, said: [{key, turns}]} or ok=false "
+    "{ok, id, confirmed, unverified, refuted, stakeholders, voice_lint, voice_warnings, said: [{key, turns}], recap} or ok=false "
     "with every failed gate. A verified draft goes into the chat app with whosaid_draft_stage "
     "(or `whosaid drafts stage ID`); nothing ever sends it. A sent draft with a corrected text is "
     "verified the same way (state 'sent, edit verified'), then staged with edit=true."
@@ -3432,7 +3435,7 @@ def _drafts_call(fn, *args, **kwargs) -> dict:
         out = fn(*args, **kwargs)
     except drafts.DraftsError as exc:
         return _ws_error(str(exc), "fix what the error names, then call again; whosaid_drafts(action='show') "
-                         "lists the open gates", category="drafts_error")
+                         "lists the open gates", category="drafts_error", **(getattr(exc, "detail", None) or {}))
     except (OSError, ValueError) as exc:
         return _ws_error(str(exc), "check the draft id and paths", category="drafts_error")
     return {"ok": True, **out} if isinstance(out, dict) else {"ok": True, "result": out}
@@ -3464,10 +3467,12 @@ def whosaid_draft_write(id: str, text: Optional[str] = None, claims: Optional[li
 
 @mcp.tool(name="whosaid_draft_verify", description=_DESC_DRAFT_VERIFY, annotations=_DRAFT_WRITE_ANN)
 def whosaid_draft_verify(id: str, force: bool = False, voice: Optional[Literal["enforce", "warn", "off", "clear"]] = None,
-                         reason: Optional[str] = None, workspace: Optional[str] = None) -> dict:
+                         reason: Optional[str] = None, workspace: Optional[str] = None,
+                         recap_days: int = 14) -> dict:
     """Run the gates and the voice lint, then stamp the content hash."""
     import drafts
-    return _drafts_call(drafts.verify, id, force=force, voice=voice, reason=reason, ws=workspace)
+    return _drafts_call(drafts.verify, id, force=force, voice=voice, reason=reason, ws=workspace,
+                        recap_days=recap_days)
 
 
 _DESC_DRAFT_CLOSE = (
