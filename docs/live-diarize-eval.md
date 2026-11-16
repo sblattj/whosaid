@@ -16,8 +16,8 @@ python3 test/live_diarize_eval_test.py                         # the eval's own 
 
 Plain `python3` works: the eval re-runs itself under `uv` with numpy and the pinned
 sherpa-onnx when they are missing (`uv run --offline` for `--fast`). It needs the
-sherpa-onnx models `whosaid setup` downloads (`diarize_sherpa.py --ensure-models-only`) and
-never downloads anything itself.
+sherpa-onnx models `whosaid setup` downloads (`diarize_sherpa.py --ensure-models-only`).
+`--fast` never downloads anything; `--realtime` lets `uv` fetch `sounddevice` the first time.
 
 ## The calls
 
@@ -165,7 +165,7 @@ like `--fast`.
 - **Line spans.** A live line has a start, not an end, so each `them` line is scored from its
   start to the next line's start (the last one gets about 65 ms per character, at most 30 s).
   Gaps between turns count against the line before, so `--realtime` scores read a few points
-  under `--fast`, which knows each chunk's end.
+  under `--fast`, which knows each chunk's end (`agree`: 90.6% live name accuracy against 94.0%).
 
 On `agree` through BlackHole 2ch (macOS arm64, real `whisper-large-v3-turbo`), the call
 started 3.19 s into the capture and live showed 25 lines:
