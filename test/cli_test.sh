@@ -169,6 +169,9 @@ for token in \
   'whosaid wiki <ws>' \
   'whosaid watch run\|install\|uninstall\|status\|menubar' \
   'whosaid memos list\|pull\|delete\|shortcut-recipe' \
+  'whosaid backup <ws> --to TARGET' \
+  'whosaid share <ws> --to TARGET' \
+  '^BACKUP AND SHARE$' \
   'whosaid commitments <ws>' \
   '_WORKLIST-<Owner>\.md' \
   '\-\-all-owners' \
@@ -244,6 +247,14 @@ for cmd in watch memos; do
   assert_eq "$RC" 0 "'whosaid $cmd --help' exits 0"
   assert_text '^WATCH$' "$OUT" "'whosaid $cmd --help' prints the WATCH section"
   assert_text 'whosaid memos delete' "$OUT" "'whosaid $cmd --help' covers the memos helpers"
+done
+for cmd in backup share; do
+  run_w "$cmd" --help
+  assert_eq "$RC" 0 "'whosaid $cmd --help' exits 0"
+  assert_text '^BACKUP AND SHARE$' "$OUT" "'whosaid $cmd --help' prints the BACKUP AND SHARE section"
+  run_w "$cmd"
+  assert_ne "$RC" 0 "'whosaid $cmd' with no args exits non-zero"
+  assert_text "usage: whosaid backup" "$OUT" "'whosaid $cmd' prints a usage hint"
 done
 
 run_w ingest --help

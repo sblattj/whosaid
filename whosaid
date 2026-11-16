@@ -87,7 +87,7 @@ if [[ -z "$WHOSAID_PY" ]]; then
   # Only the commands that run a lib/*.py module or inline snippet need it;
   # transcribe/record/enroll/relabel/install/setup/mcp/help/version/doctor do not.
   case "${1:-}" in
-    samples|speakers|teams|outlook|ingest|backfill|roll-up|rollup|reprocess|commitments|worklist|index|search|context|graph|wiki|watch|memos)
+    samples|speakers|teams|outlook|ingest|backfill|roll-up|rollup|reprocess|commitments|worklist|index|search|context|graph|wiki|watch|memos|backup|share)
       echo "whosaid: no Python >= 3.11 found; set WHOSAID_PYTHON=/path/to/python3.11+ or run: uv python install 3.13" >&2
       exit 1
       ;;
@@ -377,6 +377,15 @@ USAGE
                                         (--owner/--source/--status filters).
   whosaid wiki <ws> [--stdout] [-o FILE]
                                         Regenerate the wiki from the graph.
+  whosaid backup <ws> --to TARGET [--tier text,index,audio,biometric] [--dry-run]
+                                        Personal backup, age-encrypted and incremental,
+                                        to a path, s3://bucket/prefix or rclone:REMOTE:path.
+  whosaid backup restore TARGET <ws> [--identity KEY] [--force] [--dry-run]
+                                        Restore a backup (or pull a share), hash-checked.
+  whosaid share <ws> --to TARGET [--meetings A,B] [--since DATE] [--exclude-chat] [--yes]
+                                        Read-only text export for teammates; never
+                                        voiceprints, audio only with --tier text,audio.
+  whosaid share pull TARGET <dir>      Pull a teammate's share, then `whosaid index <dir>`.
   whosaid watch run|install|uninstall|status|menubar [--into <ws>] [flags]
                                         Hands-free ingest of new recordings (launchd).
   whosaid watch menubar install [--workspace <ws>] [--interval 10s]
@@ -704,6 +713,29 @@ WORKSPACE SEARCH
   Per-workspace settings live in <ws>/whosaid.toml (owner, groups, summarizer,
   search, watch); see the README for the full example.
 
+BACKUP AND SHARE
+  whosaid backup <ws> --to TARGET [--tier T,...] [--dry-run] [--json]
+                 [--recipient AGE_PUBKEY ... | --recipients-file F | --plaintext]
+                 [--identity KEY] [--prune-older-than DUR]
+  whosaid backup restore TARGET <ws> [--identity KEY] [--tier T,...]
+                 [--registry-out FILE] [--force] [--dry-run] [--json]
+  whosaid share <ws> --to TARGET [--meetings A,B] [--since YYYY-MM-DD]
+                [--exclude-chat] [--tier text,index,audio] [--yes] [--dry-run]
+                [--prune-older-than DUR] [--json]
+  whosaid share pull TARGET <dir>
+  Tiers: text (transcripts, sidecars, roll-ups, chat days; default), index
+  (_search.db, rebuildable), audio (recordings, .samples/ clips; opt-in),
+  biometric (the speaker registry's voiceprints; encrypted backup only, never
+  shared). TARGET is a path, file:///path, s3://bucket/prefix (AWS_* env,
+  WHOSAID_S3_ENDPOINT for MinIO and other S3-compatible stores) or
+  rclone:REMOTE:path. backup encrypts every file with age before upload
+  (--plaintext opts out) and uploads only what the target lacks; --dry-run
+  lists exactly what would upload. share strips voiceprints from every JSON
+  file, skips meetings marked _noshare or _retired and [share] never, sends
+  roll-ups only when every meeting is shared, deletes what is no longer
+  selected, and needs --yes the first time. [backup] interval = "daily" with
+  [backup] to = TARGET makes the watcher run a backup pass on that schedule.
+
 WATCH
   whosaid watch install --into <ws> [--source DIR] [--seed] [--dry-run]
                         [--interpreter PATH] [--label L] [--interval S]
@@ -943,7 +975,8 @@ Diarization writes <base>.rttm and merges with the Whisper output into
 <base>.speakers.txt (the speaker-labeled transcript). Diarization failure never
 loses the plain transcript — it warns and the transcript stands on its own.
 
-Nothing — audio, text, or embeddings — ever leaves the machine.
+Nothing (audio, text, or embeddings) leaves the machine unless you run
+`whosaid backup` or `whosaid share` (opt-in; see BACKUP AND SHARE).
 EOF
 }
 
@@ -2905,6 +2938,18 @@ cmd_watch() {
   exec "$WHOSAID_PY" "$WATCH_PY" "$@"
 }
 
+# whosaid backup <ws> --to T | backup restore T <ws> | share <ws> --to T | share pull T <dir>
+#                                                      -> lib/backup.py backup|restore|share ...
+cmd_backup_share() {  # cmd_backup_share backup|share ARGS...
+  if want_help "${@:2}"; then help_section "BACKUP AND SHARE"; exit 0; fi
+  if [[ $# -lt 2 ]]; then
+    log "$1: usage: whosaid backup <ws> --to TARGET [--dry-run] | backup restore TARGET <ws> | share <ws> --to TARGET [--yes] | share pull TARGET <dir>"
+    exit 1
+  fi
+  require_module "$REPO_DIR/lib/backup.py" "$1"
+  exec "$WHOSAID_PY" "$REPO_DIR/lib/backup.py" "$@"
+}
+
 # whosaid memos list|pull|delete|shortcut-recipe [flags] -> lib/watch.py memos <sub> ...
 cmd_memos() {
   if want_help "$@"; then help_section "WATCH"; exit 0; fi
@@ -3018,6 +3063,9 @@ case "${1:-}" in
     ;;
   memos)
     cmd_memos "${@:2}"
+    ;;
+  backup|share)
+    cmd_backup_share "$@"
     ;;
   doctor)
     cmd_doctor
