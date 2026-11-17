@@ -1994,7 +1994,7 @@ _DESC_LIVE = (
     "call is going, `ended` once it is over. `minutes`: only the last N minutes. To follow a call "
     "cheaply, pass the returned `cursor` back as `since`: you get only newer lines (plus `turns`: "
     "t, who, name, voice, confidence, mixed) and a new cursor, never an overlap; `reset` is true "
-    "when a newer call started. `since` may also be a bare t (seconds into the call). Filters: "
+    "when a newer call started (all of its lines). `since` may also be a bare t (seconds into the call). Filters: "
     "`speaker` (case-insensitive regex on the live name or role; unnamed lines are kept and "
     "marked '? (v9, nearest: B 0.71)' unless `named_only`), `exclude_self` (drop the user's mic "
     "lines). A mixed line may hold two speakers. Use it for questions about the meeting in "
@@ -3998,11 +3998,12 @@ def _listing_order(tools: list) -> list:
 
 def _summary(desc: str) -> str:
     """One line of a tool description: its first sentence, at most 140 chars."""
+    import re
     text = " ".join((desc or "").split())
-    for stop in (". ", ": "):
-        cut = text.find(stop)
-        if 0 < cut < 140:
-            return text[:cut + 1]
+    # A sentence ends at ". " unless the dot closes an abbreviation (e.g., i.e., etc.).
+    m = re.search(r"(?<!\be\.g)(?<!\bi\.e)(?<!\betc)\.\s", text)
+    if m and m.start() < 140:
+        return text[:m.start() + 1]
     return text if len(text) <= 140 else text[:137].rstrip() + "..."
 
 

@@ -1562,9 +1562,9 @@ enroll_from_file, samples, voice_groups, name_voice_group, reprocess).
 | `WHOSAID_TOOL_PROFILE` | tools listed | `tools/list` (compact JSON) |
 |---|---|---|
 | before #222 (v1.42.2) | 43 | 67,798 bytes (~17k tokens) |
-| unset or `gateway` (default) | 7 | 7,962 bytes (~2k tokens) |
-| `gateway,drafts` | 17 | 25,856 bytes |
-| `full` | 45 | 68,710 bytes |
+| unset or `gateway` (default) | 7 | 7,981 bytes (~2k tokens) |
+| `gateway,drafts` | 17 | 25,875 bytes |
+| `full` | 45 | 68,729 bytes |
 
 A comma list adds groups to the gateway listing (`gateway,drafts,live`; the five always stay).
 `full` lists everything, which also brings back per-tool host allowlists and permission rules

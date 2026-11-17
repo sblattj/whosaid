@@ -122,7 +122,7 @@ def run(tmp: Path) -> None:
         d.mkdir()
     (ws / "whosaid.toml").write_text('[summarizer]\nengine = "none"\n')
     env = dict(os.environ, WHOSAID_WORKSPACE=str(ws), WHOSAID_DRAFTS_DIR=str(drafts_dir),
-               WHOSAID_SESSIONS_DIR=str(sessions))
+               WHOSAID_SESSIONS_DIR=str(sessions), WHOSAID_TEAMS_CACHE="off")
 
     # ---- in-process: group map, profile parsing, instructions ----
     registered = {t.name for t in asyncio.run(mcp_server.mcp.list_tools())}
@@ -245,6 +245,10 @@ def run(tmp: Path) -> None:
         check(sorted(seen) == sorted(registered) and len(seen) == len(set(seen)), "catalog lists every tool once")
         check(all("description" not in t and "\n" not in t["summary"] and len(t["summary"]) <= 140
                   for g in cat["groups"] for t in g["tools"]), "catalog carries one-line summaries only")
+        summaries = {t["name"]: t["summary"] for g in cat["groups"] for t in g["tools"]}
+        check(all(not x.endswith((":", " e.g.", " i.e.")) and len(x) >= 20 for x in summaries.values()),
+              f"summaries are whole sentences: {[x for x in summaries.values() if x.endswith(':') or len(x) < 20]}")
+        check("whosaid_draft_stage" in summaries["whosaid_call_tool"], f"call_tool summary: {summaries['whosaid_call_tool']}")
         check(compact(cat) < 16384, f"catalog stays small: {compact(cat)} bytes")
         ex = payload(s.call("whosaid_search_tools", {"query": "whosaid_draft_stage"}))
         m = ex["matches"]
