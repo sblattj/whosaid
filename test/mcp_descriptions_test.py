@@ -108,6 +108,8 @@ def main() -> None:
         "whosaid_teams_live",
         "whosaid_teams_calendar",
         "whosaid_teams_launch",
+        "whosaid_search_tools",
+        "whosaid_call_tool",
     } | workspace_tools
 
     # --- tool-name set + prefix ---
@@ -348,7 +350,7 @@ def main() -> None:
         check(ann.get("readOnlyHint") is False and ann.get("destructiveHint") is False
               and ann.get("openWorldHint") is False, f"{name} annotations: {ann}")
         check("Local files only" in (by_name[name].description or ""), f"{name} says local only")
-        check(name in mcp_server.SERVER_INSTRUCTIONS, f"instructions name {name}")
+        check(name in mcp_server._GUIDE, f"guide (moved instructions) names {name}")
     ex_add = dumps["whosaid_live_explain_add"]["inputSchema"]
     check(set(ex_add.get("required", [])) == {"title"}, f"explain_add required: {ex_add.get('required')}")
     check({"explain", "from_t", "to_t", "sketch", "claims", "jargon", "questions", "asks", "for_you",
@@ -367,7 +369,7 @@ def main() -> None:
         ann = dumps[name].get("annotations") or {}
         check(ann.get("readOnlyHint") is False and ann.get("destructiveHint") is False
               and ann.get("openWorldHint") is False, f"{name} annotations: {ann}")
-        check(name in mcp_server.SERVER_INSTRUCTIONS, f"instructions name {name}")
+        check(name in mcp_server._GUIDE, f"guide (moved instructions) names {name}")
     for name in ("whosaid_drafts", "whosaid_draft_stakeholders", "whosaid_draft_stale"):
         check((dumps[name].get("annotations") or {}).get("readOnlyHint") is True, f"{name} must be read-only")
     check(not any("send" in n for n in by_name), "no send tool over MCP")
@@ -404,7 +406,7 @@ def main() -> None:
     d_tl = by_name["whosaid_teams_live"].description or ""
     check(all(x in d_tl for x in ("no network call", "not full history", "Read-only")) and "\u2014" not in d_tl,
           "teams_live desc: offline, partial history, read-only, no em dash")
-    check("whosaid_teams_live" in mcp_server.SERVER_INSTRUCTIONS, "instructions name whosaid_teams_live")
+    check("whosaid_teams_live" in mcp_server._GUIDE, "guide (moved instructions) names whosaid_teams_live")
     tcal = dumps["whosaid_teams_calendar"]
     check((tcal.get("annotations") or {}).get("readOnlyHint") is True
           and (tcal.get("annotations") or {}).get("openWorldHint") is False, f"teams_calendar annotations: {tcal.get('annotations')}")
@@ -412,7 +414,7 @@ def main() -> None:
     d_tc = by_name["whosaid_teams_calendar"].description or ""
     check(all(x in d_tc for x in ("no network call", "not the whole calendar", "not free", "UTC", "Read-only"))
           and "\u2014" not in d_tc, "teams_calendar desc: offline, partial window, UTC, read-only, no em dash")
-    check("whosaid_teams_calendar" in mcp_server.SERVER_INSTRUCTIONS, "instructions name whosaid_teams_calendar")
+    check("whosaid_teams_calendar" in mcp_server._GUIDE, "guide (moved instructions) names whosaid_teams_calendar")
 
     tla = dumps["whosaid_teams_launch"]
     tla_ann = tla.get("annotations") or {}
@@ -424,7 +426,7 @@ def main() -> None:
     d_tla = by_name["whosaid_teams_launch"].description or ""
     check(all(x in d_tla for x in ("9333", "WHOSAID_TEAMS_CDP_PORT", "check_only", "mic", "force")) and "\u2014" not in d_tla,
           "teams_launch desc: port, check_only, mic gate, force, no em dash")
-    check("whosaid_teams_launch" in mcp_server.SERVER_INSTRUCTIONS, "instructions name whosaid_teams_launch")
+    check("whosaid_teams_launch" in mcp_server._GUIDE, "guide (moved instructions) names whosaid_teams_launch")
     d_stage = by_name["whosaid_draft_stage"].description or ""
     check("WHOSAID_TEAMS_CDP_PORT, default 9333" in d_stage and "default 9222" in d_stage
           and "explicit port skips the probe" in d_stage, "draft_stage desc: Teams app port 9333 first, then 9222")
@@ -526,7 +528,7 @@ def main() -> None:
     check("Meeting workspace" in instr, "instructions must have a 'Meeting workspace' paragraph")
     check("WHOSAID_WORKSPACE" in instr and "whosaid index" in instr, "instructions must name the env var and the index command")
     check("whosaid_search" in instr and "whosaid_context" in instr, "instructions must describe search -> context")
-    check(all(term in instr for term in ("accepted_owner", "whosaid_priorities", "whosaid_tracking_suggestions",
+    check(all(term in mcp_server._GUIDE for term in ("accepted_owner", "whosaid_priorities", "whosaid_tracking_suggestions",
                                         "Historical as_of queries cannot use a current cache")),
           "instructions describe accepted obligations, priorities, suggestions and historical cache limits")
 

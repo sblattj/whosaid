@@ -52,9 +52,11 @@ command.
 - **Hands-free from Voice Memos.** `whosaid watch install` puts a launchd agent on the Voice
   Memos folder (or any folder): stop recording, and a few minutes later the meeting is
   transcribed, summarized, and searchable. See [Hands-free ingest](#hands-free-ingest-whosaid-watch).
-- **Usable from an AI agent, too.** `whosaid mcp` exposes transcribe, relabel, doctor, and the
-  read-only workspace search tools as MCP tools for Claude Code, Claude Desktop, Kiro, and other
-  MCP clients, with the same local-only guarantee as the CLI.
+- **Usable from an AI agent, too.** `whosaid mcp` exposes transcribe, relabel, doctor, the
+  workspace search tools, drafts and Teams tools as MCP tools for Claude Code, Claude Desktop, Kiro,
+  and other MCP clients, with the same local-only guarantee as the CLI. By default it lists only 7
+  of them (about 8 KB) and reaches the rest through `whosaid_call_tool`; see
+  [Tool listing](#tool-listing-whosaid_tool_profile).
 
 ## How it compares
 
@@ -1533,6 +1535,48 @@ Add it to your MCP client config:
 `command` is the path to the `whosaid` script itself — the checkout's `./whosaid`, or the installed
 `~/.local/bin/whosaid` symlink.
 
+### Tool listing (`WHOSAID_TOOL_PROFILE`)
+
+whosaid registers 43 tools, and their full `tools/list` is about 68 KB (~17k tokens), which a host
+that loads tools eagerly pays before doing anything. So by default (issue #222, the same gateway
+shape as cdp-toolkit 3.0) `tools/list` carries only 7: two meta-tools first, then the five tools
+most sessions reduce to.
+
+- `whosaid_search_tools {query?, limit?}`: no query returns the catalog by group (name and a
+  one-line summary); an exact tool name returns its full description, `inputSchema` and
+  annotations; anything else ranks matches by name, group, then description (`limit` 8, max 20).
+- `whosaid_call_tool {name, arguments?}`: runs any tool by name through the server's own call
+  path, so the result and errors equal a direct call. It refuses to wrap a meta-tool and is
+  annotated not read-only, since it can reach the draft writers.
+- `whosaid_search`, `whosaid_context`, `whosaid_meetings`, `whosaid_person`, `whosaid_live`.
+
+Every other tool is still registered and still callable directly by name (the macOS app calls
+`whosaid_draft_stage` that way); only the listing shrinks. The listing is read once at startup and
+never changes during a connection (`listChanged` stays false). Groups: `search` (search, context,
+items, item, person, meetings, prs, speakers, decisions), `live` (live, live_insights, live_ask, the
+three live_explain writers, record_browser), `drafts` (the ten draft tools), `teams` (teams_live,
+teams_calendar, teams_launch), `workspace` (workspace_status, worklist, priorities,
+tracking_suggestions, set_status), `voices` (transcribe, relabel, list_speakers, doctor,
+enroll_from_file, samples, voice_groups, name_voice_group, reprocess).
+
+| `WHOSAID_TOOL_PROFILE` | tools listed | `tools/list` (compact JSON) |
+|---|---|---|
+| before #222 (v1.42.2) | 43 | 67,798 bytes (~17k tokens) |
+| unset or `gateway` (default) | 7 | 7,962 bytes (~2k tokens) |
+| `gateway,drafts` | 17 | 25,856 bytes |
+| `full` | 45 | 68,710 bytes |
+
+A comma list adds groups to the gateway listing (`gateway,drafts,live`; the five always stay).
+`full` lists everything, which also brings back per-tool host allowlists and permission rules
+that can't tell tools apart once they go through `whosaid_call_tool`. An unknown group name stops
+the server at startup with exit code 2 and a stderr line naming the known groups. The server
+instructions shrank from 7,217 to under 2,048 characters (Claude Code's cap); the text they cut
+moved, verbatim, into the `whosaid://guide` resource.
+
+```bash
+claude mcp add --scope user whosaid -e WHOSAID_TOOL_PROFILE=full -- whosaid mcp
+```
+
 | Tool | What it does |
 |---|---|
 | `whosaid_transcribe` | Transcribes + diarizes an audio file and writes the labeled transcript, speaker cards, and a sidecar for relabeling. |
@@ -1649,6 +1693,7 @@ the absolute path to the `whosaid` script for `command` if it is not on the clie
 | `WHOSAID_INSTALL_DIR` | Command install directory used by `whosaid install` (default: `~/.local/bin`). |
 | `WHOSAID_ACTION_ITEMS_HOOK` | Default action-items hook for `ingest --action-items` (transcript on stdin, markdown on stdout), overridden by `--hook`. |
 | `WHOSAID_WORKSPACE` | Default meeting workspace for `index`, `search`, `context`, `graph`, `wiki`, `watch`, for the index-status line in `whosaid doctor`, and for the read-only workspace tools and resources of `whosaid mcp` (which, when it is unset, use the only installed watch agent's workspace). |
+| `WHOSAID_TOOL_PROFILE` | Which tools `whosaid mcp` lists, read once at startup: unset or `gateway` (default: `whosaid_search_tools`, `whosaid_call_tool` and five everyday tools), `full`, or a group list such as `gateway,drafts,live`. Unlisted tools stay callable by name. See [Tool listing](#tool-listing-whosaid_tool_profile). |
 | `WHOSAID_OWNER` | Whose action items a workspace tracks; overrides `[workspace] owner` in `whosaid.toml`. |
 | `WHOSAID_TODAY` | `YYYY-MM-DD` the worklist treats as today when deciding whether a relative deadline (`today`, `tomorrow`, `by Friday`, …) is overdue (default: the clock). |
 | `WHOSAID_OLLAMA` | Ollama base URL for embeddings and the built-in summarizer (default: `http://127.0.0.1:11434`). Localhost is the only supported destination. |
@@ -2165,7 +2210,8 @@ Each suite is run directly; the runner depends on what it imports:
   `max_speakers_hint`, `registry_matches`
   import numpy; `local_labels` and `backfill` need it for the CLI they drive):
   `uv run --quiet --with numpy python test/<name>_test.py`.
-- MCP suites (`mcp_descriptions_test.py`, `mcp_workspace_tools_test.py`, `mcp_decisions_tool_test.py` import `mcp`):
+- MCP suites (`mcp_descriptions_test.py`, `mcp_workspace_tools_test.py`, `mcp_decisions_tool_test.py`,
+  `mcp_live_tools_test.py`, and `mcp_gateway_test.py`, which spawns the real server over stdio, import `mcp`):
   `uv run --with "mcp[cli]" python test/<name>.py`.
 
 Couplings to know before editing code:

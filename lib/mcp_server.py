@@ -202,7 +202,17 @@ def _time_to_seconds(value: str) -> float:
 # ---------------------------------------------------------------------------
 # Server instructions (loaded once — cross-cutting semantics, NOT per tool).
 # ---------------------------------------------------------------------------
-SERVER_INSTRUCTIONS = """whosaid turns audio into a transcript where every turn is labeled with who spoke. It runs 100% locally on Apple Silicon via the MLX Whisper GPU pipeline plus sherpa-onnx diarization — audio, text, and voice embeddings NEVER leave the machine; there are no API keys and no cloud calls. (One opt-in exception, never made by these tools: a workspace configured with [summarizer] engine = "claude" has its action items drafted by Claude, so ingest sends transcript text to Anthropic; the item notes say so. A second, separate opt-in, [live] ai = "claude", makes the app's live insights follower send the newest lines of a call in progress to Claude every few minutes for topic labels, a recap and next steps; whosaid_live_insights then shows labelSource "ai" and an `ai` block.) A third, [live] explain = "claude", lets `whosaid live explain serve --ws` send the newest lines to Claude every few minutes to write live explainer sections; without it the explainer page is written only by an agent through whosaid_live_explain_add, whosaid_live_explain_correct and whosaid_live_explain_recap, which write local files only.
+# The always-loaded server instructions stay under 2,048 chars (Claude Code's cap, issue #222).
+# The longer text they used to carry moved, verbatim, into the whosaid://guide resource
+# (_INSTRUCTIONS_DETAIL below is appended to _GUIDE), so nothing was lost.
+SERVER_INSTRUCTIONS = """whosaid: local speaker-labeled transcription plus a searchable meeting workspace, on Apple Silicon. Audio, text and voiceprints stay on this Mac; the only cloud calls are opt-ins ([summarizer] engine = "claude", [live] ai = "claude", [live] explain = "claude"), see whosaid://guide.
+
+TOOLS (gateway listing): only whosaid_search_tools, whosaid_call_tool and five everyday tools are listed: whosaid_search, whosaid_context, whosaid_meetings, whosaid_person, whosaid_live. 38 more are registered, in groups: search (items, item, prs, speakers, decisions), live (live insights/ask, the live explainer writers, record_browser), drafts (the ~/.drafts chat outbox: draft_new/write/verify/stage...), teams (teams_live, teams_calendar, teams_launch), workspace (workspace_status, worklist, priorities, tracking_suggestions, set_status), voices (transcribe, relabel, samples, enroll_from_file, voice_groups, reprocess, doctor...). ANY other whosaid_* tool, e.g. whosaid_draft_stage, whosaid_worklist or whosaid_transcribe, is reached with whosaid_call_tool {name, arguments}, which behaves exactly like a direct call. Look its arguments up first with whosaid_search_tools {query} (no query = catalog by group; an exact name = full docs and inputSchema); do not guess them. The listing is fixed per session; WHOSAID_TOOL_PROFILE=full lists every tool (a list like gateway,drafts adds groups).
+
+Meeting workspace: launch with WHOSAID_WORKSPACE=<dir> or pass `workspace`. Flow: whosaid_search -> whosaid_context (the minute around a hit; never read whole transcripts) -> whosaid_person / items. The index is built by `whosaid index <ws>` or the watcher, never from here. Writes are few and local: whosaid_set_status, whosaid_name_voice_group, the live explainer writers, the drafts outbox; whosaid_draft_stage types into Teams but never sends. Speaker roles and commitments (whosaid_worklist ranks them), the output-file contract and the full workflow: read the whosaid://guide resource."""
+
+# Moved out of SERVER_INSTRUCTIONS (issue #222); served at the top of whosaid://guide.
+_INSTRUCTIONS_DETAIL = """whosaid turns audio into a transcript where every turn is labeled with who spoke. It runs 100% locally on Apple Silicon via the MLX Whisper GPU pipeline plus sherpa-onnx diarization — audio, text, and voice embeddings NEVER leave the machine; there are no API keys and no cloud calls. (One opt-in exception, never made by these tools: a workspace configured with [summarizer] engine = "claude" has its action items drafted by Claude, so ingest sends transcript text to Anthropic; the item notes say so. A second, separate opt-in, [live] ai = "claude", makes the app's live insights follower send the newest lines of a call in progress to Claude every few minutes for topic labels, a recap and next steps; whosaid_live_insights then shows labelSource "ai" and an `ai` block.) A third, [live] explain = "claude", lets `whosaid live explain serve --ws` send the newest lines to Claude every few minutes to write live explainer sections; without it the explainer page is written only by an agent through whosaid_live_explain_add, whosaid_live_explain_correct and whosaid_live_explain_recap, which write local files only.
 
 Output-file contract: each transcribe writes, using <base> = the input's basename (or your `name`, with any character outside [A-Za-z0-9_-] mapped to '_'): <base>.txt (plain transcript), <base>.speakers.txt (speaker-labeled), <base>.speaker-cards.txt (one card per speaker: turn count, talk time, sample snippets — to tell who each SPEAKER_NN is), and <base>.diarization.json (a sidecar that whosaid_relabel reuses). Diarization results include `count_before_fold`, `count_after_fold`, and `fold_note`; these are physical speaker-cluster counts before and after the anonymous-phantom check, not identity claims.
 
@@ -1978,20 +1988,18 @@ def whosaid_speakers(workspace: Optional[str] = None, limit: Optional[int] = Non
 # 15) whosaid_workspace_status
 # ---------------------------------------------------------------------------
 _DESC_LIVE = (
-    "Read the live transcript of the call being recorded right now (`whosaid live`, #131). "
-    "Lines look like '[HH:MM:SS] me: ...' (the user's mic) or '[HH:MM:SS] them: ...' (everyone "
-    "on the meeting app's side), rough; a known voice shows its live name guess instead of "
-    "'them'. `active` is true while the call is still going; `ended` once it is over. Pass "
-    "`minutes` for only the last N minutes. To follow a call cheaply, keep the returned `cursor` "
-    "and pass it back as `since`: you get only the lines after it (plus `turns`, the entries "
-    "with t, who, name, voice, confidence, mixed) and a new cursor, never an overlap; `reset` is "
-    "true when a newer call started (all of its lines). `since` may also be a bare t (seconds "
-    "since the call started). Filters: `speaker` (a case-insensitive regex on the live name or "
-    "role; unnamed lines are kept and marked '? (v9, nearest: B 0.71)' unless `named_only`), "
-    "`exclude_self` (drop the user's mic lines). A line marked mixed may hold two speakers. Use "
-    "it to answer questions about the meeting in progress: what was just asked, a catch-up, a "
-    "reply draft. Read-only; local files only; returns ok=false with a hint when `whosaid live` "
-    "has not written anything. `recordings` defaults to ~/Recordings."
+    "Read the live transcript of the call being recorded right now. Lines look like "
+    "'[HH:MM:SS] me: ...' (the user's mic) or '[HH:MM:SS] them: ...' (the meeting app's side), "
+    "rough; a known voice shows its live name guess instead of 'them'. `active` is true while the "
+    "call is going, `ended` once it is over. `minutes`: only the last N minutes. To follow a call "
+    "cheaply, pass the returned `cursor` back as `since`: you get only newer lines (plus `turns`: "
+    "t, who, name, voice, confidence, mixed) and a new cursor, never an overlap; `reset` is true "
+    "when a newer call started. `since` may also be a bare t (seconds into the call). Filters: "
+    "`speaker` (case-insensitive regex on the live name or role; unnamed lines are kept and "
+    "marked '? (v9, nearest: B 0.71)' unless `named_only`), `exclude_self` (drop the user's mic "
+    "lines). A mixed line may hold two speakers. Use it for questions about the meeting in "
+    "progress: what was just asked, a catch-up, a reply draft. Read-only, local files; ok=false "
+    "with a hint when `whosaid live` has written nothing. `recordings` defaults to ~/Recordings."
 )
 
 
@@ -3148,6 +3156,23 @@ missing prerequisite prints its exact fix (usually `whosaid setup`).
 """
 
 
+# The text that used to be the always-loaded server instructions (issue #222 trimmed those
+# under 2 KB); kept verbatim here so the detail is one resource read away.
+_GUIDE += (
+    "\n## Server overview (moved here from the server instructions)\n\n"
+    + _INSTRUCTIONS_DETAIL
+    + "\n\n## Tool listing (WHOSAID_TOOL_PROFILE)\n\n"
+    "By default tools/list carries only whosaid_search_tools, whosaid_call_tool and the five\n"
+    "gateway tools (whosaid_search, whosaid_context, whosaid_meetings, whosaid_person,\n"
+    "whosaid_live). Every other tool is still registered: call it by name, or through\n"
+    "whosaid_call_tool {name, arguments}, with the same result and errors. Groups: search,\n"
+    "live, drafts, teams, workspace, voices. WHOSAID_TOOL_PROFILE (read once at startup):\n"
+    "unset or `gateway` (default), `full` (every tool), or a comma list such as\n"
+    "`gateway,drafts,live` (the gateway five plus those groups). An unknown group name stops\n"
+    "the server at startup with an error naming the known groups.\n"
+)
+
+
 @mcp.resource("whosaid://guide")
 def guide() -> str:
     """Full flag / env / long-audio reference, read on demand by agents."""
@@ -3889,8 +3914,253 @@ def whosaid_draft_sent_check(id: Optional[str] = None, workspace: Optional[str] 
     return _drafts_call(drafts.sent_check, ws, id)
 
 
+# ---------------------------------------------------------------------------
+# Gateway listing (GitHub issue #222), copied from cdp-toolkit 3.0.
+#
+# tools/list is filtered at the WIRE handler only: mcp.list_tools() (what the tests and
+# search_tools enumerate) still returns every registered tool, and every tool stays
+# callable by name. The profile is read once, in main(), and the listing it selects is
+# fixed for the life of the process (listChanged stays false), so a host's prompt cache
+# never sees the tool set move.
+# ---------------------------------------------------------------------------
+META_TOOLS = ("whosaid_search_tools", "whosaid_call_tool")
+GATEWAY_TOOLS = ("whosaid_search", "whosaid_context", "whosaid_meetings", "whosaid_person", "whosaid_live")
+
+TOOL_GROUPS: dict[str, tuple[str, ...]] = {
+    "search": ("whosaid_search", "whosaid_context", "whosaid_items", "whosaid_item", "whosaid_person",
+               "whosaid_meetings", "whosaid_prs", "whosaid_speakers", "whosaid_decisions"),
+    "live": ("whosaid_live", "whosaid_live_insights", "whosaid_live_ask", "whosaid_live_explain_add",
+             "whosaid_live_explain_correct", "whosaid_live_explain_recap", "whosaid_record_browser"),
+    "drafts": ("whosaid_draft_new", "whosaid_draft_write", "whosaid_draft_verify", "whosaid_draft_close",
+               "whosaid_draft_merge", "whosaid_drafts", "whosaid_draft_stakeholders", "whosaid_draft_stale",
+               "whosaid_draft_stage", "whosaid_draft_sent_check"),
+    "teams": ("whosaid_teams_live", "whosaid_teams_calendar", "whosaid_teams_launch"),
+    "workspace": ("whosaid_workspace_status", "whosaid_worklist", "whosaid_priorities",
+                  "whosaid_tracking_suggestions", "whosaid_set_status"),
+    "voices": ("whosaid_transcribe", "whosaid_relabel", "whosaid_list_speakers", "whosaid_doctor",
+               "whosaid_enroll_from_file", "whosaid_samples", "whosaid_voice_groups",
+               "whosaid_name_voice_group", "whosaid_reprocess"),
+}
+TOOL_GROUP: dict[str, str] = {t: g for g, names in TOOL_GROUPS.items() for t in names}
+for _t in META_TOOLS:
+    TOOL_GROUP[_t] = "meta"
+
+
+class ToolProfileError(ValueError):
+    """WHOSAID_TOOL_PROFILE named a group that does not exist."""
+
+
+def resolve_tool_profile(spec: Optional[str]) -> tuple[str, Optional[frozenset]]:
+    """WHOSAID_TOOL_PROFILE -> (label, listed names), None meaning every tool.
+
+    unset/empty or "gateway": the two meta-tools plus GATEWAY_TOOLS. "full" (alone or
+    anywhere in a list): everything. A comma list of group names, with or without
+    "gateway", is the gateway listing plus those groups: the five never drop out, so a
+    list can't strand the basics. An unknown name raises ToolProfileError."""
+    raw = (spec or "").strip().lower()
+    tokens = [t.strip() for t in raw.split(",") if t.strip()]
+    if not tokens or tokens == ["gateway"]:
+        return "gateway", frozenset(META_TOOLS + GATEWAY_TOOLS)
+    if "full" in tokens:
+        return "full", None
+    picked = []
+    for token in tokens:
+        if token == "gateway":
+            continue
+        if token not in TOOL_GROUPS:
+            raise ToolProfileError(
+                f"WHOSAID_TOOL_PROFILE: unknown tool group '{token}'. "
+                f"Known: gateway, full, {', '.join(TOOL_GROUPS)}")
+        if token not in picked:
+            picked.append(token)
+    if len(picked) == len(TOOL_GROUPS):
+        return "full", None
+    names = set(META_TOOLS + GATEWAY_TOOLS)
+    for g in picked:
+        names.update(TOOL_GROUPS[g])
+    label = ",".join(["gateway"] + [g for g in TOOL_GROUPS if g in picked])
+    return label, frozenset(names)
+
+
+# Set by install_tool_profile() (main() calls it once). Until then: the default listing.
+_PROFILE_LABEL, _LISTED = "gateway", frozenset(META_TOOLS + GATEWAY_TOOLS)
+
+
+def _is_listed(name: str) -> bool:
+    return _LISTED is None or name in _LISTED
+
+
+def _listing_order(tools: list) -> list:
+    """Meta-tools first, then the gateway five, then the rest in registration order."""
+    rank = {n: i for i, n in enumerate(META_TOOLS + GATEWAY_TOOLS)}
+    return sorted(tools, key=lambda t: rank.get(t.name, len(rank)))
+
+
+def _summary(desc: str) -> str:
+    """One line of a tool description: its first sentence, at most 140 chars."""
+    text = " ".join((desc or "").split())
+    for stop in (". ", ": "):
+        cut = text.find(stop)
+        if 0 < cut < 140:
+            return text[:cut + 1]
+    return text if len(text) <= 140 else text[:137].rstrip() + "..."
+
+
+def _tool_entry(t, full: bool = True) -> dict:
+    out = {"name": t.name, "group": TOOL_GROUP.get(t.name, "?"), "listed": _is_listed(t.name)}
+    if full:
+        out["description"] = t.description or ""
+        out["inputSchema"] = t.input_schema if hasattr(t, "input_schema") else getattr(t, "inputSchema", None)
+        ann = getattr(t, "annotations", None)
+        if ann is not None:
+            out["annotations"] = ann.model_dump(by_alias=True, exclude_none=True) if hasattr(ann, "model_dump") else vars(ann)
+    else:
+        out["summary"] = _summary(t.description or "")
+    return out
+
+
+_DESC_SEARCH_TOOLS = (
+    "Find a whosaid tool not in your list (drafts, Teams, worklist, voices...). No query: catalog "
+    "by group; exact name: its docs and inputSchema. Run it with whosaid_call_tool."
+)
+_DESC_CALL_TOOL = (
+    "Run any whosaid tool by name, e.g. whosaid_draft_stage: same result and errors as a direct "
+    "call. Look its arguments up with whosaid_search_tools first."
+)
+
+
+@mcp.tool(name="whosaid_search_tools", description=_DESC_SEARCH_TOOLS, annotations=_read_only())
+async def whosaid_search_tools(query: str = "", limit: int = 8) -> dict:
+    """Catalog / exact lookup / ranked search over every registered tool."""
+    tools = [t for t in await mcp.list_tools()]
+    q = (query or "").strip()
+    if not q:
+        groups = {}
+        for t in _listing_order(tools):
+            groups.setdefault(TOOL_GROUP.get(t.name, "?"), []).append(_tool_entry(t, full=False))
+        return {"ok": True, "profile": _PROFILE_LABEL, "total": len(tools),
+                "groups": [{"group": g, "tools": groups[g]} for g in ("meta", *TOOL_GROUPS) if g in groups],
+                "next": "whosaid_search_tools {query:<name>} returns a tool's docs and inputSchema; "
+                        "run it with whosaid_call_tool {name, arguments}."}
+    by_name = {t.name: t for t in tools}
+    exact = by_name.get(q) or by_name.get("whosaid_" + q)
+    if exact is not None:
+        return {"ok": True, "query": q, "total": 1, "matches": [_tool_entry(exact)],
+                "next": f"Run it with whosaid_call_tool {{name: '{exact.name}', arguments}}."}
+    try:
+        limit = max(1, min(20, int(limit)))
+    except (TypeError, ValueError):
+        limit = 8
+    terms = [w for w in q.lower().replace(",", " ").split() if w]
+    scored = []
+    for i, t in enumerate(tools):
+        name, group, desc = t.name.lower(), TOOL_GROUP.get(t.name, ""), (t.description or "").lower()
+        score = 0
+        for w in terms:
+            if w in name:
+                score += 100
+            if w == group:
+                score += 10
+            if w in desc:
+                score += 1
+        if score:
+            scored.append((-score, i, t))
+    scored.sort(key=lambda x: (x[0], x[1]))
+    return {"ok": True, "query": q, "total": len(scored),
+            "matches": [_tool_entry(t) for _, _, t in scored[:limit]],
+            "next": ("Run one with whosaid_call_tool {name, arguments}." if scored
+                     else "No match. Call whosaid_search_tools with no query for the catalog.")}
+
+
+def _refuse_meta(name: str) -> Optional[str]:
+    if name in META_TOOLS:
+        return f"whosaid_call_tool: '{name}' is a meta-tool; call it directly"
+    return None
+
+
+@mcp.tool(name="whosaid_call_tool", description=_DESC_CALL_TOOL,
+          annotations=ToolAnnotations(read_only_hint=False, destructive_hint=False,
+                                      idempotent_hint=False, open_world_hint=True))
+async def whosaid_call_tool(name: str, arguments: dict = {}):  # noqa: B006 - pydantic copies it
+    """Fallback body. Over the wire (SDK 2.x) install_tool_profile's tools/call handler unwraps
+    this call BEFORE the SDK reaches here, re-entering the SDK's own handler with the inner
+    name, so the result is byte-identical to a direct call. This body runs only for in-process
+    mcp.call_tool() and on SDK 1.x; it mirrors MCPServer._handle_call_tool's error mapping."""
+    refused = _refuse_meta(name)
+    if refused:
+        return _error_result(refused)
+    try:
+        return await mcp.call_tool(name, arguments or {})
+    except Exception as exc:  # noqa: BLE001 - mirrors _handle_call_tool (MCPError aside)
+        if type(exc).__name__ == "MCPError":
+            raise
+        return _error_result(str(exc))
+
+
+def _error_result(text: str):
+    """An is_error CallToolResult, the shape the SDK gives a failed tool (a dict on SDK 1.x)."""
+    try:
+        from mcp.types import CallToolResult, TextContent
+    except ImportError:  # pragma: no cover - stub / very old SDK
+        return {"ok": False, "error": text}
+    return CallToolResult(content=[TextContent(type="text", text=text)], is_error=True)
+
+
+def install_tool_profile(spec: Optional[str]) -> str:
+    """Resolve the profile and install the filtered tools/list and unwrapping tools/call
+    wire handlers. Returns the profile label. Raises ToolProfileError on an unknown group.
+
+    SDK 1.x (FastMCP, no MCPServer._lowlevel_server.add_request_handler): the profile is
+    still validated, but the listing degrades to every tool, and whosaid_call_tool runs
+    its fallback body. pyproject pins mcp>=2, so this is a compatibility floor only."""
+    global _PROFILE_LABEL, _LISTED
+    _PROFILE_LABEL, _LISTED = resolve_tool_profile(spec)
+    low = getattr(mcp, "_lowlevel_server", None)
+    if low is None or not hasattr(low, "add_request_handler") or not hasattr(mcp, "_handle_call_tool"):
+        _PROFILE_LABEL, _LISTED = _PROFILE_LABEL + " (degraded to full: SDK 1.x)", None
+        return _PROFILE_LABEL
+    from mcp.types import CallToolRequestParams, ListToolsResult, PaginatedRequestParams
+
+    async def list_handler(ctx, params):
+        tools = [t for t in await mcp.list_tools() if _is_listed(t.name)]
+        return ListToolsResult(tools=_listing_order(tools))
+
+    sdk_call = mcp._handle_call_tool
+
+    async def call_handler(ctx, params):
+        if params.name == "whosaid_call_tool":
+            args = params.arguments or {}
+            inner, inner_args = args.get("name"), args.get("arguments")
+            # Malformed wrapper arguments fall through to the SDK, so pydantic reports them
+            # against whosaid_call_tool's own schema exactly as it would for any tool.
+            if isinstance(inner, str) and (inner_args is None or isinstance(inner_args, dict)) \
+                    and set(args) <= {"name", "arguments"}:
+                refused = _refuse_meta(inner)
+                if refused:
+                    return _error_result(refused)
+                params = params.model_copy(update={"name": inner, "arguments": inner_args or {}})
+        return await sdk_call(ctx, params)
+
+    low.add_request_handler("tools/list", PaginatedRequestParams, list_handler)
+    low.add_request_handler("tools/call", CallToolRequestParams, call_handler)
+    return _PROFILE_LABEL
+
+
+def _ungrouped_tools() -> list:
+    """Registered tools missing from TOOL_GROUPS (and mapped names that are not registered)."""
+    import asyncio
+    registered = {t.name for t in asyncio.run(mcp.list_tools())} if hasattr(mcp, "list_tools") \
+        else set(getattr(mcp, "tools", {}))
+    return sorted(registered ^ set(TOOL_GROUP))
+
+
 def main() -> None:
     """Run the whosaid MCP server over stdio (console-script entry point)."""
+    try:
+        install_tool_profile(os.environ.get("WHOSAID_TOOL_PROFILE"))
+    except ToolProfileError as exc:
+        print(f"whosaid mcp: {exc}", file=sys.stderr)
+        sys.exit(2)
     mcp.run()
 
 

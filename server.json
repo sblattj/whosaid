@@ -26,6 +26,12 @@
           "description": "Absolute path to the meetings workspace the search tools read",
           "isRequired": false,
           "format": "filepath"
+        },
+        {
+          "name": "WHOSAID_TOOL_PROFILE",
+          "description": "Tool listing: unset or gateway (2 meta-tools + 5 everyday tools; every other tool stays callable via whosaid_call_tool), full, or a group list like gateway,drafts,live",
+          "isRequired": false,
+          "format": "string"
         }
       ]
     }

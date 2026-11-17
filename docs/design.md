@@ -178,12 +178,12 @@ and the avfoundation audio device list. The Ollama probe is a 1.5 s `GET /api/ta
 ### MCP server (`whosaid mcp`)
 
 `whosaid mcp` runs a stdio MCP (Model Context Protocol) server — `lib/mcp_server.py`, built on the
-official `mcp` Python SDK's `FastMCP` — so AI agents can drive whosaid directly, launched the same
+official `mcp` Python SDK's `MCPServer` (2.x; a `FastMCP` 1.x fallback import remains) — so AI agents can drive whosaid directly, launched the same
 ephemeral way as everything else in whosaid: `uv run --with "mcp[cli]"`, no persistent install. The
 server never reimplements the pipeline — every tool **shells the existing `whosaid` CLI** as a
 subprocess, so the MCP surface and the CLI can't drift apart.
 
-Six tools, all prefixed `whosaid_`:
+It started with six tools, all prefixed `whosaid_` (43 by v1.42.2):
 
 - **`whosaid_transcribe`** — runs the transcribe + diarize pipeline on a file and returns the output
   paths, speaker cards, and a `next_step` pointing the agent at whichever speakers still need naming.
@@ -198,8 +198,9 @@ Six tools, all prefixed `whosaid_`:
   confirm an identity before trusting a label.
 
 Cross-cutting behavior — the local-only guarantee, the output-file contract, the
-transcribe-then-relabel workflow — lives once in the server's `instructions`, loaded up front rather
-than repeated in every tool description; deeper reference (the full flag/env list, the long-audio
+transcribe-then-relabel workflow — lives once, not repeated in every tool description: a short
+`instructions` block (under 2,048 chars since issue #222) names the tool groups and entry points,
+and the long form sits at the top of the `whosaid://guide` resource; deeper reference (the full flag/env list, the long-audio
 parallel path, the cosine-match threshold) is a `whosaid://guide` resource an agent reads on demand.
 The interactive `enroll` and `record` commands are deliberately **not** exposed as tools — both need
 a live terminal and microphone access, which an MCP client doesn't have. Same guarantee as the CLI:
@@ -218,6 +219,17 @@ current-directory fallback, because an MCP server's cwd is whatever the client c
 `WHOSAID_WORKSPACE`, then the single watch agent. The server never builds or rebuilds `_search.db`: writes belong to
 `whosaid index`, `ingest --index`, `roll-up --index`, and the watcher, so a tool call can never
 race a rebuild or spend minutes embedding.
+
+**Gateway listing (issue #222).** 43 tools made `tools/list` about 68 KB. The default listing is
+now the two meta-tools `whosaid_search_tools` and `whosaid_call_tool` plus `whosaid_search`,
+`whosaid_context`, `whosaid_meetings`, `whosaid_person` and `whosaid_live` (about 8 KB);
+`WHOSAID_TOOL_PROFILE` (`full`, or groups like `gateway,drafts`) widens it at startup. The filter
+sits on the wire `tools/list` request handler (replaced through the low-level server's
+`add_request_handler`), so `mcp.list_tools()` and direct `tools/call` still see every tool.
+`whosaid_call_tool` is unwrapped in a replacement `tools/call` handler that re-enters the SDK's
+own `_handle_call_tool` with the inner name, so pydantic validation, async awaiting, the
+`workspace_source` stamp and the error shape are those of a direct call. `TOOL_GROUPS` in
+`lib/mcp_server.py` must cover every registered tool; `test/mcp_gateway_test.py` fails otherwise.
 
 ## Workspace search and hands-free ingest
 

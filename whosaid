@@ -998,6 +998,11 @@ ENV OVERRIDES
   WHOSAID_WORKSPACE    Default meeting workspace for index/search/context/graph/
                       wiki, for 'whosaid doctor', and for the read-only search
                       tools of 'whosaid mcp'.
+  WHOSAID_TOOL_PROFILE  Which tools 'whosaid mcp' lists (read once at start):
+                      unset/gateway = whosaid_search_tools, whosaid_call_tool and 5
+                      everyday tools; full = all; or groups like gateway,drafts,live
+                      (search, live, drafts, teams, workspace, voices). Unlisted
+                      tools stay callable by name. Unknown group: exits 2.
   WHOSAID_OWNER        Whose action items a workspace tracks (overrides
                       whosaid.toml [workspace] owner).
   WHOSAID_TODAY        YYYY-MM-DD the worklist treats as today when deciding
