@@ -6,6 +6,18 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ## [Unreleased]
 
+## [1.43.0] - 2026-11-17
+
+### Changed
+- (#222) **The MCP server now lists 7 tools by default instead of 43.** `tools/list` was 67,798 bytes (about 17k tokens) and is now 7,981 bytes (about 2k). It lists `whosaid_search_tools` and `whosaid_call_tool` first, then `whosaid_search`, `whosaid_context`, `whosaid_meetings`, `whosaid_person` and `whosaid_live`. Every other tool is still registered and callable by name, directly or through `whosaid_call_tool`, with identical results and errors. The listing is fixed for the life of the server (`listChanged` stays false). If your host has per-tool allow rules, or something reads the listing expecting every tool, set `WHOSAID_TOOL_PROFILE=full` to get the old listing plus the two new tools.
+- (#222) Server instructions are down from 7,217 to 1,975 characters, under Claude Code's 2 KB cap. The text that was cut moved verbatim into the `whosaid://guide` resource.
+
+### Added
+- (#222) `whosaid_search_tools {query?, limit?}`: with no query it returns a catalog of every tool, grouped (search, live, drafts, teams, workspace, voices), one line each. An exact name returns that tool's full description and input schema. Anything else returns ranked matches.
+- (#222) `whosaid_call_tool {name, arguments?}` runs any tool through the SDK's normal call path. It refuses to wrap either meta-tool.
+- (#222) `WHOSAID_TOOL_PROFILE`, read once at startup: unset or `gateway` (the default), `full`, or a comma list of groups such as `gateway,drafts`. An unknown group name exits 2 and names the known groups.
+- (#222) `test/mcp_gateway_test.py`: starts the real entry point and checks the listing size per profile, that direct and wrapped calls give identical results, that the listing stays the same after calls, and that the group map covers every tool.
+
 ## [1.42.2] - 2026-11-16
 
 ### Fixed
