@@ -9,6 +9,7 @@
 //   record-app --call-state --app <bundle-id|name>
 //   record-app --mute-state --app <bundle-id>   (read-only: what the mute gate sees)
 //   record-app --selftest-mute                  (offline unit test of the mute gate)
+//   record-app --teams-api-listen S             (read-only: Teams local API events for S s)
 //
 // Writes DIR/app.wav and, unless --no-mic, DIR/mic.wav: mono 16 kHz, both on
 // the same timeline (sample 0 = the first buffer either leg delivered), padded
@@ -417,8 +418,181 @@ func elementMuteLabel(_ e: AXUIElement) -> String? {
 
 /// Polls the Teams mic button every 250 ms on its own queue. The audio queue
 /// only reads the cached (state, readAt) under a lock, never AX.
+// ---- Teams local API (ws://127.0.0.1:8124), opt-in (#224 option 2) ----------
+//
+// Teams for desktop has a "Third-party app API" (Settings > Privacy > Manage
+// API > Enable API, https://support.microsoft.com/office/aabca9f2-47bb-407f-9f9b-81a104a883d6)
+// that pushes meeting state over a local WebSocket. Opt-in: it is only used
+// when a token file exists (`whosaid teams pair-api` writes it). While the
+// socket is open and Teams has sent a state, that state wins over the AX read.
+// The helper never sends a frame: no commands, so it can never change the call.
+//
+// UNVERIFIED (no Microsoft protocol doc; taken from the open-source client
+// github.com/svrooij/teams-monitor and not tested against a live Teams):
+// the port 8124, the query parameters (token, protocol-version=2.0.0,
+// manufacturer, device, app, app-version), the message shapes
+// {"meetingUpdate":{"meetingState":{"isMuted":..,"isInMeeting":..}}} and
+// {"tokenRefresh":"<new token>"}, and whether Teams pushes state to a client
+// that never sent a command (that client says pairing completes on the first
+// command, which this helper never sends). Microsoft retired a "legacy,
+// non-published" meeting-control integration on 2026-06-30 (MC1266901); it
+// is not confirmed whether that is this API.
+
+func teamsAPITokenURL() -> URL {
+    let env = ProcessInfo.processInfo.environment
+    if let f = env["WHOSAID_TEAMS_API_TOKEN_FILE"], !f.isEmpty { return URL(fileURLWithPath: f) }
+    let base = env["XDG_CONFIG_HOME"].flatMap { $0.isEmpty ? nil : $0 } ?? (NSHomeDirectory() + "/.config")
+    return URL(fileURLWithPath: base).appendingPathComponent("whosaid/teams-api-token")
+}
+
+func readTeamsAPIToken() -> String? {
+    guard let s = try? String(contentsOf: teamsAPITokenURL(), encoding: .utf8) else { return nil }
+    let t = s.trimmingCharacters(in: .whitespacesAndNewlines)
+    return t.isEmpty ? nil : t
+}
+
+/// Atomic, owner-only (0600): the token lets a local process control Teams.
+func writeTeamsAPIToken(_ token: String) {
+    let url = teamsAPITokenURL()
+    try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+    let tmp = url.appendingPathExtension("tmp")
+    FileManager.default.createFile(atPath: tmp.path, contents: Data((token + "\n").utf8),
+                                   attributes: [.posixPermissions: 0o600])
+    // rename(2), not replaceItemAt: that keeps the old file's (wider) mode.
+    if rename(tmp.path, url.path) != 0 { try? FileManager.default.removeItem(at: tmp) }
+    chmod(url.path, 0o600)
+}
+
+func teamsAPIURL(token: String) -> URL {
+    let port = Int(ProcessInfo.processInfo.environment["WHOSAID_TEAMS_API_PORT"] ?? "") ?? 8124
+    var c = URLComponents()
+    c.scheme = "ws"
+    c.host = "127.0.0.1"
+    c.port = port
+    c.path = "/"
+    c.queryItems = [URLQueryItem(name: "token", value: token), URLQueryItem(name: "protocol-version", value: "2.0.0"),
+                    URLQueryItem(name: "manufacturer", value: "whosaid"), URLQueryItem(name: "device", value: "whosaid"),
+                    URLQueryItem(name: "app", value: "whosaid"), URLQueryItem(name: "app-version", value: "1.0")]
+    return c.url!
+}
+
+/// One Teams API message: the mute state it implies (nil = says nothing about
+/// mute; unknown = not in a meeting) and a refreshed token, if any.
+func parseTeamsAPIMessage(_ text: String) -> (state: MuteState?, token: String?) {
+    guard let d = text.data(using: .utf8), let obj = try? JSONSerialization.jsonObject(with: d) as? [String: Any]
+    else { return (nil, nil) }
+    let token = (obj["tokenRefresh"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+    var state: MuteState?
+    if let mu = obj["meetingUpdate"] as? [String: Any], let ms = mu["meetingState"] as? [String: Any] {
+        if let inMeeting = ms["isInMeeting"] as? Bool, !inMeeting {
+            state = .unknown
+        } else if let m = ms["isMuted"] as? NSNumber, CFGetTypeID(m) == CFBooleanGetTypeID() {
+            state = m.boolValue ? .muted : .unmuted
+        }
+    }
+    return (state, token)
+}
+
+/// Which reading the gate uses: a live Teams API state wins (it is pushed on
+/// change, so it is fresh while the socket is open), else the AX reading.
+func effectiveMute(api: MuteState?, ax: MuteState, axAt: Date?, now: Date) -> (MuteState, Date?) {
+    if let api { return (api, now) }
+    return (ax, axAt)
+}
+
+/// Listens on the Teams local API and keeps the last pushed mute state.
+/// Never sends. Reconnects every 5 s while the token file exists.
+final class TeamsAPIWatcher: NSObject, URLSessionWebSocketDelegate {
+    private let lock = NSLock()
+    private var state: MuteState?
+    private var connected = false
+    private var task: URLSessionWebSocketTask?
+    private var session: URLSession!
+    private var stopped = false
+    /// Called (off the audio queue) on connect/close and every message.
+    var onEvent: ((String) -> Void)?
+
+    override init() {
+        super.init()
+        session = URLSession(configuration: .ephemeral, delegate: self, delegateQueue: nil)
+    }
+
+    /// The pushed state while connected, nil otherwise.
+    func current() -> MuteState? {
+        lock.lock(); defer { lock.unlock() }
+        return connected ? state : nil
+    }
+
+    func start() { connect() }
+
+    func stop() {
+        lock.lock(); stopped = true; lock.unlock()
+        task?.cancel(with: .goingAway, reason: nil)
+    }
+
+    private func connect() {
+        lock.lock(); let done = stopped; lock.unlock()
+        guard !done, let token = readTeamsAPIToken() else { return }
+        let t = session.webSocketTask(with: teamsAPIURL(token: token))
+        task = t
+        t.resume()
+        receive(t)
+    }
+
+    private func receive(_ t: URLSessionWebSocketTask) {
+        t.receive { [weak self] result in
+            guard let self else { return }
+            switch result {
+            case .success(let msg):
+                var text: String?
+                switch msg {
+                case .string(let s): text = s
+                case .data(let d): text = String(data: d, encoding: .utf8)
+                @unknown default: text = nil
+                }
+                if let text { self.handle(text) }
+                self.receive(t)
+            case .failure:
+                self.disconnected(t)
+            }
+        }
+    }
+
+    private func handle(_ text: String) {
+        let (st, token) = parseTeamsAPIMessage(text)
+        if let token {
+            writeTeamsAPIToken(token)
+            onEvent?("token refreshed")
+        }
+        if let st {
+            lock.lock(); state = st; lock.unlock()
+            onEvent?("state=\(st.rawValue)")
+        }
+    }
+
+    private func disconnected(_ t: URLSessionWebSocketTask) {
+        lock.lock()
+        let was = connected && task === t
+        if task === t { connected = false; state = nil }
+        let done = stopped
+        lock.unlock()
+        if was { onEvent?("closed") }
+        guard !done, task === t else { return }
+        DispatchQueue.global().asyncAfter(deadline: .now() + 5) { [weak self] in self?.connect() }
+    }
+
+    func urlSession(_ session: URLSession, webSocketTask: URLSessionWebSocketTask, didOpenWithProtocol protocol: String?) {
+        lock.lock(); if task === webSocketTask { connected = true }; lock.unlock()
+        onEvent?("connected")
+    }
+}
+
 final class MuteWatcher {
     let bundle: String
+    /// Read the AX tree (needs the Accessibility grant).
+    let useAX: Bool
+    /// Teams local API, when a token is stored; its pushed state wins.
+    let api: TeamsAPIWatcher?
     let lock = NSLock()
     private var state = MuteState.unknown
     private var readAt: Date?
@@ -429,15 +603,27 @@ final class MuteWatcher {
     private var timer: DispatchSourceTimer?
     var start: Date?
 
-    init(bundle: String) { self.bundle = bundle }
+    init(bundle: String, useAX: Bool = true, api: TeamsAPIWatcher? = nil) {
+        self.bundle = bundle
+        self.useAX = useAX
+        self.api = api
+    }
 
+    /// What the gate uses. Cheap: two locked reads, no AX, no I/O.
     func snapshot() -> (MuteState, Date?) {
+        let apiState = api?.current()
         lock.lock(); defer { lock.unlock() }
-        return (state, readAt)
+        return effectiveMute(api: apiState, ax: state, axAt: readAt, now: Date())
     }
 
     func begin(start: Date) {
         self.start = start
+        if let api {
+            api.onEvent = { ev in
+                if ev == "connected" || ev == "closed" { log("mute: Teams local API \(ev)") }
+            }
+            api.start()
+        }
         let t = DispatchSource.makeTimerSource(queue: queue)
         t.schedule(deadline: .now(), repeating: .milliseconds(250), leeway: .milliseconds(25))
         t.setEventHandler { [weak self] in self?.poll() }
@@ -447,11 +633,12 @@ final class MuteWatcher {
 
     func poll() {
         let now = Date()
-        let st = read(now: now)
+        let ax = useAX ? read(now: now) : .unknown
         lock.lock()
-        state = st
+        state = ax
         readAt = now
         lock.unlock()
+        let st = snapshot().0
         if st != logged {
             logged = st
             log(muteEventLine(st, at: now, start: start))
@@ -528,6 +715,20 @@ func runMuteSelftest() -> Int32 {
           && muteEventLine(.muted, at: now, start: now.addingTimeInterval(-12.34)).hasSuffix(" (+12.3s)"), "muted log line format")
     check(muteEventLine(.unmuted, at: now, start: nil).hasPrefix("mic unmuted: recording the mic at "), "unmuted log line")
     check(muteEventLine(.unknown, at: now, start: nil).contains("mute state unknown"), "unknown log line")
+
+    // Teams local API messages and precedence (option 2).
+    check(parseTeamsAPIMessage(#"{"meetingUpdate":{"meetingState":{"isMuted":true,"isInMeeting":true}}}"#).state == .muted, "api isMuted true = muted")
+    check(parseTeamsAPIMessage(#"{"meetingUpdate":{"meetingState":{"isMuted":false}}}"#).state == .unmuted, "api isMuted false = unmuted")
+    check(parseTeamsAPIMessage(#"{"meetingUpdate":{"meetingState":{"isMuted":true,"isInMeeting":false}}}"#).state == .unknown, "api not in a meeting = unknown")
+    check(parseTeamsAPIMessage(#"{"meetingUpdate":{"meetingState":{"isMuted":1}}}"#).state == nil, "api non-bool isMuted is ignored")
+    check(parseTeamsAPIMessage(#"{"tokenRefresh":"abc"}"#).token == "abc", "api tokenRefresh")
+    check(parseTeamsAPIMessage("not json").state == nil && parseTeamsAPIMessage("[]").token == nil, "api junk is ignored")
+    check(effectiveMute(api: .unmuted, ax: .muted, axAt: now, now: now).0 == .unmuted, "api state wins over AX")
+    check(effectiveMute(api: nil, ax: .muted, axAt: now, now: now).0 == .muted, "no api state: AX")
+    let stale = effectiveMute(api: nil, ax: .muted, axAt: now.addingTimeInterval(-5), now: now)
+    check(!shouldSilenceMic(state: stale.0, readAt: stale.1, now: now, micAlways: false), "no api, stale AX: records")
+    let pushed = effectiveMute(api: .muted, ax: .unknown, axAt: nil, now: now)
+    check(shouldSilenceMic(state: pushed.0, readAt: pushed.1, now: now, micAlways: false), "api muted silences without AX")
 
     // Gate through a real Leg: 0.1 s tone, 0.1 s while muted, 0.1 s tone, at
     // consecutive offsets. The muted block must be zeros of the same length at
@@ -741,12 +942,13 @@ var watchInterval = 1.0
 var micAlways = false
 var muteStateOnly = false
 var selftestMute = false
+var teamsAPIListen: Double?
 
 func usage() -> Never {
     log("usage: record-app --list | --call-state --app <bundle-id|name> | --app <bundle-id|name> --out-dir DIR"
         + " [--no-mic] [--max-seconds N] [--wait-for-call] [--until-call-ends] [--idle-seconds N]"
         + " [--mic-always] | --watch-call --app <bundle-id|name> [--interval S]"
-        + " | --mute-state --app <bundle-id> | --selftest-mute")
+        + " | --mute-state --app <bundle-id> | --selftest-mute | --teams-api-listen S")
     terminate(2)
 }
 
@@ -765,6 +967,9 @@ while !args.isEmpty {
     case "--mic-always": micAlways = true
     case "--mute-state": muteStateOnly = true
     case "--selftest-mute": selftestMute = true
+    case "--teams-api-listen":
+        guard !args.isEmpty, let v = Double(args.removeFirst()), v > 0, v.isFinite else { usage() }
+        teamsAPIListen = v
     case "--max-seconds":
         guard !args.isEmpty, let v = Double(args.removeFirst()), v > 0 else { usage() }
         maxSeconds = v
@@ -783,6 +988,29 @@ while !args.isEmpty {
 }
 
 if selftestMute { terminate(runMuteSelftest()) }
+
+// `--teams-api-listen S`: connect to the Teams local API with the stored
+// token, print each event (connected, state=..., token refreshed, closed) for
+// S seconds, then exit (0 if it connected, 4 if not). Never sends a frame.
+if let secs = teamsAPIListen {
+    guard readTeamsAPIToken() != nil else {
+        log("no Teams API token at \(teamsAPITokenURL().path); run: whosaid teams pair-api")
+        terminate(2)
+    }
+    let w = TeamsAPIWatcher()
+    let seen = NSLock()
+    var didConnect = false
+    w.onEvent = { ev in
+        seen.lock(); if ev == "connected" { didConnect = true }; seen.unlock()
+        print(ev); fflush(stdout)
+    }
+    w.start()
+    DispatchQueue.global().asyncAfter(deadline: .now() + secs) {
+        seen.lock(); let ok = didConnect; seen.unlock()
+        terminate(ok ? 0 : 4)
+    }
+    dispatchMain()
+}
 
 // Read-only: prints whether this process may read AX, and the mic-button
 // labels and state the gate would use for a running app. Never prompts.
@@ -974,14 +1202,22 @@ Task {
             log("mic always on (--mic-always): meeting mute is ignored")
         } else if !readsMute(target.bundleIdentifier) {
             log("mute: unknown (only the Teams mic button is read; \(target.applicationName)'s mute is not); recording the mic")
-        } else if !AXIsProcessTrusted() {
-            promptAccessibilityOnce()
-            log("mute: unknown (no Accessibility grant; \(accessibilityHint)); recording the mic")
         } else {
-            log("mic follows meeting mute: silenced while muted")
-            let w = MuteWatcher(bundle: target.bundleIdentifier)
-            rec.muteWatcher = w
-            w.begin(start: Date())
+            let ax = AXIsProcessTrusted()
+            let api = readTeamsAPIToken() != nil ? TeamsAPIWatcher() : nil
+            if !ax {
+                promptAccessibilityOnce()
+                log("mute: unknown (no Accessibility grant; \(accessibilityHint)); "
+                    + (api != nil ? "the Teams local API is used when it connects, else the mic is recorded"
+                                  : "recording the mic"))
+            }
+            if ax || api != nil {
+                log("mic follows meeting mute: silenced while muted"
+                    + (api != nil ? " (Teams local API" + (ax ? ", then Accessibility)" : ")") : " (Accessibility)"))
+                let w = MuteWatcher(bundle: target.bundleIdentifier, useAX: ax, api: api)
+                rec.muteWatcher = w
+                w.begin(start: Date())
+            }
         }
     }
 

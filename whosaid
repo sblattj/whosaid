@@ -322,6 +322,15 @@ USAGE
                                         one row per occurrence. --ws lists the
                                         recorded meeting folders per event.
                                         `calendar status` shows what it holds.
+  whosaid teams pair-api [--check] [--listen S]
+                                        Opt in to the Teams local API (ws://127.0.0.1:8124)
+                                        as a second mute source for record --app: stores
+                                        the token from Teams > Settings > Privacy > Manage
+                                        API (read from stdin, saved 0600 to
+                                        ~/.config/whosaid/teams-api-token), then listens S s
+                                        (default 15) and prints what Teams pushes. Never
+                                        sends a command. --check only listens.
+                                        UNVERIFIED protocol (see README); unpair-api removes it.
   whosaid teams launch [--port N] [--check] [--force] [--wait S]
                                         Start the Teams desktop app with a DevTools
                                         port (--port, else WHOSAID_TEAMS_CDP_PORT,
@@ -2455,12 +2464,64 @@ cmd_ab() {
 # whosaid teams ingest-transcript <transcript.json> --into DIR [--start ISO] [--title T] [...]
 # Non-audio adapters (issue #49): chats in lib/teams_chat.py, meeting transcripts in
 # lib/teams_transcript.py (both stdlib-only).
+# Opt in to the Teams local API as a mute source for record --app (#224).
+# The token goes from stdin to a 0600 file, never onto a command line. The
+# helper only listens (--teams-api-listen); it never sends a command.
+cmd_teams_pair_api() {
+  local check=0 listen=15
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --check) check=1; shift ;;
+      --listen)
+        [[ $# -ge 2 && "$2" =~ ^[0-9]+$ && "$2" -gt 0 ]] || { log "--listen needs a whole number of seconds > 0"; return 2; }
+        listen="$2"; shift 2 ;;
+      -h|--help) cmd_help; return 0 ;;
+      *) log "teams pair-api: unknown flag $1"; return 2 ;;
+    esac
+  done
+  local tf="${WHOSAID_TEAMS_API_TOKEN_FILE:-${XDG_CONFIG_HOME:-$HOME/.config}/whosaid/teams-api-token}"
+  if [[ "$check" != 1 ]]; then
+    log "Teams local API pairing (opt-in mute source for record --app; UNVERIFIED protocol)."
+    log "  1. Teams > Settings > Privacy > Manage API (Third-party app API): turn on Enable API."
+    log "     Greyed out = your IT admin turned third-party pairing off; Accessibility still works."
+    log "  2. Copy the API token shown there (Generate if it is empty)."
+    log "  3. Paste it here and press Enter (input hidden):"
+    local token=""
+    if [[ -t 0 ]]; then IFS= read -rs token; echo >&2; else IFS= read -r token || true; fi
+    token="${token//[[:space:]]/}"
+    [[ -n "$token" ]] || { log "no token given; nothing stored."; return 2; }
+    mkdir -p "$(dirname "$tf")"
+    ( umask 077; printf '%s\n' "$token" > "$tf.tmp" ) && mv -f "$tf.tmp" "$tf" && chmod 600 "$tf"
+    log "stored the token in $tf (0600)."
+  elif [[ ! -s "$tf" ]]; then
+    log "no Teams API token at $tf; run: whosaid teams pair-api"
+    return 2
+  fi
+  local bin rc=0
+  bin="$(ensure_record_app_helper)" || return 1
+  log "listening ${listen}s on the Teams local API (join or start a meeting to see state=...); nothing is sent."
+  "$bin" --teams-api-listen "$listen" || rc=$?
+  if [[ "$rc" -eq 0 ]]; then
+    log "Teams accepted the connection. record --app uses its mute state while connected."
+  else
+    log "could not connect (exit $rc): Teams not running, Enable API off, or this API is gone in your Teams build."
+    log "The token stays stored (whosaid teams unpair-api removes it); record --app falls back to Accessibility."
+  fi
+  return "$rc"
+}
+
 cmd_teams() {
   case "${1:-}" in
     live|chats|sync) exec "$WHOSAID_PY" "$REPO_DIR/lib/teams_cache.py" "$@" ;;
     cache-status) exec "$WHOSAID_PY" "$REPO_DIR/lib/teams_cache.py" status "${@:2}" ;;
     calendar) exec "$WHOSAID_PY" "$REPO_DIR/lib/teams_calendar.py" "${@:2}" ;;
     launch) WHOSAID_BIN="$REPO_DIR/whosaid" exec "$WHOSAID_PY" "$REPO_DIR/lib/teams_launch.py" "${@:2}" ;;
+    pair-api) cmd_teams_pair_api "${@:2}"; exit $? ;;
+    unpair-api)
+      local tf="${WHOSAID_TEAMS_API_TOKEN_FILE:-${XDG_CONFIG_HOME:-$HOME/.config}/whosaid/teams-api-token}"
+      rm -f "$tf"
+      log "removed $tf; record --app reads mute through Accessibility only."
+      exit 0 ;;
   esac
   if want_help "$@"; then cmd_help; exit 0; fi
   if [[ $# -eq 0 ]]; then
@@ -2469,6 +2530,7 @@ cmd_teams() {
     log "       whosaid teams live|chats|sync|cache-status [...]   (local Teams cache; --help on each)"
     log "       whosaid teams calendar [--from today] [--days 7] [--q TEXT] [--json]   (calendar from the same cache)"
     log "       whosaid teams launch [--port N] [--check] [--force] [--wait S]   (start the Teams app with a DevTools port)"
+    log "       whosaid teams pair-api [--check] [--listen S] | unpair-api   (Teams local API as a mute source, opt-in)"
     exit 1
   fi
   if [[ "$1" == "ingest-transcript" ]]; then

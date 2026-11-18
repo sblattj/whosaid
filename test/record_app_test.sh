@@ -276,6 +276,44 @@ if command -v swiftc >/dev/null 2>&1 && [ "$(sw_vers -productVersion | cut -d. -
   printf '%s\n' "$ST_OUT" | grep -v "^mute selftest" || true
   assert_eq "$ST_RC" 0 "record-app --selftest-mute exits 0"
   assert_contains "$ST_OUT" " 0 failed" "mute selftest reports no failures"
+
+  echo "-- Teams local API (#224 option 2) against a fake ws server: listen only, token rotated --"
+  printf 'old-token-224\n' > "$TMP/teams-api-token"
+  python3 -I "$REPO/test/fixtures/teams_api_fake_server.py" "$TMP/fake.json" > "$TMP/fake.port" &
+  FAKE_PID=$!
+  for _ in $(seq 1 100); do [ -s "$TMP/fake.port" ] && break; sleep 0.05; done
+  API_OUT="$(WHOSAID_TEAMS_API_PORT="$(cat "$TMP/fake.port")" WHOSAID_TEAMS_API_TOKEN_FILE="$TMP/teams-api-token" \
+    "$TMP/record-app-selftest" --teams-api-listen 3 2>&1)" && API_RC=0 || API_RC=$?
+  wait "$FAKE_PID" || true
+  assert_eq "$API_RC" 0 "teams-api-listen exits 0 after connecting"
+  assert_eq "$(printf '%s\n' "$API_OUT" | grep -E '^(connected|state=|token refreshed)' | tr '\n' ' ')" \
+    "connected state=muted state=unmuted token refreshed " "teams-api-listen events in order"
+  assert_eq "$(cat "$TMP/teams-api-token")" "new-token-224" "tokenRefresh replaces the stored token"
+  assert_eq "$(stat -f %Lp "$TMP/teams-api-token")" "600" "token file is owner-only"
+  FAKE_RES="$(python3 -I -c 'import json,sys; d=json.load(open(sys.argv[1])); print(d["path"]); print("data_frames=%d" % sum(1 for o in d["client_opcodes"] if o in (1, 2)))' "$TMP/fake.json")"
+  assert_contains "$FAKE_RES" "token=old-token-224" "connects with the stored token"
+  assert_contains "$FAKE_RES" "protocol-version=2.0.0" "sends protocol-version"
+  assert_contains "$FAKE_RES" "data_frames=0" "the helper never sends a command frame"
+  rm -f "$TMP/teams-api-token"
+  NO_TOK="$(WHOSAID_TEAMS_API_TOKEN_FILE="$TMP/teams-api-token" "$TMP/record-app-selftest" --teams-api-listen 1 2>&1)" && NT_RC=0 || NT_RC=$?
+  assert_eq "$NT_RC" 2 "teams-api-listen without a token exits 2"
+  assert_contains "$NO_TOK" "whosaid teams pair-api" "points at pair-api"
+
+  echo "-- whosaid teams pair-api / unpair-api: token from stdin, 0600, listen only --"
+  TOK="$TMP/cfg/whosaid/teams-api-token"
+  PA_OUT="$(printf 'piped-token-224\n' | WHOSAID_TEAMS_API_TOKEN_FILE="$TOK" WHOSAID_TEAMS_API_PORT="$(cat "$TMP/fake.port")" \
+    "$WHOSAID" teams pair-api --listen 1 2>&1)" && PA_RC=0 || PA_RC=$?
+  assert_eq "$PA_RC" 4 "pair-api with Teams' API closed exits 4"
+  assert_eq "$(cat "$TOK")" "piped-token-224" "pair-api stores the token from stdin"
+  assert_eq "$(stat -f %Lp "$TOK")" "600" "pair-api token file is owner-only"
+  assert_contains "$PA_OUT" "falls back to Accessibility" "pair-api explains the fallback"
+  case "$PA_OUT" in *piped-token-224*) fail "pair-api echoed the token: $PA_OUT" ;; esac
+  PASS=$((PASS + 1))
+  WHOSAID_TEAMS_API_TOKEN_FILE="$TOK" "$WHOSAID" teams unpair-api >/dev/null 2>&1
+  [ ! -e "$TOK" ] || fail "unpair-api left $TOK"
+  PASS=$((PASS + 1))
+  CK_OUT="$(WHOSAID_TEAMS_API_TOKEN_FILE="$TOK" "$WHOSAID" teams pair-api --check 2>&1)" && CK_RC=0 || CK_RC=$?
+  assert_eq "$CK_RC" 2 "pair-api --check without a token exits 2"
 else
   echo "SKIP: needs swiftc and macOS 15+"
 fi
