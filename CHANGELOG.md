@@ -6,6 +6,13 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ## [Unreleased]
 
+## [1.43.2] - 2026-11-18
+
+### Fixed
+- (#223) Drafts stage: a new-chat draft addressed to a group now opens the chat those members already have, instead of pressing New message and failing in the To picker. Before creating a chat it checks the chat list, opening a collapsed "See more" section if there is one, then searches Teams for the chat name and each member, matching on the set of members, not the title. `drafts stage` also passes the chat's thread id when the Teams cache has exactly one chat with those members. If two chats have the same members it stops with "ambiguous: N chats", and it only presses New message when nothing matches. The output gains `"existing_chat": true` when an existing chat was used. One-person new-chat drafts keep the plain New message path.
+- (#223) A plain (not new-chat) stage also opens a collapsed "See more" section when no visible row matches.
+- (#223) A new-chat draft to `A, B and C` is now split into three people for the To picker. Before, "B and C" was typed as one name.
+
 ## [1.43.1] - 2026-11-17
 
 ### Fixed
