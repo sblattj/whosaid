@@ -12,6 +12,9 @@ All notable changes to whosaid are documented here. This project adheres to
 ### Added
 - `--mic-always` for `record --browser`, `autorecord run|install|setup --browser` and the `whosaid_record_browser` MCP tool (`mic_always`): record the mic even while muted. `autorecord install` keeps it in the LaunchAgent's arguments. It conflicts with `--no-mic` and does not apply to `--app` (app mode does not read mute yet).
 
+### Fixed
+- `autorecord install` over a running agent could fail with `launchctl bootstrap failed (Bootstrap failed: 5: Input/output error)`: `bootout` returns before launchd drops the job. Install now waits (up to 15 s) until the old job is gone before bootstrapping.
+
 ## [1.43.2] - 2026-11-18
 
 ### Fixed

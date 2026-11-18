@@ -76,6 +76,23 @@ for bad in (["run", "--app", "x", "--mic-always"], ["install", "--browser", "--m
         check(False, f"{bad} must be rejected")
     except SystemExit as e:
         check(e.code == 2, f"{bad} exits 2")
+# ---- stop_running waits for launchd to drop the job (bootstrap error 5 race) ----
+_calls, _orig_lc, _orig_run = [], ar.launchctl, ar.subprocess.run
+_left = {"print": 3}
+def _fake_lc(*args):
+    _calls.append(args[0])
+    rc = 0 if args[0] != "print" or _left["print"] > 0 else 113
+    if args[0] == "print":
+        _left["print"] -= 1
+    return subprocess.CompletedProcess(args, rc, "", "")
+ar.launchctl = _fake_lc
+ar.subprocess.run = lambda *a, **k: subprocess.CompletedProcess(a, 0, "", "")
+try:
+    ar.stop_running(sleep=lambda s: None)
+finally:
+    ar.launchctl, ar.subprocess.run = _orig_lc, _orig_run
+check(_calls == ["bootout", "print", "print", "print", "print"],
+      f"stop_running polls until the service is gone: {_calls}")
 try:
     ar.parse_args(["run", "--app", "x", "--target", "t"])
     check(False, "--target without --browser must fail")

@@ -617,10 +617,17 @@ def domain() -> str:
     return f"gui/{os.getuid()}"
 
 
-def stop_running() -> None:
-    """Stop an installed autorecord (job, launcher app). A call in progress is saved."""
+def stop_running(wait: float = 15.0, sleep=time.sleep) -> None:
+    """Stop an installed autorecord (job, launcher app). A call in progress is saved.
+
+    bootout returns before launchd has finished removing the job; a bootstrap in
+    that window fails with "Bootstrap failed: 5: Input/output error". So wait,
+    up to `wait` seconds, until `launchctl print` no longer finds the service."""
     launchctl("bootout", f"{domain()}/{LABEL}")
     subprocess.run(["pkill", "-TERM", "-f", f"{APP_NAME}.app/Contents/MacOS/"], capture_output=True)
+    deadline = time.monotonic() + wait
+    while launchctl("print", f"{domain()}/{LABEL}").returncode == 0 and time.monotonic() < deadline:
+        sleep(0.25)
 
 
 def cmd_install(a: argparse.Namespace) -> int:
