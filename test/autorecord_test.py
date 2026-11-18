@@ -69,7 +69,23 @@ mp = ar.build_plist(mi, None)["ProgramArguments"]
 check("--mic-always" in mp and mp[:3] == ["/w", "autorecord", "run"], f"install --mic-always reaches the plist: {mp}")
 check(ar.parse_args(mp[2:]).mic_always is True, "plist args round-trip through run's parser")
 check("--mic-always" not in ar.build_plist(j, None)["ProgramArguments"], "default install plist omits --mic-always")
-for bad in (["run", "--app", "x", "--mic-always"], ["install", "--browser", "--mic-always", "--no-mic"]):
+# ---- --mic-always in app mode (#224): Teams mute is read through Accessibility ----
+am = ar.parse_args(["run", "--app", "com.microsoft.teams2", "--mic-always", "--into", "/r", "--whosaid", "/w"])
+check(ar.record_argv(am) == ["/w", "record", "--app", "com.microsoft.teams2", "--wait-for-call", "--until-call-ends",
+                             "--idle-seconds", "30", "--mic-always", "--into", "/r", "--label", "call"],
+      f"app run --mic-always argv {ar.record_argv(am)}")
+check("--mic-always" not in ar.record_argv(a), "app default: no --mic-always (mute-respecting)")
+ai = ar.parse_args(["install", "--app", "com.microsoft.teams2", "--mic-always", "--into", "/r", "--whosaid", "/w"])
+ap = ar.build_plist(ai, Path("/Apps/X.app"))["ProgramArguments"]
+check(ap[:7] == ["/usr/bin/open", "-W", "-g", "-a", "/Apps/X.app", "--args", "/w"] and "--mic-always" in ap,
+      f"app install --mic-always reaches the launcher plist: {ap}")
+check(ar.parse_args(ap[8:]).mic_always is True and ar.parse_args(ap[8:]).app == "com.microsoft.teams2",
+      "app plist args round-trip through run's parser")
+check("--mic-always" not in ar.build_plist(i, Path("/Apps/X.app"))["ProgramArguments"],
+      "default app install plist omits --mic-always")
+check(ar.parse_args(["setup", "--app", "com.microsoft.teams2", "--mic-always", "--workspace", "/ws"]).mic_always is True,
+      "setup --app --mic-always parses")
+for bad in (["run", "--app", "x", "--mic-always", "--no-mic"], ["install", "--browser", "--mic-always", "--no-mic"]):
     try:
         with contextlib.redirect_stderr(io.StringIO()):
             ar.parse_args(bad)

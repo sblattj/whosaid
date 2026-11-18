@@ -8,12 +8,15 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ### Changed
 - `record --browser` (and `autorecord --browser`) now respects meeting mute by default. The mic goes through a gain node that is set to 0 while the meeting's mic button reads muted (Teams web `#microphone-button` / `data-tid="microphone-button"` / `data-tid="toggle-mute"`: `aria-label` "Unmute ..." or `data-state="mic-off"`), polled every 250 ms plus a DOM observer. Muted frames are zeroed, not dropped, so the left/right timeline stays aligned. Each mute change is logged (`mic muted: left channel silenced at <time> (+<offset>s)`). If the button is missing or unreadable, the mic is recorded (fail-safe).
+- `record --app com.microsoft.teams2` (and `autorecord --app`) now respects Teams mute too (#224). The helper reads the native Teams mic button through macOS Accessibility every 250 ms, off the audio thread (`AXDescription`/`AXTitle`/`AXHelp` "Unmute ..." = muted, "Mute ..." = live; "Mute all" and roster entries are ignored), and writes the mic leg as zeros of the same length at the same offset while muted. Mute changes are logged in the browser format and reach `.autorecord.log`. Fail-safe: no Accessibility grant, no button, an unknown or localized label, conflicting buttons, or a reading older than 1 s record the mic; without the grant it logs `mute: unknown (no Accessibility grant; ...)` once and asks macOS for the prompt once per app (`WHOSAID_AX_PROMPT=0` turns that off). Other apps are not read (`mute: unknown`). `autorecord install --app` lists the Accessibility toggle for "Whosaid Call Recorder" as step 3; the launcher is unchanged, so its Screen Recording grant stays.
 
 ### Added
-- `--mic-always` for `record --browser`, `autorecord run|install|setup --browser` and the `whosaid_record_browser` MCP tool (`mic_always`): record the mic even while muted. `autorecord install` keeps it in the LaunchAgent's arguments. It conflicts with `--no-mic` and does not apply to `--app` (app mode does not read mute yet).
+- `--mic-always` for `record --browser`, `autorecord run|install|setup --browser` and the `whosaid_record_browser` MCP tool (`mic_always`): record the mic even while muted. `autorecord install` keeps it in the LaunchAgent's arguments. It conflicts with `--no-mic`. It also applies to `record --app` and `autorecord run|install|setup --app` (#224), where it turns off the Teams Accessibility mute gate.
+- `whosaid record --mute-state --app A`: read-only, prints whether this terminal has the Accessibility grant and what the app-mode mute gate reads now (`state=muted|unmuted|unknown`, the labels found). The helper also has `--selftest-mute`, an offline test of the gate run by `test/record_app_test.sh`.
 
 ### Fixed
 - `autorecord install` over a running agent could fail with `launchctl bootstrap failed (Bootstrap failed: 5: Input/output error)`: `bootout` returns before launchd drops the job. Install now waits (up to 15 s) until the old job is gone before bootstrapping.
+- `test/record_app_test.sh` and `test/record_browser_cli_test.sh` failed at a random check: `assert_contains` piped the help text into `grep -q` under `pipefail`, and `printf` died of SIGPIPE. They read a here-string now.
 
 ## [1.43.2] - 2026-11-18
 

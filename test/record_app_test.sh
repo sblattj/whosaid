@@ -126,6 +126,7 @@ import os, signal, subprocess, sys, time
 args = sys.argv[1:]
 out = args[args.index("--out-dir") + 1]
 state = os.environ["STUB_STATE"]
+open(state + ".argv", "w").write("\n".join(args))
 for leg, freq in (("mic", 300), ("app", 500)):
     subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi",
                     "-i", f"sine=f={freq}:d=1", "-ar", "16000", "-ac", "1",
@@ -150,14 +151,15 @@ whosaid, mode, tmp = sys.argv[1:4]
 state = os.path.join(tmp, f"stub-{mode}")
 env = dict(os.environ, XDG_CACHE_HOME=os.path.join(tmp, "cache"), STUB_STATE=state)
 log = open(os.path.join(tmp, f"{mode}.log"), "w")
-p = subprocess.Popen([whosaid, "record", "--app", "StubApp", "--into", os.path.join(tmp, f"out-{mode}")],
+extra = ["--mic-always"] if mode == "micalways" else []
+p = subprocess.Popen([whosaid, "record", "--app", "StubApp", *extra, "--into", os.path.join(tmp, f"out-{mode}")],
                      stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=log,
                      env=env, start_new_session=True, text=True)
 for _ in range(300):
     if os.path.exists(state + ".ready"):
         break
     time.sleep(0.05)
-if mode == "term":
+if mode in ("term", "micalways"):
     os.kill(p.pid, signal.SIGTERM)
 else:
     os.killpg(p.pid, signal.SIGINT)
@@ -175,12 +177,12 @@ if alive:
 sigs = open(state + ".signals").read() if os.path.exists(state + ".signals") else ""
 print(f"rc={rc}|alive={int(alive)}|signals={sigs}|out={printed.strip()}")
 DRIVE
-  for mode in term int; do
+  for mode in term int micalways; do
     RES="$(python3 -I "$TMP/drive.py" "$WHOSAID" "$mode" "$TMP")"
     assert_contains "$RES" "rc=0|" "$mode: the wrapper exits 0"
     assert_contains "$RES" "|alive=0|" "$mode: no helper is left running"
     case "$mode" in
-      term) assert_contains "$RES" "|signals=SIGTERM|" "term: the helper gets exactly one SIGTERM" ;;
+      term|micalways) assert_contains "$RES" "|signals=SIGTERM|" "$mode: the helper gets exactly one SIGTERM" ;;
       int)  assert_contains "$RES" "|signals=SIGINT|" "int: the helper gets exactly one SIGINT" ;;
     esac
     M4A="${RES##*|out=}"
@@ -189,6 +191,9 @@ DRIVE
     assert_eq "$(ffprobe -v error -show_entries stream=channels -of csv=p=0 "$M4A")" "2" "$mode: output is stereo"
     assert_eq "$(ffprobe -v error -show_entries format_tags=comment -of default=nw=1:nk=1 "$M4A")" "whosaid:channels=mic,app" "$mode: output carries the channel tag"
   done
+  # #224: record --app --mic-always reaches the helper; the default does not pass it.
+  assert_eq "$(grep -cx -- --mic-always "$TMP/stub-micalways.argv" || true)" "1" "--app --mic-always is passed to the helper"
+  assert_eq "$(grep -cx -- --mic-always "$TMP/stub-term.argv" || true)" "0" "--app without --mic-always does not pass it"
 else
   echo "SKIP: needs ffmpeg and macOS 15+"
 fi
@@ -208,8 +213,14 @@ run_w record --watch-call --app X --interval abc
 assert_eq "$RC" 2 "'--interval abc' exits 2"
 run_w record --app X --interval 1
 assert_eq "$RC" 2 "'--interval' without --watch-call exits 2"
+run_w record --mute-state
+assert_eq "$RC" 2 "'--mute-state' without --app exits 2"
+assert_contains "$OUT" "--mute-state needs --app" "explains --mute-state"
+run_w record --watch-call --app X --mic-always
+assert_eq "$RC" 2 "'--watch-call --mic-always' exits 2"
 run_w help
 assert_contains "$OUT" "--watch-call" "help lists --watch-call"
+assert_contains "$OUT" "--mic-always        With --app or --browser" "help: --mic-always applies to --app"
 assert_contains "$OUT" "--interval S" "help lists --interval"
 
 echo "-- record --watch-call: real helper, app not running --"
@@ -247,6 +258,24 @@ WATCH
   assert_contains "$RES" "|running=False|mic=False|" "watch-call: an unlaunched app is running:false, mic:false"
   assert_contains "$RES" "|keys=app,running,mic,speaker,at|" "watch-call: keys are in order"
   assert_contains "$RES" "|left=|" "watch-call: no helper is left running"
+  # #224: --mute-state is read-only and never prompts; an app that is not running is unknown.
+  MS="$(cd "$TMP" && WHOSAID_AX_PROMPT=0 "$WHOSAID" record --mute-state --app com.example.notrunning 2>/dev/null)" && MRC=0 || MRC=$?
+  assert_eq "$MRC" 0 "mute-state exits 0"
+  assert_contains "$MS" "app=com.example.notrunning	running=false	state=unknown" "mute-state: a closed app is unknown"
+else
+  echo "SKIP: needs swiftc and macOS 15+"
+fi
+
+echo "-- mute gate selftest (#224): labels, gate decision, zeros at the same offset --"
+if command -v swiftc >/dev/null 2>&1 && [ "$(sw_vers -productVersion | cut -d. -f1)" -ge 15 ]; then
+  # Built straight into $TMP: never the cached helper, never AX, no capture.
+  swiftc -swift-version 5 -target "$(uname -m)-apple-macos15.0" \
+    -framework ScreenCaptureKit -framework AVFoundation -framework CoreMedia \
+    "$REPO/lib/record_app.swift" -o "$TMP/record-app-selftest"
+  ST_OUT="$("$TMP/record-app-selftest" --selftest-mute 2>&1)" && ST_RC=0 || ST_RC=$?
+  printf '%s\n' "$ST_OUT" | grep -v "^mute selftest" || true
+  assert_eq "$ST_RC" 0 "record-app --selftest-mute exits 0"
+  assert_contains "$ST_OUT" " 0 failed" "mute selftest reports no failures"
 else
   echo "SKIP: needs swiftc and macOS 15+"
 fi

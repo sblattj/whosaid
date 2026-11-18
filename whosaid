@@ -199,7 +199,7 @@ USAGE
                                         Record (or extract from an existing FILE) a voice
                                         sample and name a speaker cluster.
   whosaid record [--label L] [flags]   Record from the mic, then transcribe it.
-  whosaid record --app A [--no-mic] [--label L] [--wait-for-call] [--until-call-ends]
+  whosaid record --app A [--no-mic | --mic-always] [--label L] [--wait-for-call] [--until-call-ends]
                  [--idle-seconds N] [--into DIR] [flags]
                                         Record one app's audio (Zoom, a browser, ...) via
                                         ScreenCaptureKit, plus the mic, then transcribe it.
@@ -528,6 +528,12 @@ RECORD FLAGS
                       on first use) and Screen & System Audio Recording permission
                       for your terminal.
   --no-mic            With --app or --browser: skip the mic (mono, remote only).
+                      With --app on Teams (com.microsoft.teams2) the left channel is
+                      silent while Teams' mic button shows muted (read every 250 ms
+                      through Accessibility, mute changes are logged). Needs an
+                      Accessibility grant for your terminal (or, under autorecord,
+                      Whosaid Call Recorder); without one, or for other apps, the mic
+                      is recorded and "mute: unknown" is logged.
   --browser           Capture one browser tab's meeting audio (+ mic) over the Chrome
                       DevTools protocol instead. Start the browser with
                       --remote-debugging-port=9222. No Screen Recording permission.
@@ -536,7 +542,7 @@ RECORD FLAGS
                       The left channel is silent while the meeting's mic button shows
                       muted (Teams web; checked every 250 ms, mute changes are logged).
                       No mic button found: the mic is recorded.
-  --mic-always        With --browser: record the mic even while muted in the meeting.
+  --mic-always        With --app or --browser: record the mic even while muted in the meeting.
   --cdp-port P        With --browser: DevTools port (default $WHOSAID_CDP_PORT or 9222).
   --target T          With --browser: tab to record, a targetId or a URL substring.
                       Needed when more than one tab matches.
@@ -554,6 +560,9 @@ RECORD FLAGS
                       A.* helpers) has used the mic for --idle-seconds (default 30).
   --idle-seconds N    With --until-call-ends: how long the mic must stay closed.
   --list-apps         Print running apps --app accepts, then exit.
+  --mute-state --app A  Print what the --app mute gate sees now (Accessibility grant,
+                      muted|unmuted|unknown, the mic-button labels found), then exit.
+                      Read-only; it runs under (and checks the grant of) your terminal.
   --watch-call        With --app: print one JSON line per change of the app's mic or
                       speaker state (first line is the current state), until stopped.
                       Given a bundle ID it needs no Screen Recording and the app may
@@ -795,8 +804,11 @@ AUTORECORD
   browser started with --remote-debugging-port. One copy per folder; it never gives
   up (app not running and no browser are waiting states; failures back off to 5 min).
   Log: <into>/.autorecord.log. Default --label: call.
-  --browser respects meeting mute by default (left channel silent while muted);
-  --mic-always records the mic regardless and is kept in the installed agent's args.
+  Meeting mute is respected by default (left channel silent while muted): --browser
+  reads the meeting tab's mic button, --app com.microsoft.teams2 reads Teams' mic button
+  through Accessibility (grant it to Whosaid Call Recorder; without it the mic is
+  recorded and "mute: unknown" is logged). --mic-always records the mic regardless
+  and is kept in the installed agent's args.
   --live also runs `whosaid live --once` while each call is captured (a live me/them
   transcript for the app's Live now and the whosaid_live tool); it starts with the
   capture and stops with it. Off by default. Its log: <into>/.autorecord/live.log.
@@ -1902,6 +1914,13 @@ cmd_record() {
         shift 2 ;;
       --leave) leave=1; shift ;;
       -h|--help) cmd_help; exit 0 ;;
+      --mute-state)
+        # Read-only (#224): what the app-mode mute gate sees right now. Never prompts.
+        local mbin mapp=""
+        [[ "${2:-}" == "--app" && -n "${3:-}" ]] && mapp="$3"
+        [[ -n "$mapp" ]] || { log "--mute-state needs --app A right after it (e.g. --mute-state --app com.microsoft.teams2)."; exit 2; }
+        mbin="$(ensure_record_app_helper)" || exit 1
+        exec "$mbin" --mute-state --app "$mapp" ;;
       --list-apps)
         local bin
         bin="$(ensure_record_app_helper)" || exit 1
@@ -1918,8 +1937,8 @@ cmd_record() {
       log "--watch-call only applies with --app."
       exit 2
     fi
-    if [[ -n "$into" || "$wait_call" == 1 || "$until_end" == 1 || "$no_mic" == 1 || "$browser" == 1 || -n "$idle_secs" ]]; then
-      log "--watch-call only streams call state; it cannot be combined with --into, --wait-for-call, --until-call-ends, --idle-seconds, --no-mic or --browser."
+    if [[ -n "$into" || "$wait_call" == 1 || "$until_end" == 1 || "$no_mic" == 1 || "$mic_always" == 1 || "$browser" == 1 || -n "$idle_secs" ]]; then
+      log "--watch-call only streams call state; it cannot be combined with --into, --wait-for-call, --until-call-ends, --idle-seconds, --no-mic, --mic-always or --browser."
       exit 2
     fi
     local wbin
@@ -1933,8 +1952,8 @@ cmd_record() {
     log "--browser and --app are mutually exclusive."
     exit 2
   fi
-  if [[ "$mic_always" == 1 && "$browser" != 1 ]]; then
-    log "--mic-always only applies with --browser (--app does not read meeting mute yet)."
+  if [[ "$mic_always" == 1 && "$browser" != 1 && -z "$app" ]]; then
+    log "--mic-always only applies with --app or --browser."
     exit 2
   fi
   if [[ "$mic_always" == 1 && "$no_mic" == 1 ]]; then
@@ -2020,6 +2039,7 @@ cmd_record() {
     [[ "$wait_call" == 1 ]] && call_args+=(--wait-for-call)
     [[ "$until_end" == 1 ]] && call_args+=(--until-call-ends)
     [[ -n "$idle_secs" ]] && call_args+=(--idle-seconds "$idle_secs")
+    [[ "$mic_always" == 1 ]] && call_args+=(--mic-always)
     REC_APP_STARTED=""
     record_app_audio "$app" "$out" "$no_mic" ${call_args[@]+"${call_args[@]}"}
     trap - INT

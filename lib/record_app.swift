@@ -5,8 +5,10 @@
 //
 //   record-app --list
 //   record-app --app <bundle-id|name> --out-dir DIR [--no-mic] [--max-seconds N]
-//              [--wait-for-call] [--until-call-ends] [--idle-seconds N]
+//              [--wait-for-call] [--until-call-ends] [--idle-seconds N] [--mic-always]
 //   record-app --call-state --app <bundle-id|name>
+//   record-app --mute-state --app <bundle-id>   (read-only: what the mute gate sees)
+//   record-app --selftest-mute                  (offline unit test of the mute gate)
 //
 // Writes DIR/app.wav and, unless --no-mic, DIR/mic.wav: mono 16 kHz, both on
 // the same timeline (sample 0 = the first buffer either leg delivered), padded
@@ -30,6 +32,13 @@
 // while any of its processes, the bundle ID itself or a `<bundle>.*` helper,
 // has an input (mic) stream running. Native Teams plays and records through
 // com.microsoft.teams2.modulehost, which only the helper match finds.
+//
+// Meeting mute (#224): with the mic on, a Teams capture writes the mic leg as
+// zeros while Teams' own mic button reads "Unmute ..." (see MuteWatcher). It
+// needs an Accessibility grant for the responsible app (the terminal, or
+// Whosaid Call Recorder under autorecord); without one, or for any other app,
+// the mic is recorded and `mute: unknown (...)` is logged once. --mic-always
+// skips the gate.
 
 import AppKit
 import AVFoundation
@@ -275,9 +284,302 @@ func pcmBuffer(_ sb: CMSampleBuffer) -> AVAudioPCMBuffer? {
     return st == noErr ? buf : nil
 }
 
+// ---- meeting mute (Accessibility read of the Teams mic button, #224) ----------
+//
+// While Teams shows you muted, the mic leg is written as zeros (never dropped),
+// so a muted aside does not end up in the left channel and the two legs stay on
+// one timeline. Read-only: the helper only copies AX attributes (AXDescription,
+// AXTitle, AXHelp) of the Teams window; it never presses, focuses or sets
+// anything. Every doubt records the mic: no Accessibility grant, no button, an
+// unrecognised or conflicting label, or a reading older than muteMaxAge.
+//
+// The label wording comes from the Teams client (and the browser gate in
+// lib/record_browser.py): "Mute (⌘+Shift+M)" while live, "Unmute (⌘+Shift+M)"
+// while muted. UNVERIFIED on the native client: the probe that would confirm
+// which AX attribute carries it ran without an Accessibility grant (#224).
+// `record-app --mute-state --app com.microsoft.teams2` prints what it sees.
+
+enum MuteState: String { case muted, unmuted, unknown }
+
+/// The mute state one control's label implies, or nil when it is not the
+/// meeting's own mic button. Only "Mute"/"Unmute" alone, followed by a
+/// shortcut hint "(...)" or by "mic"/"microphone" count: "Mute all",
+/// "Unmute Jane Doe" (roster entries), "Mute notifications" are not it.
+func muteLabelState(_ raw: String) -> MuteState? {
+    let s = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    for (word, state) in [("unmute", MuteState.muted), ("mute", MuteState.unmuted)] {
+        guard s.hasPrefix(word) else { continue }
+        let rest = s.dropFirst(word.count).trimmingCharacters(in: .whitespaces)
+        if rest.isEmpty || rest.hasPrefix("(") || rest == "mic" || rest == "microphone"
+            || rest.hasPrefix("mic (") || rest.hasPrefix("microphone (") {
+            return state
+        }
+        return nil
+    }
+    return nil
+}
+
+/// One state from every mic-button label found: unknown when there is none
+/// or when they disagree (a stale second window must not silence the mic).
+func combineMuteLabels(_ labels: [String]) -> MuteState {
+    let states = Set(labels.compactMap(muteLabelState))
+    return states.count == 1 ? states.first! : .unknown
+}
+
+/// A reading older than this counts as unknown, so a hung AX call or a
+/// stopped poller can never leave the mic stuck silent.
+let muteMaxAge = 1.0
+
+/// Whether this mic buffer is written as silence: only a fresh "muted"
+/// reading, and never with --mic-always.
+func shouldSilenceMic(state: MuteState, readAt: Date?, now: Date, micAlways: Bool) -> Bool {
+    guard !micAlways, state == .muted, let at = readAt else { return false }
+    let age = now.timeIntervalSince(at)
+    return age >= 0 && age <= muteMaxAge
+}
+
+/// Zero every sample in place; frameLength (and so the buffer's place on the
+/// timeline) is unchanged. Works for any PCM layout.
+func zeroSamples(_ buf: AVAudioPCMBuffer) {
+    for b in UnsafeMutableAudioBufferListPointer(buf.mutableAudioBufferList) {
+        if let p = b.mData { memset(p, 0, Int(b.mDataByteSize)) }
+    }
+}
+
+/// The gate at the .microphone branch: silences `buf` when it should.
+/// Returns whether it did.
+@discardableResult
+func gateMic(_ buf: AVAudioPCMBuffer, state: MuteState, readAt: Date?, now: Date, micAlways: Bool) -> Bool {
+    guard shouldSilenceMic(state: state, readAt: readAt, now: now, micAlways: micAlways) else { return false }
+    zeroSamples(buf)
+    return true
+}
+
+/// The log line for a mute change, in the browser recorder's format
+/// (lib/record_browser.py mute_event_line).
+func muteEventLine(_ state: MuteState, at: Date, start: Date?) -> String {
+    let f = DateFormatter()
+    f.locale = Locale(identifier: "en_US_POSIX")
+    f.dateFormat = "yyyy-MM-dd'T'HH:mm:ss.SSS"
+    let off = start.map { String(format: " (+%.1fs)", max(0, at.timeIntervalSince($0))) } ?? ""
+    let text: String
+    switch state {
+    case .muted: text = "muted: left channel silenced"
+    case .unmuted: text = "unmuted: recording the mic"
+    case .unknown: text = "mute state unknown (no mic button): recording the mic"
+    }
+    return "mic \(text) at \(f.string(from: at))\(off)"
+}
+
+let accessibilityHint = "System Settings > Privacy & Security > Accessibility: turn on your terminal app "
+    + "(whosaid record --app) or \"Whosaid Call Recorder\" (autorecord; + to add ~/Applications/Whosaid Call Recorder.app)"
+
+func axString(_ e: AXUIElement, _ name: String) -> String? {
+    var v: CFTypeRef?
+    guard AXUIElementCopyAttributeValue(e, name as CFString, &v) == .success, let v else { return nil }
+    return v as? String
+}
+
+/// Every mic-button label in the app's windows (read-only walk, bounded).
+/// The element that carried one is returned too, so the next poll can re-read
+/// just that element instead of walking the tree again.
+func findMuteLabels(pid: pid_t, maxNodes: Int = 8000) -> (labels: [String], elements: [AXUIElement]) {
+    let appEl = AXUIElementCreateApplication(pid)
+    AXUIElementSetMessagingTimeout(appEl, 0.2)  // our client-side wait, not a change to Teams
+    var wins: CFTypeRef?
+    guard AXUIElementCopyAttributeValue(appEl, kAXWindowsAttribute as CFString, &wins) == .success,
+          let windows = wins as? [AXUIElement] else { return ([], []) }
+    var labels: [String] = [], elements: [AXUIElement] = []
+    var stack = windows, seen = 0
+    while let e = stack.popLast(), seen < maxNodes {
+        seen += 1
+        if let l = elementMuteLabel(e) {
+            labels.append(l)
+            elements.append(e)
+            continue
+        }
+        var kids: CFTypeRef?
+        if AXUIElementCopyAttributeValue(e, kAXChildrenAttribute as CFString, &kids) == .success,
+           let arr = kids as? [AXUIElement] {
+            stack.append(contentsOf: arr)
+        }
+    }
+    return (labels, elements)
+}
+
+/// The first of AXDescription / AXTitle / AXHelp that reads as a mic button.
+func elementMuteLabel(_ e: AXUIElement) -> String? {
+    for a in [kAXDescriptionAttribute, kAXTitleAttribute, kAXHelpAttribute] {
+        if let s = axString(e, a), muteLabelState(s) != nil { return s }
+    }
+    return nil
+}
+
+/// Polls the Teams mic button every 250 ms on its own queue. The audio queue
+/// only reads the cached (state, readAt) under a lock, never AX.
+final class MuteWatcher {
+    let bundle: String
+    let lock = NSLock()
+    private var state = MuteState.unknown
+    private var readAt: Date?
+    private var logged: MuteState?
+    private var cached: [AXUIElement] = []
+    private var lastWalk = Date.distantPast
+    private let queue = DispatchQueue(label: "whosaid.record-app.mute", qos: .utility)
+    private var timer: DispatchSourceTimer?
+    var start: Date?
+
+    init(bundle: String) { self.bundle = bundle }
+
+    func snapshot() -> (MuteState, Date?) {
+        lock.lock(); defer { lock.unlock() }
+        return (state, readAt)
+    }
+
+    func begin(start: Date) {
+        self.start = start
+        let t = DispatchSource.makeTimerSource(queue: queue)
+        t.schedule(deadline: .now(), repeating: .milliseconds(250), leeway: .milliseconds(25))
+        t.setEventHandler { [weak self] in self?.poll() }
+        t.resume()
+        timer = t
+    }
+
+    func poll() {
+        let now = Date()
+        let st = read(now: now)
+        lock.lock()
+        state = st
+        readAt = now
+        lock.unlock()
+        if st != logged {
+            logged = st
+            log(muteEventLine(st, at: now, start: start))
+        }
+    }
+
+    private func read(now: Date) -> MuteState {
+        // Cheap path: re-read the element(s) that carried the label last time.
+        if !cached.isEmpty {
+            let labels = cached.compactMap(elementMuteLabel)
+            if labels.count == cached.count { return combineMuteLabels(labels) }
+            cached = []
+        }
+        // Full walk at most every 2 s: a call window with no mic button
+        // (lobby, call over) must not cost a tree walk every 250 ms.
+        guard now.timeIntervalSince(lastWalk) >= 2 else { return .unknown }
+        lastWalk = now
+        guard let app = NSWorkspace.shared.runningApplications.first(where: { $0.bundleIdentifier == bundle })
+        else { return .unknown }
+        let found = findMuteLabels(pid: app.processIdentifier)
+        cached = found.elements
+        return combineMuteLabels(found.labels)
+    }
+}
+
+/// Which bundles have a mic button the watcher knows how to read.
+func readsMute(_ bundle: String) -> Bool { bundle == "com.microsoft.teams2" }
+
+/// Asks macOS to show the Accessibility prompt at most once per responsible
+/// app (the terminal, or Whosaid Call Recorder under autorecord): a marker in
+/// ~/.cache/whosaid keyed on __CFBundleIdentifier, which `open` and terminals
+/// set and children inherit. WHOSAID_AX_PROMPT=0 turns it off.
+func promptAccessibilityOnce() {
+    let env = ProcessInfo.processInfo.environment
+    if env["WHOSAID_AX_PROMPT"] == "0" { return }
+    let who = (env["__CFBundleIdentifier"] ?? "unknown").replacingOccurrences(of: "/", with: "_")
+    let dir = URL(fileURLWithPath: env["XDG_CACHE_HOME"] ?? (NSHomeDirectory() + "/.cache")).appendingPathComponent("whosaid")
+    let marker = dir.appendingPathComponent("ax-prompted-\(who)")
+    if FileManager.default.fileExists(atPath: marker.path) { return }
+    try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    FileManager.default.createFile(atPath: marker.path, contents: Data())
+    let opts = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
+    _ = AXIsProcessTrustedWithOptions(opts)
+}
+
+/// `--selftest-mute`: the label matcher, the gate decision and the zero-fill
+/// through a real Leg. No AX, no capture, no prompt. Exit 0 = all pass.
+func runMuteSelftest() -> Int32 {
+    var failed = 0, passed = 0
+    func check(_ ok: Bool, _ what: String) {
+        if ok { passed += 1 } else { failed += 1; print("FAIL: \(what)") }
+    }
+    let labels: [(String, MuteState?)] = [
+        ("Mute (⌘+Shift+M)", .unmuted), ("Unmute (⌘+Shift+M)", .muted), ("Unmute", .muted), ("Mute", .unmuted),
+        ("  unmute  ", .muted), ("Mute mic", .unmuted), ("Unmute microphone (Ctrl+Shift+M)", .muted),
+        ("Mute all", nil), ("Unmute Jane Doe", nil), ("Mute notifications", nil), ("Muted", nil),
+        ("Stummschalten (⌘+Umschalt+M)", nil), ("Désactiver le micro", nil), ("", nil), ("Camera", nil),
+    ]
+    for (l, want) in labels { check(muteLabelState(l) == want, "label \(l.debugDescription) -> \(String(describing: want))") }
+    check(combineMuteLabels(["Unmute (⌘+Shift+M)"]) == .muted, "one Unmute label = muted")
+    check(combineMuteLabels(["Mute (⌘+Shift+M)", "Unmute Jane Doe"]) == .unmuted, "roster entries are ignored")
+    check(combineMuteLabels([]) == .unknown, "no button = unknown")
+    check(combineMuteLabels(["Stummschalten"]) == .unknown, "localized label = unknown")
+    check(combineMuteLabels(["Mute", "Unmute"]) == .unknown, "conflicting buttons = unknown")
+    let now = Date()
+    check(shouldSilenceMic(state: .muted, readAt: now, now: now, micAlways: false), "fresh muted silences")
+    check(!shouldSilenceMic(state: .muted, readAt: now, now: now, micAlways: true), "--mic-always never silences")
+    check(!shouldSilenceMic(state: .unknown, readAt: now, now: now, micAlways: false), "unknown records")
+    check(!shouldSilenceMic(state: .unmuted, readAt: now, now: now, micAlways: false), "unmuted records")
+    check(!shouldSilenceMic(state: .muted, readAt: nil, now: now, micAlways: false), "never read records")
+    check(!shouldSilenceMic(state: .muted, readAt: now.addingTimeInterval(-1.5), now: now, micAlways: false),
+          "stale muted (1.5 s) records")
+    check(muteEventLine(.muted, at: now, start: now.addingTimeInterval(-12.34)).hasPrefix("mic muted: left channel silenced at ")
+          && muteEventLine(.muted, at: now, start: now.addingTimeInterval(-12.34)).hasSuffix(" (+12.3s)"), "muted log line format")
+    check(muteEventLine(.unmuted, at: now, start: nil).hasPrefix("mic unmuted: recording the mic at "), "unmuted log line")
+    check(muteEventLine(.unknown, at: now, start: nil).contains("mute state unknown"), "unknown log line")
+
+    // Gate through a real Leg: 0.1 s tone, 0.1 s while muted, 0.1 s tone, at
+    // consecutive offsets. The muted block must be zeros of the same length at
+    // the same place; with --mic-always it must stay the tone.
+    for micAlways in [false, true] {
+        let url = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("whosaid-mute-selftest-\(getpid())-\(micAlways).wav")
+        defer { try? FileManager.default.removeItem(at: url) }
+        guard let leg = try? Leg(name: "mic", url: url) else { check(false, "open test leg"); continue }
+        let n = 1600
+        func tone() -> AVAudioPCMBuffer {
+            let b = AVAudioPCMBuffer(pcmFormat: leg.target, frameCapacity: AVAudioFrameCount(n))!
+            b.frameLength = AVAudioFrameCount(n)
+            for i in 0..<n { b.floatChannelData![0][i] = 0.5 * Float(sin(Double(i) * 0.3)) + 0.25 }
+            return b
+        }
+        let states: [MuteState] = [.unmuted, .muted, .unknown]
+        var silenced: [Bool] = []
+        for (k, st) in states.enumerated() {
+            let b = tone()
+            silenced.append(gateMic(b, state: st, readAt: now, now: now, micAlways: micAlways))
+            check(Int(b.frameLength) == n, "gate keeps frameLength (mic-always \(micAlways), \(st))")
+            leg.append(b, at: Int64(k * n))
+        }
+        check(silenced == [false, !micAlways, false], "gate decisions \(silenced) (mic-always \(micAlways))")
+        check(leg.written == Int64(3 * n) && leg.filled == 0 && leg.dropped == 0,
+              "frame count preserved: written \(leg.written), filled \(leg.filled), dropped \(leg.dropped)")
+        leg.file.close()
+        guard let rf = try? AVAudioFile(forReading: url),
+              let rb = AVAudioPCMBuffer(pcmFormat: rf.processingFormat, frameCapacity: AVAudioFrameCount(rf.length)),
+              (try? rf.read(into: rb)) != nil, let ch = rb.floatChannelData?[0] else {
+            check(false, "read back test leg"); continue
+        }
+        check(Int(rb.frameLength) == 3 * n, "file holds \(rb.frameLength) frames, want \(3 * n)")
+        let block = { (k: Int) -> Float in (k * n..<(k + 1) * n).map { abs(ch[$0]) }.max() ?? 0 }
+        check(block(0) > 0.1 && block(2) > 0.1, "unmuted and unknown blocks keep the tone")
+        if micAlways {
+            check(block(1) > 0.1, "--mic-always keeps the muted block")
+        } else {
+            check(block(1) == 0, "muted block is all zeros (peak \(block(1))) at offset \(n)")
+        }
+    }
+    print("mute selftest: \(passed) passed, \(failed) failed")
+    return failed == 0 ? 0 : 1
+}
+
 final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
     let app: Leg
     let mic: Leg?
+    /// Reads Teams' mic button; nil with --mic-always, --no-mic, another app,
+    /// or no Accessibility grant (the mic is then always recorded).
+    var muteWatcher: MuteWatcher?
+    var micAlways = false
     /// All sample callbacks land here, serially, so buffers stay in capture
     /// order (a concurrent queue reorders ~10 ms chunks under load).
     let queue = DispatchQueue(label: "whosaid.record-app.samples", qos: .userInitiated)
@@ -311,6 +613,11 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
         let pts = CMSampleBufferGetPresentationTimeStamp(sb).seconds
         if t0 == nil { t0 = pts }
         let offset = Int64(((pts - t0!) * sampleRate).rounded())
+        if leg === mic, let w = muteWatcher {
+            // Zeros, not a drop: the buffer keeps its frames and its offset.
+            let (st, at) = w.snapshot()
+            gateMic(buf, state: st, readAt: at, now: Date(), micAlways: micAlways)
+        }
         leg.append(buf, at: max(0, offset))
     }
 
@@ -431,11 +738,15 @@ var untilCallEnds = false
 var idleSeconds = 30.0
 var watchCall = false
 var watchInterval = 1.0
+var micAlways = false
+var muteStateOnly = false
+var selftestMute = false
 
 func usage() -> Never {
     log("usage: record-app --list | --call-state --app <bundle-id|name> | --app <bundle-id|name> --out-dir DIR"
         + " [--no-mic] [--max-seconds N] [--wait-for-call] [--until-call-ends] [--idle-seconds N]"
-        + " | --watch-call --app <bundle-id|name> [--interval S]")
+        + " [--mic-always] | --watch-call --app <bundle-id|name> [--interval S]"
+        + " | --mute-state --app <bundle-id> | --selftest-mute")
     terminate(2)
 }
 
@@ -451,6 +762,9 @@ while !args.isEmpty {
     case "--app": appQuery = nextValue()
     case "--out-dir": outDir = nextValue()
     case "--no-mic": withMic = false
+    case "--mic-always": micAlways = true
+    case "--mute-state": muteStateOnly = true
+    case "--selftest-mute": selftestMute = true
     case "--max-seconds":
         guard !args.isEmpty, let v = Double(args.removeFirst()), v > 0 else { usage() }
         maxSeconds = v
@@ -466,6 +780,27 @@ while !args.isEmpty {
         idleSeconds = v
     default: usage()
     }
+}
+
+if selftestMute { terminate(runMuteSelftest()) }
+
+// Read-only: prints whether this process may read AX, and the mic-button
+// labels and state the gate would use for a running app. Never prompts.
+if muteStateOnly {
+    guard let q = appQuery else { usage() }
+    let trusted = AXIsProcessTrusted()
+    guard let a = NSWorkspace.shared.runningApplications.first(where: {
+        $0.bundleIdentifier == q || ($0.localizedName ?? "").lowercased() == q.lowercased()
+    }) else {
+        print("trusted=\(trusted)\tapp=\(q)\trunning=false\tstate=unknown")
+        terminate(0)
+    }
+    let found: (labels: [String], elements: [AXUIElement]) = trusted ? findMuteLabels(pid: a.processIdentifier) : ([], [])
+    let state = trusted ? combineMuteLabels(found.labels) : .unknown
+    print("trusted=\(trusted)\tapp=\(a.bundleIdentifier ?? q)\trunning=true\tstate=\(state.rawValue)\tlabels="
+          + found.labels.map { $0.debugDescription }.joined(separator: ","))
+    if !trusted { log("no Accessibility grant: " + accessibilityHint) }
+    terminate(0)
 }
 
 // Ignore default SIGINT/SIGTERM handling; these dispatch sources take over.
@@ -633,6 +968,22 @@ Task {
     }
     startupAfterWait.cancel()
     log("capturing \(target.applicationName) (\(target.bundleIdentifier))\(withMic ? " + mic" : "") — Ctrl-C to stop.")
+    if withMic {
+        rec.micAlways = micAlways
+        if micAlways {
+            log("mic always on (--mic-always): meeting mute is ignored")
+        } else if !readsMute(target.bundleIdentifier) {
+            log("mute: unknown (only the Teams mic button is read; \(target.applicationName)'s mute is not); recording the mic")
+        } else if !AXIsProcessTrusted() {
+            promptAccessibilityOnce()
+            log("mute: unknown (no Accessibility grant; \(accessibilityHint)); recording the mic")
+        } else {
+            log("mic follows meeting mute: silenced while muted")
+            let w = MuteWatcher(bundle: target.bundleIdentifier)
+            rec.muteWatcher = w
+            w.begin(start: Date())
+        }
+    }
 
     if untilCallEnds {
         log("auto-stops once \(target.applicationName) has not used the mic for \(Int(idleSeconds))s (the call ended).")

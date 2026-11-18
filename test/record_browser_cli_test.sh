@@ -73,8 +73,12 @@ assert_eq "$RC" 2 "'record --leave' without --browser exits 2"
 run_w record --no-mic
 assert_eq "$RC" 2 "'record --no-mic' alone still exits 2"
 run_w record --mic-always
-assert_eq "$RC" 2 "'record --mic-always' without --browser exits 2"
-assert_contains "$OUT" "--mic-always only applies with --browser" "explains --mic-always"
+assert_eq "$RC" 2 "'record --mic-always' without --browser or --app exits 2"
+assert_contains "$OUT" "--mic-always only applies with --app or --browser" "explains --mic-always"
+case "$OUT" in *"does not read meeting mute"*) fail "old browser-only message is back: $OUT" ;; esac
+run_w record --app X --mic-always --no-mic
+assert_eq "$RC" 2 "'record --app X --mic-always --no-mic' exits 2"
+assert_contains "$OUT" "conflict" "explains --no-mic/--mic-always with --app"
 run_w record --browser --mic-always --no-mic
 assert_eq "$RC" 2 "'record --browser --mic-always --no-mic' exits 2"
 assert_contains "$OUT" "conflict" "explains --no-mic/--mic-always"

@@ -667,6 +667,9 @@ Next: allow the launcher to record.
   1. System Settings > Privacy & Security > Screen & System Audio Recording:
      turn on "{APP_NAME}" (+ to add {app} if it is missing).
   2. Allow the microphone prompt the first time a call starts.
+  3. Teams (com.microsoft.teams2) only, to keep muted asides out of the recording:
+     Privacy & Security > Accessibility: turn on "{APP_NAME}" (+ to add {app}).
+     Without it the mic is recorded and the log says "mute: unknown".
 Until then each attempt logs a permission line and retries (backing off to 5 min).
 No admin rights for that toggle? Use: whosaid autorecord install --browser
 Log: tail -f {into / LOG_NAME}""")
@@ -993,8 +996,9 @@ def add_mode_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--label", default="call")
     p.add_argument("--no-mic", action="store_true")
     p.add_argument("--mic-always", action="store_true",
-                   help="--browser: record the mic even while the meeting shows it muted "
-                        "(default: the left channel is silent while muted)")
+                   help="record the mic even while the meeting shows it muted "
+                        "(default: the left channel is silent while muted; --app reads "
+                        "Teams' mic button through Accessibility)")
     p.add_argument("--live", action="store_true",
                    help="also run `whosaid live` during each capture (a live me/them transcript)")
     p.add_argument("--whosaid", default=default_whosaid())
@@ -1046,8 +1050,6 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
         p.error("--idle-seconds must be > 0")
     if a.cmd in ("run", "install", "setup") and a.browser is False and a.target:
         p.error("--target only applies with --browser")
-    if a.cmd in ("run", "install", "setup") and a.mic_always and not a.browser:
-        p.error("--mic-always only applies with --browser (app mode does not read mute yet)")
     if a.cmd in ("run", "install", "setup") and a.mic_always and a.no_mic:
         p.error("--no-mic and --mic-always conflict")
     return a
