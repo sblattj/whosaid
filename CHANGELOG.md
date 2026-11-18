@@ -6,6 +6,8 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ## [Unreleased]
 
+## [1.44.0] - 2026-11-18
+
 ### Changed
 - `record --browser` (and `autorecord --browser`) now respects meeting mute by default. The mic goes through a gain node that is set to 0 while the meeting's mic button reads muted (Teams web `#microphone-button` / `data-tid="microphone-button"` / `data-tid="toggle-mute"`: `aria-label` "Unmute ..." or `data-state="mic-off"`), polled every 250 ms plus a DOM observer. Muted frames are zeroed, not dropped, so the left/right timeline stays aligned. Each mute change is logged (`mic muted: left channel silenced at <time> (+<offset>s)`). If the button is missing or unreadable, the mic is recorded (fail-safe).
 - `record --app com.microsoft.teams2` (and `autorecord --app`) now respects Teams mute too (#224). The helper reads the native Teams mic button through macOS Accessibility every 250 ms, off the audio thread (`AXDescription`/`AXTitle`/`AXHelp` "Unmute ..." = muted, "Mute ..." = live; "Mute all" and roster entries are ignored), and writes the mic leg as zeros of the same length at the same offset while muted. Mute changes are logged in the browser format and reach `.autorecord.log`. Fail-safe: no Accessibility grant, no button, an unknown or localized label, conflicting buttons, or a reading older than 1 s record the mic; without the grant it logs `mute: unknown (no Accessibility grant; ...)` once and asks macOS for the prompt once per app (`WHOSAID_AX_PROMPT=0` turns that off). Other apps are not read (`mute: unknown`). `autorecord install --app` lists the Accessibility toggle for "Whosaid Call Recorder" as step 3; the launcher is unchanged, so its Screen Recording grant stays.
