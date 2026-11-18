@@ -1327,6 +1327,46 @@ class ThreadIdTest(DraftsBase):
         argv = drafts.stage([did], dry_run=True)["would_run"][0]["argv"]
         self.assertEqual(argv[argv.index("--thread-id") + 1], "19:grp@thread.v2")
 
+    def cache(self, names, rosters):
+        import teams_cache
+        return [patch.dict(os.environ, {"WHOSAID_TEAMS_CACHE": ""}),
+                patch.object(teams_cache, "_leveldb", return_value=self.root),
+                patch.object(teams_cache, "load", return_value={"rosters": rosters}),
+                patch.object(teams_cache, "name_chats", return_value=names)]
+
+    def test_new_chat_group_draft_passes_the_member_set_thread_id(self):
+        # #223: a new-chat draft to a group that already exists gets that group's id, so the stager opens it
+        did = self.ready(to="Bob Brown, Alice Adams", new_chat=True)
+        names = {"19:grp@thread.v2": "19:grp@thread.v2", "19:dm@unq.gbl.spaces": "Bob Brown"}
+        rosters = {"19:grp@thread.v2": {"members": ["Alice Adams", "Bob Brown"]},
+                   "19:dm@unq.gbl.spaces": {"members": ["Bob Brown"], "one_on_one": True}}
+        ps = self.cache(names, rosters)
+        for p in ps:
+            p.start()
+        try:
+            argv = drafts.stage([did], dry_run=True)["would_run"][0]["argv"]
+        finally:
+            for p in ps:
+                p.stop()
+        self.assertIn("--new-chat", argv)
+        self.assertEqual(argv[argv.index("--thread-id") + 1], "19:grp@thread.v2")
+
+    def test_new_chat_one_on_one_draft_passes_no_thread_id(self):
+        # a 1:1 new chat keeps the New message path (Teams itself reuses the 1:1): no lookup, no id
+        did = self.ready(to="Bob Brown", new_chat=True)
+        names = {"19:dm@unq.gbl.spaces": "Bob Brown"}
+        rosters = {"19:dm@unq.gbl.spaces": {"members": ["Bob Brown"], "one_on_one": True}}
+        ps = self.cache(names, rosters)
+        for p in ps:
+            p.start()
+        try:
+            argv = drafts.stage([did], dry_run=True)["would_run"][0]["argv"]
+        finally:
+            for p in ps:
+                p.stop()
+        self.assertIn("--new-chat", argv)
+        self.assertNotIn("--thread-id", argv)
+
     def test_bad_thread_id_is_refused(self):
         for bad in ("Ann and Bo", "19:a b@thread.v2", "no-colon"):
             with self.assertRaises(drafts.DraftsError):

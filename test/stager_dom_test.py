@@ -351,5 +351,74 @@ class OpenChatAgainstFixtureDom(unittest.TestCase):
         self.assertEqual(json.loads(r.stdout.strip().splitlines()[-1])["chat"], "Chat | Ann Lee, Bo Chen | Microsoft Teams")
         self.assertFalse(st["sent"])
 
+@unittest.skipIf(WHY_NOT and not os.environ.get("WHOSAID_REQUIRE_DOM_TEST"), f"no DOM engine: {WHY_NOT}")
+class SeeMoreAgainstFixtureDom(unittest.TestCase):
+    """#223: a chat Teams keeps under a collapsed "See more" in the rail. A new-chat draft to its members opens
+    it instead of pressing New message, and a plain stage finds it too."""
+
+    def setUp(self):
+        if WHY_NOT:
+            self.fail(f"WHOSAID_REQUIRE_DOM_TEST is set but {WHY_NOT}")
+        self.tmp = tempfile.TemporaryDirectory(prefix="stager-dom-")
+        d = Path(self.tmp.name)
+        self.md, self.lockd = d / "draft.md", d / "lock"
+        self.md.write_text("the staging hosts are in [the runbook](https://example.com/rb)\n")
+        self.lockd.mkdir()
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def stage(self, mode, chat, *extra):
+        f = DomTeams(mode=mode)
+        env = {**os.environ, "WHOSAID_STAGER_TIME_SCALE": "0.02", "TEAMS_OUTBOX_LOCK": str(self.lockd)}
+        try:
+            r = subprocess.run([sys.executable, SCRIPT, "--chat", chat, "--md", str(self.md), "--cdp-port",
+                                str(f.port), *extra], capture_output=True, text=True, env=env, timeout=120)
+            st = f.state()
+        finally:
+            f.close()
+        return r, st
+
+    def test_new_chat_draft_opens_the_group_under_a_collapsed_see_more(self):
+        r, st = self.stage("seemore=1", "Ann Lee, Bo Chen", "--new-chat")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertFalse(st["new_message"], "pressed New message although the group chat exists")
+        self.assertEqual(st["title"], "Chat | Ann Lee, Bo Chen | Microsoft Teams")
+        self.assertIn('href="https://example.com/rb"', st["compose"])
+        self.assertTrue(st["expanded"], "the row it opened stays on screen")
+        self.assertFalse(st["sent"])
+
+    def test_new_chat_draft_opens_the_group_in_a_nested_see_more_group(self):
+        r, st = self.stage("seemore=nested", "Bo Chen, Ann Lee", "--new-chat")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertFalse(st["new_message"])
+        self.assertEqual(st["title"], "Chat | Ann Lee, Bo Chen | Microsoft Teams")
+        self.assertIn('href="https://example.com/rb"', st["compose"])
+        self.assertFalse(st["sent"])
+
+    def test_plain_stage_finds_a_row_under_a_collapsed_see_more(self):
+        r, st = self.stage("seemore=1", "Cy Dee")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(st["title"], "Chat | Cy Dee | Microsoft Teams")
+        self.assertIn('href="https://example.com/rb"', st["compose"])
+        self.assertFalse(st["sent"])
+
+    def test_plain_stage_by_thread_id_under_a_nested_see_more_is_not_ambiguous(self):
+        # the See more row has no tree value of its own: it must not borrow its first child's id
+        r, st = self.stage("seemore=nested", "Ann Lee, Bo Chen", "--thread-id", "19:grp@thread.v2")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(st["title"], "Chat | Ann Lee, Bo Chen | Microsoft Teams")
+        self.assertFalse(st["sent"])
+
+    def test_no_match_under_see_more_collapses_it_back_before_new_message(self):
+        # control: nobody has a chat with Ann Lee and Dee Dee; the rail goes back to how it was, then New message
+        r, st = self.stage("seemore=1", "Ann Lee, Dee Dee", "--new-chat")
+        self.assertTrue(st["new_message"], r.stderr)
+        self.assertFalse(st["expanded"], "left the See more section expanded")
+        self.assertEqual(st.get("more_clicks"), 2)
+        self.assertEqual(st["compose"], "", "typed into a compose box before a chat was chosen")
+        self.assertFalse(st["sent"])
+
+
 if __name__ == "__main__":
     unittest.main()

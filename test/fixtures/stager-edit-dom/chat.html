@@ -33,6 +33,8 @@
 <div role="toolbar" id="hover" data-rect="0,0,0,0">
   <button aria-label="Edit" id="hover-edit" data-rect="0,0,0,0">Edit</button>
 </div>
+<button aria-label="New message" id="new-message" data-rect="210,0,30,30"></button>
+<input data-tid="people-picker-search" aria-label="To" id="to-picker" data-rect="0,0,0,0">
 <div id="compose" data-rect="200,700,800,100">
   <div data-tid="ckeditor" contenteditable="true" role="textbox" data-rect="210,710,600,40"></div>
   <button data-tid="sendMessageCommands-FilePicker" aria-label="Attach files" data-rect="820,760,30,30"></button>
@@ -40,7 +42,7 @@
 </div>
 <script>
 (() => {
-  const fx = window.__fx = {saved: false, sent: false, editing: null, clicks: [], hovered: null};
+  const fx = window.__fx = {saved: false, sent: false, editing: null, clicks: [], hovered: null, new_message: false};
   const items = () => [...document.querySelectorAll('[data-tid="message-pane-body"] [data-tid="chat-pane-item"]')];
   const rect = (el, r) => el.setAttribute("data-rect", r.join(","));
   if (new URLSearchParams(location.search).get("later") !== "1") document.getElementById("later").remove();
@@ -73,12 +75,58 @@
         `OneGQL_SystemDefinedConversationFolder|t0~u0~RecentChats/OneGQL_${kind}|${t.getAttribute("data-fui-tree-item-value")}`);
     });
   }
-  document.querySelectorAll('[role=treeitem]').forEach(t => t.addEventListener("click", () => {
-    if (q.get("stray") === "1") return;
+  const wire = t => t.addEventListener("click", e => {
+    if (q.get("stray") === "1" || e.target.closest('[role=treeitem]') !== t) return;
     send.setAttribute("data-track-thread-id", t.getAttribute("data-fui-tree-item-value").split("|").pop());
     const title = () => { document.title = `Chat | ${t.getAttribute("data-title") || t.textContent.trim()} | Microsoft Teams`; };
     if (q.get("lag") === "1") setTimeout(title, 150); else title();
-  }));
+  });
+  document.querySelectorAll('[role=treeitem]').forEach(wire);
+  // ?seemore=1 (#223): older chats sit under a collapsed "See more" row at the end of the rail and are not in
+  // the DOM until it is clicked; then they render below it and it reads "See less" (a click takes them out
+  // again). ?seemore=nested: the "See more" treeitem (aria-expanded=false, no tree value of its own) holds
+  // them in a role=group, rendered but zero-sized until it expands. fx.expanded says what the rail shows now.
+  const hiddenRows = [["Ann and Bo Chen", "19:grp@thread.v2", "Ann Lee, Bo Chen"], ["Cy Dee", "19:cy@thread.v2", ""]];
+  const row = ([name, id, title], i, shown) => {
+    const r = document.createElement("div");
+    r.setAttribute("role", "treeitem"); r.setAttribute("data-fui-tree-item-value", id);
+    if (title) r.setAttribute("data-title", title);
+    r.setAttribute("data-rect", shown ? `0,${160 + 40 * i},200,40` : "0,0,0,0");
+    r.textContent = name; wire(r); return r;
+  };
+  const sm = q.get("seemore");
+  if (sm) {
+    const tree = document.querySelector('[role=tree]');
+    const more = document.createElement("div");
+    more.setAttribute("role", "treeitem"); more.setAttribute("data-rect", "0,120,200,40"); more.id = "see-more";
+    fx.expanded = false;
+    if (sm === "nested") {
+      more.setAttribute("aria-expanded", "false");
+      more.innerHTML = '<div class="label">See more</div><div role="group"></div>';
+      const g = more.querySelector('[role=group]');
+      hiddenRows.forEach((h, i) => g.appendChild(row(h, i, false)));
+      more.addEventListener("click", e => {
+        if (e.target.closest('[role=treeitem]') !== more) return;
+        fx.expanded = !fx.expanded; fx.more_clicks = (fx.more_clicks || 0) + 1;
+        more.setAttribute("aria-expanded", String(fx.expanded));
+        [...g.children].forEach((r, i) => r.setAttribute("data-rect", fx.expanded ? `0,${160 + 40 * i},200,40` : "0,0,0,0"));
+      });
+    } else {
+      more.textContent = "See more";
+      more.addEventListener("click", () => {
+        fx.expanded = !fx.expanded; fx.more_clicks = (fx.more_clicks || 0) + 1;
+        more.textContent = fx.expanded ? "See less" : "See more";
+        if (fx.expanded) hiddenRows.forEach((h, i) => tree.appendChild(row(h, i, true)));
+        else tree.querySelectorAll('[data-fui-tree-item-value="19:grp@thread.v2"],[data-fui-tree-item-value="19:cy@thread.v2"]').forEach(r => r.remove());
+      });
+    }
+    tree.appendChild(more);
+  }
+  // New message (#223 tests watch it): pressing it opens the To picker; fx.new_message says it was pressed
+  document.getElementById("new-message").addEventListener("click", () => {
+    fx.new_message = true;
+    document.getElementById("to-picker").setAttribute("data-rect", "250,40,300,30");
+  });
   // the one floating toolbar follows the pointer: it sits on the top edge of the item last hovered
   document.addEventListener("mouseover", e => {
     const it = e.target.closest && e.target.closest('[data-tid="chat-pane-item"]');

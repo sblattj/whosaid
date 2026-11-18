@@ -487,7 +487,7 @@ class FakeTeams:
             alts = {a.lower() for a in args.get("alts") or [args["name"]]}
             any_ = [i for i, n in enumerate(self.rail) if n.lower() in alts]
             exact = [i for i in any_ if self.rail[i].lower() == args["name"].lower()]
-            idx = by_id or exact or any_
+            idx = by_id or (any_ if args.get("all") else exact or any_)  # all: every same-member row (#223)
             hits = [{"x": self.rail_xy(i)[0], "y": self.rail_xy(i)[1], "name": self.rail[i]} for i in idx]
             return {"total": len(self.rail), "matches": hits}
         if name == "title":
@@ -1233,6 +1233,128 @@ class EndToEnd(unittest.TestCase):
         r = self.run_stager(f, "--new-chat", chat="Ann Lee, Bob Ray")
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(f.to_chips, ["Ann Lee", "Bob Ray"])
+        f.never_sent(self)
+
+    # ---- #223: a new-chat draft to a group opens the existing chat with the same members ----
+    def group_title(self, f, row, title):
+        """Clicking ROW opens a window titled TITLE (Teams lists the members there, not the rail name)."""
+        orig = f.click
+
+        def click(x, y):
+            orig(x, y)
+            if f.chat == row:
+                f.title = title
+        f.click = click
+
+    def assert_no_new_message(self, f):
+        self.assertNotIn(f.NEWCHAT_XY, f.clicks, "pressed New message although the chat exists")
+        self.assertNotIn("people_picker", f.ops)
+        self.assertEqual(f.to_chips, [])
+
+    def test_new_chat_group_in_the_rail_opens_it(self):
+        f = self.fake(rail=["Zed", "Alice and Bob Brown"], people=["Alice Adams", "Bob Brown"],
+                      titles={"Alice and Bob Brown": "Chat | Alice Adams, Bob Brown"})
+        r = self.run_stager(f, "--new-chat", chat="Alice Adams, Bob Brown")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(f.chat, "Alice and Bob Brown")
+        self.assert_no_new_message(f)
+        self.assertTrue(f.compose.startswith("Hi **Ann**"))
+        out = json.loads(r.stdout.strip().splitlines()[-1])
+        self.assertEqual(out["chat"], "Chat | Alice Adams, Bob Brown")
+        self.assertIs(out.get("existing_chat"), True)
+        f.never_sent(self)
+
+    def test_new_chat_group_off_the_rail_found_by_member_search_opens_it(self):
+        f = self.fake(rail=["Zed"], people=["Alice Adams", "Bob Brown"], search=["Alice Adams", "Bob Brown"],
+                      search_groups={"Alice and Bob Brown": ["Alice Adams", "Bob Brown"]})
+        self.group_title(f, "Alice and Bob Brown", "Chat | Alice Adams, Bob Brown")
+        r = self.run_stager(f, "--new-chat", chat="Alice Adams, Bob Brown")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(f.chat, "Alice and Bob Brown")
+        self.assert_no_new_message(f)
+        self.assertIn("search_find", f.ops)
+        self.assertTrue(f.compose.startswith("Hi **Ann**"))
+        f.never_sent(self)
+
+    def test_new_chat_three_people_with_and_found_by_member_search(self):
+        # the issue's own form: "A, B and C"
+        f = self.fake(rail=["Zed"], people=["Alice Adams", "Bob Brown", "Carol Cole"],
+                      search_groups={"Alice, Bob and Carol": ["Alice Adams", "Bob Brown", "Carol Cole"]})
+        self.group_title(f, "Alice, Bob and Carol", "Chat | Alice Adams, Bob Brown, Carol Cole")
+        r = self.run_stager(f, "--new-chat", chat="Alice Adams, Bob Brown and Carol Cole")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(f.chat, "Alice, Bob and Carol")
+        self.assert_no_new_message(f)
+        f.never_sent(self)
+
+    def test_new_chat_two_chats_with_the_same_members_is_ambiguous(self):
+        f = self.fake(rail=["Alice and Bob Brown", "Zed", "Bob Brown and Alice"], people=["Alice Adams", "Bob Brown"])
+        r = self.run_stager(f, "--new-chat", chat="Alice Adams, Bob Brown")
+        self.assertEqual(r.returncode, 1, r.stderr)
+        self.assertIn("ambiguous: 2 chats", r.stderr)
+        self.assert_no_new_message(f)
+        self.assertNotIn("paste", f.ops)
+        self.assertEqual(f.compose, "")
+        f.never_sent(self)
+
+    def test_new_chat_exact_name_does_not_beat_another_chat_with_the_same_members(self):
+        # open_chat prefers the row named exactly; a new-chat lookup counts every same-member chat
+        f = self.fake(rail=["Alice Adams, Bob Brown", "Alice and Bob Brown"], people=["Alice Adams", "Bob Brown"])
+        r = self.run_stager(f, "--new-chat", chat="Alice Adams, Bob Brown")
+        self.assertEqual(r.returncode, 1, r.stderr)
+        self.assertIn("ambiguous: 2 chats", r.stderr)
+        self.assert_no_new_message(f)
+        f.never_sent(self)
+
+    def test_new_chat_two_chats_with_the_same_members_in_search_is_ambiguous(self):
+        f = self.fake(rail=["Zed"], people=["Alice Adams", "Bob Brown"],
+                      search_groups={"Alice and Bob Brown": ["Alice Adams", "Bob Brown"],
+                                     "Bob Brown and Alice": ["Alice Adams", "Bob Brown"]})
+        r = self.run_stager(f, "--new-chat", chat="Alice Adams, Bob Brown")
+        self.assertEqual(r.returncode, 1, r.stderr)
+        self.assertIn("ambiguous: 2 chats", r.stderr)
+        self.assert_no_new_message(f)
+        self.assertNotIn("paste", f.ops)
+        f.never_sent(self)
+
+    def test_new_chat_with_no_existing_chat_starts_one_as_before(self):
+        # control: nothing in the rail or search has these members, so New message and the To picker
+        f = self.fake(rail=["Zed", "Alice Adams", "Alice and Cy Dee"], people=["Alice Adams", "Bob Brown"],
+                      search=["Alice Adams", "Bob Brown"],
+                      search_groups={"Alice, Bob and Cy": ["Alice Adams", "Bob Brown", "Cy Dee"]})
+        r = self.run_stager(f, "--new-chat", chat="Alice Adams, Bob Brown")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn(f.NEWCHAT_XY, f.clicks)
+        self.assertEqual(f.to_chips, ["Alice Adams", "Bob Brown"])
+        self.assertEqual(f.typed, "", "the search box is left empty after the lookup")
+        self.assertTrue(f.compose.startswith("Hi **Ann**"))
+        self.assertNotIn("existing_chat", json.loads(r.stdout.strip().splitlines()[-1]))
+        f.never_sent(self)
+
+    def test_new_chat_three_people_with_and_start_one_with_each_in_the_to_picker(self):
+        f = self.fake(rail=["Zed"], people=["Alice Adams", "Bob Brown", "Carol Cole"])
+        r = self.run_stager(f, "--new-chat", chat="Alice Adams, Bob Brown and Carol Cole")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(f.to_chips, ["Alice Adams", "Bob Brown", "Carol Cole"])
+        f.never_sent(self)
+
+    def test_new_chat_group_found_by_its_thread_id_under_a_custom_title(self):
+        f = self.fake(rail=["Zed", "Launch crew"], people=["Alice Adams", "Bob Brown"],
+                      thread_ids={"Launch crew": "19:crew@thread.v2"})
+        r = self.run_stager(f, "--new-chat", "--thread-id", "19:crew@thread.v2", chat="Alice Adams, Bob Brown")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(f.chat, "Launch crew")
+        self.assert_no_new_message(f)
+        out = json.loads(r.stdout.strip().splitlines()[-1])
+        self.assertEqual(out["thread_id"], "19:crew@thread.v2")
+        f.never_sent(self)
+
+    def test_new_chat_with_a_thread_id_not_found_starts_one_without_claiming_the_id(self):
+        f = self.fake(rail=["Zed"], people=["Alice Adams", "Bob Brown"])
+        r = self.run_stager(f, "--new-chat", "--thread-id", "19:gone@thread.v2", chat="Alice Adams, Bob Brown")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(f.to_chips, ["Alice Adams", "Bob Brown"])
+        self.assertNotIn("thread_id", json.loads(r.stdout.strip().splitlines()[-1]))
         f.never_sent(self)
 
     def test_one_to_one_refuses_a_group_window_that_lists_the_person(self):
