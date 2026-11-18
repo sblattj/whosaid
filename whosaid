@@ -1845,6 +1845,7 @@ record_app_audio() {
       muted_frames="$(sed -n 's/^silenced_frames=\([0-9][0-9]*\)$/\1/p' "$tmpdir/mic.muted")"
       total_frames="$(sed -n 's/^total_frames=\([0-9][0-9]*\)$/\1/p' "$tmpdir/mic.muted")"
       muted_frames="${muted_frames:-0}"; total_frames="${total_frames:-0}"
+      (( muted_frames > total_frames )) && muted_frames="$total_frames"
     fi
     if [[ -z "$mic_db" ]] || awk -v m="$mic_db" 'BEGIN{exit !((m+0) <= -85)}'; then
       if [[ "$total_frames" -gt 0 ]] && (( muted_frames * 10 >= total_frames * 9 )); then

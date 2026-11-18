@@ -828,9 +828,20 @@ func runMuteSelftest() -> Int32 {
             rec.queue.sync { rec.deliver(mb2, to: micLeg, at: Int64(n)) }
             check(mb2.floatChannelData![0][n / 2] == 0.5, "deliver keeps the mic once unmuted")
             check(rec.micSilenced == Int64(n), "silenced frames counted: \(rec.micSilenced)")
+            // A device-rate (48 kHz) buffer counts as its 16 kHz length.
+            muted = .muted
+            let hi = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 48_000, channels: 1, interleaved: false)!
+            let hb = AVAudioPCMBuffer(pcmFormat: hi, frameCapacity: 4800)!
+            hb.frameLength = 4800
+            for i in 0..<4800 { hb.floatChannelData![0][i] = 0.5 }
+            rec.queue.sync { rec.deliver(hb, to: micLeg, at: Int64(2 * n)) }
+            check(rec.micSilenced == Int64(2 * n), "48 kHz buffer counted in 16 kHz frames: \(rec.micSilenced)")
+            check(rec.micSilenced <= micLeg.written, "silenced \(rec.micSilenced) <= written \(micLeg.written)")
+            muted = .unmuted
             rec.queue.sync { rec.writeMutedMarker() }
             let marker = (try? String(contentsOf: dir.appendingPathComponent("mic.muted"), encoding: .utf8)) ?? ""
-            check(marker == "silenced_frames=\(n)\ntotal_frames=\(2 * n)\n", "mic.muted marker \(marker.debugDescription)")
+            check(marker == "silenced_frames=\(rec.micSilenced)\ntotal_frames=\(micLeg.written)\n" && marker.hasPrefix("silenced_frames=\(2 * n)\n"),
+                  "mic.muted marker \(marker.debugDescription)")
             appLeg.file.close(); micLeg.file.close()
         } else {
             check(false, "open recorder test legs")
@@ -907,7 +918,9 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
             // time, and an earlier "now" would make it look future-dated.
             let (st, at) = src()
             if gateMic(buf, state: st, readAt: at, now: Date(), micAlways: micAlways) {
-                micSilenced += Int64(buf.frameLength)
+                // Count in the leg's 16 kHz frames: SCK delivers the mic at
+                // the device rate (often 48 kHz), and Leg converts it.
+                micSilenced += Int64((Double(buf.frameLength) / buf.format.sampleRate * sampleRate).rounded())
             }
         }
         leg.append(buf, at: offset)
