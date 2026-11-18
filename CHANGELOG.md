@@ -6,6 +6,11 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ## [Unreleased]
 
+## [1.44.1] - 2026-11-18
+
+### Fixed
+- `drafts stage`: the chat list's "See more" in the Teams desktop app loads the next page of recent chats (a `treeitem` whose value ends in `-load-next-page`). It isn't a section that opens (#226). The stager used to wait for it to read open, so it stopped after one extra page. It now loads up to 3 pages, stops once the chat shows, never clicks an unchanged control twice, and has nothing to collapse afterwards. The selector is checked against the real app (2026-11-18). Sections that really expand (`aria-expanded`) still open and close as before.
+
 ## [1.44.0] - 2026-11-18
 
 ### Changed
