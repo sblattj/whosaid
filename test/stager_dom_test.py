@@ -426,6 +426,35 @@ class SeeMoreAgainstFixtureDom(unittest.TestCase):
         self.assertEqual(st["compose"], "", "typed into a compose box before a chat was chosen")
         self.assertFalse(st["sent"])
 
+@unittest.skipIf(WHY_NOT and not os.environ.get("WHOSAID_REQUIRE_DOM_TEST"), WHY_NOT or "")
+class RailMoreMarkup(unittest.TestCase):
+    """#226: JS_RAIL_MORE against the real Teams desktop markup (probe 2026-11-18): a load-next-page treeitem."""
+
+    def probe(self, html):
+        sys.path.insert(0, str(ROOT / "lib"))
+        import drafts_stager as ds
+        js = ("const {JSDOM}=require('jsdom');const d=new JSDOM(process.argv.at(-1));"
+              "global.document=d.window.document;"
+              "Object.defineProperty(d.window.HTMLElement.prototype,'innerText',{get(){return this.textContent}});"
+              "console.log(JSON.stringify((function(){" + ds.JS_RAIL_MORE + "})()))")
+        r = subprocess.run(["bun", "-e", js, html], capture_output=True, text=True, timeout=60,
+                           env={**os.environ, "NODE_PATH": str(JSDOM_DIR / "node_modules")})
+        self.assertEqual(r.returncode, 0, r.stderr)
+        return json.loads(r.stdout)
+
+    def test_load_next_page_treeitem_is_a_page_and_counts_the_rail_rows(self):
+        v = "OneGQL_SystemDefinedConversationFolder|a~b~RecentChats-load-next-page"
+        out = self.probe('<div role="tree" aria-label="Teams"><div role="treeitem" data-fui-tree-item-value="x|19:1">Ann</div>'
+                         f'<div role="treeitem" data-fui-tree-item-value="{v}"><span>See more</span></div>'
+                         '<div role="treeitem" data-fui-tree-item-value="OneGQL_Team|19:t@thread.tacv2-see-all-channels">See all channels</div></div>')
+        self.assertEqual(len(out), 1, out)
+        self.assertEqual((out[0]["label"], out[0]["page"], out[0]["expanded"], out[0]["rows"]), ("See more", True, False, 3))
+
+    def test_a_see_more_without_the_page_value_is_not_a_page(self):
+        out = self.probe('<div role="tree"><div role="treeitem" aria-expanded="false" data-fui-tree-item-value="x|sec">See more</div></div>')
+        self.assertEqual(len(out), 1, out)
+        self.assertFalse(out[0]["page"])
+
 
 if __name__ == "__main__":
     unittest.main()

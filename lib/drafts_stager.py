@@ -26,8 +26,9 @@ existing chips stay. After an upload the chips inside the root must have grown b
 and each file name must show inside the root; "attachments" in the output is the measured chip count.
 A global deadline (270s, $WHOSAID_STAGER_DEADLINE) turns a hang into exit 1 "timed out during <step>".
 --new-chat: for a group NAME ("A, B" / "A, B and C") it first looks for the chat those members already have
-(#223), read-only until it picks one: the left rail (a collapsed "See more" section is opened to render its
-rows, and closed again when the chat isn't there), then Teams search for NAME and each member (search_queries),
+(#223), read-only until it picks one: the left rail (the "See more" control, which on the real app loads the
+next page of recent chats, is clicked up to 3 times until the chat shows (#226); an aria-expanded section would
+be opened to render its rows, and closed again when the chat isn't there), then Teams search for NAME and each member (search_queries),
 keeping rows whose tree value / data-tid ends in --thread-id when given (`drafts stage` passes the id the
 Teams cache resolves for the member set), else whose label is the same member set (label_alts: any order,
 full or first names, self not listed, case and spacing aside; "+N" labels never). One chat: opened and proven
@@ -36,7 +37,7 @@ never pressed. None: presses "New message" (formerly "New chat"), types each per
 suggestion whose first line is that name exactly (none: exit 1 "no person named"; several: exit 1 ambiguous)
 and checks the To field now shows a chip with it (a new chat's title need not contain it), then continues to the
 compose box. A one-person NAME skips the lookup (Teams reuses the 1:1 itself).
-Without --new-chat the rail lookup opens a collapsed "See more" the same way when the visible rows don't match.
+Without --new-chat the rail lookup pages (or opens) "See more" the same way when the visible rows don't match.
 --mention NAME (repeatable) makes REAL @mentions. PLACEMENT RULE: mentions go at the START of the
 message, in the given order, each followed by one space, before the pasted body. A literal `@NAME` in
 the draft text is stripped from the pasted text (html and plain, plus one blank after it) so it isn't
@@ -80,7 +81,8 @@ so it stays valid JSON). A fake dispatches on NAME. Ops and their return values:
                                   of alts (case and spacing aside; label_alts(name): the member list in any order,
                                   full or first names, Teams' "A and B" short titles), the one named name exactly
                                   winning unless all is true; id = the row's own thread id or null}
-  rail_more    {}                 [{x,y,w,label,expanded}] the rail's "See more"/"See less" controls (#223)
+  rail_more    {}                 [{x,y,w,label,expanded,page,rows}] the rail's "See more"/"See less" controls
+                                  (#223); page = a load-next-page treeitem, rows = the rail's treeitem count (#226)
   title        {}                 document.title (string)
   editor_ready {}                 bool, the compose box exists
   compose_len  {}                 int, trimmed innerText length of the compose box
@@ -478,16 +480,25 @@ const ex=(byId.length||A.all)?[]:any.filter(e=>first(e).toLowerCase()===nm(A.nam
 const seen=new Set();const m=(ex.length?ex:any).filter(e=>{const k=last(tid(e));if(!k)return true;if(seen.has(k))return false;seen.add(k);return true});
 if(m.length===1)m[0].scrollIntoView({block:'center'});
 return {total:items.length,matches:m.map(t=>{const r=t.getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2,name:t.innerText.trim().split('\\n')[0].trim(),id:last(tid(t))||null}})}"""
-# The rail's "See more" / "See less" controls (#223: Teams keeps older chats under a collapsed "See more", out
-# of the rendered rows). UNVERIFIED on the real app (no probe of a collapsed section yet): a treeitem, button
-# or role=button inside the rail tree whose aria-label or first line is "See more"/"Show more" ("less" once
-# open); open = aria-expanded="true" when it has one, else a "less" label. The outermost of nested matches.
+# The rail's "See more" / "See less" controls (#223: older chats are not in the rendered rows). A treeitem,
+# button or role=button inside the rail tree whose aria-label or first line is "See more"/"Show more" ("less"
+# once open); open = aria-expanded="true" when it has one, else a "less" label. The outermost of nested matches.
+# CHECKED on the real Teams desktop app 2026-11-18 (read-only probe, no click): the control is a
+# [role=tree] [role=treeitem] whose first line is "See more", w=266, no aria-expanded, and whose
+# data-fui-tree-item-value ends in "RecentChats-load-next-page": PAGINATION, not a collapsible section, so
+# `page` is true and `rows` is the rail's rendered treeitem count (the signal a click loaded something).
+# "See all channels" and "See all your teams" do not match the regex. STILL UNOBSERVED: what a click does (the
+# label may stay "See more" with more rows above it, or the control may vanish at the last page), so
+# expand_more accepts any of: more rows, the control moved, the control gone. Sections with aria-expanded keep
+# the open/close path (never seen on the real app).
 JS_RAIL_MORE = """const nm=t=>(t||'').replace(/\\s+/g,' ').trim();
 const lab=e=>nm(e.getAttribute('aria-label')||(e.innerText||'').trim().split('\\n')[0]);
 const c=[...document.querySelectorAll('[role=tree] [role=treeitem],[role=tree] button,[role=tree] [role=button]')].filter(e=>/^(see|show) (more|less)$/i.test(lab(e)));
 const top=c.filter(e=>!c.some(o=>o!==e&&o.contains(e)));
-return top.map(e=>{const r=e.getBoundingClientRect();const x=e.getAttribute('aria-expanded');
-return {x:r.x+r.width/2,y:r.y+r.height/2,w:r.width,label:lab(e),expanded:x?x==='true':/less$/i.test(lab(e))}})"""
+const val=e=>{const t=e.closest('[role=treeitem]')||e;return t.getAttribute('data-fui-tree-item-value')||e.getAttribute('data-fui-tree-item-value')||''};
+return top.map(e=>{const r=e.getBoundingClientRect();const x=e.getAttribute('aria-expanded');const tr=e.closest('[role=tree]');
+return {x:r.x+r.width/2,y:r.y+r.height/2,w:r.width,label:lab(e),expanded:x?x==='true':/less$/i.test(lab(e)),
+page:/-load-next-page$/.test(val(e)),rows:tr?tr.querySelectorAll('[role=treeitem]').length:0}})"""
 JS_SEARCH_BOX = ("const b=document.querySelector(" + json.dumps(SEARCH_SEL) + ");"
                  "if(!b)return null;const r=b.getBoundingClientRect();if(!r.width)return null;"
                  "return {x:r.x+r.width/2,y:r.y+r.height/2}")
@@ -826,20 +837,40 @@ async def search_clear(c: CDP):
         pass
 
 
-async def expand_more(c: CDP) -> tuple[list[int], bool]:
-    """Open each collapsed "See more" in the rail (#223), at most 3, so the chats under it render. Returns the
-    indices (among the rail's See more controls) it opened, for collapse_more, and whether it saw a collapsed
-    one at all (the rail renders lazily: no control yet means look again on the next poll). A control that
-    doesn't read open after its click ends it: nothing is clicked twice."""
+async def expand_more(c: CDP, found=None) -> tuple[list[int], bool]:
+    """Reveal older rail rows (#223, #226), at most 3 clicks. Two kinds of "See more":
+    - a PAGE control (a load-next-page treeitem, what the real app has): a click worked when the rail's treeitem
+      count grew, the control moved, or it went; waits ~2 s for that. Nothing changed: stops, never clicking an
+      unchanged control twice. Pages are not returned in `opened`: there is nothing to collapse. FOUND, an async
+      callable, is checked after each page and ends the paging as soon as it is true.
+    - a section with aria-expanded / a "See less" label: opened, its index returned for collapse_more; one that
+      doesn't read open after its click ends it.
+    Returns the opened section indices and whether it saw a control to click at all (the rail renders lazily:
+    no control yet means look again on the next poll)."""
     opened: list[int] = []
     seen = False
     for _ in range(3):
         ms = await c.ev(op("rail_more", JS_RAIL_MORE)) or []
-        i = next((k for k, m in enumerate(ms) if not m.get("expanded") and m.get("w") and k not in opened), None)
+        i = next((k for k, m in enumerate(ms) if not m.get("expanded") and m.get("w")
+                  and (m.get("page") or k not in opened)), None)
         if i is None:
             break
         seen = True
-        await c.click(ms[i]["x"], ms[i]["y"])
+        before = ms[i]
+        await c.click(before["x"], before["y"])
+        if before.get("page"):
+            moved = False
+            for _ in range(8):
+                await nap(0.25)
+                now = await c.ev(op("rail_more", JS_RAIL_MORE)) or []
+                pages = [m for m in now if m.get("page")]
+                if (not pages or pages[0].get("rows", 0) > before.get("rows", 0)
+                        or pages[0].get("y") != before.get("y")):
+                    moved = True
+                    break
+            if not moved or (found is not None and await found()):
+                break
+            continue
         for _ in range(8):
             await nap(0.25)
             now = await c.ev(op("rail_more", JS_RAIL_MORE)) or []
@@ -853,12 +884,13 @@ async def expand_more(c: CDP) -> tuple[list[int], bool]:
 
 async def collapse_more(c: CDP, opened: list[int]):
     """Put the rail back the way it was: close the See more sections expand_more opened, last first (an
-    earlier one closing would move the later ones). Only when no row under them is about to be clicked."""
+    earlier one closing would move the later ones). Only when no row under them is about to be clicked. A page
+    control (load-next-page, #226) is never clicked: loaded pages stay, there is nothing to undo."""
     if not opened:
         return
     ms = await c.ev(op("rail_more", JS_RAIL_MORE)) or []
     for i in sorted(opened, reverse=True):
-        if i < len(ms) and ms[i].get("expanded") and ms[i].get("w"):
+        if i < len(ms) and ms[i].get("expanded") and ms[i].get("w") and not ms[i].get("page"):
             await c.click(ms[i]["x"], ms[i]["y"])
             await nap(0.25)
 
@@ -867,7 +899,9 @@ async def rail_lookup(c: CDP, chat: str, thread_id: str | None, settle: int, eve
                       wait: int = 30) -> tuple[list[dict], list[int]]:
     """Rows of the left rail that are CHAT: by thread id, else by label (label_alts). Waits up to WAIT polls
     for the rail to render, then SETTLE polls (~1s each) for the row; while the rendered rail has no match it
-    looks for a collapsed "See more" each poll and opens it the first time one shows (#223). Returns the matches and the See more sections it opened."""
+    looks for a "See more" each poll and uses it the first time one shows (#223): a collapsed section is opened,
+    a load-next-page control is clicked up to 3 times, stopping once the row shows (#226). Returns the matches
+    and the See more sections it opened (pages loaded are not listed: nothing to collapse)."""
     matches: list[dict] = []
     opened: list[int] = []
     rendered = 0
@@ -879,9 +913,12 @@ async def rail_lookup(c: CDP, chat: str, thread_id: str | None, settle: int, eve
             break
         if r["total"] > 0:
             if not tried_more:  # each poll until a collapsed See more shows up (it can render after the rows)
-                opened, tried_more = await expand_more(c)
-                if opened:
-                    continue  # read the rail again at once, with the section open
+                async def found():
+                    r2 = await c.ev(op("rail_find", JS_RAIL, name=chat, id=thread_id, alts=label_alts(chat), all=every))
+                    return bool(pick_row(r2["matches"], chat, exact=not every))
+                opened, tried_more = await expand_more(c, found)
+                if opened or tried_more:
+                    continue  # read the rail again at once, with the section open / the pages loaded
             rendered += 1
             if rendered >= settle:
                 break
@@ -919,8 +956,8 @@ async def open_chat(c: CDP, chat: str, thread_id: str | None = None) -> str:
     title must not name another chat (it may name CHAT, the row the id found, or a "+1" cut of either; the id
     can switch before the title does, so it waits for both); without one, the title must name exactly this
     chat. The title returned is read once both agree, so the result's "chat" is where the text went.
-    A row under a collapsed "See more" in the rail counts too (#223): the section is opened to find it, and
-    closed again when the chat isn't there."""
+    A row under a "See more" in the rail counts too (#223): a collapsed section is opened to find it, and
+    closed again when the chat isn't there; a load-next-page control (#226) is paged, up to 3 pages."""
     matches, opened = await rail_lookup(c, chat, thread_id, settle=15, every=False)
     source = "left rail"
     if not matches:
@@ -939,8 +976,8 @@ async def open_chat(c: CDP, chat: str, thread_id: str | None = None) -> str:
 
 async def existing_chat(c: CDP, chat: str, thread_id: str | None = None) -> str | None:
     """--new-chat to a group (#223): before New message, the one chat that already has these members. Looks,
-    read-only (no keystroke outside the search box, no compose box), in the left rail (a collapsed "See more"
-    opened for it, closed again when the chat isn't under it), then Teams search by the chat and by each
+    read-only (no keystroke outside the search box, no compose box), in the left rail ("See more" paged, or a
+    collapsed section opened for it and closed again when the chat isn't under it), then Teams search by the chat and by each
     member, matching rows by the thread id when one is known, else by the MEMBER SET (label_alts: the same
     people in any order, full or first names; a "+N" label never), never by an exact title alone. One chat:
     opened and proven like open_chat (the title must list these members, or the id must match), its title
