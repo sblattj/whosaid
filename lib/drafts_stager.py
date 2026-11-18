@@ -38,12 +38,22 @@ then check the compose box gained one mention element. A NAME with a one-letter 
 second query without it ("@Ana") when the full one lists nobody, still picking "Ana B" exactly. A query
 that finds nobody is taken back (Escape, one Backspace per typed character) before the next; none
 left: exit 1 "no mention suggestion for NAME", after clearing the compose box (and saying so if it
-didn't clear). Mentions are inserted after any --replace clearing and before the paste.
+didn't clear). Mentions are inserted after any --replace clearing and before the paste (why not body
+first: the "Why mentions go before the body (#221)" comment in stage()).
+HANDS OFF (#221): before its first keystroke in the compose box (or the edit box) the stager prints
+"hands off Teams: don't press Enter or Send ..." to stderr and raises a macOS notification (osascript,
+best effort; WHOSAID_STAGER_NOTIFY=0 turns it off). Typing mentions takes seconds each, and an Enter or
+Send meanwhile sends what is in the box so far. Between mention steps, before an "no mention suggestion",
+and before the paste it re-reads the box: fewer mention elements than it inserted, or an empty box after
+it typed, stops it with exit 1 "compose box emptied mid-stage; check the chat, it may have been sent",
+with no clean-up and no retry hint (staging again would build on top of a sent stub).
 
 --edit-sent --match-file F (#176): edit one of YOUR messages already in the chat instead of composing.
 Finds the own message whose text matches F (same rule as `drafts mark-sent --check`; none: exit 1, several:
 exit 1 ambiguous), hovers it, clicks its "More options", then the "Edit" menu item, waits for the edit box
-(an editor that is not the compose box), clears it and pastes --md. It never saves: no Enter, and in this
+(an editor that is not the compose box), clears it and pastes --md. If the edit box reads empty right after
+the paste, the edit box inside the message item is re-read for up to 0.8 s (#221); still empty: exit 1
+"... check the edit box in Teams: if the new text is there, save it, if not, Esc cancels the edit". It never saves: no Enter, and in this
 mode a click on a Done/Save control is refused too. Messages from others after it in the chat view stop
 it (exit 1) unless --allow-newer (#209). Not combinable with --attach/--mention/--replace/--new-chat (exit 2). Output: {"sent": false, "saved": false, "edit": true, "chat", "chars", "links"}.
 
@@ -97,6 +107,8 @@ Wave 3 ops (--edit-sent):
   edit_len     {}                 int, trimmed text length of the one edit box (-1 when not exactly one)
   edit_select  {}                 null, selects the edit box contents with a range
   edit_paste   {html, plain}      {"len": int, "links": int} after a synthetic paste into the edit box
+  edit_check   {}                 {"len": int, "links": int} of the edit box inside the message item (else the one
+                                  edit box), re-read after a paste that read empty (#221); len -1 when none
 (caret_end also means: the compose box has focus with the caret at its end.)
 Other CDP calls: Target.getTargets, setDiscoverTargets, createTarget, attachToTarget, detachFromTarget,
 activateTarget, Page.enable/bringToFront/setInterceptFileChooserDialog, DOM.enable/getDocument/
@@ -111,6 +123,7 @@ import html as htmllib
 import json
 import os
 import re
+import subprocess
 import sys
 import urllib.request
 
@@ -172,6 +185,39 @@ class StagerError(Exception):
     def __init__(self, msg: str, code: int = 1):
         super().__init__(msg)
         self.code = code
+
+
+EMPTIED = "compose box emptied mid-stage; check the chat, it may have been sent"
+
+
+class ComposeEmptied(StagerError):
+    """The compose box lost what this stage typed (most likely an Enter or Send from the user, #221). Nothing
+    is cleaned up after it and no retry hint goes with it: a retry would stage on top of a sent stub."""
+
+    def __init__(self):
+        super().__init__(EMPTIED)
+
+
+def notify(msg: str) -> None:
+    """A macOS notification, best effort: never blocks, never raises. Off with WHOSAID_STAGER_NOTIFY=0 (tests).
+    The text goes to osascript as an argument, never into the script source."""
+    if sys.platform != "darwin" or os.environ.get("WHOSAID_STAGER_NOTIFY", "1") == "0":
+        return
+    try:
+        subprocess.Popen(["osascript", "-e", "on run argv", "-e",
+                          "display notification (item 1 of argv) with title (item 2 of argv)", "-e", "end run",
+                          msg, "whosaid stager"],
+                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except Exception:  # noqa: BLE001 - a missing notification must never stop a stage
+        pass
+
+
+def hands_off(what: str) -> None:
+    """Tell the user to keep off Teams before the stager types into it (#221): an Enter or Send while it
+    types sends whatever is in the box so far."""
+    msg = f"hands off Teams: don't press Enter or {what} in Teams until staging finishes"
+    print(f"drafts_stager: {msg}", file=sys.stderr, flush=True)
+    notify(msg)
 
 
 def scale() -> float:
@@ -486,7 +532,10 @@ _OWN = (f"const own=()=>[...document.querySelectorAll({json.dumps(OWN_MSG_SEL)})
 _EDITS = (f"const EDS=()=>[...document.querySelectorAll({json.dumps(EDITOR_SEL)})].filter(e=>{{"
           "if(e.closest('[data-tid=\"chat-pane-item\"],[data-tid=\"message-pane-body\"]'))return true;let n=e.parentElement;"
           f"while(n&&n!==document.documentElement){{if(n.querySelector({json.dumps(ATTACH_SEL)}))return false;"
-          "n=n.parentElement}return true});const EE=()=>{const l=EDS();return l.length===1?l[0]:null};")
+          "n=n.parentElement}return true});const EE=()=>{const l=EDS();return l.length===1?l[0]:null};"
+          # IE: the edit box INSIDE a message item (#221), not the footer compose box; else the one edit box
+          "const IE=()=>{const l=EDS().filter(e=>e.closest('[data-tid=\"chat-pane-item\"]'));"
+          "return l.length===1?l[0]:EE()};")
 JS_OWN_MSGS = _OWN + "return own().map(m=>({text:body(m).innerText}))"
 # The message's own Edit / More controls: visible ones only (the hidden 4px button opens nothing),
 # inside the message's item, else on a toolbar anchored at the item's top edge (the app's floating
@@ -514,9 +563,12 @@ JS_EDIT_READY = _EDITS + "const l=EDS();return {editors:l.length,text:l.length==
 JS_EDIT_LEN = _EDITS + "const e=EE();return e?e.innerText.trim().length:-1"
 JS_EDIT_SELECT = (_EDITS + "const e=EE();e.focus();const r=document.createRange();r.selectNodeContents(e);"
                   "const s=getSelection();s.removeAllRanges();s.addRange(r);return null")
-JS_EDIT_PASTE = (_EDITS + "const e=EE();e.focus();const dt=new DataTransfer();dt.setData('text/html',A.html);"
+JS_EDIT_PASTE = (_EDITS + "const e=IE();e.focus();const dt=new DataTransfer();dt.setData('text/html',A.html);"
                  "dt.setData('text/plain',A.plain);e.dispatchEvent(new ClipboardEvent('paste',{clipboardData:dt,"
                  "bubbles:true,cancelable:true}));return {len:e.innerText.trim().length,links:e.querySelectorAll('a').length}")
+# Re-read after the paste (#221): looked up afresh each time (the app may re-render the editor).
+JS_EDIT_CHECK = (_EDITS + "const e=IE();return e?{len:e.innerText.trim().length,links:e.querySelectorAll('a').length}"
+                 ":{len:-1,links:0}")
 
 
 async def has_search_box(c: CDP, tid: str) -> bool:
@@ -999,8 +1051,23 @@ async def erase_typed(c: CDP, n: int):
         await c.key("Backspace", "Backspace", 8)
 
 
+async def box_intact(c: CDP, inserted: int, typed: bool) -> bool:
+    """False when the compose box lost what this stage put in it (#221): fewer mention elements than were
+    inserted, or an empty box although something was typed. Both reads are ones the flow already trusts."""
+    if await c.ev(op("mention_count", JS_MENTION_COUNT)) < inserted:
+        return False
+    return not (typed and await c.ev(op("compose_len", JS_LEN)) <= 0)
+
+
+async def watch_box(c: CDP, inserted: int, typed: bool = True):
+    if not await box_intact(c, inserted, typed):
+        raise ComposeEmptied()
+
+
 async def insert_mentions(c: CDP, names: list[str]):
+    inserted = 0  # mentions this stage put in the box; a drop below it means the box was emptied (sent?)
     for name in names:
+        await watch_box(c, inserted, typed=inserted > 0)  # between steps (#221)
         before = await c.ev(op("mention_count", JS_MENTION_COUNT))
         m = None
         for q in mention_queries(name):
@@ -1008,11 +1075,15 @@ async def insert_mentions(c: CDP, names: list[str]):
             try:
                 hits = await type_mention_query(c, q, name)
             except StagerError:
+                await watch_box(c, inserted)
                 await erase_typed(c, len(q) + 1)
                 raise
             if hits:
                 m = hits[0]
                 break
+            # Nobody listed: first make sure the box still holds what was typed. A box emptied mid-stage
+            # (a stub sent) also lists nobody, and blaming the picker would invite a retry on top of it.
+            await watch_box(c, inserted)
             await erase_typed(c, len(q) + 1)  # never leave "@Name" behind as plain text
         if m is None:
             raise StagerError(f"no mention suggestion for {name}")
@@ -1022,9 +1093,12 @@ async def insert_mentions(c: CDP, names: list[str]):
                 break
             await nap(0.3)
         else:
+            await watch_box(c, inserted)
             raise StagerError(f"picking the suggestion for {name} did not insert a mention")
         await c.ev(op("caret_end", JS_CARET))
         await c.s("Input.insertText", {"text": " "})
+        inserted += 1
+        await watch_box(c, inserted)  # after each step (#221)
 
 
 def strip_mention_literals(md: str, names: list[str]) -> str:
@@ -1088,6 +1162,7 @@ async def stage(a) -> dict:
                 did = (os.path.basename(os.path.dirname(md)) if os.path.basename(md) == "draft.md" else "") or "<id>"
                 raise StagerError(f"compose box already holds {existing} chars; rerun with "
                                   f"`whosaid drafts stage {did} --replace` to overwrite")
+            hands_off("Send")  # before the first keystroke in the compose box (#221)
             await clear_compose(c)
             if await c.ev(op("compose_len", JS_LEN)) > 0:
                 raise StagerError("couldn't clear the compose box; clear it by hand and rerun")
@@ -1095,10 +1170,22 @@ async def stage(a) -> dict:
                 step("removing old attachments")
                 await remove_chips(c, bool(a.attach))
 
+            # Why mentions go before the body (#221): #221 asked whether the body could go in first, so a stray
+            # Enter during the slow mention picks sends less. Not done, for three reasons. (1) The PLACEMENT RULE
+            # puts the mentions at the START, and the only caret move proven on the real app is "caret at the
+            # end" (JS_CARET); typing "@query" at the start of a pasted rich body, then the space, the retype
+            # Backspace and the erase_typed clean-up all at that spot, is unverified, and the mention path
+            # already took three live-found fixes (#183, the lazy first key, one-letter names). (2) The body's
+            # first block can be a heading, list or code fence, so a mention typed at its start would land
+            # inside that block. (3) It wouldn't make Enter harmless: an Enter mid-mention would send the whole
+            # body plus a half mention, a stub that looks finished. Instead: the hands-off warning above, and
+            # watch_box after every mention step and before the paste, which stops on an emptied box.
             if a.mention:  # after the clearing, so the mentions lead the message
                 step("inserting mentions")
                 try:
                     await insert_mentions(c, a.mention)
+                except ComposeEmptied:
+                    raise  # touch nothing: the box may hold what the user typed since, and no retry hint
                 except StagerError as exc:
                     left = -1
                     try:
@@ -1111,6 +1198,7 @@ async def stage(a) -> dict:
                                           "Teams before staging again") from exc
                     raise
                 await c.ev(op("caret_end", JS_CARET))
+                await watch_box(c, len(a.mention))  # the last mention still there: don't paste into a fresh box
 
             step("pasting the draft")
             if not a.new_chat:
@@ -1211,6 +1299,7 @@ async def edit_sent(c: CDP, a, title: str, html: str, plain: str) -> dict:
     if not _norm_text(ready["text"]).startswith(key[:40]):
         raise StagerError("the edit box doesn't hold the message we picked; stopping (press Esc in Teams)")
     step("replacing the text")
+    hands_off("click Done")  # an Enter in the edit box saves it half-replaced (#221)
     for _ in range(3):
         if await c.ev(op("edit_len", JS_EDIT_LEN)) <= 0:
             break
@@ -1220,8 +1309,20 @@ async def edit_sent(c: CDP, a, title: str, html: str, plain: str) -> dict:
     if await c.ev(op("edit_len", JS_EDIT_LEN)) != 0:
         raise StagerError("couldn't clear the edit box; press Esc in Teams to cancel the edit")
     res = await c.ev(op("edit_paste", JS_EDIT_PASTE, html=html, plain=plain))
-    if not res or not res.get("len"):
-        raise StagerError("paste left the edit box empty; press Esc in Teams to cancel the edit")
+    if not res or (res.get("len") or 0) <= 0:
+        # #221: the edit box can show a paste a moment later (a check right after it once read empty while
+        # the box held all 276 chars). Re-read the edit box inside the message item for up to 0.8 s, in real
+        # time (not nap(): the page's timing doesn't scale with WHOSAID_STAGER_TIME_SCALE).
+        loop = asyncio.get_running_loop()
+        end = loop.time() + 0.8
+        while True:
+            await asyncio.sleep(0.1)
+            res = await c.ev(op("edit_check", JS_EDIT_CHECK))
+            if (res and (res.get("len") or 0) > 0) or loop.time() >= end:
+                break
+    if not res or (res.get("len") or 0) <= 0:
+        raise StagerError("the edit box still looks empty after the paste; check the edit box in Teams: if the "
+                          "new text is there, save it, if not, Esc cancels the edit")
     return {"sent": False, "saved": False, "edit": True, "chat": title, "chars": res["len"], "links": res["links"]}
 
 

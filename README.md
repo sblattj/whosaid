@@ -460,7 +460,13 @@ whosaid drafts html                             # review page of every open draf
   also removes the attachments already there). Each `--mention NAME` becomes a real @mention at the
   start of the message, in order, before the body; a literal `@NAME` in the text is dropped so it is
   not doubled. It never sends (no Enter, no click on Send), prints a JSON line and leaves the chat
-  focused. Set `WHOSAID_DRAFTS_STAGER` to your own command to stage into another chat app.
+  focused. Keep your hands off Teams while it stages: mentions take seconds each, and an Enter or Send
+  from you sends whatever is in the box so far. It says so on stderr and in a macOS notification
+  before it types (`WHOSAID_STAGER_NOTIFY=0` turns the notification off), and it re-reads the box
+  between steps: an emptied box stops it with `compose box emptied mid-stage; check the chat, it may
+  have been sent`. Check the chat then; don't stage the draft again on top of a sent stub. With
+  `--edit`, a paste the edit box shows late is re-read for a moment before it counts as failed.
+  Set `WHOSAID_DRAFTS_STAGER` to your own command to stage into another chat app.
 - **Staging into the Teams desktop app.** The app is a WebView2 (Edge) host, and it only speaks CDP
   when it is started with a debugging port. `whosaid teams launch [--port N] [--check] [--force]
   [--wait S]` quits Teams and relaunches it with `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=N`

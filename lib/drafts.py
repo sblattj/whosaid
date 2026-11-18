@@ -1953,6 +1953,9 @@ def stage(ids: list[str] | None = None, all_ready: bool = False, dry_run: bool =
                 res["would_run"].append({"id": draft_id, "argv": cmd + argv})
                 continue
             env = {**os.environ, "TEAMS_OUTBOX_LOCK": str(_lock_path())}
+            # The stager's own stderr is captured until it exits, so the heads-up goes out from here (#221).
+            print(f"{draft_id}: staging into {m['to']}; hands off Teams (no Enter, no Send) until it finishes",
+                  file=sys.stderr, flush=True)
             try:
                 r = subprocess.run(cmd + argv, capture_output=True, text=True, env=env, timeout=300)
             except (OSError, subprocess.TimeoutExpired) as exc:
@@ -2115,6 +2118,8 @@ def _stage_edit(draft_id: str, dry_run: bool, tab: str | None, wsp: Path | None,
     acquire_lock(f"stage --edit {draft_id}")
     try:
         env = {**os.environ, "TEAMS_OUTBOX_LOCK": str(_lock_path())}
+        print(f"{draft_id}: loading the edit in {m['to']}; hands off Teams (no Enter, no Done) until it finishes",
+              file=sys.stderr, flush=True)
         try:
             r = subprocess.run(argv, capture_output=True, text=True, env=env, timeout=300)
         except (OSError, subprocess.TimeoutExpired) as exc:
