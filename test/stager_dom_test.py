@@ -26,6 +26,7 @@ FIX = ROOT / "test" / "fixtures" / "stager-edit-dom"
 SCRIPT = str(ROOT / "lib" / "drafts_stager.py")
 JSDOM_DIR = Path(os.environ.get("WHOSAID_TEST_JSDOM_DIR") or Path.home() / ".cache" / "whosaid-test-jsdom")
 os.environ["WHOSAID_TEAMS_CDP_PORT"] = "9"  # never the real Teams app port
+os.environ["WHOSAID_STAGER_NOTIFY"] = "0"  # no macOS notification per test run (#221)
 
 
 def jsdom_ready() -> str | None:
@@ -170,6 +171,24 @@ class EditSentAgainstFixtureDom(unittest.TestCase):
         self.assertNotIn("staging hosts?can you", st["edit_html"][0], "the old text was cleared first")
         self.assertEqual(st["compose"], "", "the compose box is never touched")
         self.assertFalse([c for c in st["clicks"] if c[0] == 972], "clicked the hidden 4px More button")
+        self.never_saved(f, st)
+
+    def test_a_paste_the_edit_box_shows_late_is_a_success(self):
+        """#221 part 3: the in-message edit box (under chat-pane-item) shows the paste 300 ms later and the
+        footer compose box stays empty. The old check read once, at once: "paste left the edit box empty;
+        press Esc", for an edit that was right."""
+        f = DomTeams(mode="pastelag=1")
+        try:
+            r = self.run_stager(f)
+            st = f.state()
+        finally:
+            f.close()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        out = json.loads(r.stdout.strip().splitlines()[-1])
+        self.assertEqual((out["edit"], out["saved"], out["links"]), (True, False, 1))
+        self.assertGreater(out["chars"], 0)
+        self.assertIn('href="https://example.com/rb"', st["edit_html"][0])
+        self.assertEqual(st["compose"], "", "the compose box is never touched")
         self.never_saved(f, st)
 
     def test_a_reply_after_the_message_stops_it_unless_allow_newer(self):

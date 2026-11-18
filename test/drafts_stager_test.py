@@ -31,6 +31,7 @@ SCRIPT = str(ROOT / "lib" / "drafts_stager.py")
 # No test may reach a real Teams: the desktop app (9333) or a browser (9222) may be running here.
 # The default app port points at a closed one; tests that want a port set it themselves.
 os.environ["WHOSAID_TEAMS_CDP_PORT"] = "9"
+os.environ["WHOSAID_STAGER_NOTIFY"] = "0"  # no macOS notification per test run (#221)
 SEND_XY = (900, 900)
 OP_RE = re.compile(r"^/\*op:(\w+)\*//\*args:(.*?)\*/")
 
@@ -271,8 +272,15 @@ class FakeTeams:
                  history=(), no_root=False, remover_noop=False, drop_uploads=False, focus_miss=False,
                  fail_set_files=False, root_flicker=0, hidden=False, own=(), no_edit_item=False, titles=None, mention_lazy=False, targets=None, browser=None,
                  search_groups=None, search_stale="", app_toolbar=False,
-                 thread_ids=None):
+                 thread_ids=None, empty_on_query=0, empty_after_mention=0, edit_lag=None):
         from websockets.sync.server import serve
+        # #221: the user sends a stub mid-stage. empty_on_query=k: the box empties (sent) as the k-th @query is
+        # typed, and the @ picker opens no more; empty_after_mention=k: it empties right after the k-th mention's
+        # trailing space. Either way the mention elements go too.
+        self.empty_on_query, self.empty_after_mention = empty_on_query, empty_after_mention
+        self.queries, self.picker_dead, self.emptied_at, self.stub = 0, False, None, None
+        # #221: the edit box shows a pasted text only after edit_lag reads of it (-1: never); None = at once
+        self.edit_lag, self.edit_pending, self.edit_reads = edit_lag, None, 0
         self.targets, self.browser = targets, browser  # targets: dicts of id/title/url; browser: /json/version Browser
         self.titles = dict(titles or {})  # rail name -> window title, when it isn't "Chat | <name> | ..."
         self.rail, self.search_dir, self.compose = list(rail), list(search), compose
@@ -393,7 +401,14 @@ class FakeTeams:
     def people_options(self):
         return [n for n in self.people_dir if self.newchat_open and self.picker_typed and self.picker_typed in n]
 
+    def stub_sent(self):
+        """The user pressed Enter mid-stage: what was in the box is sent, the box is empty."""
+        self.stub, self.compose, self.mentions, self.mention_typed = self.compose, "", [], ""
+        self.emptied_at = len(self.calls)
+
     def mention_options(self):
+        if self.picker_dead:
+            return []
         t = self.mention_typed
         return [n for n in self.mention_dir if self.mention_keyed and t.startswith("@") and t[1:] in n]
 
@@ -507,8 +522,20 @@ class FakeTeams:
             self.edit_selected = True
             return None
         if name == "edit_paste":
+            self.edit_links = args["html"].count("<a ")
+            if self.edit_lag is not None:  # the editor shows the paste only later
+                self.edit_pending, self.edit_reads = args["plain"], 0
+                return {"len": 0, "links": 0}
             self.edit_text += args["plain"]
-            return {"len": len(self.edit_text.strip()), "links": args["html"].count("<a ")}
+            return {"len": len(self.edit_text.strip()), "links": self.edit_links}
+        if name == "edit_check":
+            if self.edit_pending is not None:
+                self.edit_reads += 1
+                if self.edit_lag >= 0 and self.edit_reads >= self.edit_lag:
+                    self.edit_text, self.edit_pending = self.edit_text + self.edit_pending, None
+            if self.editing is None:
+                return {"len": -1, "links": 0}
+            return {"len": len(self.edit_text.strip()), "links": getattr(self, "edit_links", 0) if self.edit_text.strip() else 0}
         if name == "editor_ready":
             return self.chat is not None
         if name == "compose_len":
@@ -658,8 +685,15 @@ class FakeTeams:
                     self.picker_typed += t
                 elif self.compose_focused:
                     if t.startswith("@"):
+                        self.queries += 1
+                        if self.empty_on_query and self.queries == self.empty_on_query:
+                            self.stub_sent()
+                            self.picker_dead = True
                         self.mention_typed, self.mention_keyed, self.mention_keys = t, False, 0
                     self.compose += t  # the typed text is in the box until a suggestion replaces it
+                    if (t == " " and self.empty_after_mention and self.emptied_at is None
+                            and len(self.mentions) == self.empty_after_mention):
+                        self.stub_sent()
                 else:
                     self.typed = t if self.search_sel else self.typed + t  # a selected query is replaced
                     self.search_sel = False
@@ -1449,6 +1483,106 @@ class EndToEnd(unittest.TestCase):
         self.assertNotIn("paste", f.ops)
         f.never_sent(self)
 
+    # ---- #221: a stub sent mid-stage, and the hands-off warning ----------------------------------
+
+    NO_RETRY = ("no mention suggestion", "staging again", "rerun", "--replace", "may still hold")
+
+    def assert_emptied_mid_stage(self, f, r, mid_query=False):
+        self.assertEqual(r.returncode, 1, r.stdout)
+        self.assertIn("compose box emptied mid-stage; check the chat, it may have been sent", r.stderr)
+        for hint in self.NO_RETRY:
+            self.assertNotIn(hint, r.stderr, "a retry hint on top of a sent stub")
+        self.assertNotIn("paste", f.ops)
+        self.assertIsNotNone(f.emptied_at)
+        after = f.calls[f.emptied_at:]
+        # mid-query, the query itself still gets its last letter (and the retypes); nothing after that: no
+        # Escape/Backspace clean-up, no select-all clear, no next @query
+        typed = [(m, p.get("key") or p.get("text")) for m, p in after if m in ("Input.insertText", "Input.dispatchKeyEvent")
+                 and not (mid_query and (p.get("key") in ("y", "Backspace") and m == "Input.dispatchKeyEvent"))]
+        self.assertFalse(typed, f"kept typing into the box after it emptied: {typed}")
+        self.assertFalse([p for m, p in after if m == "Runtime.evaluate" and "op:editor_select" in p["expression"]],
+                         "cleared the box after it emptied")
+        f.never_sent(self)
+
+    def test_box_emptied_while_a_mention_query_is_typed_says_it_may_have_been_sent(self):
+        """#221 part 2: the box empties (a stub was sent) and the next @query finds nobody. The old error blamed
+        the picker ("no mention suggestion for Bob Ray") and invited a retry on top of the sent stub."""
+        f = self.fake(rail=["Ann Lee"], mention_dir=["Cy Dee", "Bob Ray", "Al Po"], empty_on_query=2)
+        r = self.run_stager(f, "--mention", "Cy Dee", "--mention", "Bob Ray", "--mention", "Al Po")
+        self.assert_emptied_mid_stage(f, r, mid_query=True)
+        self.assertEqual(f.stub, "Cy Dee ")
+
+    def test_box_emptied_between_mentions_stops_before_the_next_one(self):
+        """#221 part 1: the watch between steps. The old code typed the next mention into the empty box,
+        pasted the body after it and reported success."""
+        f = self.fake(rail=["Ann Lee"], mention_dir=["Cy Dee", "Bob Ray"], empty_after_mention=1)
+        r = self.run_stager(f, "--mention", "Cy Dee", "--mention", "Bob Ray")
+        self.assert_emptied_mid_stage(f, r)
+        self.assertEqual(f.mentions, [])
+        self.assertEqual(f.compose, "", "typed into the box after it emptied")
+
+    def test_box_emptied_after_the_last_mention_stops_before_the_paste(self):
+        f = self.fake(rail=["Ann Lee"], mention_dir=["Cy Dee"], empty_after_mention=1)
+        r = self.run_stager(f, "--mention", "Cy Dee")
+        self.assert_emptied_mid_stage(f, r)
+
+    def test_hands_off_warning_comes_before_the_first_keystroke_in_the_compose_box(self):
+        """#221 part 1: the stager says to keep hands off Teams before it types into the compose box. Run
+        in-process so its stderr and the CDP calls land in one ordered list."""
+        f = self.fake(rail=["Ann Lee"], compose="old", mention_dir=["Bob Ray"])
+
+        class Rec:
+            def write(self, t):
+                if t.strip():
+                    f.calls.append(("stderr", {"text": t}))
+                return len(t)
+
+            def flush(self):
+                pass
+
+        env = {"TEAMS_OUTBOX_LOCK": str(self.lock), "WHOSAID_STAGER_TIME_SCALE": "0.01"}
+        with patch.dict(os.environ, env), patch.object(sys, "stderr", Rec()), patch.object(ds, "notify") as note:
+            rc = ds.main(["--chat", "Ann Lee", "--md", str(self.md), "--cdp-port", str(f.port),
+                          "--replace", "--mention", "Bob Ray"])
+        self.assertEqual(rc, 0)
+        warn = [i for i, (m, p) in enumerate(f.calls) if m == "stderr" and "hands off" in p["text"].lower()]
+        self.assertTrue(warn, f"no hands-off warning on stderr: {[p for m, p in f.calls if m == 'stderr']}")
+        self.assertIn("Enter", f.calls[warn[0]][1]["text"])
+        first_op = next(i for i, (m, p) in enumerate(f.calls) if m == "Runtime.evaluate"
+                        and p["expression"].startswith(("/*op:editor_focus*/", "/*op:editor_select*/", "/*op:caret_end*/")))
+        first_key = next(i for i, (m, p) in enumerate(f.calls[first_op:], first_op)
+                         if m in ("Input.dispatchKeyEvent", "Input.insertText"))
+        self.assertLess(warn[0], first_op, "warned only after touching the compose box")
+        self.assertLess(warn[0], first_key)
+        note.assert_called_once()
+        self.assertIn("Enter", note.call_args[0][0])
+
+    def test_notify_is_an_osascript_argv_and_never_fatal(self):
+        with patch.dict(os.environ, {"WHOSAID_STAGER_NOTIFY": "1"}), patch.object(ds.sys, "platform", "darwin"), \
+                patch.object(ds.subprocess, "Popen") as po:
+            ds.notify('a "quoted" msg')
+        argv = po.call_args[0][0]
+        self.assertEqual(argv[0], "osascript")
+        self.assertIn('a "quoted" msg', argv, "the text goes in as an argument, not into the script")
+        self.assertFalse([a for a in argv if "display notification" in a and "quoted" in a])
+        with patch.dict(os.environ, {"WHOSAID_STAGER_NOTIFY": "1"}), patch.object(ds.sys, "platform", "darwin"), \
+                patch.object(ds.subprocess, "Popen", side_effect=OSError("no osascript")):
+            ds.notify("x")  # no raise
+        for env, plat in (({"WHOSAID_STAGER_NOTIFY": "0"}, "darwin"), ({"WHOSAID_STAGER_NOTIFY": "1"}, "linux")):
+            with patch.dict(os.environ, env), patch.object(ds.sys, "platform", plat), \
+                    patch.object(ds.subprocess, "Popen") as po:
+                ds.notify("x")
+            po.assert_not_called()
+
+    def test_mentions_lead_and_the_body_follows_with_the_reason_written_down(self):
+        """#221 asked for body-first; the stager keeps mentions first (PLACEMENT RULE) and says why in the code."""
+        f = self.fake(rail=["Ann Lee"], mention_dir=["Bob Ray"])
+        r = self.run_stager(f, "--mention", "Bob Ray")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertLess(len(f.ops) - 1 - f.ops[::-1].index("mention_find"), f.ops.index("paste"))
+        src = Path(SCRIPT).read_text()
+        self.assertIn("Why mentions go before the body (#221)", src)
+
     # ---- review fixes -------------------------------------------------------------------------
 
     def test_restage_never_touches_history_attachments(self):
@@ -1601,6 +1735,29 @@ class EndToEnd(unittest.TestCase):
         r = self.edit_run(f, self.OWN[1])
         self.assertEqual(r.returncode, 1)
         self.assertIn("refusing to click a save control", r.stderr)
+        self.assertFalse(f.edit_saved)
+
+    def test_edit_sent_paste_that_shows_late_in_the_edit_box_is_a_success(self):
+        """#221 part 3: the in-message editor shows the pasted text only a moment later (the footer compose box
+        stays empty). The old check read once, at once, and said "press Esc", which would discard a good edit."""
+        f = self.fake(rail=["Ann Lee"], own=self.OWN, edit_lag=3)
+        r = self.edit_run(f, self.OWN[1])
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(f.edit_text.strip(), "so I filed a follow-up to run the migration once per env")
+        out = json.loads(r.stdout.strip().splitlines()[-1])
+        self.assertEqual(out["chars"], len("so I filed a follow-up to run the migration once per env"))
+        self.assertEqual(f.compose, "")
+        self.assertFalse(f.edit_saved)
+        f.never_sent(self)
+
+    def test_edit_sent_paste_still_empty_says_check_the_edit_box(self):
+        f = self.fake(rail=["Ann Lee"], own=self.OWN, edit_lag=-1)
+        r = self.edit_run(f, self.OWN[1])
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("check the edit box", r.stderr)
+        self.assertIn("Esc cancels", r.stderr)
+        self.assertNotIn("press Esc", r.stderr)
+        self.assertGreaterEqual(f.ops.count("edit_check"), 2, "decided without polling the edit box")
         self.assertFalse(f.edit_saved)
 
     def test_edit_sent_usage_errors(self):

@@ -103,7 +103,13 @@
       const s = getSelection();
       if (e.key === "Backspace" && s.rangeCount && s.toString() === ed.textContent) ed.innerHTML = "";
     });
-    ed.addEventListener("paste", e => { e.preventDefault(); ed.innerHTML += e.clipboardData.getData("text/html"); });
+    // ?pastelag=1 (#221): the edit box shows a paste only 300 ms later, like the app's editor model can
+    const lag = q.get("pastelag") === "1" ? 300 : 0;
+    ed.addEventListener("paste", e => {
+      e.preventDefault();
+      const h = e.clipboardData.getData("text/html");
+      if (lag) setTimeout(() => { ed.innerHTML += h; }, lag); else ed.innerHTML += h;
+    });
     body.after(ed, done);
     fx.editing = items().indexOf(it);
   });
