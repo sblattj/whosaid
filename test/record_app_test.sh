@@ -43,7 +43,7 @@ assert_eq() {  # assert_eq <actual> <expected> <what>
 }
 
 assert_contains() {  # assert_contains <haystack> <needle> <what>
-  if printf '%s\n' "$1" | grep -qF -- "$2"; then
+  if grep -qF -- "$2" <<<"$1"; then  # a pipe into grep -q SIGPIPEs printf under pipefail
     PASS=$((PASS + 1))
   else
     fail "$3 — expected to find [$2] in [$1]"
