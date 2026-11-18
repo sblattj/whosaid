@@ -6,6 +6,13 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ## [Unreleased]
 
+## [1.43.1] - 2026-11-17
+
+### Fixed
+- (#221) Drafts stager: before typing anything into Teams, it now prints a "hands off Teams: don't press Enter or Send" line and shows a macOS notification (`WHOSAID_STAGER_NOTIFY=0` turns the notification off). `drafts stage` and `stage --edit` print the same heads-up before starting the stager, because the stager's own stderr only appears after it exits. Mentions still go before the body; `stage()` has a comment explaining why.
+- (#221) If the compose box empties partway through staging (usually because Enter sent a half-built message), the stager stops with `compose box emptied mid-stage; check the chat, it may have been sent` and gives no retry hint. Before, it failed later with a misleading `no mention suggestion for <name>`, or pasted the body into the fresh box. It checks the box after each mention, before reporting a missing suggestion, and before the paste.
+- (#221) `stage --edit` / `edit-sent` no longer reports a correct paste as empty. Before, it checked the in-message edit box immediately after pasting. Now it re-reads that box for up to 0.8 s before deciding. If the box is still empty, the error says to check the edit box and that Esc cancels the edit, instead of a flat "press Esc" that would discard a good edit.
+
 ## [1.43.0] - 2026-11-17
 
 ### Changed
