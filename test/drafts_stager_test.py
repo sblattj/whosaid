@@ -273,7 +273,7 @@ class FakeTeams:
                  fail_set_files=False, root_flicker=0, hidden=False, own=(), no_edit_item=False, titles=None, mention_lazy=False, targets=None, browser=None,
                  search_groups=None, search_stale="", app_toolbar=False,
                  thread_ids=None, empty_on_query=0, empty_after_mention=0, edit_lag=None, empty_on_key=0,
-                 more_rows=None, more_delay=0):
+                 more_rows=None, more_delay=0, page_pages=None, page_mode="grow"):
         from websockets.sync.server import serve
         # #221: the user sends a stub mid-stage. empty_on_query=k: the box empties (sent) as the k-th @query is
         # typed, and the @ picker opens no more; empty_after_mention=k: it empties right after the k-th mention's
@@ -307,6 +307,11 @@ class FakeTeams:
         # control itself shows up only after more_delay reads of it (the rail renders lazily)
         self.more_rows = None if more_rows is None else list(more_rows)
         self.more_delay, self.more_reads, self.more_open = more_delay, 0, False
+        # #226: the real rail's "See more" is a load-next-page treeitem (no aria-expanded). page_pages = the rows each
+        # click adds ("grow": the control goes once they run out; "noop": a click changes nothing; "vanish": the
+        # control is gone after one click, no rows added)
+        self.page_pages = None if page_pages is None else [list(p) for p in page_pages]
+        self.page_mode, self.page_clicks, self.page_gone = page_mode, 0, False
         self.hovered = self.more_menu = self.editing = None
         self.edit_text, self.edit_selected, self.edit_saved = "", False, False
         self.newchat_open = self.picker_focus = self.compose_focused = False
@@ -462,6 +467,13 @@ class FakeTeams:
         for i, n in enumerate(self.rail):
             if near(self.rail_xy(i)):
                 self.chat, self.title = n, self.titles.get(n, f"Chat | {n} | Microsoft Teams")
+        if near(self.MORE_XY) and self.page_pages is not None and not self.page_gone:
+            self.page_clicks += 1
+            if self.page_mode == "vanish":
+                self.page_gone = True
+            elif self.page_mode == "grow" and self.page_pages:
+                self.rail = self.rail + self.page_pages.pop(0)
+                self.page_gone = not self.page_pages
         if near(self.MORE_XY) and self.more_rows is not None and self.more_reads > self.more_delay:
             self.more_open = not self.more_open
             self.rail = self.rail + self.more_rows if self.more_open else [n for n in self.rail if n not in self.more_rows]
@@ -500,6 +512,9 @@ class FakeTeams:
             hits = [{"x": self.rail_xy(i)[0], "y": self.rail_xy(i)[1], "name": self.rail[i]} for i in idx]
             return {"total": len(self.rail), "matches": hits}
         if name == "rail_more":
+            if self.page_pages is not None:
+                return [] if self.page_gone else [{"x": self.MORE_XY[0], "y": self.MORE_XY[1], "w": 266, "label": "See more",
+                                                   "expanded": False, "page": True, "rows": len(self.rail)}]
             if self.more_rows is None:
                 return None
             self.more_reads += 1
@@ -1344,6 +1359,74 @@ class EndToEnd(unittest.TestCase):
         self.assert_no_new_message(f)
         self.assertNotIn("search_find", f.ops, "found in the rail, no search needed")
         f.never_sent(self)
+
+    # #226: the rail's "See more" is load-next-page pagination, not a section that opens and closes
+    def test_page_control_loads_pages_until_the_chat_shows_and_stops_there(self):
+        f = self.fake(rail=["Zed"], page_pages=[["Row Two"], ["Ann Lee"], ["Row Four"]])
+        r = self.run_stager(f)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(f.chat, "Ann Lee")
+        self.assertEqual(f.page_clicks, 2)
+        self.assertNotIn("search_find", f.ops, "found in the rail, no search needed")
+        f.never_sent(self)
+
+    def test_page_control_is_not_clicked_more_than_three_times(self):
+        f = self.fake(rail=["Zed"], page_pages=[["R2"], ["R3"], ["R4"], ["R5"], ["Ann Lee"]], search=["Ann Lee"])
+        r = self.run_stager(f)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(f.page_clicks, 3)
+        self.assertIn("search_find", f.ops, "not in the first 4 pages: falls back to search")
+        f.never_sent(self)
+
+    def test_page_control_that_changes_nothing_is_clicked_once_then_search_takes_over(self):
+        f = self.fake(rail=["Zed"], page_pages=[["Ann Lee"]], page_mode="noop", search=["Ann Lee"])
+        r = self.run_stager(f)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(f.page_clicks, 1, "an unchanged control is never clicked twice")
+        self.assertIn("search_find", f.ops)
+        f.never_sent(self)
+
+    def test_page_control_that_vanishes_after_a_click_ends_paging(self):
+        f = self.fake(rail=["Zed"], page_pages=[["Ann Lee"]], page_mode="vanish", search=["Ann Lee"])
+        r = self.run_stager(f)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(f.page_clicks, 1)
+        self.assertIn("search_find", f.ops)
+        f.never_sent(self)
+
+    def test_page_control_pages_are_never_collapsed(self):
+        f = self.fake(rail=["Zed"], page_pages=[["Row Two"]], people=["Alice Adams", "Bob Brown"])
+        r = self.run_stager(f, "--new-chat", chat="Alice Adams, Bob Brown")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(f.page_clicks, 1, "one page loaded, then the control went; nothing to put back")
+        self.assertEqual(f.clicks.count(f.MORE_XY), 1)
+        self.assertIn("Row Two", f.rail)
+        f.never_sent(self)
+
+    def test_collapse_more_never_clicks_a_page_control(self):
+        import asyncio
+
+        class C:
+            def __init__(self):
+                self.clicks = []
+
+            async def ev(self, expr):
+                return [{"x": 50, "y": 60, "w": 266, "label": "See more", "expanded": False, "page": True, "rows": 5}]
+
+            async def click(self, x, y):
+                self.clicks.append((x, y))
+
+        for opened in ([0], [0, 1]):  # even a stale index that points at a page control
+            c = C()
+            asyncio.run(ds.collapse_more(c, opened))
+            self.assertEqual(c.clicks, [], "a page control has nothing to collapse")
+        # and an aria-expanded section that is open still is
+        class D(C):
+            async def ev(self, expr):
+                return [{"x": 50, "y": 60, "w": 100, "label": "See less", "expanded": True}]
+        d = D()
+        asyncio.run(ds.collapse_more(d, [0]))
+        self.assertEqual(d.clicks, [(50, 60)])
 
     def test_see_more_is_clicked_once_and_closed_again_when_the_chat_is_not_under_it(self):
         f = self.fake(rail=["Zed"], more_rows=["Cy Dee"], people=["Alice Adams", "Bob Brown"])
