@@ -1426,6 +1426,11 @@ def draft_chat_messages(ws: Path, m: dict, since_ms: int | None = None) -> list[
     return chat_messages(ws, m["to"], since_ms=since_ms, thread_id=tid)
 
 
+def _is_group(to: str) -> bool:
+    """TO lists two or more people ("A, B", "A and B", "A, B and C"), the stager's split_members rule."""
+    return len([w for w in re.split(r",\s*(?:and\s+)?|\s+and\s+", to or "") if w.strip()]) >= 2
+
+
 def chat_thread_id(m: dict, ws: Path | None) -> str | None:
     """The Teams thread id of the draft's chat: the draft's own thread_id, else the one chat the Teams
     desktop app's cache names like the draft's recipient. None when there is no cache or the name is
@@ -1954,7 +1959,9 @@ def stage(ids: list[str] | None = None, all_ready: bool = False, dry_run: bool =
                 argv += ["--new-chat"]
             if tab:
                 argv += ["--tab", tab]
-            tid = None if m.get("new_chat") else chat_thread_id(m, wsp)
+            # a new-chat draft to a group passes the id of the chat those members already have, when the cache
+            # knows exactly one, so the stager opens it instead of starting a duplicate (#223); a 1:1 doesn't
+            tid = chat_thread_id(m, wsp) if (not m.get("new_chat") or _is_group(m["to"])) else None
             if tid:
                 argv += ["--thread-id", tid]
             if dry_run:

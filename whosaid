@@ -931,7 +931,9 @@ DRAFTS
   whose stakeholders said something on their topics after the verify. stage is the
   only step that drives a browser: it takes ~/.drafts/.outbox.lock, refuses stale
   drafts and rival drafts to the same person, then runs WHOSAID_DRAFTS_STAGER with
-  --chat NAME --md FILE [--attach PAGE] and TEAMS_OUTBOX_LOCK set. Nothing is sent, but keep
+  --chat NAME --md FILE [--attach PAGE] and TEAMS_OUTBOX_LOCK set. A --new-chat draft to a group
+  opens the chat those members already have (rail incl. a collapsed "See more", then search) when
+  there is exactly one, stops on two, and starts a new chat only when there is none. Nothing is sent, but keep
   hands off Teams while it types: an Enter or Send from you sends the half-built message, and
   "compose box emptied mid-stage" means check the chat, don't stage again. One draft a
   run; --all --queue stages every verified draft, oldest first. MCP: whosaid_draft_stage.

@@ -25,9 +25,18 @@ button; history attachments outside it are never touched. If the root can't be f
 existing chips stay. After an upload the chips inside the root must have grown by the number of files
 and each file name must show inside the root; "attachments" in the output is the measured chip count.
 A global deadline (270s, $WHOSAID_STAGER_DEADLINE) turns a hang into exit 1 "timed out during <step>".
---new-chat: presses "New message" (formerly "New chat"), types NAME in the To picker, picks the suggestion whose first line is
-NAME exactly (none: exit 1 "no person named"; several: exit 1 ambiguous) and checks the To field now
-shows a chip with NAME (a new chat's title need not contain it), then continues to the compose box.
+--new-chat: for a group NAME ("A, B" / "A, B and C") it first looks for the chat those members already have
+(#223), read-only until it picks one: the left rail (a collapsed "See more" section is opened to render its
+rows, and closed again when the chat isn't there), then Teams search for NAME and each member (search_queries),
+keeping rows whose tree value / data-tid ends in --thread-id when given (`drafts stage` passes the id the
+Teams cache resolves for the member set), else whose label is the same member set (label_alts: any order,
+full or first names, self not listed, case and spacing aside; "+N" labels never). One chat: opened and proven
+like a plain stage (title or id), the output adds "existing_chat": true. Several: exit 1 ambiguous, New message
+never pressed. None: presses "New message" (formerly "New chat"), types each person in the To picker, picks the
+suggestion whose first line is that name exactly (none: exit 1 "no person named"; several: exit 1 ambiguous)
+and checks the To field now shows a chip with it (a new chat's title need not contain it), then continues to the
+compose box. A one-person NAME skips the lookup (Teams reuses the 1:1 itself).
+Without --new-chat the rail lookup opens a collapsed "See more" the same way when the visible rows don't match.
 --mention NAME (repeatable) makes REAL @mentions. PLACEMENT RULE: mentions go at the START of the
 message, in the given order, each followed by one space, before the pasted body. A literal `@NAME` in
 the draft text is stripped from the pasted text (html and plain, plus one blank after it) so it isn't
@@ -65,10 +74,13 @@ $WHOSAID_STAGER_TIME_SCALE (float, default 1; tests use a small one).
 FAKE-CDP CONTRACT (frozen; wave 2 extends it). Every Runtime.evaluate expression starts with
 `/*op:NAME*/` followed by `/*args:JSON*/` (the JSON of the op's arguments, "*/" escaped as "*\\/",
 so it stays valid JSON). A fake dispatches on NAME. Ops and their return values:
-  rail_find    args {name, id, alts} {"total": n treeitems in the left rail, "matches": [{x,y,name}]: the row whose
-                                  tree value ends in "|<id>" (or is id), else rows whose first line is one of alts
-                                  (case and spacing aside; label_alts(name): the member list in any order, full or
-                                  first names, Teams' "A and B" short titles), the one named name exactly winning}
+  rail_find    args {name, id, alts, all} {"total": n treeitems in the left rail, "matches": [{x,y,name,id}]: the
+                                  RENDERED (non-zero size) row whose tree value ends in "|<id>" (or is id; a row
+                                  holding other rows never borrows a child's), else rows whose first line is one
+                                  of alts (case and spacing aside; label_alts(name): the member list in any order,
+                                  full or first names, Teams' "A and B" short titles), the one named name exactly
+                                  winning unless all is true; id = the row's own thread id or null}
+  rail_more    {}                 [{x,y,w,label,expanded}] the rail's "See more"/"See less" controls (#223)
   title        {}                 document.title (string)
   editor_ready {}                 bool, the compose box exists
   compose_len  {}                 int, trimmed innerText length of the compose box
@@ -449,16 +461,31 @@ class CDP:
 
 # ---- ops ---------------------------------------------------------------------------------
 
+# A row's tree value is its own attribute, or a child's when the row holds no other rows: a "See more" row
+# (or any section) that holds rows must not borrow its first child's id (#223, it made one hit look like two).
+# Only rendered rows count: a row inside a collapsed section has no size. all=true: every row whose label
+# fits (a new-chat lookup counts every chat with the members, #223); else the one named exactly wins.
 JS_RAIL = """const items=[...document.querySelectorAll('[role=treeitem]')];
-const tid=e=>e.getAttribute('data-fui-tree-item-value')||e.querySelector('[data-fui-tree-item-value]')?.getAttribute('data-fui-tree-item-value');
+const tid=e=>e.getAttribute('data-fui-tree-item-value')||(e.querySelector('[role=treeitem]')?null:e.querySelector('[data-fui-tree-item-value]')?.getAttribute('data-fui-tree-item-value'));
+const vis=e=>{const r=e.getBoundingClientRect();return r.width>0&&r.height>0};
 const last=v=>(v||'').split('|').pop();const nm=t=>(t||'').replace(/\\s+/g,' ').trim();
 const alts=new Set((A.alts||[A.name]).map(a=>nm(a).toLowerCase()));
-const byId=A.id?items.filter(e=>last(tid(e))===A.id):[];
+const byId=A.id?items.filter(e=>vis(e)&&last(tid(e))===A.id):[];
 const first=e=>nm(e.innerText.trim().split('\\n')[0]);
-const any=byId.length?byId:items.filter(e=>alts.has(first(e).toLowerCase()));
-const ex=byId.length?[]:any.filter(e=>first(e).toLowerCase()===nm(A.name).toLowerCase());const m=ex.length?ex:any;
+const any=byId.length?byId:items.filter(e=>vis(e)&&alts.has(first(e).toLowerCase()));
+const ex=(byId.length||A.all)?[]:any.filter(e=>first(e).toLowerCase()===nm(A.name).toLowerCase());const m=ex.length?ex:any;
 if(m.length===1)m[0].scrollIntoView({block:'center'});
-return {total:items.length,matches:m.map(t=>{const r=t.getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2,name:t.innerText.trim().split('\\n')[0].trim()}})}"""
+return {total:items.length,matches:m.map(t=>{const r=t.getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2,name:t.innerText.trim().split('\\n')[0].trim(),id:last(tid(t))||null}})}"""
+# The rail's "See more" / "See less" controls (#223: Teams keeps older chats under a collapsed "See more", out
+# of the rendered rows). UNVERIFIED on the real app (no probe of a collapsed section yet): a treeitem, button
+# or role=button inside the rail tree whose aria-label or first line is "See more"/"Show more" ("less" once
+# open); open = aria-expanded="true" when it has one, else a "less" label. The outermost of nested matches.
+JS_RAIL_MORE = """const nm=t=>(t||'').replace(/\\s+/g,' ').trim();
+const lab=e=>nm(e.getAttribute('aria-label')||(e.innerText||'').trim().split('\\n')[0]);
+const c=[...document.querySelectorAll('[role=tree] [role=treeitem],[role=tree] button,[role=tree] [role=button]')].filter(e=>/^(see|show) (more|less)$/i.test(lab(e)));
+const top=c.filter(e=>!c.some(o=>o!==e&&o.contains(e)));
+return top.map(e=>{const r=e.getBoundingClientRect();const x=e.getAttribute('aria-expanded');
+return {x:r.x+r.width/2,y:r.y+r.height/2,w:r.width,label:lab(e),expanded:x?x==='true':/less$/i.test(lab(e))}})"""
 JS_SEARCH_BOX = ("const b=document.querySelector(" + json.dumps(SEARCH_SEL) + ");"
                  "if(!b)return null;const r=b.getBoundingClientRect();if(!r.width)return null;"
                  "return {x:r.x+r.width/2,y:r.y+r.height/2}")
@@ -757,11 +784,23 @@ def label_alts(chat: str) -> list[str]:
     return out
 
 
-def pick_row(matches: list[dict], chat: str) -> list[dict]:
-    """Of the rows a label matched, the ones named CHAT exactly win; otherwise all of them stay (several
-    is "ambiguous")."""
-    exact = [m for m in matches if (m.get("name") or "").strip().lower() == chat.strip().lower()]
-    return exact or matches
+def pick_row(matches: list[dict], chat: str, exact: bool = True) -> list[dict]:
+    """Of the rows a label matched, the ones named CHAT exactly win (exact=False: none wins, every chat with
+    the members counts, #223); otherwise all of them stay (several is "ambiguous"). Rows carrying the same
+    thread id are one chat shown twice (a pinned chat is also in Recent): the first stays."""
+    seen: set[str] = set()
+    rows = []
+    for m in matches:
+        k = m.get("id")
+        if k and k in seen:
+            continue
+        if k:
+            seen.add(k)
+        rows.append(m)
+    if not exact:
+        return rows
+    named = [m for m in rows if (m.get("name") or "").strip().lower() == chat.strip().lower()]
+    return named or rows
 
 
 def search_queries(chat: str) -> list[str]:
@@ -795,53 +834,156 @@ async def search_clear(c: CDP):
         pass
 
 
+async def expand_more(c: CDP) -> list[int]:
+    """Open each collapsed "See more" in the rail (#223), at most 3, so the chats under it render. Returns the
+    indices (among the rail's See more controls) it opened, for collapse_more. A control that doesn't read
+    open after its click ends it: nothing is clicked twice."""
+    opened: list[int] = []
+    for _ in range(3):
+        ms = await c.ev(op("rail_more", JS_RAIL_MORE)) or []
+        i = next((k for k, m in enumerate(ms) if not m.get("expanded") and m.get("w") and k not in opened), None)
+        if i is None:
+            break
+        await c.click(ms[i]["x"], ms[i]["y"])
+        for _ in range(8):
+            await nap(0.25)
+            now = await c.ev(op("rail_more", JS_RAIL_MORE)) or []
+            if i < len(now) and now[i].get("expanded"):
+                opened.append(i)
+                break
+        else:
+            break
+    return opened
+
+
+async def collapse_more(c: CDP, opened: list[int]):
+    """Put the rail back the way it was: close the See more sections expand_more opened, last first (an
+    earlier one closing would move the later ones). Only when no row under them is about to be clicked."""
+    if not opened:
+        return
+    ms = await c.ev(op("rail_more", JS_RAIL_MORE)) or []
+    for i in sorted(opened, reverse=True):
+        if i < len(ms) and ms[i].get("expanded") and ms[i].get("w"):
+            await c.click(ms[i]["x"], ms[i]["y"])
+            await nap(0.25)
+
+
+async def rail_lookup(c: CDP, chat: str, thread_id: str | None, settle: int, every: bool,
+                      wait: int = 30) -> tuple[list[dict], list[int]]:
+    """Rows of the left rail that are CHAT: by thread id, else by label (label_alts). Waits up to WAIT polls
+    for the rail to render, then SETTLE polls (~1s each) for the row; the first time the rendered rail has no
+    match it opens any collapsed "See more" (#223). Returns the matches and the See more sections it opened."""
+    matches: list[dict] = []
+    opened: list[int] = []
+    rendered = 0
+    tried_more = False
+    for _ in range(wait + settle):
+        r = await c.ev(op("rail_find", JS_RAIL, name=chat, id=thread_id, alts=label_alts(chat), all=every))
+        matches = pick_row(r["matches"], chat, exact=not every)
+        if matches:
+            break
+        if r["total"] > 0:
+            if not tried_more:
+                tried_more = True
+                opened = await expand_more(c)
+                if opened:
+                    continue  # read the rail again at once, with the section open
+            rendered += 1
+            if rendered >= settle:
+                break
+        await nap(1)
+    return matches, opened
+
+
+async def search_lookup(c: CDP, chat: str, thread_id: str | None, every: bool) -> tuple[list[dict], list[str]]:
+    """Teams search for CHAT: the name, then each member (search_queries), keeping the options whose data-tid
+    holds the thread id, else whose first line is a label of CHAT (the member set in any order). Read-only
+    apart from the search box itself, which is left empty when nothing matched. Returns matches, queries."""
+    box = await c.ev(op("search_box", JS_SEARCH_BOX))
+    await c.click(box["x"], box["y"])
+    matches: list[dict] = []
+    queries = search_queries(chat)
+    for q in queries:
+        await search_type(c, q)
+        last = -1
+        for _ in range(20):
+            await nap(0.5)
+            r = await c.ev(op("search_find", JS_SEARCH_FIND, name=chat, id=thread_id, alts=label_alts(chat)))
+            matches = pick_row(r["matches"], chat, exact=not every)
+            if matches and len(matches) == last:
+                break
+            last = len(matches)
+        if matches:
+            break
+    if not matches:
+        await search_clear(c)
+    return matches, queries
+
+
 async def open_chat(c: CDP, chat: str, thread_id: str | None = None) -> str:
     """Open CHAT and prove it is the one: with a thread id, the open chat's id must equal it AND the window
     title must not name another chat (it may name CHAT, the row the id found, or a "+1" cut of either; the id
     can switch before the title does, so it waits for both); without one, the title must name exactly this
-    chat. The title returned is read once both agree, so the result's "chat" is where the text went."""
-    matches: list[dict] = []
-    rendered = 0  # polls since the rail first showed any item
-    for _ in range(45):  # wait for the rail, then give the exact row up to 15 polls (~15s) to appear
-        r = await c.ev(op("rail_find", JS_RAIL, name=chat, id=thread_id, alts=label_alts(chat)))
-        matches = pick_row(r["matches"], chat)
-        if matches:
-            break
-        if r["total"] > 0:
-            rendered += 1
-            if rendered >= 15:
-                break
-        await nap(1)
+    chat. The title returned is read once both agree, so the result's "chat" is where the text went.
+    A row under a collapsed "See more" in the rail counts too (#223): the section is opened to find it, and
+    closed again when the chat isn't there."""
+    matches, opened = await rail_lookup(c, chat, thread_id, settle=15, every=False)
     source = "left rail"
     if not matches:
+        await collapse_more(c, opened)
         source = "search"
-        box = await c.ev(op("search_box", JS_SEARCH_BOX))
-        if not box:
+        if not await c.ev(op("search_box", JS_SEARCH_BOX)):
             raise StagerError(f"no chat named {chat} in the left rail and no search box found (signed in?)")
-        await c.click(box["x"], box["y"])
-        queries = search_queries(chat)
-        for q in queries:
-            await search_type(c, q)
-            last = -1
-            for _ in range(20):
-                await nap(0.5)
-                r = await c.ev(op("search_find", JS_SEARCH_FIND, name=chat, id=thread_id, alts=label_alts(chat)))
-                matches = pick_row(r["matches"], chat)
-                if matches and len(matches) == last:
-                    break
-                last = len(matches)
-            if matches:
-                break
+        matches, queries = await search_lookup(c, chat, thread_id, every=False)
         if not matches:
-            await search_clear(c)
             tried = ", ".join(f'"{q}"' for q in queries)
             raise StagerError(f"no chat named {chat} (rail or search; searched {tried})")
     if len(matches) > 1:
         raise StagerError(f"ambiguous: {len(matches)} chats named {chat}")
+    return await open_match(c, chat, thread_id, matches, source, every=False)
+
+
+async def existing_chat(c: CDP, chat: str, thread_id: str | None = None) -> str | None:
+    """--new-chat to a group (#223): before New message, the one chat that already has these members. Looks,
+    read-only (no keystroke outside the search box, no compose box), in the left rail (a collapsed "See more"
+    opened for it, closed again when the chat isn't under it), then Teams search by the chat and by each
+    member, matching rows by the thread id when one is known, else by the MEMBER SET (label_alts: the same
+    people in any order, full or first names; a "+N" label never), never by an exact title alone. One chat:
+    opened and proven like open_chat (the title must list these members, or the id must match), its title
+    returned. Several: exit 1 ambiguous, nothing pressed. None: None, and the caller starts a new chat.
+    A one-person new chat is not looked up: Teams' New message to someone reuses the 1:1 itself."""
+    if len(split_members(chat)) < 2:
+        return None
+    await chat_view(c)
+    matches, opened = await rail_lookup(c, chat, thread_id, settle=5, every=True, wait=10)
+    source = "left rail"
+    if not matches:
+        await collapse_more(c, opened)
+        source = "search"
+        if await c.ev(op("search_box", JS_SEARCH_BOX)):
+            matches, _ = await search_lookup(c, chat, thread_id, every=True)
+        else:
+            print("drafts_stager: no search box; looked for an existing chat in the left rail only", file=sys.stderr)
+    if not matches:
+        return None
+    if len(matches) > 1:
+        raise StagerError(f"ambiguous: {len(matches)} chats with the members {chat} ({source}: "
+                          + ", ".join(f'"{m.get("name")}"' for m in matches)
+                          + "); open the right one and stage without --new-chat, or give its --thread-id")
+    print(f'drafts_stager: {chat} already have a chat ("{matches[0].get("name")}", {source}); opening it '
+          "instead of starting a new one", file=sys.stderr)
+    return await open_match(c, chat, thread_id, matches, source, every=True)
+
+
+async def open_match(c: CDP, chat: str, thread_id: str | None, matches: list[dict], source: str,
+                     every: bool = False) -> str:
+    """Click the one row (rail) or option (search) found for CHAT and wait until the open chat proves to be
+    it (see open_chat). Returns the window title."""
     title = ""
+    got = None
     for attempt in range(2):  # the rail can still be scrolling or re-rendering: a click once landed on the next chat
         if source == "left rail":
-            matches = await settled_rail_xy(c, chat, matches, thread_id)
+            matches = await settled_rail_xy(c, chat, matches, thread_id, every)
         await c.click(matches[0]["x"], matches[0]["y"])
         id_ok = False
         # with a thread id the row it found may be named otherwise (the group was renamed since the draft):
@@ -870,12 +1012,13 @@ async def open_chat(c: CDP, chat: str, thread_id: str | None = None) -> str:
     raise StagerError(f'title is "{title}", not {chat}; stopping ({source})' + where(title, got if thread_id else None, chat, thread_id))
 
 
-async def settled_rail_xy(c: CDP, chat: str, matches: list[dict], thread_id: str | None = None) -> list[dict]:
+async def settled_rail_xy(c: CDP, chat: str, matches: list[dict], thread_id: str | None = None,
+                          every: bool = False) -> list[dict]:
     """rail_find scrolls the row into view; read its position again until two reads agree (max ~2s)."""
     for _ in range(8):
         await nap(0.25)
-        r = await c.ev(op("rail_find", JS_RAIL, name=chat, id=thread_id, alts=label_alts(chat)))
-        now = pick_row(r["matches"], chat)
+        r = await c.ev(op("rail_find", JS_RAIL, name=chat, id=thread_id, alts=label_alts(chat), all=every))
+        now = pick_row(r["matches"], chat, exact=not every)
         if len(now) != 1:
             raise StagerError(f"chat {chat} left the rail while scrolling to it ({len(now)} rows match)")
         if abs(now[0]["x"] - matches[0]["x"]) < 1 and abs(now[0]["y"] - matches[0]["y"]) < 1:
@@ -901,11 +1044,11 @@ async def pick_exact(c: CDP, opname: str, js: str, name: str, none_msg: str, wha
     return matches[0]
 
 
-async def new_chat(c: CDP, name: str) -> str:
-    """New message to NAME, or to every person in "First Last, Other Person" (a new group chat)."""
-    people = [p.strip() for p in name.split(",") if p.strip()]
+async def chat_view(c: CDP) -> dict | None:
+    """The New message control, after switching Teams to the Chat view when it is on another (Calendar,
+    Activity...): the rail's chats and New message exist only there. None when it can't be found."""
     btn = await c.ev(op("new_chat_btn", JS_NEW_CHAT_BTN))
-    if not btn:  # Teams is on another view (Calendar, Activity...): switch to Chat first
+    if not btn:
         app_btn = await c.ev(op("chat_app_btn", JS_CHAT_APP_BTN))
         if app_btn:
             await c.click(app_btn["x"], app_btn["y"])
@@ -914,6 +1057,14 @@ async def new_chat(c: CDP, name: str) -> str:
                 btn = await c.ev(op("new_chat_btn", JS_NEW_CHAT_BTN))
                 if btn:
                     break
+    return btn
+
+
+async def new_chat(c: CDP, name: str) -> str:
+    """New message to NAME, or to every person in "First Last, Other Person" or "A, B and C" (a new group
+    chat; split_members, #223: "B and C" was once typed into the To picker as one person)."""
+    people = split_members(name)
+    btn = await chat_view(c)
     if not btn:
         raise StagerError("no New chat control found (signed in?)")
     await c.click(btn["x"], btn["y"])
@@ -1150,8 +1301,20 @@ async def stage(a) -> dict:
             c.session = (await c.send("Target.attachToTarget", {"targetId": tid, "flatten": True}))["sessionId"]
             step("bringing the tab to the front")  # a background tab (document.hidden) ignores rail clicks
             await bring_to_front(c, tid)
-            step("opening the chat")
-            title = await (new_chat(c, a.chat) if a.new_chat else open_chat(c, a.chat, a.thread_id))
+            # known: the chat that opened is an existing one, proven by its title or id, so the compose-box
+            # checks below apply; a chat started with New message has neither yet (the To chips are its check)
+            reused = False
+            if a.new_chat:
+                step("looking for an existing chat with these members")  # #223: never a duplicate group
+                title = await existing_chat(c, a.chat, a.thread_id)
+                reused = title is not None
+                if not reused:
+                    step("opening the chat")
+                    title = await new_chat(c, a.chat)
+            else:
+                step("opening the chat")
+                title = await open_chat(c, a.chat, a.thread_id)
+            known = reused or not a.new_chat
             if a.edit_sent:
                 return await edit_sent(c, a, title, html, plain)
 
@@ -1161,7 +1324,7 @@ async def stage(a) -> dict:
                     break
                 await nap(0.5)
             step("clearing the compose box")
-            if not a.new_chat:
+            if known:
                 title = await check_open(c, a.chat, a.thread_id)
             existing = await c.ev(op("compose_len", JS_LEN))
             if existing > 0 and not a.replace:
@@ -1208,7 +1371,7 @@ async def stage(a) -> dict:
                 await watch_box(c, len(a.mention))  # the last mention still there: don't paste into a fresh box
 
             step("pasting the draft")
-            if not a.new_chat:
+            if known:
                 title = await check_open(c, a.chat, a.thread_id)
             pasted = await c.ev(op("paste", JS_PASTE, html=html, plain=plain))
             if not pasted or not pasted.get("len"):
@@ -1227,11 +1390,13 @@ async def stage(a) -> dict:
             await c.ev(op("caret_end", JS_CARET))
             fin = await c.ev(op("final", JS_FINAL))
             measured = len(await chip_names(c) or [])  # chips actually in the compose box, not what was asked
-            if not a.new_chat:
+            if known:
                 title = await c.ev(op("title", "return document.title")) or title  # "chat": where the text is now
             out = {"sent": False, "chat": title, "chars": fin["len"], "links": fin["links"],
                    "attachments": measured, "mentions": len(a.mention)}
-            if a.thread_id:
+            if reused:
+                out["existing_chat"] = True  # a --new-chat draft went into the chat these members already have
+            if a.thread_id and known:
                 out["thread_id"] = a.thread_id
             return out
         finally:

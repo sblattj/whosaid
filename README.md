@@ -455,7 +455,11 @@ whosaid drafts html                             # review page of every open draf
 - **The built-in stager.** When `WHOSAID_DRAFTS_STAGER` is unset, `stage` uses `lib/drafts_stager.py`.
   It needs either the Teams desktop app or a Chromium browser started with `--remote-debugging-port`
   with Teams web signed in (port order below). It opens the chat by
-  exact name (left rail, else search; `--new-chat` starts one via the To picker), pastes the draft
+  exact name (left rail, opening a collapsed **See more** section when the chat isn't among the visible
+  rows, else search). `--new-chat` to a group first looks for the chat those members already have
+  (rail, **See more**, then search by each member, matching the member set in any order or the chat's
+  thread id) and opens it when there is exactly one; two or more stop it as ambiguous, and only when there
+  is none does it press **New message** and pick each person in the To picker. It pastes the draft
   as rich text, attaches the pages, and with `--replace` clears the box (`--only-these-attachments`
   also removes the attachments already there). Each `--mention NAME` becomes a real @mention at the
   start of the message, in order, before the body; a literal `@NAME` in the text is dropped so it is
