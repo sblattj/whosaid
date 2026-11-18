@@ -72,6 +72,12 @@ run_w record --leave
 assert_eq "$RC" 2 "'record --leave' without --browser exits 2"
 run_w record --no-mic
 assert_eq "$RC" 2 "'record --no-mic' alone still exits 2"
+run_w record --mic-always
+assert_eq "$RC" 2 "'record --mic-always' without --browser exits 2"
+assert_contains "$OUT" "--mic-always only applies with --browser" "explains --mic-always"
+run_w record --browser --mic-always --no-mic
+assert_eq "$RC" 2 "'record --browser --mic-always --no-mic' exits 2"
+assert_contains "$OUT" "conflict" "explains --no-mic/--mic-always"
 [ ! -e /tmp/x ] || [ -d /tmp/x ] || fail "unexpected /tmp/x"
 PASS=$((PASS + 1))
 
@@ -80,6 +86,8 @@ if [ -f "$REPO/lib/record_browser.py" ]; then
   mkdir -p "$TMP/in"
   run_w record --browser --cdp-port 1 --into "$TMP/in"
   assert_eq "$RC" 6 "dead CDP port exits 6"
+  run_w record --browser --mic-always --cdp-port 1 --into "$TMP/in"
+  assert_eq "$RC" 6 "--mic-always passes through to record_browser.py (dead port still exits 6, not 2)"
   [ -z "$(ls "$TMP/in" 2>/dev/null)" ] || fail "dead-port run left files: $(ls "$TMP/in")"
   PASS=$((PASS + 1))
 else

@@ -3316,7 +3316,8 @@ _DESC_RECORD_BROWSER = (
     "target (a targetId or a URL substring). The recorder stops by itself when the call ends "
     "(the hang-up control disappears; override with leave_selector) or after max_seconds "
     "(default 10800); leave=true also clicks hang-up at max_seconds; no_mic=true records the "
-    "tab only. With into=<dir> the file is saved there and NOT transcribed, so `whosaid watch` "
+    "tab only. The mic channel is silent while the meeting shows you muted (Teams mic button); "
+    "mic_always=true records the mic regardless. With into=<dir> the file is saved there and NOT transcribed, so `whosaid watch` "
     "can ingest it; without into it is saved under recordings/ and transcribed. "
     "action=\"stop\" sends Ctrl-C, waits up to 60 seconds for the file to be finalized, and "
     "returns {status, output, log_tail}. action=\"status\" returns {running, pid, started, "
@@ -3463,6 +3464,7 @@ def whosaid_record_browser(
     leave: bool = False,
     into: Optional[str] = None,
     label: Optional[str] = None,
+    mic_always: bool = False,
 ) -> dict:
     """start / stop / status for a background `whosaid record --browser` run.
 
@@ -3482,8 +3484,12 @@ def whosaid_record_browser(
                       ("--max-seconds", max_seconds), ("--into", into), ("--label", label)):
         if val is not None and str(val) != "":
             argv += [flag, str(val)]
+    if no_mic and mic_always:
+        return _ws_error("no_mic and mic_always conflict", "pass one of them")
     if no_mic:
         argv.append("--no-mic")
+    if mic_always:
+        argv.append("--mic-always")
     if leave:
         argv.append("--leave")
     return _rb_start(argv, {"argv": argv[1:]}, state_path)

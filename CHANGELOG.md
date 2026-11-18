@@ -6,6 +6,12 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ## [Unreleased]
 
+### Changed
+- `record --browser` (and `autorecord --browser`) now respects meeting mute by default. The mic goes through a gain node that is set to 0 while the meeting's mic button reads muted (Teams web `#microphone-button` / `data-tid="microphone-button"` / `data-tid="toggle-mute"`: `aria-label` "Unmute ..." or `data-state="mic-off"`), polled every 250 ms plus a DOM observer. Muted frames are zeroed, not dropped, so the left/right timeline stays aligned. Each mute change is logged (`mic muted: left channel silenced at <time> (+<offset>s)`). If the button is missing or unreadable, the mic is recorded (fail-safe).
+
+### Added
+- `--mic-always` for `record --browser`, `autorecord run|install|setup --browser` and the `whosaid_record_browser` MCP tool (`mic_always`): record the mic even while muted. `autorecord install` keeps it in the LaunchAgent's arguments. It conflicts with `--no-mic` and does not apply to `--app` (app mode does not read mute yet).
+
 ## [1.43.2] - 2026-11-18
 
 ### Fixed

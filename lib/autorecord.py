@@ -128,6 +128,8 @@ def record_argv(a: argparse.Namespace) -> list[str]:
             argv += ["--target", a.target]
     if a.no_mic:
         argv.append("--no-mic")
+    if getattr(a, "mic_always", False):
+        argv.append("--mic-always")
     argv += ["--into", str(a.into)]
     if a.label:
         argv += ["--label", a.label]
@@ -550,6 +552,8 @@ def run_args(a: argparse.Namespace) -> list[str]:
             args += ["--target", a.target]
     if a.no_mic:
         args.append("--no-mic")
+    if getattr(a, "mic_always", False):
+        args.append("--mic-always")
     if a.label:
         args += ["--label", a.label]
     if a.live:
@@ -852,7 +856,8 @@ def installed_config() -> dict | None:
             "mode": "app" if "--app" in args else "browser",
             "app": args[args.index("--app") + 1] if "--app" in args else None,
             "label": args[args.index("--label") + 1] if "--label" in args else None,
-            "live": "--live" in args}
+            "live": "--live" in args,
+            "mic_always": "--mic-always" in args}
 
 
 def status(into_arg: str | None = None) -> dict:
@@ -980,6 +985,9 @@ def add_mode_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--target")
     p.add_argument("--label", default="call")
     p.add_argument("--no-mic", action="store_true")
+    p.add_argument("--mic-always", action="store_true",
+                   help="--browser: record the mic even while the meeting shows it muted "
+                        "(default: the left channel is silent while muted)")
     p.add_argument("--live", action="store_true",
                    help="also run `whosaid live` during each capture (a live me/them transcript)")
     p.add_argument("--whosaid", default=default_whosaid())
@@ -1031,6 +1039,10 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
         p.error("--idle-seconds must be > 0")
     if a.cmd in ("run", "install", "setup") and a.browser is False and a.target:
         p.error("--target only applies with --browser")
+    if a.cmd in ("run", "install", "setup") and a.mic_always and not a.browser:
+        p.error("--mic-always only applies with --browser (app mode does not read mute yet)")
+    if a.cmd in ("run", "install", "setup") and a.mic_always and a.no_mic:
+        p.error("--no-mic and --mic-always conflict")
     return a
 
 

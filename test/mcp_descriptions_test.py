@@ -471,7 +471,8 @@ def main() -> None:
           and rb_ann.get("openWorldHint") is False, f"record_browser annotations: {rb_ann}")
     check(rb["inputSchema"].get("required") == ["action"], f"record_browser requires only action: {rb['inputSchema']}")
     check(set(rb["inputSchema"]["properties"]) == {"action", "cdp_port", "target", "leave_selector",
-                                                   "max_seconds", "no_mic", "leave", "into", "label"},
+                                                   "max_seconds", "no_mic", "leave", "into", "label",
+                                                   "mic_always"},
           f"record_browser params: {sorted(rb['inputSchema']['properties'])}")
     check(set(rb["inputSchema"]["properties"]["action"].get("enum") or []) == {"start", "stop", "status"},
           "record_browser action enum")

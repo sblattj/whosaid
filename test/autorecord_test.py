@@ -7,7 +7,9 @@ one-copy-per-folder lock. No launchctl, no capture, no audio.
 
 Run: python3 test/autorecord_test.py
 """
+import contextlib
 import fcntl
+import io
 import os
 import plistlib
 import re
@@ -56,6 +58,24 @@ j = ar.parse_args(["install", "--browser", "--into", "/r", "--whosaid", "/w"])
 pl = ar.build_plist(j, None)
 check(pl["ProgramArguments"][:3] == ["/w", "autorecord", "run"] and "--browser" in pl["ProgramArguments"],
       "browser plist runs whosaid directly (no app, no grant)")
+# ---- --mic-always (D81): default respects meeting mute; opt-in reaches record and the plist ----
+check("--mic-always" not in ar.record_argv(b) and ar.parse_args(["run", "--browser"]).mic_always is False,
+      "browser default: no --mic-always (mute-respecting)")
+m = ar.parse_args(["run", "--browser", "--mic-always", "--into", "/r", "--whosaid", "/w"])
+check(ar.record_argv(m) == ["/w", "record", "--browser", "--wait-for-call", "--cdp-port", str(m.cdp_port),
+                            "--mic-always", "--into", "/r", "--label", "call"], f"run --mic-always argv {ar.record_argv(m)}")
+mi = ar.parse_args(["install", "--browser", "--mic-always", "--into", "/r", "--whosaid", "/w", "--live"])
+mp = ar.build_plist(mi, None)["ProgramArguments"]
+check("--mic-always" in mp and mp[:3] == ["/w", "autorecord", "run"], f"install --mic-always reaches the plist: {mp}")
+check(ar.parse_args(mp[2:]).mic_always is True, "plist args round-trip through run's parser")
+check("--mic-always" not in ar.build_plist(j, None)["ProgramArguments"], "default install plist omits --mic-always")
+for bad in (["run", "--app", "x", "--mic-always"], ["install", "--browser", "--mic-always", "--no-mic"]):
+    try:
+        with contextlib.redirect_stderr(io.StringIO()):
+            ar.parse_args(bad)
+        check(False, f"{bad} must be rejected")
+    except SystemExit as e:
+        check(e.code == 2, f"{bad} exits 2")
 try:
     ar.parse_args(["run", "--app", "x", "--target", "t"])
     check(False, "--target without --browser must fail")
@@ -157,6 +177,8 @@ exit 0
     check((d / "ws" / "whosaid.toml").read_text() == "# mine\n", "an existing whosaid.toml is never edited")
 
 # ---- state file, stop-now, pause/resume, status --json (macOS app, P1) ----
+import contextlib
+import io
 import json  # noqa: E402
 import time  # noqa: E402
 

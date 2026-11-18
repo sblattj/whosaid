@@ -533,6 +533,10 @@ RECORD FLAGS
                       --remote-debugging-port=9222. No Screen Recording permission.
                       Saved as stereo: left = mic, right = the tab. Auto-stops once the
                       call's hang-up button has been seen and then vanishes (2 polls).
+                      The left channel is silent while the meeting's mic button shows
+                      muted (Teams web; checked every 250 ms, mute changes are logged).
+                      No mic button found: the mic is recorded.
+  --mic-always        With --browser: record the mic even while muted in the meeting.
   --cdp-port P        With --browser: DevTools port (default $WHOSAID_CDP_PORT or 9222).
   --target T          With --browser: tab to record, a targetId or a URL substring.
                       Needed when more than one tab matches.
@@ -776,7 +780,7 @@ WATCH
 
 AUTORECORD
   whosaid autorecord run       --app A | --browser [--into DIR] [--idle-seconds N]
-                               [--cdp-port P] [--target T] [--label L] [--no-mic] [--live]
+                               [--cdp-port P] [--target T] [--label L] [--no-mic | --mic-always] [--live]
   whosaid autorecord install   (same flags) [--no-open] [--dry-run]
   whosaid autorecord uninstall [--purge]
   whosaid autorecord status    [--lines N] [--json] [--into DIR]
@@ -791,6 +795,8 @@ AUTORECORD
   browser started with --remote-debugging-port. One copy per folder; it never gives
   up (app not running and no browser are waiting states; failures back off to 5 min).
   Log: <into>/.autorecord.log. Default --label: call.
+  --browser respects meeting mute by default (left channel silent while muted);
+  --mic-always records the mic regardless and is kept in the installed agent's args.
   --live also runs `whosaid live --once` while each call is captured (a live me/them
   transcript for the app's Live now and the whosaid_live tool); it starts with the
   capture and stops with it. Off by default. Its log: <into>/.autorecord/live.log.
@@ -1831,9 +1837,9 @@ record_app_audio() {
 
 # Record one browser tab's meeting audio over CDP into OUT, an .m4a.
 # lib/record_browser.py writes OUT atomically (temp name, then rename).
-# Args: out no_mic cdp_port target leave_selector max_seconds leave wait_call
+# Args: out no_mic cdp_port target leave_selector max_seconds leave wait_call mic_always
 record_browser_audio() {
-  local out="$1" no_mic="$2" cdp_port="$3" target="$4" sel="$5" maxs="$6" leave="$7" wait_call="${8:-0}"
+  local out="$1" no_mic="$2" cdp_port="$3" target="$4" sel="$5" maxs="$6" leave="$7" wait_call="${8:-0}" mic_always="${9:-0}"
   local rb=(--out "$out" --cdp-port "$cdp_port")
   [[ "$wait_call" == 1 ]] && rb+=(--wait-for-call)
   [[ -n "$target" ]] && rb+=(--target "$target")
@@ -1841,6 +1847,7 @@ record_browser_audio() {
   [[ -n "$maxs" ]] && rb+=(--max-seconds "$maxs")
   [[ "$leave" == 1 ]] && rb+=(--leave)
   [[ "$no_mic" == 1 ]] && rb+=(--no-mic)
+  [[ "$mic_always" == 1 ]] && rb+=(--mic-always)
 
   log "recording browser tab (CDP port $cdp_port) to $out; press Ctrl-C to stop (auto-stops when the call ends)."
   local rc
@@ -1860,7 +1867,7 @@ cmd_record() {
   warn_if_not_arm64
   ensure_uv_and_ffmpeg
 
-  local label="" app="" no_mic=0 wait_call=0 until_end=0 idle_secs=""
+  local label="" app="" no_mic=0 mic_always=0 wait_call=0 until_end=0 idle_secs=""
   local watch_call=0 interval=""
   local browser=0 cdp_port="" target="" leave_sel="" max_secs="" leave=0 into=""
   local extra_args=()
@@ -1871,6 +1878,7 @@ cmd_record() {
         [[ $# -ge 2 && -n "$2" ]] || { log "--app needs an app (bundle ID or name); see: whosaid record --list-apps"; exit 2; }
         app="$2"; shift 2 ;;
       --no-mic) no_mic=1; shift ;;
+      --mic-always) mic_always=1; shift ;;
       --wait-for-call) wait_call=1; shift ;;
       --until-call-ends) until_end=1; shift ;;
       --idle-seconds)
@@ -1925,6 +1933,14 @@ cmd_record() {
     log "--browser and --app are mutually exclusive."
     exit 2
   fi
+  if [[ "$mic_always" == 1 && "$browser" != 1 ]]; then
+    log "--mic-always only applies with --browser (--app does not read meeting mute yet)."
+    exit 2
+  fi
+  if [[ "$mic_always" == 1 && "$no_mic" == 1 ]]; then
+    log "--no-mic and --mic-always conflict."
+    exit 2
+  fi
   if [[ "$wait_call" == 1 && -z "$app" && "$browser" != 1 ]]; then
     log "--wait-for-call only applies with --app or --browser."
     exit 2
@@ -1968,7 +1984,7 @@ cmd_record() {
 
   rc=0
   if [[ "$browser" == 1 ]]; then
-    record_browser_audio "$out" "$no_mic" "$cdp_port" "$target" "$leave_sel" "$max_secs" "$leave" "$wait_call"
+    record_browser_audio "$out" "$no_mic" "$cdp_port" "$target" "$leave_sel" "$max_secs" "$leave" "$wait_call" "$mic_always"
     trap - INT
     if [[ "$wait_call" == 1 && ! -e "$out" ]]; then
       # record_browser exits 0 with no file when the wait was interrupted.

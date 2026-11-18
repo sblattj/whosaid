@@ -125,6 +125,98 @@ cands = rb.wait_candidates([page("A", "https://teams.microsoft.com/v2/") | ws,
 check([(c[0]["id"], c[1]) for c in cands] == [("B", "#hang")], "--target and --leave-selector narrow the wait")
 
 
+# ---- mute gate (D81): the injected JS under node with a stub DOM / Web Audio ----
+def run_gate_js(body: str) -> dict:
+    """Run install_js-derived JS under node; body ends by printing one JSON object."""
+    r = subprocess.run(["node", "-e", body], capture_output=True, text=True, timeout=30)
+    check(r.returncode == 0, f"node gate script failed: {r.stderr}")
+    return json.loads(r.stdout.strip().splitlines()[-1])
+
+
+GATE_HARNESS = r"""
+const btn = {attrs: {}, getAttribute(k) { return k in this.attrs ? this.attrs[k] : null; }};
+let present = __PRESENT__;
+const timers = [];
+globalThis.setInterval = (f, ms) => { timers.push(ms); return 1; };
+globalThis.clearInterval = () => {};
+globalThis.MutationObserver = class { observe() {} disconnect() {} };
+globalThis.document = {
+  documentElement: {}, sel: null,
+  querySelector(s) { if (s === __SEL__) { this.sel = s; return present ? btn : null; } return null; },
+  querySelectorAll() { return []; },
+};
+const node = () => ({connect() {}, gain: {value: 1}});
+globalThis.AudioContext = class { constructor() { this.state = 'running'; }
+  createGain() { return node(); } createMediaStreamDestination() { return {stream: {}}; }
+  createChannelMerger() { return node(); } createMediaStreamSource() { return node(); } };
+globalThis.MediaRecorder = class { constructor() { this.state = 'inactive'; } start() { this.state = 'recording'; } };
+globalThis.MediaStream = class {};
+Object.defineProperty(globalThis, 'navigator', {configurable: true,
+  value: {mediaDevices: {getUserMedia: async () => ({getTracks: () => []})}}});
+globalThis.window = globalThis;
+(async () => {
+  const info = await __INSTALL__;
+  const R = window.__whosaidRec;
+  const out = {info, timers, sel: document.sel, steps: []};
+  const step = (label) => {
+    if (label === null) delete btn.attrs['aria-label']; else btn.attrs['aria-label'] = label;
+    const st = R.poll(null);
+    out.steps.push({label, muted: st.muted, gain: R.micGate.gain.value, events: st.muteEvents.map(e => e.muted)});
+  };
+  for (const l of __LABELS__) step(l);
+  btn.attrs['data-state'] = 'mic-off'; delete btn.attrs['aria-label'];
+  const st = R.poll(null);
+  out.dataState = {muted: st.muted, gain: R.micGate.gain.value};
+  console.log(JSON.stringify(out));
+})();
+"""
+
+
+def gate_run(present: bool, mic_always: bool = False,
+             labels=("Mute mic (Ctrl+Shift+M)", "Unmute mic (Ctrl+Shift+M)", "Unmute", "Mute")) -> dict:
+    body = (GATE_HARNESS.replace("__PRESENT__", "true" if present else "false")
+            .replace("__SEL__", json.dumps(rb.MUTE_SELECTOR))
+            .replace("__LABELS__", json.dumps(list(labels)))
+            .replace("__INSTALL__", rb.install_js(False, mic_always).strip()))
+    return run_gate_js(body)
+
+
+js = rb.install_js(False)
+check("const micAlways = false;" in js and "__" not in js.replace("__whosaidRec", ""),
+      "install_js substitutes every placeholder (default respects mute)")
+check("const micAlways = true;" in rb.install_js(False, True), "install_js(mic_always=True)")
+check(rb.MUTE_POLL_MS == 250 and "#microphone-button" in rb.MUTE_SELECTOR
+      and '[data-tid="toggle-mute"]' in rb.MUTE_SELECTOR, "mute selector + 250 ms poll")
+check(rb.parse_args(["--out", "x.m4a"]).mic_always is False, "--mic-always is off by default")
+check(rb.parse_args(["--out", "x.m4a", "--mic-always"]).mic_always is True, "--mic-always parses")
+ev = rb.mute_event_line({"t": 1_700_000_003_500, "muted": True}, start_ms=1_700_000_000_000)
+check(ev.startswith("mic muted: left channel silenced at ") and ev.endswith("(+3.5s)"), f"mute log line: {ev}")
+check("unknown" in rb.mute_event_line({"t": 1, "muted": None}), "unknown mute line")
+check("unmuted" in rb.mute_event_line({"t": 1, "muted": False}), "unmute line")
+if shutil.which("node"):
+    g = gate_run(present=True)
+    check(g["timers"] == [250] and g["sel"] == rb.MUTE_SELECTOR, f"gate polls the mic button every 250 ms: {g}")
+    check([(s["muted"], s["gain"]) for s in g["steps"]] == [(False, 1), (True, 0), (True, 0), (False, 1)],
+          f"unmuted -> gain 1, muted -> gain 0: {g['steps']}")
+    check([s["events"] for s in g["steps"]] == [[None, False], [True], [], [False]],
+          f"one mute event per transition (install logs the start state, unlabeled = unknown): {g['steps']}")
+    check(g["dataState"] == {"muted": True, "gain": 0}, f"data-state=mic-off reads muted: {g['dataState']}")
+    g = gate_run(present=False)
+    check(all(s["muted"] is None and s["gain"] == 1 for s in g["steps"]),
+          f"button missing -> unknown, gain 1 (fail-safe records): {g['steps']}")
+    check(g["steps"][0]["events"] == [None] and all(s["events"] == [] for s in g["steps"][1:]),
+          "button missing logs one 'unknown' event")
+    g = gate_run(present=True, labels=(None, "Camera"))
+    check(all(s["muted"] is None and s["gain"] == 1 for s in g["steps"]),
+          f"unreadable button -> unknown, gain 1: {g['steps']}")
+    g = gate_run(present=True, mic_always=True)
+    check(g["timers"] == [] and all(s["gain"] == 1 and s["muted"] is None and s["events"] == [] for s in g["steps"])
+          and g["dataState"]["gain"] == 1, f"--mic-always: no poll, gain stays 1 while muted: {g}")
+    check(g["info"]["micAlways"] is True, "install reports micAlways")
+else:
+    print("SKIP: node not found (mute gate JS)")
+
+
 # ---- fake CDP end to end ----
 def fake_cdp(webm_b64, ws_port_box, close_after_drain=False, in_call_forever=False, joins_after=None):
     """Serve canned Runtime.evaluate replies; returns the websockets server.
@@ -145,7 +237,9 @@ def fake_cdp(webm_b64, ws_port_box, close_after_drain=False, in_call_forever=Fal
             elif "MediaRecorder" in expr:  # install (its body also mentions drain/poll)
                 value = {"installed": True, "micOk": True, "micError": None}
             elif ".poll(" in expr:
-                value = {"inCall": next(polls, False), "remoteStreams": 1, "micOk": True}
+                value = {"inCall": next(polls, False), "remoteStreams": 1, "micOk": True,
+                         "muteEvents": [] if sent.get("muted") else [{"t": 1_700_000_000_000, "muted": True}]}
+                sent["muted"] = True
             elif ".drain()" in expr:
                 value, sent["drain"] = ("" if sent["drain"] else webm_b64), True
             else:  # .stop() hands back whatever was never drained, like the real one
@@ -211,6 +305,8 @@ if shutil.which("ffmpeg") and shutil.which("ffprobe"):
             check(r.stderr.count("record-browser: stopped: ") == 1
                   and "record-browser: stopped: call-ended" in r.stderr, f"stopped: call-ended once: {r.stderr}")
             check("captured " in r.stderr and str(out) in r.stderr, "captured line names the out path")
+            check(r.stderr.count("record-browser: mic muted: left channel silenced at ") == 1
+                  and "mic follows meeting mute" in r.stderr, f"mute events from poll are logged once: {r.stderr}")
             check(out.exists() and sc.is_tagged(str(out)), "out file is stereo and tagged")
             check(not Path(rb.part_path(str(out))).exists(), "no .part left behind")
             dur = rb.probe_duration(str(out))

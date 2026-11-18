@@ -9,7 +9,11 @@ in a Chrome started with --remote-debugging-port needs no grant: this script
 connects to the tab's CDP websocket and injects a small recorder into the page.
 
   - left  = the local mic, via getUserMedia (the meeting origin already holds
-            mic permission, so there is no prompt)
+            mic permission, so there is no prompt). It goes through a gain
+            node that is set to 0 while the meeting's own mic button reads
+            muted (MUTE_SELECTOR, polled every 250 ms), so a muted aside is
+            recorded as silence and the L/R timeline stays aligned. A missing
+            button records the mic (fail-safe). --mic-always skips the gate.
   - right = every <audio>/<video> element whose srcObject is a MediaStream,
             mixed into one bus and re-scanned on each poll (meeting apps swap
             elements mid-call)
@@ -27,7 +31,7 @@ CHANNEL_TAG), so mic-vs-app attribution works on it unchanged.
 Usage:
   record_browser.py --out PATH.m4a [--cdp-host 127.0.0.1] [--cdp-port 9222]
                     [--target TARGETID|URL-SUBSTRING] [--leave-selector CSS]
-                    [--max-seconds N] [--no-mic] [--leave]
+                    [--max-seconds N] [--no-mic | --mic-always] [--leave]
                     [--poll-seconds 2] [--drain-seconds 2] [--arm-seconds 60]
                     [--wait-for-call [--wait-poll-seconds 4]]
   record_browser.py --list-targets [--cdp-host H] [--cdp-port P]
@@ -78,6 +82,16 @@ PROVIDERS = (
     ("meet.google.com", '[aria-label*="Leave call"]'),
     ("zoom.us", '.footer__leave-btn,[aria-label*="Leave"]'),
 )
+
+# The meeting's own mic toggle. Teams web v2 renders it as
+# <button id="microphone-button" data-tid="microphone-button" aria-label="Mute mic (Ctrl+Shift+M)">
+# and flips the label to "Unmute mic (...)" (data-state "mic" -> "mic-off" on builds that set
+# it) while muted; data-tid="toggle-mute" is the older client. Muted = data-state mic-off or
+# the word "unmute" in aria-label/title; unmuted = data-state mic/mic-on or the word "mute".
+# Anything else (no button, no label) is unknown and the mic is recorded (fail-safe).
+MUTE_SELECTOR = '#microphone-button,[data-tid="microphone-button"],[data-tid="toggle-mute"]'
+# How often the injected gate re-reads the button (ms). Worst-case leak at a mute edge.
+MUTE_POLL_MS = 250
 
 # Consecutive polls without the in-call element that count as "call ended".
 MISSES_TO_END = 2
@@ -280,13 +294,33 @@ class CDPSession:
 # --------------------------------------------------------- injected JS
 
 # Installs window.__whosaidRec once (a second run returns the existing state, so
-# a reconnect never starts a second MediaRecorder). __NO_MIC__ is substituted.
+# a reconnect never starts a second MediaRecorder). __NO_MIC__, __MIC_ALWAYS__,
+# __MUTE_SELECTOR__, __MUTE_POLL_MS__ and __MUTE_GATE__ are substituted.
+
+# The mute gate as standalone JS, so a test can run it under node with stub buttons.
+#   muteState(btn): true = muted, false = unmuted, null = no button (unknown)
+#   micGain(state, micAlways): 0 only when muted and not --mic-always; unknown records (1)
+MUTE_GATE_JS = r"""
+const muteState = (btn) => {
+  if (!btn) return null;
+  const label = (btn.getAttribute('aria-label') || btn.getAttribute('title') || '').trim().toLowerCase();
+  const dstate = (btn.getAttribute('data-state') || '').toLowerCase();
+  if (dstate === 'mic-off' || /\bunmute\b/.test(label)) return true;
+  if (dstate === 'mic' || dstate === 'mic-on' || /\bmute\b/.test(label)) return false;
+  return null;  // a button we cannot read counts as unknown: record (fail-safe)
+};
+const micGain = (state, micAlways) => (!micAlways && state === true) ? 0 : 1;
+"""
+
 INSTALL_JS = r"""
 (async () => {
   const noMic = __NO_MIC__;
+  const micAlways = __MIC_ALWAYS__;
+  __MUTE_GATE__
   if (window.__whosaidRec) return {installed: false, micOk: window.__whosaidRec.micOk,
                                    micError: window.__whosaidRec.micError};
-  const R = {chunks: [], streams: new Set(), micOk: false, micError: null, micStream: null};
+  const R = {chunks: [], streams: new Set(), micOk: false, micError: null, micStream: null,
+             muted: null, muteEvents: [], muteTimer: null, muteObs: null};
   window.__whosaidRec = R;
   const ctx = new AudioContext();
   if (ctx.state === 'suspended') { try { await ctx.resume(); } catch (e) {} }
@@ -300,11 +334,35 @@ INSTALL_JS = r"""
     const merger = ctx.createChannelMerger(2);
     R.remote.connect(merger, 0, 1);
     merger.connect(dest);
+    // Mic -> gate -> left. The gate zeroes frames while muted (never drops them).
+    R.micGate = ctx.createGain();
+    R.micGate.connect(merger, 0, 0);
+    let first = true;
+    R.applyMute = () => {
+      if (micAlways) return null;  // gate stays open; mute is not read or logged
+      const st = muteState(document.querySelector('__MUTE_SELECTOR__'));
+      R.micGate.gain.value = micGain(st, micAlways);
+      if (first || st !== R.muted) R.muteEvents.push({t: Date.now(), muted: st});
+      first = false;
+      R.muted = st;
+      return st;
+    };
+    R.applyMute();
+    if (!micAlways) {
+      R.muteTimer = setInterval(R.applyMute, __MUTE_POLL_MS__);
+      // Timers throttle in background tabs; attribute changes still fire at once.
+      try {
+        R.muteObs = new MutationObserver(() => R.applyMute());
+        R.muteObs.observe(document.documentElement, {subtree: true, childList: true,
+                                                     attributes: true,
+                                                     attributeFilter: ['aria-label', 'data-state', 'title']});
+      } catch (e) {}
+    }
     // An unanswered permission prompt never settles, so race it: after 8s record
     // with a silent left channel, and wire the mic in if it is granted later.
     const gum = navigator.mediaDevices.getUserMedia({audio: true}).then((s) => {
       R.micStream = s;
-      ctx.createMediaStreamSource(s).connect(merger, 0, 0);
+      ctx.createMediaStreamSource(s).connect(R.micGate);
       R.micOk = true; R.micError = null;
     }, (e) => {
       R.micError = String(e && (e.name || e.message) || e);  // left stays silent
@@ -341,6 +399,8 @@ INSTALL_JS = r"""
     return url.slice(url.indexOf(',') + 1);
   };
   R.poll = (sel) => ({
+    muted: R.applyMute ? R.applyMute() : null,  // also a backstop for a throttled timer
+    muteEvents: R.muteEvents.splice(0),
     inCall: sel ? !!document.querySelector(sel) : null,
     remoteStreams: R.scan(),
     micOk: R.micOk,
@@ -354,19 +414,43 @@ INSTALL_JS = r"""
     if (R.mr.state !== 'inactive') {
       await new Promise((ok) => { R.mr.onstop = ok; R.mr.stop(); });
     }
+    if (R.muteTimer) clearInterval(R.muteTimer);
+    if (R.muteObs) R.muteObs.disconnect();
     if (R.micStream) R.micStream.getTracks().forEach((t) => t.stop());
     try { await R.ctx.close(); } catch (e) {}
     const rest = await R.drain();
     delete window.__whosaidRec;
     return rest;
   };
-  return {installed: true, micOk: R.micOk, micError: R.micError};
+  return {installed: true, micOk: R.micOk, micError: R.micError, micAlways, muted: R.muted};
 })()
 """
 
 
-def install_js(no_mic: bool) -> str:
-    return INSTALL_JS.replace("__NO_MIC__", "true" if no_mic else "false")
+def install_js(no_mic: bool, mic_always: bool = False) -> str:
+    return (INSTALL_JS.replace("__MUTE_GATE__", MUTE_GATE_JS.strip())
+            .replace("__NO_MIC__", "true" if no_mic else "false")
+            .replace("__MIC_ALWAYS__", "true" if mic_always else "false")
+            .replace("__MUTE_SELECTOR__", MUTE_SELECTOR)
+            .replace("__MUTE_POLL_MS__", str(MUTE_POLL_MS)))
+
+
+def mute_event_line(ev: dict, start_ms: float | None = None) -> str:
+    """One log line for a mute transition from the injected gate.
+
+    ev = {"t": epoch ms, "muted": true|false|null}. start_ms (epoch ms of the
+    capture start) adds the offset into the recording.
+    """
+    t = ev.get("t")
+    when, off = "?", ""
+    if isinstance(t, (int, float)):
+        when = time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(t / 1000)) + f".{int(t % 1000):03d}"
+        if start_ms:
+            off = f" (+{max(0.0, t - start_ms) / 1000:.1f}s)"
+    state = {True: "muted: left channel silenced",
+             False: "unmuted: recording the mic",
+             None: "mute state unknown (no mic button): recording the mic"}.get(ev.get("muted"), "?")
+    return f"mic {state} at {when}{off}"
 
 
 def in_call_js(selector: str) -> str:
@@ -399,6 +483,8 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
     p.add_argument("--leave-selector")
     p.add_argument("--max-seconds", type=float, default=10800)
     p.add_argument("--no-mic", action="store_true")
+    p.add_argument("--mic-always", action="store_true",
+                   help="record the mic even while the meeting shows it muted")
     p.add_argument("--leave", action="store_true")
     # Floats so tests can run the loop fast.
     p.add_argument("--poll-seconds", type=float, default=2.0)
@@ -411,6 +497,8 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
         p.error("--out is required (or --list-targets)")
     if min(a.poll_seconds, a.drain_seconds, a.max_seconds, a.wait_poll_seconds) <= 0:
         p.error("--poll-seconds, --drain-seconds, --max-seconds and --wait-poll-seconds must be > 0")
+    if a.no_mic and a.mic_always:
+        p.error("--no-mic and --mic-always conflict")
     if a.wait_for_call and a.list_targets:
         p.error("--wait-for-call does not apply to --list-targets")
     return a
@@ -557,14 +645,18 @@ def main(argv: list[str] | None = None) -> int:
     started = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     reason = None
     try:
+        start_ms = time.time() * 1000
         try:
-            info = cdp.evaluate(install_js(a.no_mic)) or {}
+            info = cdp.evaluate(install_js(a.no_mic, a.mic_always)) or {}
         except CDPError as e:
             log(f"recorder injection failed: {e}")
             return EXIT_NO_CDP
         if not a.no_mic and not info.get("micOk"):
             log(f"warning: mic unavailable ({info.get('micError')}); left channel will be silent")
         log("recording" + (" (no mic)" if a.no_mic else " (L=mic, R=tab audio)"))
+        if not a.no_mic:
+            log("mic always on (--mic-always): meeting mute is ignored" if a.mic_always
+                else "mic follows meeting mute: silenced while muted")
 
         tracker = CallTracker(a.arm_seconds, start)
         if a.wait_for_call:
@@ -594,6 +686,8 @@ def main(argv: list[str] | None = None) -> int:
                     if now >= next_poll:
                         next_poll = now + a.poll_seconds
                         st = cdp.evaluate(poll_js(selector)) or {}
+                        for ev in st.get("muteEvents") or []:
+                            log(mute_event_line(ev, start_ms))
                         streams_seen = max(streams_seen, int(st.get("remoteStreams") or 0))
                         if selector and tracker.update(bool(st.get("inCall"))):
                             reason = "call-ended"
