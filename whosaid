@@ -536,13 +536,13 @@ RECORD FLAGS
                       Needs macOS 15+, Xcode Command Line Tools (the helper is built
                       on first use) and Screen & System Audio Recording permission
                       for your terminal.
-  --no-mic            With --app or --browser: skip the mic (mono, remote only).
-                      With --app on Teams (com.microsoft.teams2) the left channel is
+                      On Teams (com.microsoft.teams2) the left channel is
                       silent while Teams' mic button shows muted (read every 250 ms
                       through Accessibility, mute changes are logged). Needs an
                       Accessibility grant for your terminal (or, under autorecord,
                       Whosaid Call Recorder); without one, or for other apps, the mic
                       is recorded and "mute: unknown" is logged.
+  --no-mic            With --app or --browser: skip the mic (mono, remote only).
   --browser           Capture one browser tab's meeting audio (+ mic) over the Chrome
                       DevTools protocol instead. Start the browser with
                       --remote-debugging-port=9222. No Screen Recording permission.
@@ -1838,9 +1838,23 @@ record_app_audio() {
   if [[ "$no_mic" != 1 ]]; then
     local mic_db
     mic_db="$(mean_volume_db "$tmpdir/mic.wav")"
+    # #224: the helper leaves mic.muted (silenced_frames=, total_frames=)
+    # when the meeting-mute gate zeroed part of the mic leg.
+    local muted_frames=0 total_frames=0
+    if [[ -f "$tmpdir/mic.muted" ]]; then
+      muted_frames="$(sed -n 's/^silenced_frames=\([0-9][0-9]*\)$/\1/p' "$tmpdir/mic.muted")"
+      total_frames="$(sed -n 's/^total_frames=\([0-9][0-9]*\)$/\1/p' "$tmpdir/mic.muted")"
+      muted_frames="${muted_frames:-0}"; total_frames="${total_frames:-0}"
+    fi
     if [[ -z "$mic_db" ]] || awk -v m="$mic_db" 'BEGIN{exit !((m+0) <= -85)}'; then
-      log "warning: the mic leg is SILENT; macOS feeds an unauthorized microphone silent zeros."
-      log "Fix: System Settings -> Privacy & Security -> Microphone -> enable your terminal app. Continuing with $app only."
+      if [[ "$total_frames" -gt 0 ]] && (( muted_frames * 10 >= total_frames * 9 )); then
+        log "the mic leg is silent because you were muted in the meeting for $((muted_frames / 16000))s of $((total_frames / 16000))s (not a permission problem; --mic-always records it anyway)."
+      else
+        log "warning: the mic leg is SILENT; macOS feeds an unauthorized microphone silent zeros."
+        log "Fix: System Settings -> Privacy & Security -> Microphone -> enable your terminal app. Continuing with $app only."
+      fi
+    elif [[ "$muted_frames" -gt 0 ]]; then
+      log "mic silenced while muted in the meeting: $((muted_frames / 16000))s of $((total_frames / 16000))s."
     fi
   fi
 
@@ -2502,7 +2516,10 @@ cmd_teams_pair_api() {
   log "listening ${listen}s on the Teams local API (join or start a meeting to see state=...); nothing is sent."
   "$bin" --teams-api-listen "$listen" || rc=$?
   if [[ "$rc" -eq 0 ]]; then
-    log "Teams accepted the connection. record --app uses its mute state while connected."
+    log "Teams pushed a mute state. record --app uses it while connected (a fresh 'unmuted' from the mic button still wins over its 'muted')."
+  elif [[ "$rc" -eq 3 ]]; then
+    log "connected, but no mute state came in ${listen}s. Join a meeting and run: whosaid teams pair-api --check"
+    log "If it stays silent, Teams may want pairing (a device command, which whosaid never sends); record --app then relies on Accessibility."
   else
     log "could not connect (exit $rc): Teams not running, Enable API off, or this API is gone in your Teams build."
     log "The token stays stored (whosaid teams unpair-api removes it); record --app falls back to Accessibility."

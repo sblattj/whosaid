@@ -6,7 +6,8 @@ messages (muted, unmuted, tokenRefresh), then records every frame the client
 sent for 1 s and closes. Prints the port on stdout first; writes
 {"path": ..., "client_opcodes": [...]} to OUT_JSON. Stdlib only.
 
-Usage: teams_api_fake_server.py OUT_JSON
+Usage: teams_api_fake_server.py OUT_JSON [state|nostate]
+nostate: accept and stay open ~2 s but push nothing.
 """
 import base64
 import hashlib
@@ -17,6 +18,7 @@ import sys
 import time
 
 out = sys.argv[1]
+mode = sys.argv[2] if len(sys.argv) > 2 else "state"
 srv = socket.socket()
 srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 srv.bind(("127.0.0.1", 0))
@@ -47,14 +49,14 @@ def send(obj) -> None:
 
 
 state = {"isMuted": True, "isInMeeting": True, "isHandRaised": False, "isVideoOn": False}
-for msg in ({"meetingUpdate": {"meetingState": state}},
+for msg in () if mode == "nostate" else ({"meetingUpdate": {"meetingState": state}},
             {"meetingUpdate": {"meetingState": dict(state, isMuted=False)}},
             {"tokenRefresh": "new-token-224"}):
     time.sleep(0.4)
     send(msg)
 
 buf = rest
-c.settimeout(1.0)
+c.settimeout(2.0 if mode == "nostate" else 1.0)
 try:
     while True:
         d = c.recv(4096)

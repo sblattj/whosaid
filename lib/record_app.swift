@@ -493,11 +493,25 @@ func parseTeamsAPIMessage(_ text: String) -> (state: MuteState?, token: String?)
     return (state, token)
 }
 
-/// Which reading the gate uses: a live Teams API state wins (it is pushed on
-/// change, so it is fresh while the socket is open), else the AX reading.
+/// Which reading the gate uses. A live Teams API state (pushed on change, so
+/// fresh while the socket is open) wins, with two fail-safe exceptions: API
+/// "unknown" (not in a meeting) falls through to AX, and API "muted" never
+/// overrides a fresh AX "unmuted" (an unverified source must not silence
+/// speech the mic button says is live).
 func effectiveMute(api: MuteState?, ax: MuteState, axAt: Date?, now: Date) -> (MuteState, Date?) {
-    if let api { return (api, now) }
-    return (ax, axAt)
+    switch api {
+    case .unmuted?: return (.unmuted, now)
+    case .muted?:
+        if ax == .unmuted, let at = axAt, now.timeIntervalSince(at) <= muteMaxAge { return (.unmuted, at) }
+        return (.muted, now)
+    default: return (ax, axAt)
+    }
+}
+
+/// True when the API says muted but a fresh AX read says unmuted (logged once).
+func muteSourcesDisagree(api: MuteState?, ax: MuteState, axAt: Date?, now: Date) -> Bool {
+    guard api == .muted, ax == .unmuted, let at = axAt else { return false }
+    return now.timeIntervalSince(at) <= muteMaxAge
 }
 
 /// Listens on the Teams local API and keeps the last pushed mute state.
@@ -597,6 +611,7 @@ final class MuteWatcher {
     private var state = MuteState.unknown
     private var readAt: Date?
     private var logged: MuteState?
+    private var warnedDisagree = false
     private var cached: [AXUIElement] = []
     private var lastWalk = Date.distantPast
     private let queue = DispatchQueue(label: "whosaid.record-app.mute", qos: .utility)
@@ -639,6 +654,10 @@ final class MuteWatcher {
         readAt = now
         lock.unlock()
         let st = snapshot().0
+        if !warnedDisagree, muteSourcesDisagree(api: api?.current(), ax: ax, axAt: now, now: now) {
+            warnedDisagree = true
+            log("mute: the Teams local API says muted but the mic button says unmuted; recording the mic while they disagree")
+        }
         if st != logged {
             logged = st
             log(muteEventLine(st, at: now, start: start))
@@ -650,7 +669,10 @@ final class MuteWatcher {
         if !cached.isEmpty {
             let labels = cached.compactMap(elementMuteLabel)
             if labels.count == cached.count { return combineMuteLabels(labels) }
+            // The button was replaced (a mute edge can do that): walk now,
+            // not up to 2 s later; only empty walks are throttled.
             cached = []
+            lastWalk = .distantPast
         }
         // Full walk at most every 2 s: a call window with no mic button
         // (lobby, call over) must not cost a tree walk every 250 ms.
@@ -725,6 +747,11 @@ func runMuteSelftest() -> Int32 {
     check(parseTeamsAPIMessage("not json").state == nil && parseTeamsAPIMessage("[]").token == nil, "api junk is ignored")
     check(effectiveMute(api: .unmuted, ax: .muted, axAt: now, now: now).0 == .unmuted, "api state wins over AX")
     check(effectiveMute(api: nil, ax: .muted, axAt: now, now: now).0 == .muted, "no api state: AX")
+    check(effectiveMute(api: .muted, ax: .unmuted, axAt: now, now: now).0 == .unmuted, "api muted vs fresh AX unmuted: records")
+    check(muteSourcesDisagree(api: .muted, ax: .unmuted, axAt: now, now: now), "api muted vs fresh AX unmuted is a disagreement")
+    check(effectiveMute(api: .muted, ax: .unmuted, axAt: now.addingTimeInterval(-5), now: now).0 == .muted, "api muted vs stale AX unmuted: muted")
+    check(effectiveMute(api: .unknown, ax: .muted, axAt: now, now: now).0 == .muted, "api unknown falls through to AX muted")
+    check(effectiveMute(api: .unknown, ax: .unmuted, axAt: now, now: now).0 == .unmuted, "api unknown falls through to AX unmuted")
     let stale = effectiveMute(api: nil, ax: .muted, axAt: now.addingTimeInterval(-5), now: now)
     check(!shouldSilenceMic(state: stale.0, readAt: stale.1, now: now, micAlways: false), "no api, stale AX: records")
     let pushed = effectiveMute(api: .muted, ax: .unknown, axAt: nil, now: now)
@@ -770,6 +797,45 @@ func runMuteSelftest() -> Int32 {
             check(block(1) == 0, "muted block is all zeros (peak \(block(1))) at offset \(n)")
         }
     }
+    // The capture path itself: Recorder.deliver gates the mic leg only,
+    // counts the silenced frames, and finish's marker reports them.
+    do {
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("whosaid-mute-rec-\(getpid())")
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        if let appLeg = try? Leg(name: "app", url: dir.appendingPathComponent("app.wav")),
+           let micLeg = try? Leg(name: "mic", url: dir.appendingPathComponent("mic.wav")) {
+            let rec = Recorder(app: appLeg, mic: micLeg)
+            rec.outDir = dir
+            let n = 1600
+            func tone() -> AVAudioPCMBuffer {
+                let b = AVAudioPCMBuffer(pcmFormat: micLeg.target, frameCapacity: AVAudioFrameCount(n))!
+                b.frameLength = AVAudioFrameCount(n)
+                for i in 0..<n { b.floatChannelData![0][i] = 0.5 }
+                return b
+            }
+            var muted = MuteState.muted
+            rec.queue.sync { rec.muteSource = { (muted, Date()) } }
+            let mb = tone(), ab = tone()
+            rec.queue.sync {
+                rec.deliver(mb, to: micLeg, at: 0)
+                rec.deliver(ab, to: appLeg, at: 0)
+            }
+            check(mb.floatChannelData![0][n / 2] == 0, "deliver zeroes the mic buffer while muted")
+            check(ab.floatChannelData![0][n / 2] == 0.5, "deliver leaves the app buffer alone")
+            muted = .unmuted
+            let mb2 = tone()
+            rec.queue.sync { rec.deliver(mb2, to: micLeg, at: Int64(n)) }
+            check(mb2.floatChannelData![0][n / 2] == 0.5, "deliver keeps the mic once unmuted")
+            check(rec.micSilenced == Int64(n), "silenced frames counted: \(rec.micSilenced)")
+            rec.queue.sync { rec.writeMutedMarker() }
+            let marker = (try? String(contentsOf: dir.appendingPathComponent("mic.muted"), encoding: .utf8)) ?? ""
+            check(marker == "silenced_frames=\(n)\ntotal_frames=\(2 * n)\n", "mic.muted marker \(marker.debugDescription)")
+            appLeg.file.close(); micLeg.file.close()
+        } else {
+            check(false, "open recorder test legs")
+        }
+    }
     print("mute selftest: \(passed) passed, \(failed) failed")
     return failed == 0 ? 0 : 1
 }
@@ -779,8 +845,18 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
     let mic: Leg?
     /// Reads Teams' mic button; nil with --mic-always, --no-mic, another app,
     /// or no Accessibility grant (the mic is then always recorded).
-    var muteWatcher: MuteWatcher?
+    var muteWatcher: MuteWatcher? {
+        didSet { muteSource = muteWatcher.map { w in { w.snapshot() } } }
+    }
+    /// What `deliver` asks for the mute state; set through muteWatcher, or
+    /// directly by the selftest. Touch only on `queue`.
+    var muteSource: (() -> (MuteState, Date?))?
     var micAlways = false
+    /// Mic frames written as zeros because the meeting was muted.
+    var micSilenced: Int64 = 0
+    /// Where finish() leaves `mic.muted` (silenced and total mic frames) so
+    /// the wrapper can tell a muted call from an unauthorized mic.
+    var outDir: URL?
     /// All sample callbacks land here, serially, so buffers stay in capture
     /// order (a concurrent queue reorders ~10 ms chunks under load).
     let queue = DispatchQueue(label: "whosaid.record-app.samples", qos: .userInitiated)
@@ -814,12 +890,27 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
         let pts = CMSampleBufferGetPresentationTimeStamp(sb).seconds
         if t0 == nil { t0 = pts }
         let offset = Int64(((pts - t0!) * sampleRate).rounded())
-        if leg === mic, let w = muteWatcher {
+        deliver(buf, to: leg, at: max(0, offset))
+    }
+
+    func writeMutedMarker() {
+        guard let mic, micSilenced > 0, let dir = outDir else { return }
+        try? "silenced_frames=\(micSilenced)\ntotal_frames=\(mic.written)\n"
+            .write(to: dir.appendingPathComponent("mic.muted"), atomically: true, encoding: .utf8)
+    }
+
+    /// Gate (mic only), then append. Runs on `queue`.
+    func deliver(_ buf: AVAudioPCMBuffer, to leg: Leg, at offset: Int64) {
+        if leg === mic, let src = muteSource {
             // Zeros, not a drop: the buffer keeps its frames and its offset.
-            let (st, at) = w.snapshot()
-            gateMic(buf, state: st, readAt: at, now: Date(), micAlways: micAlways)
+            // "now" is taken after the read: an API state is stamped at read
+            // time, and an earlier "now" would make it look future-dated.
+            let (st, at) = src()
+            if gateMic(buf, state: st, readAt: at, now: Date(), micAlways: micAlways) {
+                micSilenced += Int64(buf.frameLength)
+            }
         }
-        leg.append(buf, at: max(0, offset))
+        leg.append(buf, at: offset)
     }
 
     func stream(_ stream: SCStream, didStopWithError error: Error) {
@@ -885,6 +976,7 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
             // close() writes the final WAV header; exit() would skip deinit.
             app.file.close()
             mic?.file.close()
+            writeMutedMarker()
             return true
         }
         guard first else { return }
@@ -897,7 +989,8 @@ final class Recorder: NSObject, SCStreamOutput, SCStreamDelegate {
             try? await s?.stopCapture()
             let secs = Double(self.app.written) / sampleRate
             log(String(format: "stopped after %.1fs (app buffers: %d%@, restarts: %d)", secs, self.app.buffers,
-                       self.mic.map { ", mic buffers: \($0.buffers)" } ?? "", self.restarts))
+                       self.mic.map { ", mic buffers: \($0.buffers)" } ?? "", self.restarts)
+                + (self.micSilenced > 0 ? String(format: "; mic silenced while muted: %.1fs", Double(self.micSilenced) / sampleRate) : ""))
             terminate(code)
         }
     }
@@ -999,15 +1092,20 @@ if let secs = teamsAPIListen {
     }
     let w = TeamsAPIWatcher()
     let seen = NSLock()
-    var didConnect = false
+    var didConnect = false, gotState = false
     w.onEvent = { ev in
-        seen.lock(); if ev == "connected" { didConnect = true }; seen.unlock()
+        seen.lock()
+        if ev == "connected" { didConnect = true }
+        if ev.hasPrefix("state=") { gotState = true }
+        seen.unlock()
         print(ev); fflush(stdout)
     }
     w.start()
+    // 0 = Teams pushed a mute state; 3 = the socket opened but no state came
+    // (not in a meeting, or Teams wants pairing first); 4 = no connection.
     DispatchQueue.global().asyncAfter(deadline: .now() + secs) {
-        seen.lock(); let ok = didConnect; seen.unlock()
-        terminate(ok ? 0 : 4)
+        seen.lock(); let c = didConnect, g = gotState; seen.unlock()
+        terminate(g ? 0 : c ? 3 : 4)
     }
     dispatchMain()
 }
@@ -1168,6 +1266,7 @@ Task {
         log("cannot open output in \(dir): \(error.localizedDescription)")
         terminate(1)
     }
+    rec.outDir = base
     recorder = rec
     // Right after a call starts, macOS has refused the capture once with a
     // permission error while the grant was on (#129); a retry seconds later
@@ -1197,7 +1296,7 @@ Task {
     startupAfterWait.cancel()
     log("capturing \(target.applicationName) (\(target.bundleIdentifier))\(withMic ? " + mic" : "") — Ctrl-C to stop.")
     if withMic {
-        rec.micAlways = micAlways
+        rec.queue.sync { rec.micAlways = micAlways }
         if micAlways {
             log("mic always on (--mic-always): meeting mute is ignored")
         } else if !readsMute(target.bundleIdentifier) {
@@ -1215,7 +1314,7 @@ Task {
                 log("mic follows meeting mute: silenced while muted"
                     + (api != nil ? " (Teams local API" + (ax ? ", then Accessibility)" : ")") : " (Accessibility)"))
                 let w = MuteWatcher(bundle: target.bundleIdentifier, useAX: ax, api: api)
-                rec.muteWatcher = w
+                rec.queue.sync { rec.muteWatcher = w }
                 w.begin(start: Date())
             }
         }

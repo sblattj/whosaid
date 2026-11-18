@@ -127,10 +127,14 @@ args = sys.argv[1:]
 out = args[args.index("--out-dir") + 1]
 state = os.environ["STUB_STATE"]
 open(state + ".argv", "w").write("\n".join(args))
+mic_mode = os.environ.get("STUB_MIC", "")  # "", "muted" (silent + mic.muted), "silent" (no marker)
 for leg, freq in (("mic", 300), ("app", 500)):
+    src = "anullsrc=r=16000:cl=mono:d=1" if leg == "mic" and mic_mode else f"sine=f={freq}:d=1"
     subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi",
-                    "-i", f"sine=f={freq}:d=1", "-ar", "16000", "-ac", "1",
+                    "-i", src, "-t", "1", "-ar", "16000", "-ac", "1",
                     os.path.join(out, f"{leg}.wav")], check=True)
+if mic_mode == "muted":
+    open(os.path.join(out, "mic.muted"), "w").write("silenced_frames=16000\ntotal_frames=16000\n")
 got = []
 def on_signal(signum, _frame):
     got.append(signal.Signals(signum).name)
@@ -149,7 +153,8 @@ STUB
 import os, signal, subprocess, sys, time
 whosaid, mode, tmp = sys.argv[1:4]
 state = os.path.join(tmp, f"stub-{mode}")
-env = dict(os.environ, XDG_CACHE_HOME=os.path.join(tmp, "cache"), STUB_STATE=state)
+env = dict(os.environ, XDG_CACHE_HOME=os.path.join(tmp, "cache"), STUB_STATE=state,
+           STUB_MIC={"mutedcall": "muted", "silentmic": "silent"}.get(mode, ""))
 log = open(os.path.join(tmp, f"{mode}.log"), "w")
 extra = ["--mic-always"] if mode == "micalways" else []
 p = subprocess.Popen([whosaid, "record", "--app", "StubApp", *extra, "--into", os.path.join(tmp, f"out-{mode}")],
@@ -159,7 +164,7 @@ for _ in range(300):
     if os.path.exists(state + ".ready"):
         break
     time.sleep(0.05)
-if mode in ("term", "micalways"):
+if mode in ("term", "micalways", "mutedcall", "silentmic"):
     os.kill(p.pid, signal.SIGTERM)
 else:
     os.killpg(p.pid, signal.SIGINT)
@@ -177,12 +182,12 @@ if alive:
 sigs = open(state + ".signals").read() if os.path.exists(state + ".signals") else ""
 print(f"rc={rc}|alive={int(alive)}|signals={sigs}|out={printed.strip()}")
 DRIVE
-  for mode in term int micalways; do
+  for mode in term int micalways mutedcall silentmic; do
     RES="$(python3 -I "$TMP/drive.py" "$WHOSAID" "$mode" "$TMP")"
     assert_contains "$RES" "rc=0|" "$mode: the wrapper exits 0"
     assert_contains "$RES" "|alive=0|" "$mode: no helper is left running"
     case "$mode" in
-      term|micalways) assert_contains "$RES" "|signals=SIGTERM|" "$mode: the helper gets exactly one SIGTERM" ;;
+      term|micalways|mutedcall|silentmic) assert_contains "$RES" "|signals=SIGTERM|" "$mode: the helper gets exactly one SIGTERM" ;;
       int)  assert_contains "$RES" "|signals=SIGINT|" "int: the helper gets exactly one SIGINT" ;;
     esac
     M4A="${RES##*|out=}"
@@ -194,6 +199,11 @@ DRIVE
   # #224: record --app --mic-always reaches the helper; the default does not pass it.
   assert_eq "$(grep -cx -- --mic-always "$TMP/stub-micalways.argv" || true)" "1" "--app --mic-always is passed to the helper"
   assert_eq "$(grep -cx -- --mic-always "$TMP/stub-term.argv" || true)" "0" "--app without --mic-always does not pass it"
+  # #224: a call muted throughout is not reported as a mic-permission problem.
+  assert_contains "$(cat "$TMP/mutedcall.log")" "silent because you were muted in the meeting for 1s of 1s" "muted call: says why the mic is silent"
+  case "$(cat "$TMP/mutedcall.log")" in *"unauthorized microphone"*) fail "muted call got the permission warning" ;; esac
+  PASS=$((PASS + 1))
+  assert_contains "$(cat "$TMP/silentmic.log")" "unauthorized microphone" "silent mic without the marker keeps the permission warning"
 else
   echo "SKIP: needs ffmpeg and macOS 15+"
 fi
@@ -314,6 +324,23 @@ if command -v swiftc >/dev/null 2>&1 && [ "$(sw_vers -productVersion | cut -d. -
   PASS=$((PASS + 1))
   CK_OUT="$(WHOSAID_TEAMS_API_TOKEN_FILE="$TOK" "$WHOSAID" teams pair-api --check 2>&1)" && CK_RC=0 || CK_RC=$?
   assert_eq "$CK_RC" 2 "pair-api --check without a token exits 2"
+  for fmode in state nostate; do
+    rm -f "$TMP/fake.port"
+    python3 -I "$REPO/test/fixtures/teams_api_fake_server.py" "$TMP/fake-$fmode.json" "$fmode" > "$TMP/fake.port" &
+    FAKE_PID=$!
+    for _ in $(seq 1 100); do [ -s "$TMP/fake.port" ] && break; sleep 0.05; done
+    PA_OUT="$(printf 'piped-token-224\n' | WHOSAID_TEAMS_API_TOKEN_FILE="$TOK" WHOSAID_TEAMS_API_PORT="$(cat "$TMP/fake.port")" \
+      "$WHOSAID" teams pair-api --listen 3 2>&1)" && PA_RC=0 || PA_RC=$?
+    wait "$FAKE_PID" || true
+    if [ "$fmode" = state ]; then
+      assert_eq "$PA_RC" 0 "pair-api exits 0 once Teams pushes a state"
+      assert_contains "$PA_OUT" "Teams pushed a mute state" "pair-api reports the pushed state"
+    else
+      assert_eq "$PA_RC" 3 "pair-api: connected but no state exits 3"
+      assert_contains "$PA_OUT" "connected, but no mute state came" "pair-api does not overclaim on a bare connection"
+    fi
+  done
+  rm -f "$TOK"
 else
   echo "SKIP: needs swiftc and macOS 15+"
 fi
