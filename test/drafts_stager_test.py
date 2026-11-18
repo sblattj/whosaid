@@ -272,12 +272,14 @@ class FakeTeams:
                  history=(), no_root=False, remover_noop=False, drop_uploads=False, focus_miss=False,
                  fail_set_files=False, root_flicker=0, hidden=False, own=(), no_edit_item=False, titles=None, mention_lazy=False, targets=None, browser=None,
                  search_groups=None, search_stale="", app_toolbar=False,
-                 thread_ids=None, empty_on_query=0, empty_after_mention=0, edit_lag=None):
+                 thread_ids=None, empty_on_query=0, empty_after_mention=0, edit_lag=None, empty_on_key=0):
         from websockets.sync.server import serve
         # #221: the user sends a stub mid-stage. empty_on_query=k: the box empties (sent) as the k-th @query is
         # typed, and the @ picker opens no more; empty_after_mention=k: it empties right after the k-th mention's
         # trailing space. Either way the mention elements go too.
         self.empty_on_query, self.empty_after_mention = empty_on_query, empty_after_mention
+        # empty_on_key=k: it empties right after the k-th @query's last letter is keyed (picker dead after)
+        self.empty_on_key = empty_on_key
         self.queries, self.picker_dead, self.emptied_at, self.stub = 0, False, None, None
         # #221: the edit box shows a pasted text only after edit_lag reads of it (-1: never); None = at once
         self.edit_lag, self.edit_pending, self.edit_reads = edit_lag, None, 0
@@ -674,6 +676,10 @@ class FakeTeams:
                     self.mention_typed = self.mention_typed[:-1]
                 if params["type"] == "keyDown" and params.get("text") and self.compose_focused:
                     self.compose += params["text"]
+                    if (self.empty_on_key and self.mention_typed and self.emptied_at is None
+                            and self.queries == self.empty_on_key):
+                        self.stub_sent()
+                        self.picker_dead = True
                     if self.mention_typed:
                         self.mention_typed += params["text"]
                         self.mention_keys += 1
@@ -1512,6 +1518,14 @@ class EndToEnd(unittest.TestCase):
         self.assert_emptied_mid_stage(f, r, mid_query=True)
         self.assertEqual(f.stub, "Cy Dee ")
 
+    def test_box_emptied_during_the_only_mentions_query_says_it_may_have_been_sent(self):
+        """#221: a stub sent while the first (here the only) @query is typed. The retype puts one letter back,
+        so neither the mention count nor an empty box shows it; the box being shorter than the query does."""
+        f = self.fake(rail=["Ann Lee"], mention_dir=["Bob Ray"], empty_on_key=1)
+        r = self.run_stager(f, "--mention", "Bob Ray")
+        self.assert_emptied_mid_stage(f, r, mid_query=True)
+        self.assertEqual(f.stub, "@Bob Ray")
+
     def test_box_emptied_between_mentions_stops_before_the_next_one(self):
         """#221 part 1: the watch between steps. The old code typed the next mention into the empty box,
         pasted the body after it and reported success."""
@@ -1541,7 +1555,8 @@ class EndToEnd(unittest.TestCase):
                 pass
 
         env = {"TEAMS_OUTBOX_LOCK": str(self.lock), "WHOSAID_STAGER_TIME_SCALE": "0.01"}
-        with patch.dict(os.environ, env), patch.object(sys, "stderr", Rec()), patch.object(ds, "notify") as note:
+        with patch.dict(os.environ, env), patch.object(sys, "stderr", Rec()), \
+                patch.object(ds, "notify", create=True) as note:
             rc = ds.main(["--chat", "Ann Lee", "--md", str(self.md), "--cdp-port", str(f.port),
                           "--replace", "--mention", "Bob Ray"])
         self.assertEqual(rc, 0)

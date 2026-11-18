@@ -1805,6 +1805,14 @@ def release_lock() -> None:
         shutil.rmtree(lk, ignore_errors=True)
 
 
+def _stager_msg(r: subprocess.CompletedProcess) -> str:
+    """The stager's error text for a failure record: its stderr and stdout, minus the hands-off heads-up
+    (#221), which was news while it ran and would only push the real error out of the 500 chars."""
+    lines = [x for x in ((r.stderr or "") + (r.stdout or "")).splitlines()
+             if not x.startswith("drafts_stager: hands off Teams")]
+    return "\n".join(lines).strip()[:500]
+
+
 def stager() -> list[str]:
     """WHOSAID_DRAFTS_STAGER when set (any chat app), else the built-in Teams web stager."""
     cmd = os.environ.get("WHOSAID_DRAFTS_STAGER", "").strip()
@@ -1954,15 +1962,15 @@ def stage(ids: list[str] | None = None, all_ready: bool = False, dry_run: bool =
                 continue
             env = {**os.environ, "TEAMS_OUTBOX_LOCK": str(_lock_path())}
             # The stager's own stderr is captured until it exits, so the heads-up goes out from here (#221).
-            print(f"{draft_id}: staging into {m['to']}; hands off Teams (no Enter, no Send) until it finishes",
-                  file=sys.stderr, flush=True)
+            print(f"{draft_id}: staging into {m['to']}; hands off the chat app (no Enter, no Send) until it "
+                  "finishes", file=sys.stderr, flush=True)
             try:
                 r = subprocess.run(cmd + argv, capture_output=True, text=True, env=env, timeout=300)
             except (OSError, subprocess.TimeoutExpired) as exc:
                 r = subprocess.CompletedProcess(cmd, 1, "", str(exc))
             tail = (r.stdout or "").strip().splitlines()[-1:] or [""]
             if r.returncode != 0:
-                msg = ((r.stderr or "") + (r.stdout or "")).strip()[:500]
+                msg = _stager_msg(r)
                 _event(m, "stage-failed", err=msg)
                 save(m)
                 res["failed"].append({"id": draft_id, "why": f"stager exit {r.returncode}: {msg}"})
@@ -2127,7 +2135,7 @@ def _stage_edit(draft_id: str, dry_run: bool, tab: str | None, wsp: Path | None,
     finally:
         release_lock()
     if r.returncode != 0:
-        msg = ((r.stderr or "") + (r.stdout or "")).strip()[:500]
+        msg = _stager_msg(r)
         _event(m, "edit-failed", err=msg)
         save(m)
         raise DraftsError(f"stager exit {r.returncode}: {msg}")

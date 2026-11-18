@@ -395,6 +395,17 @@ class OutboxTest(DraftsBase):
         self.assertIn("stager exit 4", r["failed"][0]["why"])
         self.assertEqual(drafts.load(did)["status"], "verified")
 
+    def test_stager_failure_why_drops_the_hands_off_line(self):
+        """#221: the stager's hands-off heads-up is not part of the error a failure records."""
+        did = self.ready()
+        code = ("import sys; print('drafts_stager: hands off Teams: do not press Enter or Send in Teams until "
+                "staging finishes', file=sys.stderr); print('drafts_stager: the real error', file=sys.stderr); sys.exit(1)")
+        with patch.dict(os.environ, {"WHOSAID_DRAFTS_STAGER": f"{sys.executable} -c \"{code}\""}):
+            r = drafts.stage([did])
+        why = r["failed"][0]["why"]
+        self.assertEqual(why, "stager exit 1: drafts_stager: the real error")
+        self.assertNotIn("hands off", drafts.load(did)["history"][-1].get("err", "hands off?"))
+
     def test_detach_page(self):
         did = self.ready()
         drafts.write(did, remove_pages=[str(self.page)])

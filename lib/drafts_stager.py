@@ -43,9 +43,9 @@ first: the "Why mentions go before the body (#221)" comment in stage()).
 HANDS OFF (#221): before its first keystroke in the compose box (or the edit box) the stager prints
 "hands off Teams: don't press Enter or Send ..." to stderr and raises a macOS notification (osascript,
 best effort; WHOSAID_STAGER_NOTIFY=0 turns it off). Typing mentions takes seconds each, and an Enter or
-Send meanwhile sends what is in the box so far. Between mention steps, before an "no mention suggestion",
-and before the paste it re-reads the box: fewer mention elements than it inserted, or an empty box after
-it typed, stops it with exit 1 "compose box emptied mid-stage; check the chat, it may have been sent",
+Send meanwhile sends what is in the box so far. Between mention steps, before a "no mention suggestion",
+and before the paste it re-reads the box: fewer mention elements than it inserted, an empty box after
+it typed, or a box shorter than the @query just typed into it, stops it with exit 1 "compose box emptied mid-stage; check the chat, it may have been sent",
 with no clean-up and no retry hint (staging again would build on top of a sent stub).
 
 --edit-sent --match-file F (#176): edit one of YOUR messages already in the chat instead of composing.
@@ -1051,16 +1051,20 @@ async def erase_typed(c: CDP, n: int):
         await c.key("Backspace", "Backspace", 8)
 
 
-async def box_intact(c: CDP, inserted: int, typed: bool) -> bool:
+async def box_intact(c: CDP, inserted: int, typed: bool, min_len: int = 0) -> bool:
     """False when the compose box lost what this stage put in it (#221): fewer mention elements than were
-    inserted, or an empty box although something was typed. Both reads are ones the flow already trusts."""
+    inserted, an empty box although something was typed, or (min_len) a box shorter than the text typed
+    into it. All reads are ones the flow already trusts."""
     if await c.ev(op("mention_count", JS_MENTION_COUNT)) < inserted:
         return False
-    return not (typed and await c.ev(op("compose_len", JS_LEN)) <= 0)
+    if not typed and min_len <= 0:
+        return True
+    n = await c.ev(op("compose_len", JS_LEN))
+    return n > 0 and n >= min_len
 
 
-async def watch_box(c: CDP, inserted: int, typed: bool = True):
-    if not await box_intact(c, inserted, typed):
+async def watch_box(c: CDP, inserted: int, typed: bool = True, min_len: int = 0):
+    if not await box_intact(c, inserted, typed, min_len):
         raise ComposeEmptied()
 
 
@@ -1072,10 +1076,13 @@ async def insert_mentions(c: CDP, names: list[str]):
         m = None
         for q in mention_queries(name):
             await c.ev(op("caret_end", JS_CARET))
+            # "@" + q goes in now: the box must then hold at least base + len(q) chars (one of slack). A stub
+            # sent while the query is typed leaves only the retyped last letter, even for the first mention.
+            want = await c.ev(op("compose_len", JS_LEN)) + len(q)
             try:
                 hits = await type_mention_query(c, q, name)
             except StagerError:
-                await watch_box(c, inserted)
+                await watch_box(c, inserted, min_len=want)
                 await erase_typed(c, len(q) + 1)
                 raise
             if hits:
@@ -1083,7 +1090,7 @@ async def insert_mentions(c: CDP, names: list[str]):
                 break
             # Nobody listed: first make sure the box still holds what was typed. A box emptied mid-stage
             # (a stub sent) also lists nobody, and blaming the picker would invite a retry on top of it.
-            await watch_box(c, inserted)
+            await watch_box(c, inserted, min_len=want)
             await erase_typed(c, len(q) + 1)  # never leave "@Name" behind as plain text
         if m is None:
             raise StagerError(f"no mention suggestion for {name}")
