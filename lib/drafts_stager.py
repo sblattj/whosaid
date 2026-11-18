@@ -465,6 +465,7 @@ class CDP:
 # (or any section) that holds rows must not borrow its first child's id (#223, it made one hit look like two).
 # Only rendered rows count: a row inside a collapsed section has no size. all=true: every row whose label
 # fits (a new-chat lookup counts every chat with the members, #223); else the one named exactly wins.
+# Rows with one tree value are one chat shown twice (pinned and recent): the first stays, and is scrolled to.
 JS_RAIL = """const items=[...document.querySelectorAll('[role=treeitem]')];
 const tid=e=>e.getAttribute('data-fui-tree-item-value')||(e.querySelector('[role=treeitem]')?null:e.querySelector('[data-fui-tree-item-value]')?.getAttribute('data-fui-tree-item-value'));
 const vis=e=>{const r=e.getBoundingClientRect();return r.width>0&&r.height>0};
@@ -473,7 +474,8 @@ const alts=new Set((A.alts||[A.name]).map(a=>nm(a).toLowerCase()));
 const byId=A.id?items.filter(e=>vis(e)&&last(tid(e))===A.id):[];
 const first=e=>nm(e.innerText.trim().split('\\n')[0]);
 const any=byId.length?byId:items.filter(e=>vis(e)&&alts.has(first(e).toLowerCase()));
-const ex=(byId.length||A.all)?[]:any.filter(e=>first(e).toLowerCase()===nm(A.name).toLowerCase());const m=ex.length?ex:any;
+const ex=(byId.length||A.all)?[]:any.filter(e=>first(e).toLowerCase()===nm(A.name).toLowerCase());
+const seen=new Set();const m=(ex.length?ex:any).filter(e=>{const k=last(tid(e));if(!k)return true;if(seen.has(k))return false;seen.add(k);return true});
 if(m.length===1)m[0].scrollIntoView({block:'center'});
 return {total:items.length,matches:m.map(t=>{const r=t.getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2,name:t.innerText.trim().split('\\n')[0].trim(),id:last(tid(t))||null}})}"""
 # The rail's "See more" / "See less" controls (#223: Teams keeps older chats under a collapsed "See more", out
@@ -786,21 +788,11 @@ def label_alts(chat: str) -> list[str]:
 
 def pick_row(matches: list[dict], chat: str, exact: bool = True) -> list[dict]:
     """Of the rows a label matched, the ones named CHAT exactly win (exact=False: none wins, every chat with
-    the members counts, #223); otherwise all of them stay (several is "ambiguous"). Rows carrying the same
-    thread id are one chat shown twice (a pinned chat is also in Recent): the first stays."""
-    seen: set[str] = set()
-    rows = []
-    for m in matches:
-        k = m.get("id")
-        if k and k in seen:
-            continue
-        if k:
-            seen.add(k)
-        rows.append(m)
+    the members counts, #223); otherwise all of them stay (several is "ambiguous")."""
     if not exact:
-        return rows
-    named = [m for m in rows if (m.get("name") or "").strip().lower() == chat.strip().lower()]
-    return named or rows
+        return matches
+    named = [m for m in matches if (m.get("name") or "").strip().lower() == chat.strip().lower()]
+    return named or matches
 
 
 def search_queries(chat: str) -> list[str]:
@@ -834,16 +826,19 @@ async def search_clear(c: CDP):
         pass
 
 
-async def expand_more(c: CDP) -> list[int]:
+async def expand_more(c: CDP) -> tuple[list[int], bool]:
     """Open each collapsed "See more" in the rail (#223), at most 3, so the chats under it render. Returns the
-    indices (among the rail's See more controls) it opened, for collapse_more. A control that doesn't read
-    open after its click ends it: nothing is clicked twice."""
+    indices (among the rail's See more controls) it opened, for collapse_more, and whether it saw a collapsed
+    one at all (the rail renders lazily: no control yet means look again on the next poll). A control that
+    doesn't read open after its click ends it: nothing is clicked twice."""
     opened: list[int] = []
+    seen = False
     for _ in range(3):
         ms = await c.ev(op("rail_more", JS_RAIL_MORE)) or []
         i = next((k for k, m in enumerate(ms) if not m.get("expanded") and m.get("w") and k not in opened), None)
         if i is None:
             break
+        seen = True
         await c.click(ms[i]["x"], ms[i]["y"])
         for _ in range(8):
             await nap(0.25)
@@ -853,7 +848,7 @@ async def expand_more(c: CDP) -> list[int]:
                 break
         else:
             break
-    return opened
+    return opened, seen
 
 
 async def collapse_more(c: CDP, opened: list[int]):
@@ -871,8 +866,8 @@ async def collapse_more(c: CDP, opened: list[int]):
 async def rail_lookup(c: CDP, chat: str, thread_id: str | None, settle: int, every: bool,
                       wait: int = 30) -> tuple[list[dict], list[int]]:
     """Rows of the left rail that are CHAT: by thread id, else by label (label_alts). Waits up to WAIT polls
-    for the rail to render, then SETTLE polls (~1s each) for the row; the first time the rendered rail has no
-    match it opens any collapsed "See more" (#223). Returns the matches and the See more sections it opened."""
+    for the rail to render, then SETTLE polls (~1s each) for the row; while the rendered rail has no match it
+    looks for a collapsed "See more" each poll and opens it the first time one shows (#223). Returns the matches and the See more sections it opened."""
     matches: list[dict] = []
     opened: list[int] = []
     rendered = 0
@@ -883,9 +878,8 @@ async def rail_lookup(c: CDP, chat: str, thread_id: str | None, settle: int, eve
         if matches:
             break
         if r["total"] > 0:
-            if not tried_more:
-                tried_more = True
-                opened = await expand_more(c)
+            if not tried_more:  # each poll until a collapsed See more shows up (it can render after the rows)
+                opened, tried_more = await expand_more(c)
                 if opened:
                     continue  # read the rail again at once, with the section open
             rendered += 1

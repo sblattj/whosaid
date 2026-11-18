@@ -272,7 +272,8 @@ class FakeTeams:
                  history=(), no_root=False, remover_noop=False, drop_uploads=False, focus_miss=False,
                  fail_set_files=False, root_flicker=0, hidden=False, own=(), no_edit_item=False, titles=None, mention_lazy=False, targets=None, browser=None,
                  search_groups=None, search_stale="", app_toolbar=False,
-                 thread_ids=None, empty_on_query=0, empty_after_mention=0, edit_lag=None, empty_on_key=0):
+                 thread_ids=None, empty_on_query=0, empty_after_mention=0, edit_lag=None, empty_on_key=0,
+                 more_rows=None, more_delay=0):
         from websockets.sync.server import serve
         # #221: the user sends a stub mid-stage. empty_on_query=k: the box empties (sent) as the k-th @query is
         # typed, and the @ picker opens no more; empty_after_mention=k: it empties right after the k-th mention's
@@ -302,6 +303,10 @@ class FakeTeams:
         self.app_toolbar = app_toolbar
         # chat name -> thread id, what the app shows on the compose box's Send button (data-track-thread-id)
         self.thread_ids = dict(thread_ids or {})
+        # #223: rows under a collapsed "See more" at the end of the rail, rendered only once it is clicked; the
+        # control itself shows up only after more_delay reads of it (the rail renders lazily)
+        self.more_rows = None if more_rows is None else list(more_rows)
+        self.more_delay, self.more_reads, self.more_open = more_delay, 0, False
         self.hovered = self.more_menu = self.editing = None
         self.edit_text, self.edit_selected, self.edit_saved = "", False, False
         self.newchat_open = self.picker_focus = self.compose_focused = False
@@ -368,6 +373,7 @@ class FakeTeams:
         return (300, 200 + 40 * i)
 
     SEARCH_XY, ATTACH_XY, MENU_XY = (200, 20), (500, 880), (520, 840)
+    MORE_XY = (50, 60)
     EDIT_ITEM_XY, DONE_XY = (740, 500), (760, 560)
 
     def own_xy(self, i):
@@ -456,6 +462,9 @@ class FakeTeams:
         for i, n in enumerate(self.rail):
             if near(self.rail_xy(i)):
                 self.chat, self.title = n, self.titles.get(n, f"Chat | {n} | Microsoft Teams")
+        if near(self.MORE_XY) and self.more_rows is not None and self.more_reads > self.more_delay:
+            self.more_open = not self.more_open
+            self.rail = self.rail + self.more_rows if self.more_open else [n for n in self.rail if n not in self.more_rows]
         if near(self.SEARCH_XY):
             self.search_open = True
         for i, n in enumerate(self.options()):
@@ -490,6 +499,14 @@ class FakeTeams:
             idx = by_id or (any_ if args.get("all") else exact or any_)  # all: every same-member row (#223)
             hits = [{"x": self.rail_xy(i)[0], "y": self.rail_xy(i)[1], "name": self.rail[i]} for i in idx]
             return {"total": len(self.rail), "matches": hits}
+        if name == "rail_more":
+            if self.more_rows is None:
+                return None
+            self.more_reads += 1
+            if self.more_reads <= self.more_delay:
+                return []
+            return [{"x": self.MORE_XY[0], "y": self.MORE_XY[1], "w": 100,
+                     "label": "See less" if self.more_open else "See more", "expanded": self.more_open}]
         if name == "title":
             return self.title
         if name == "own_msgs":
@@ -1315,6 +1332,26 @@ class EndToEnd(unittest.TestCase):
         self.assertIn("ambiguous: 2 chats", r.stderr)
         self.assert_no_new_message(f)
         self.assertNotIn("paste", f.ops)
+        f.never_sent(self)
+
+    def test_new_chat_group_under_a_see_more_that_renders_late_is_still_opened(self):
+        # the rail shows rows before its "See more" control: one look at the first rendered poll missed it
+        f = self.fake(rail=["Zed"], more_rows=["Alice and Bob Brown"], more_delay=3, people=["Alice Adams", "Bob Brown"],
+                      titles={"Alice and Bob Brown": "Chat | Alice Adams, Bob Brown"})
+        r = self.run_stager(f, "--new-chat", chat="Alice Adams, Bob Brown")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(f.chat, "Alice and Bob Brown")
+        self.assert_no_new_message(f)
+        self.assertNotIn("search_find", f.ops, "found in the rail, no search needed")
+        f.never_sent(self)
+
+    def test_see_more_is_clicked_once_and_closed_again_when_the_chat_is_not_under_it(self):
+        f = self.fake(rail=["Zed"], more_rows=["Cy Dee"], people=["Alice Adams", "Bob Brown"])
+        r = self.run_stager(f, "--new-chat", chat="Alice Adams, Bob Brown")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(f.clicks.count(f.MORE_XY), 2)
+        self.assertFalse(f.more_open)
+        self.assertLess(f.clicks.index(f.MORE_XY), f.clicks.index(f.NEWCHAT_XY))
         f.never_sent(self)
 
     def test_new_chat_with_no_existing_chat_starts_one_as_before(self):

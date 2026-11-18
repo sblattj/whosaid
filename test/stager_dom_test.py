@@ -410,6 +410,13 @@ class SeeMoreAgainstFixtureDom(unittest.TestCase):
         self.assertEqual(st["title"], "Chat | Ann Lee, Bo Chen | Microsoft Teams")
         self.assertFalse(st["sent"])
 
+    def test_a_pinned_chat_shown_twice_in_the_rail_is_one_chat(self):
+        for extra in ((), ("--thread-id", "19:ann@thread.v2")):
+            r, st = self.stage("pinned=1", "Ann Lee", *extra)
+            self.assertEqual(r.returncode, 0, (extra, r.stderr))
+            self.assertEqual(st["title"], "Chat | Ann Lee | Microsoft Teams")
+            self.assertFalse(st["sent"])
+
     def test_no_match_under_see_more_collapses_it_back_before_new_message(self):
         # control: nobody has a chat with Ann Lee and Dee Dee; the rail goes back to how it was, then New message
         r, st = self.stage("seemore=1", "Ann Lee, Dee Dee", "--new-chat")

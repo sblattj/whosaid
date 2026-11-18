@@ -94,6 +94,12 @@
     r.setAttribute("data-rect", shown ? `0,${160 + 40 * i},200,40` : "0,0,0,0");
     r.textContent = name; wire(r); return r;
   };
+  // ?pinned=1: Ann Lee is pinned, so the rail shows her chat twice (Pinned and Recent), one tree value
+  if (q.get("pinned") === "1") {
+    const pin = row(["Ann Lee", "19:ann@thread.v2", ""], 0, true);
+    pin.setAttribute("data-rect", "0,0,200,40");
+    document.querySelector('[role=tree]').prepend(pin);
+  }
   const sm = q.get("seemore");
   if (sm) {
     const tree = document.querySelector('[role=tree]');
