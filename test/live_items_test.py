@@ -278,7 +278,7 @@ with tempfile.TemporaryDirectory() as tmp:
     check(not rc_path.exists(), "fixture: an ended call without a recap")
     derived = lx.derive_recap(d)
     check(derived and derived["derived"] is True, f"derive_recap: {derived}")
-    check({"who": "Ana", "text": GOOD_ASK["text"]} in derived["owes"]
+    check({"who": "me", "text": GOOD_ASK["text"]} in derived["owes"]
           and "How long does a cached copy live before it expires?" in derived["questions"],
           f"derived from top-level section items: {derived}")
     check("We should ship the cache behind a feature flag." in derived["decisions"],
@@ -297,6 +297,9 @@ with tempfile.TemporaryDirectory() as tmp:
     check((d / "recap.html").is_file() and 'id="s-recap"' in (d / "index.html").read_text(), "recap rendered")
     check(lx.ensure_recap(d) is False, "ensure_recap is idempotent (nothing changed: no rewrite)")
     rows_disk = li.export(into, STEM)["rows"]
+    da = by_text(rows_disk, "load test numbers")
+    check(len(da) == 1 and da[0]["owner"] == "me" and da[0]["asker"] == "Ana"
+          and "recap.json:owes[0]" in da[0]["sources"], f"a derived owe is owed by me, asked by Ana: {da}")
     check(any(s.startswith("recap.json:decisions[") for r in rows_disk for s in r["sources"]),
           "a fresh derived recap on disk is cited as recap.json")
 

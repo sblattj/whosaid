@@ -32,6 +32,7 @@
 #   whosaid autorecord <sub>        run | install | uninstall | status: record every call unattended.
 #   whosaid live [show]             Live me/them transcript of the call being recorded.
 #   whosaid live explain serve      Live explainer page: plain sections + sketches, pushed over SSE.
+#   whosaid live export-items STEM  Rows of an ended explainer: asks, questions, decisions, next steps.
 #   whosaid topics build [WS]       Topics across meetings into <WS>/_topics.json (the app's Topics).
 #   whosaid decisions [WS] <mtg>    One decisions ledger per call, joined across topic revisits.
 #   whosaid drafts <sub>            Offline outbox of verified chat drafts: new | verify | list | stage ...
@@ -854,6 +855,8 @@ LIVE
   whosaid live explain serve [--into DIR] [--session STEM] [--port N] [--lan] [--ws WS]
   whosaid live explain add|recap [--file F] [--no-copy] | correct NNN --before T --after T [--quote Q] [--who W] [--at T]
   whosaid live explain render|status [--into DIR] [--session STEM] [--dir D] [--ws WS]
+  whosaid live export-items [STEM] [--since STEM] [--format json|csv] [--into DIR]
+  whosaid live mark-item STEM ID --status open|done [--note N] [--into DIR]
   run follows the call `record --app` / autorecord is capturing and transcribes it as
   it happens, locally (default model whisper-large-v3-turbo, or WHOSAID_LIVE_MODEL):
   every ~20 s it appends "me:" (your mic) and "them:" (the app) lines with times to
@@ -905,6 +908,21 @@ LIVE
   explain_max_tokens). Nothing configured: the page stays empty, nothing is sent. A For
   you answer is put on the clipboard as rich text (--no-copy, WHOSAID_EXPLAIN_CLIPBOARD=0:
   never). Glossary terms: [live.explain_glossary] in whosaid.toml or <dir>/glossary.json.
+  An ended call always gets a recap: when nobody wrote one, a local one (derived: true,
+  no model call) is built from the sections' asks and questions plus the agreed
+  decisions of the local decisions ledger.
+  export-items (#227, read-only) turns an ended call into rows, json (default) or csv:
+  id (STEM-kind-hash of the normalized text, stable across reruns), kind (ask, question,
+  suggestion, decision, next step), section and time window, asker, owner when the
+  text names one, the verbatim transcript line it matches (clock, speaker) and every
+  source it was merged from (NNN-<slug>.json:asks[i], recap.json:owes[i],
+  STEM.ai.json:nextSteps[i]). Only top-level arrays are read, never revisions[], so a
+  retracted item never comes back; near-duplicates within a call (a recap question
+  repeating a section question, an owe repeating an ask) are one row. STEM alone: that
+  call (exit 1 while it is still live); --since S: every ended call after S; both: the
+  calls in (S, STEM]. A call whose .jsonl meta says ended: false is skipped. status comes
+  from <STEM>.explain/items.status.json, written by mark-item or the served page's
+  For-you checkboxes (same-origin JSON POST, token rules as above); default open.
 
 TOPICS
   whosaid topics build [WS] [--out F] [--chats] [--json]
@@ -3111,6 +3129,11 @@ cmd_live() {
     if want_help "${@:2}"; then help_section "LIVE"; exit 0; fi
     require_module "$REPO_DIR/lib/live_explain.py" "live explain"
     exec "$WHOSAID_PY" "$REPO_DIR/lib/live_explain.py" "${@:2}"
+  fi
+  # export-items | mark-item (#227): rows of an ended explainer, stdlib only, no uv
+  if [[ "${1:-}" == export-items || "${1:-}" == mark-item ]]; then
+    require_module "$REPO_DIR/lib/live_items.py" "live $1"
+    exec "$WHOSAID_PY" "$REPO_DIR/lib/live_items.py" "$@"
   fi
   # insights build|follow and ask: stdlib only, no uv
   if [[ "${1:-}" == insights || "${1:-}" == ask ]]; then

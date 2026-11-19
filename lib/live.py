@@ -712,11 +712,27 @@ def follow(capture: Path, into: Path, transcribe, chunk_seconds: float = 20.0,
         if added or final:
             write_session(md, jl, started, entries, ended=final)
         if final:
+            finish_explainer(jl)
             for leg in legs:
                 leg.close()
             log(f"capture over; {len(entries)} line(s) in {md}")
             return md
         time.sleep(poll_seconds)
+
+
+def finish_explainer(jl: Path) -> bool:
+    """The call ended: its live explainer (if any) gets a recap.json even when no producer
+    wrote one (live_explain.ensure_recap, a local fallback, #227). Never fails capture."""
+    name = jl.name[: -len(".jsonl")] if jl.name.endswith(".jsonl") else jl.stem
+    d = jl.with_name(name + ".explain")
+    if not d.is_dir():
+        return False
+    try:
+        import live_explain
+        return live_explain.ensure_recap(d)
+    except Exception as err:  # noqa: BLE001  the transcript is what matters here
+        log(f"explainer recap for {name}: {err}")
+        return False
 
 
 # ---------------------------------------------------------------- reading (stdlib)

@@ -24,6 +24,13 @@ footnote. Newest first; a final recap goes on top when the call ends.
   render   Rebuild index.html from the section files.
   status   Where the page lives and how many sections it has.
 
+An ended call always gets a recap: when no producer wrote one, ensure_recap() writes
+a local fallback (derived: true; see live_items.derive_recap, no model call) from the
+engine's ended pass, serve, add/correct on an ended call and the capture loop's end.
+The served page's For-you checkboxes also land in <stem>.explain/items.status.json
+(GET /items.json, POST /item-status: same-origin JSON only), the overlay
+`whosaid live export-items` (lib/live_items.py, #227) merges into its rows.
+
 Storage: <into>/.live/<stem>.explain/ next to the live transcript it explains.
 One section is NNN-<slug>.json (the source, with every earlier revision) plus
 NNN-<slug>.html (its rendered fragment); ids never change, so a correction updates
@@ -601,6 +608,7 @@ def add(d: Path, data: dict, ws=None, copy=None) -> dict:
                    corrections=[], revisions=[], updated=time.time())
         jp = _save(d, sec, started)
         rebuild(d, ws)
+    ensure_recap(d, ws)
     copied = _copy_answers(sec, copy)
     return {"ok": True, "id": sec["id"], "rev": 1, "file": str(jp.with_suffix(".html")),
             "page": str(d / "index.html"), "copied": copied}
@@ -634,6 +642,7 @@ def correct(d: Path, sid: str, before: str, after: str, quote: str = "", who: st
         if jp != files[sid]:  # never: the slug is kept, but stay tidy
             files[sid].unlink(missing_ok=True)
         rebuild(d, ws)
+    ensure_recap(d, ws)  # a derived recap follows the correction (a retracted ask leaves it)
     copied = _copy_answers(sec, copy) if changes and "for_you" in changes else False
     return {"ok": True, "id": sid, "rev": rev, "file": str(jp.with_suffix(".html")),
             "page": str(d / "index.html"), "copied": copied}
@@ -658,6 +667,48 @@ def recap(d: Path, data: dict, ws=None) -> dict:
         rebuild(d, ws)
     return {"ok": True, "id": "recap", "rev": rc["rev"], "file": str(d / "recap.html"),
             "page": str(d / "index.html")}
+
+
+def derive_recap(d: Path) -> dict | None:
+    """The local fallback recap (live_items.derive_recap): writes nothing."""
+    import live_items
+    return live_items.derive_recap(d)
+
+
+def ensure_recap(d: Path, ws=None) -> bool:
+    """An ended call always has a recap.json: write the derived one (derived: true) when no
+    producer wrote a recap, refresh it when the sections changed, never replace a
+    producer's. Only on an ended call (an existing recap marks the page ended). True when
+    it wrote or removed the file."""
+    if not d.is_dir() or not transcript_meta(d).get("ended"):
+        return False
+    try:
+        import live_items
+        with _LOCK:
+            p = d / "recap.json"
+            prev = load(p) if p.is_file() else None
+            if prev and not prev.get("derived"):
+                return False
+            got = live_items.derive_recap(d)
+            if got is None:
+                if not prev:
+                    return False
+                p.unlink(missing_ok=True)  # every item it held was retracted
+                (d / "recap.html").unlink(missing_ok=True)
+                rebuild(d, ws)
+                return True
+            if prev and live_items.same_recap(prev, got):
+                return False
+            rc = {"title": "Recap", "decisions": got["decisions"], "questions": got["questions"],
+                  "owes": got["owes"], "derived": True, "rev": int((prev or {}).get("rev") or 0) + 1,
+                  "updated": time.time()}
+            write_text(p, json.dumps(rc, indent=1, ensure_ascii=False))
+            write_text(d / "recap.html", render_recap(rc))
+            rebuild(d, ws)
+        return True
+    except (OSError, ValueError) as err:
+        log(f"fallback recap for {d.name}: {err}")
+        return False
 
 
 # ---------------------------------------------------------------- rich-text clipboard
@@ -802,9 +853,49 @@ def make_handler(d: Path, token: str | None, ws=None, stop: threading.Event | No
                 if hp is None or not hp.is_file():
                     return self._send(404, b"no such section\n", "text/plain; charset=utf-8")
                 return self._send(200, hp.read_bytes(), "text/html; charset=utf-8", extra)
+            if path == "/items.json":
+                import live_items
+                body = json.dumps({"items": live_items.page_keys(d)}).encode()
+                return self._send(200, body, "application/json", extra)
             if path == "/events":
                 return self._events(extra)
             return self._send(404, b"not found\n", "text/plain; charset=utf-8")
+
+        def do_POST(self):
+            """POST /item-status {id, status}: a For-you checkbox into items.status.json.
+            Same token rule as GET; JSON only (a cross-site form cannot send it without a
+            CORS preflight this server never answers) and, when the browser sends an
+            Origin, only this page's own."""
+            url = urllib.parse.urlsplit(self.path)
+            cookies = {}
+            for part in (self.headers.get("Cookie") or "").split(";"):
+                k, _, v = part.strip().partition("=")
+                cookies[k] = v
+            text = "text/plain; charset=utf-8"
+            if authorize(self.client_address[0], None, cookies.get("xp_token"), token) != "ok":
+                return self._send(403, b"forbidden: open the link with its token\n", text)
+            if url.path != "/item-status":
+                return self._send(404, b"not found\n", text)
+            if (self.headers.get("Content-Type") or "").split(";")[0].strip().lower() != "application/json":
+                return self._send(415, b"send application/json\n", text)
+            origin = self.headers.get("Origin")
+            if (origin and origin != f"http://{self.headers.get('Host') or ''}") or \
+                    self.headers.get("Sec-Fetch-Site") in ("cross-site", "same-site"):
+                return self._send(403, b"forbidden: another origin\n", text)
+            try:
+                n = int(self.headers.get("Content-Length") or 0)
+            except ValueError:
+                n = -1
+            if n < 0 or n > 4096:
+                return self._send(413, b"too large\n", text)
+            try:
+                body = json.loads(self.rfile.read(n) or b"{}")
+                rid, status = str(body["id"]), str(body["status"])
+            except (ValueError, KeyError, TypeError):
+                return self._send(400, b"send {id, status}\n", text)
+            import live_items
+            res = live_items.set_status(d, rid, status, by="page")
+            return self._send(200 if res.get("ok") else 400, json.dumps(res).encode(), "application/json")
 
         def _events(self, extra: dict):
             self.send_response(200)
@@ -838,6 +929,7 @@ def serve(d: Path, host: str = "127.0.0.1", port: int = DEFAULT_PORT, lan: bool 
           stop: threading.Event | None = None):
     """Start the server; returns (server, url, token). The caller runs serve_forever()."""
     d.mkdir(parents=True, exist_ok=True)
+    ensure_recap(d, ws)
     rebuild(d, ws)
     token = page_token(d) if lan else None
     srv = _Server(("0.0.0.0" if lan else host, port), make_handler(d, token, ws, stop))
@@ -999,8 +1091,26 @@ def engine_step(d: Path, jl: Path, cfg: dict, copy=None) -> dict | None:
         log(f"{jl.name}: {out['error']}")
     out["tokens"] += int(getattr(client, "tokens", 0) or 0)
     d.mkdir(parents=True, exist_ok=True)
+    if meta.get("ended") and ensure_recap(d, cfg.get("ws")):  # no valid recap from the model
+        out["recap"] = "derived"
     write_text(d / STATE_FILE, json.dumps(out, indent=1))
     return out
+
+
+class RecapWatcher(threading.Thread):
+    """serve without the engine (an agent writes the page): once the call ends, the
+    fallback recap is written if the agent wrote none."""
+
+    def __init__(self, d: Path, stop: threading.Event, ws=None, poll: float = 5.0):
+        super().__init__(daemon=True, name="whosaid-live-explain-recap")
+        self.d, self.stop, self.ws, self.poll = d, stop, ws, poll
+
+    def run(self) -> None:
+        while not self.stop.is_set():
+            if transcript_meta(self.d).get("ended"):
+                ensure_recap(self.d, self.ws)
+                return
+            self.stop.wait(self.poll)
 
 
 class EngineWorker(threading.Thread):
@@ -1048,6 +1158,8 @@ def cmd_serve(a) -> int:
     else:
         log("no explainer engine configured: sections come only from an agent (MCP) or "
             "`whosaid live explain add`; nothing is sent anywhere")
+    if jl.is_file():  # the engine may hit its budget before the end: the fallback still comes
+        RecapWatcher(d, stop, a.ws).start()
     print(f"serving {d / 'index.html'} at {url}", flush=True)
     if token:
         print(f"LAN mode: other devices open http://<this-mac>:{srv.server_address[1]}/?token={token}", flush=True)

@@ -64,6 +64,7 @@ import watch as watch_mod  # noqa: E402
 import live as live_mod  # noqa: E402
 import live_insights  # noqa: E402
 import live_explain  # noqa: E402
+import live_items  # noqa: E402
 
 # Single source of truth: lib/__init__.py (pyproject.toml reads it too, via
 # hatch's dynamic version). Import both ways so the file works as a package
@@ -207,12 +208,12 @@ def _time_to_seconds(value: str) -> float:
 # (_INSTRUCTIONS_DETAIL below is appended to _GUIDE), so nothing was lost.
 SERVER_INSTRUCTIONS = """whosaid: local speaker-labeled transcription plus a searchable meeting workspace, on Apple Silicon. Audio, text and voiceprints stay on this Mac; the only cloud calls are opt-ins ([summarizer] engine = "claude", [live] ai = "claude", [live] explain = "claude"), see whosaid://guide.
 
-TOOLS (gateway listing): only whosaid_search_tools, whosaid_call_tool and five everyday tools are listed: whosaid_search, whosaid_context, whosaid_meetings, whosaid_person, whosaid_live. 38 more are registered, in groups: search (items, item, prs, speakers, decisions), live (live insights/ask, the live explainer writers, record_browser), drafts (the ~/.drafts chat outbox: draft_new/write/verify/stage...), teams (teams_live, teams_calendar, teams_launch), workspace (workspace_status, worklist, priorities, tracking_suggestions, set_status), voices (transcribe, relabel, samples, enroll_from_file, voice_groups, reprocess, doctor...). ANY other whosaid_* tool, e.g. whosaid_draft_stage, whosaid_worklist or whosaid_transcribe, is reached with whosaid_call_tool {name, arguments}, which behaves exactly like a direct call. Look its arguments up first with whosaid_search_tools {query} (no query = catalog by group; an exact name = full docs and inputSchema); do not guess them. The listing is fixed per session; WHOSAID_TOOL_PROFILE=full lists every tool (a list like gateway,drafts adds groups).
+TOOLS (gateway listing): only whosaid_search_tools, whosaid_call_tool and five everyday tools are listed: whosaid_search, whosaid_context, whosaid_meetings, whosaid_person, whosaid_live. 39 more are registered, in groups: search (items, item, prs, speakers, decisions), live (live insights/ask, the live explainer writers, live_export_items, record_browser), drafts (the ~/.drafts chat outbox: draft_new/write/verify/stage...), teams (teams_live, teams_calendar, teams_launch), workspace (workspace_status, worklist, priorities, tracking_suggestions, set_status), voices (transcribe, relabel, samples, enroll_from_file, voice_groups, reprocess, doctor...). ANY other whosaid_* tool, e.g. whosaid_draft_stage, whosaid_worklist or whosaid_transcribe, is reached with whosaid_call_tool {name, arguments}, which behaves exactly like a direct call. Look its arguments up first with whosaid_search_tools {query} (no query = catalog by group; an exact name = full docs and inputSchema); do not guess them. The listing is fixed per session; WHOSAID_TOOL_PROFILE=full lists every tool (a list like gateway,drafts adds groups).
 
 Meeting workspace: launch with WHOSAID_WORKSPACE=<dir> or pass `workspace`. Flow: whosaid_search -> whosaid_context (the minute around a hit; never read whole transcripts) -> whosaid_person / items. The index is built by `whosaid index <ws>` or the watcher, never from here. Writes are few and local: whosaid_set_status, whosaid_name_voice_group, the live explainer writers, the drafts outbox; whosaid_draft_stage types into Teams but never sends. Speaker roles and commitments (whosaid_worklist ranks them), the output-file contract and the full workflow: read the whosaid://guide resource."""
 
 # Moved out of SERVER_INSTRUCTIONS (issue #222); served at the top of whosaid://guide.
-_INSTRUCTIONS_DETAIL = """whosaid turns audio into a transcript where every turn is labeled with who spoke. It runs 100% locally on Apple Silicon via the MLX Whisper GPU pipeline plus sherpa-onnx diarization — audio, text, and voice embeddings NEVER leave the machine; there are no API keys and no cloud calls. (One opt-in exception, never made by these tools: a workspace configured with [summarizer] engine = "claude" has its action items drafted by Claude, so ingest sends transcript text to Anthropic; the item notes say so. A second, separate opt-in, [live] ai = "claude", makes the app's live insights follower send the newest lines of a call in progress to Claude every few minutes for topic labels, a recap and next steps; whosaid_live_insights then shows labelSource "ai" and an `ai` block.) A third, [live] explain = "claude", lets `whosaid live explain serve --ws` send the newest lines to Claude every few minutes to write live explainer sections; without it the explainer page is written only by an agent through whosaid_live_explain_add, whosaid_live_explain_correct and whosaid_live_explain_recap, which write local files only.
+_INSTRUCTIONS_DETAIL = """whosaid turns audio into a transcript where every turn is labeled with who spoke. It runs 100% locally on Apple Silicon via the MLX Whisper GPU pipeline plus sherpa-onnx diarization — audio, text, and voice embeddings NEVER leave the machine; there are no API keys and no cloud calls. (One opt-in exception, never made by these tools: a workspace configured with [summarizer] engine = "claude" has its action items drafted by Claude, so ingest sends transcript text to Anthropic; the item notes say so. A second, separate opt-in, [live] ai = "claude", makes the app's live insights follower send the newest lines of a call in progress to Claude every few minutes for topic labels, a recap and next steps; whosaid_live_insights then shows labelSource "ai" and an `ai` block.) A third, [live] explain = "claude", lets `whosaid live explain serve --ws` send the newest lines to Claude every few minutes to write live explainer sections; without it the explainer page is written only by an agent through whosaid_live_explain_add, whosaid_live_explain_correct and whosaid_live_explain_recap, which write local files only. whosaid_live_export_items reads an ended explainer back as rows (asks, questions, suggestions, decisions, next steps, each with its transcript line and sources), read-only.
 
 Output-file contract: each transcribe writes, using <base> = the input's basename (or your `name`, with any character outside [A-Za-z0-9_-] mapped to '_'): <base>.txt (plain transcript), <base>.speakers.txt (speaker-labeled), <base>.speaker-cards.txt (one card per speaker: turn count, talk time, sample snippets — to tell who each SPEAKER_NN is), and <base>.diarization.json (a sidecar that whosaid_relabel reuses). Diarization results include `count_before_fold`, `count_after_fold`, and `fold_note`; these are physical speaker-cluster counts before and after the anonymous-phantom check, not identity claims.
 
@@ -2237,6 +2238,35 @@ def whosaid_live_explain_recap(decisions: Optional[list[str]] = None, questions:
         return {"ok": False, "error": str(err), "hint": "give at least one decision, question or owe"}
 
 
+_DESC_EXPORT_ITEMS = (
+    "Rows of an ended live explainer call: every ask, question, suggestion, decision and next step "
+    "(#227); read-only. Each row: id (stem-kind-hash of the normalized text, stable across reruns), kind, "
+    "section and from/to window, asker, owner when the text names one, quote (the verbatim transcript "
+    "line it matches: t, clock, speaker, text) and sources, every file path it was merged from "
+    "(NNN-<slug>.json:asks[i], recap.json:owes[i], <stem>.ai.json:nextSteps[i]); near-duplicates within a "
+    "call are one row. Reads top-level arrays only, never revisions[], so a retracted item never comes "
+    "back. `session` (a stem) alone: that call, refused while it has not ended; `since` (a stem) alone: "
+    "every ended call after it; both: the calls in (since, session]; calls whose transcript says ended: "
+    "false are skipped and listed. status (open/done) comes from <stem>.explain/items.status.json, which "
+    "the page's For-you checkboxes and `whosaid live mark-item` write. format csv returns the rows as one "
+    "csv string. `recordings` defaults to ~/Recordings. Local files only."
+)
+
+
+@mcp.tool(name="whosaid_live_export_items", description=_DESC_EXPORT_ITEMS, annotations=_read_only())
+def whosaid_live_export_items(session: Optional[str] = None, since: Optional[str] = None, format: str = "json",
+                              recordings: Optional[str] = None) -> dict:
+    """lib/live_items.py export() for one ended call or every ended call after `since`."""
+    into = Path(recordings).expanduser() if recordings else live_mod.DEFAULT_INTO
+    res = live_items.export(into, session, since)
+    if not res.get("ok"):
+        res.setdefault("hint", "pass session=<stem> of an ended call (whosaid_live says ended) or since=<stem>")
+        return res
+    if format == "csv":
+        return {k: v for k, v in res.items() if k != "rows"} | {"csv": live_items.to_csv(res["rows"])}
+    return res
+
+
 _DESC_SET_STATUS = (
     "Mark one action item or commitment (AI-NNN or CM-NNN) with a status, for example done when "
     "the user says it is finished. Appends ONE curated status event to the workspace's tracking "
@@ -3938,7 +3968,8 @@ TOOL_GROUPS: dict[str, tuple[str, ...]] = {
     "search": ("whosaid_search", "whosaid_context", "whosaid_items", "whosaid_item", "whosaid_person",
                "whosaid_meetings", "whosaid_prs", "whosaid_speakers", "whosaid_decisions"),
     "live": ("whosaid_live", "whosaid_live_insights", "whosaid_live_ask", "whosaid_live_explain_add",
-             "whosaid_live_explain_correct", "whosaid_live_explain_recap", "whosaid_record_browser"),
+             "whosaid_live_explain_correct", "whosaid_live_explain_recap", "whosaid_live_export_items",
+             "whosaid_record_browser"),
     "drafts": ("whosaid_draft_new", "whosaid_draft_write", "whosaid_draft_verify", "whosaid_draft_close",
                "whosaid_draft_merge", "whosaid_drafts", "whosaid_draft_stakeholders", "whosaid_draft_stale",
                "whosaid_draft_stage", "whosaid_draft_sent_check"),
