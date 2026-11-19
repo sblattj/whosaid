@@ -126,7 +126,7 @@ def run(tmp: Path) -> None:
 
     # ---- in-process: group map, profile parsing, instructions ----
     registered = {t.name for t in asyncio.run(mcp_server.mcp.list_tools())}
-    check(len(registered) == 45, f"43 tools + 2 meta-tools registered: {len(registered)}")
+    check(len(registered) == 46, f"44 tools + 2 meta-tools registered: {len(registered)}")
     check(mcp_server._ungrouped_tools() == [], f"group map covers every tool: {mcp_server._ungrouped_tools()}")
     mapped = [t for names in mcp_server.TOOL_GROUPS.values() for t in names]
     check(len(mapped) == len(set(mapped)), "no tool is in two groups")
@@ -182,8 +182,8 @@ def run(tmp: Path) -> None:
     check(listings[None] == META + FIVE, f"unset lists exactly the 7, in order: {listings[None]}")
     check(measured["unset"][1] < 8192, f"default tools/list under 8,192 bytes: {measured['unset']}")
     check(listings["gateway"] == listings[None], "gateway == unset")
-    check(listings["full"][:2] == META and set(listings["full"]) == registered and len(listings["full"]) == 45,
-          f"full lists all 45, meta first: {len(listings['full'])}")
+    check(listings["full"][:2] == META and set(listings["full"]) == registered and len(listings["full"]) == 46,
+          f"full lists all 46, meta first: {len(listings['full'])}")
     check(listings["full"] != listings[None], "control: full differs from the default")
     check(listings["gateway,drafts"][:7] == META + FIVE
           and set(listings["gateway,drafts"][7:]) == set(mcp_server.TOOL_GROUPS["drafts"]),

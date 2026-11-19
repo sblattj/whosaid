@@ -139,4 +139,33 @@ with tempfile.TemporaryDirectory() as d:
           f"explain_recap: {rc}")
     check(mcp_server.whosaid_live_explain_recap(recordings=d)["ok"] is False, "empty recap refused")
 
+# ---- export-items (#227): read-only rows of an ended explainer stem
+with tempfile.TemporaryDirectory() as d:
+    into = Path(d)
+    jl = into / live.LIVE_DIR / "20261116T090000.jsonl"
+    jl.parent.mkdir()
+    started = time.time() - 600
+    jl.write_text(json.dumps({"meta": {"started": started, "ended": False, "updated": time.time()}}) + "\n"
+                  + json.dumps({"n": 0, "t": 30.0, "who": "them", "name": "Ana", "clock": "10:00:30",
+                                "text": "Can you share the load test numbers by Friday?"}) + "\n")
+    mcp_server.whosaid_live_explain_add("Numbers", from_t="0", to_t="120",
+                                        asks=[{"who": "Ana", "text": "can you share the load test numbers by Friday?"}],
+                                        questions=["Is 500 enough?"], recordings=d)
+    live_out = mcp_server.whosaid_live_export_items(session="20261116T090000", recordings=d)
+    check(live_out["ok"] is False and "ended" in live_out["error"] and live_out["hint"],
+          f"export_items refuses a call still in progress: {live_out}")
+    jl.write_text(jl.read_text().replace('"ended": false', '"ended": true'))
+    out = mcp_server.whosaid_live_export_items(session="20261116T090000", recordings=d)
+    check(out["ok"] and out["stems"] == ["20261116T090000"], f"export_items: {out}")
+    ask = [r for r in out["rows"] if r["kind"] == "ask"]
+    check(len(ask) == 1 and ask[0]["quote"]["speaker"] == "Ana" and ask[0]["quote"]["clock"] == "10:00:30"
+          and ask[0]["owner"] == "me" and ask[0]["sources"][0].endswith(".json:asks[0]"), f"export_items ask row: {ask}")
+    check(not (into / live.LIVE_DIR / "20261116T090000.explain" / "items.status.json").exists(),
+          "export_items writes no overlay")
+    csv_out = mcp_server.whosaid_live_export_items(session="20261116T090000", format="csv", recordings=d)
+    check(csv_out["ok"] and csv_out["csv"].splitlines()[0].startswith("id,stem,kind"), f"export_items csv: {csv_out}")
+    since = mcp_server.whosaid_live_export_items(since="20261101T000000", recordings=d)
+    check(since["ok"] and since["stems"] == ["20261116T090000"], f"export_items since: {since}")
+    check(mcp_server.whosaid_live_export_items(recordings=d)["ok"] is False, "export_items needs session or since")
+
 print(f"PASS: mcp_live_tools_test ({CHECKS} checks)")

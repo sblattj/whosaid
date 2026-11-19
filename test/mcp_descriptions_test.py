@@ -92,6 +92,7 @@ def main() -> None:
         "whosaid_live_explain_add",
         "whosaid_live_explain_correct",
         "whosaid_live_explain_recap",
+        "whosaid_live_export_items",
         "whosaid_set_status",
         "whosaid_voice_groups",
         "whosaid_name_voice_group",
@@ -362,6 +363,17 @@ def main() -> None:
     ex_cor = dumps["whosaid_live_explain_correct"]["inputSchema"]
     check(set(ex_cor.get("required", [])) == {"id", "before", "after"}, f"explain_correct required: {ex_cor.get('required')}")
     check('[live] explain = "claude"' in mcp_server.SERVER_INSTRUCTIONS, "instructions disclose the explain opt-in")
+    # --- export-items (#227): read-only rows of an ended explainer ---
+    ex_items = dumps["whosaid_live_export_items"]
+    ann = ex_items.get("annotations") or {}
+    check(ann.get("readOnlyHint") is True and ann.get("destructiveHint") is False
+          and ann.get("openWorldHint") is False, f"export_items is read-only: {ann}")
+    check(set(ex_items["inputSchema"]["properties"]) == {"session", "since", "format", "recordings"}
+          and not ex_items["inputSchema"].get("required"), f"export_items params: {ex_items['inputSchema']}")
+    d_items = by_name["whosaid_live_export_items"].description or ""
+    check(all(w in d_items for w in ("read-only", "revisions", "ended", "items.status.json", "sources", "csv")),
+          f"export_items desc covers read-only, revisions, ended, overlay, sources, csv: {d_items}")
+    check("\u2014" not in d_items, "export_items desc has no em dash")
 
     # --- drafts outbox (#165): writers, readers, one stage tool, no send over MCP ---
     for name in ("whosaid_draft_new", "whosaid_draft_write", "whosaid_draft_verify", "whosaid_draft_close",

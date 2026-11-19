@@ -173,6 +173,9 @@ for token in \
   'whosaid share <ws> --to TARGET' \
   '^BACKUP AND SHARE$' \
   'whosaid commitments <ws>' \
+  'whosaid live export-items' \
+  'whosaid live mark-item' \
+  'items\.status\.json' \
   '_WORKLIST-<Owner>\.md' \
   '\-\-all-owners' \
   '^COMMITMENTS$' \

@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test';
 
 const page = require('../lib/explain_assets/page.js');
 const live = require('../lib/explain_assets/live.js');
-const { tokenize, wordDiff, findTermOnce, escapeRegExp } = page;
+const { tokenize, wordDiff, findTermOnce, escapeRegExp, isDone } = page;
 const { pendingFrom, countChanges, rangesFromOps, diffBlockLists, insertIndex, loadLabel } = live;
 
 describe('tokenize', () => {
@@ -121,5 +121,18 @@ describe('countChanges and helpers', () => {
   test('loadLabel', () => {
     expect(loadLabel(1)).toBe('↑ 1 new update, click to load');
     expect(loadLabel(3)).toBe('↑ 3 new updates, click to load');
+  });
+});
+
+describe('isDone (items.status.json overlay, #227)', () => {
+  test('the served overlay wins over localStorage for a key it knows', () => {
+    const server = { '001-a0': { id: 'S-ask-1', status: 'done' }, '001-q0': { id: 'S-question-2', status: 'open' } };
+    expect(isDone('001-a0', '', server)).toBe(true);
+    expect(isDone('001-q0', '1', server)).toBe(false);
+  });
+  test('localStorage alone when the page is offline or the key is unknown', () => {
+    expect(isDone('002-f0', '1', null)).toBe(true);
+    expect(isDone('002-f0', '', {})).toBe(false);
+    expect(isDone('002-f0', '1', { '001-a0': { status: 'done' } })).toBe(true);
   });
 });
