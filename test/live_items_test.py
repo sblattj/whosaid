@@ -354,6 +354,28 @@ with tempfile.TemporaryDirectory() as tmp:
           and json.loads((d / "recap.json").read_text())["derived"] is True,
           f"the engine's ended pass without a model recap still leaves recap.json: {out}")
 
+# RecapWatcher (serve without the engine): the fallback recap lands once the call ends
+with tempfile.TemporaryDirectory() as tmp:
+    into = Path(tmp)
+    write_jsonl(into, "20261119T100000", ended=False)
+    d = lx.store_dir(into, "20261119T100000")
+    lx.add(d, {"title": "Watch", "asks": [{"who": "Ana", "text": "can you send the deck?"}]})
+    check(not (d / "recap.json").exists(), "no fallback recap while the call is live")
+    stop = threading.Event()
+    w = lx.RecapWatcher(d, stop, poll=0.05)
+    w.start()
+    time.sleep(0.2)
+    check(not (d / "recap.json").exists(), "the watcher waits while ended is false")
+    write_jsonl(into, "20261119T100000", ended=True)
+    w.join(timeout=5)
+    check(not w.is_alive() and (d / "recap.json").is_file()
+          and json.loads((d / "recap.json").read_text())["derived"] is True,
+          "the watcher writes the derived recap once the call ends, then exits")
+    rev = json.loads((d / "recap.json").read_text())["rev"]
+    lx.ensure_recap(d)
+    check(json.loads((d / "recap.json").read_text())["rev"] == rev, "a second pass with nothing new does not rewrite")
+    stop.set()
+
 # ---------------------------------------------------------------- overlay
 with tempfile.TemporaryDirectory() as tmp:
     into = Path(tmp)
@@ -416,6 +438,15 @@ with tempfile.TemporaryDirectory() as tmp:
               "the page's checkbox lands in the overlay")
         st, page = req("GET", "/")
         check(b"/items.json" in page and b"/item-status" in page, "the served page script syncs with the overlay")
+        # every checkbox key the page renders (data-key on .xs-ask/.xs-fy/.xs-q) is one /items.json knows
+        import re as _re
+        html = page.decode()
+        for sid in ("001", "002", "recap"):
+            st, sec = req("GET", f"/section/{sid}")
+            html += sec.decode() if st == 200 else ""
+        rendered = set(_re.findall(r'class="xs-(?:ask|fy|q)" data-key="([^"]+)"', html))
+        served = set(json.loads(req("GET", "/items.json")[1])["items"])
+        check(rendered and rendered <= served, f"rendered checkbox keys all in /items.json: {sorted(rendered - served)}")
     finally:
         stop.set()
         srv.shutdown()
