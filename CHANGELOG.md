@@ -9,13 +9,22 @@ All notable changes to whosaid are documented here. This project adheres to
 ### Added
 - The watcher closes sent drafts (#228). Each pass runs the drafts sent check after the recordings and logs every draft it marks sent (`drafts: <id> sent at ...`), so a staged draft that went out no longer stays `staged` until someone runs `mark-sent --check`. After a Teams cache sync it reads only the workspace, where the sync just put the messages. `[drafts] auto_sent_check = false` turns it off. It never raises.
 - `mark-sent --check --backfill` (MCP `whosaid_draft_sent_check` `backfill=true`): records the message for sent drafts closed by hand without one, adding a `backfilled` event and changing nothing else.
-- A stage-time sent guard (#228). Before `drafts stage` (with or without `--replace`, and through `whosaid_draft_stage`) pastes anything, it syncs the Teams cache into the workspace, then checks the draft and every other draft recorded `staged` in the same chat against it. If one already went out, the stage is refused with `already sent at <time>` and that draft is marked sent with its message id (`how: stage guard`). A dry run reports the same and records nothing. `WHOSAID_TEAMS_CACHE=off` skips the sync, not the check.
+- A stage-time sent guard (#228). Before `drafts stage` (with or without `--replace`, and through `whosaid_draft_stage`) pastes anything, it syncs the Teams cache into the workspace, then checks the draft and every other draft recorded `staged` in the same chat against it. If one already went out, the stage is refused with `already sent at <time>` and that draft is marked sent with its message id (`how: stage guard`). A dry run reports the same and changes no draft; it still runs the sync. `WHOSAID_TEAMS_CACHE=off` skips the sync, not the check.
 
 ### Changed
 - `mark-sent ID` and `whosaid_draft_close` `status=sent` look the message up in the chat (`--ws` / `workspace`, else `WHOSAID_WORKSPACE`) and keep `sent_message`, so a later `stage --edit` finds it by id. With no workspace or no match, they close as before.
 - `drafts new` runs the sent check on the recipient's staged drafts before joining one: a draft that already went out is closed (`closed_sent` in the result) and the new draft starts fresh.
 - `sent`, `dropped`, `edited` and `backfilled` events record `by`: the agent session, or `watcher`.
 - The sent match tolerates an edited send (#229's edited-send case). A name expanded into a full-name mention, a link rendered as `label (url)` or left bare, and a sentence added before sending no longer hide a sent draft: when a long draft's body (greeting and mention marks aside) is at least 90% inside one of your messages, it counts. The guard and the sent check both depend on this. A draft that is already in a chat as your message is now refused at stage time instead of skipped.
+
+## [1.45.1] - 2026-11-19
+
+### Fixed
+- `whosaid backfill` no longer rewrites a transcript's `# Speakers (N):` header with every cluster in the diarization sidecar (#233).
+  - **Before:** the tiny uncounted fragments went into the list too, and N stayed at the old value. One real 87-minute meeting went from 7 names to 110.
+  - **Now:** the header keeps its own membership with renames applied. N moves only by the change, since it counts clusters and two clusters can share a name.
+  - **No rename:** with nothing renamed, the line is left untouched.
+  - **Uncounted clusters:** these stay on the `# Uncounted` line, except one the registry has now named. A named cluster always counts, so it moves to the header and the sidecar's `uncounted` and `num_speakers` follow.
 
 ## [1.45.0] - 2026-11-19
 

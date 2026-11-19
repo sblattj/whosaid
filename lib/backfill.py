@@ -16,17 +16,39 @@ import diarize_sherpa as diarizer
 import workspace
 
 
+def _split_names(listed):
+    return [n.strip() for n in listed.split(",") if n.strip()]
+
+
 def rewrite_transcript(text, old_names, names, roles):
     renamed = {old_names[c]: n for c, n in names.items() if old_names.get(c, c) != n}
+    # The header keeps its own membership (the diarizer lists counted speakers only,
+    # lib/diarize_sherpa.py render_outputs), with renames applied, and N follows the list.
+    # Uncounted clusters stay off it, except one the registry has now named: a named
+    # cluster always counts (diarize_sherpa.uncounted_clusters), so it moves over (#233).
+    still_uncounted, promoted = [], set()
+    for line in text.splitlines():
+        if (u := workspace.UNCOUNTED_HEADER_RE.match(line)):
+            for n in _split_names(u.group(1)):
+                (promoted.add(renamed[n]) if n in renamed else still_uncounted.append(n))
     lines = []
     for line in text.splitlines():
         if workspace.ROLE_HEADER_RE.match(line):
             continue
         header = workspace.SPEAKERS_HEADER_RE.match(line)
         if header:
-            line = re.sub(r":.*$", ": " + ", ".join(sorted(set(names.values()))), line)
+            before = _split_names(header.group(1))
+            listed = sorted({renamed.get(n, n) for n in before} | promoted)
+            if listed != before:  # N counts clusters (two may share a name): move it by the change
+                count = int(re.search(r"\((\d+)\)", line).group(1)) + len(listed) - len(set(before))
+                line = re.sub(r"\(\d+\)\s*:.*$", f"({count}): " + ", ".join(listed), line)
             lines.append(line)
             lines.extend(f"# Role: {n} = {r}" for n, r in sorted(roles.items()))
+            continue
+        uncounted = workspace.UNCOUNTED_HEADER_RE.match(line)
+        if uncounted:
+            if still_uncounted:
+                lines.append(line[:uncounted.start(1)] + ", ".join(sorted(set(still_uncounted))))
             continue
         turn = workspace.TURN_TIME_RE.match(line)
         if turn and turn['name'] in renamed:
@@ -74,6 +96,11 @@ def plan_meeting(folder, registry, cfg):
     updated = rewrite_transcript(original, old_names, names, roles)
     writes = {}
     data['names'] = names
+    if isinstance(data.get('uncounted'), list):  # a named cluster always counts (#233)
+        kept = [c for c in data['uncounted'] if names.get(c, c) == c]
+        if isinstance(data.get('num_speakers'), int):
+            data['num_speakers'] += len(data['uncounted']) - len(kept)
+        data['uncounted'] = kept
     if roles:
         data['roles'] = roles
     else:
