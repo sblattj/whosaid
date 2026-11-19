@@ -525,8 +525,13 @@ whosaid drafts html                             # review page of every open draf
   `show <id> --rev N` prints one, `diff <id> [--from N --to M]` compares two.
 - **Reads the chat first.** With a workspace of ingested chats (`whosaid teams ingest`),
   `stage` prints the last messages with that person and skips a draft that already appears
-  there as your message. `mark-sent --check` marks staged drafts sent the same way, so the
-  outbox closes itself after you send.
+  there as your message. `mark-sent --check` marks staged drafts sent the same way, and the
+  watcher runs that check after every Teams sync, so the outbox closes itself after you send
+  (`[drafts] auto_sent_check = false` in `whosaid.toml` turns it off). `drafts new` checks too
+  before it joins a staged draft, so a message that already went out is never built on.
+  `mark-sent ID` (by hand) still looks the message up in the chat (`--ws`, else
+  `WHOSAID_WORKSPACE`) and keeps its id; `mark-sent --check --backfill` records it for older
+  drafts closed by hand without one. Sent, dropped and edited events record who did it.
 
 Agents use the same outbox over MCP: `whosaid_draft_new`, `whosaid_draft_write`,
 `whosaid_draft_verify`, `whosaid_draft_close`, `whosaid_drafts`, `whosaid_draft_stakeholders`,

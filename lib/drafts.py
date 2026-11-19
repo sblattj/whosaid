@@ -17,7 +17,7 @@ when the user stages them.
     whosaid drafts stale-check [WS] [ID] [--json]         new statements since each draft was verified
     whosaid drafts stage ID|--all [--dry-run] [--tab TARGET] [--ws WS]
     whosaid drafts merge INTO FROM [FROM ...] [--text-file F] [--dry-run] [--force]   fold rival drafts into one
-    whosaid drafts mark-sent ID | mark-sent --check [WS] | drop ID [--reason R]
+    whosaid drafts mark-sent ID [--ws WS] | mark-sent --check [WS] [--backfill] | drop ID [--reason R]
     whosaid drafts show ID --rev N | diff ID [--from N --to M]
     whosaid drafts html [--out PATH] [--all]              one review page of the open drafts
 
@@ -273,14 +273,19 @@ def edit_pending(m: dict) -> bool:
     return m["status"] == "sent" and edit_state(m) != "sent"
 
 
-def _mark_sent(m: dict, hit: dict | None, how: str) -> None:
+def _actor(by: str | None = None) -> str | None:
+    """Who closes or edits a draft (#228): the given name (e.g. "watcher"), else the agent session."""
+    return by or os.environ.get("CLAUDE_CODE_SESSION_ID") or None
+
+
+def _mark_sent(m: dict, hit: dict | None, how: str, by: str | None = None) -> None:
     """status sent, with the message it went out as and the baseline later edits compare against."""
     m["status"] = "sent"
     if hit:
         m["sent_message"] = {k: hit.get(k) for k in ("at", "mid", "folder")}
     m["sent_edit_hash"] = edit_hash(m)
     m["sent_text"] = _draft_text(m)
-    _event(m, "sent", how=how, message=m.get("sent_message"))
+    _event(m, "sent", how=how, message=m.get("sent_message"), by=_actor(by))
 
 
 def _plain_links(s: str) -> str:
@@ -759,6 +764,9 @@ def new(to: str, topic: str, pages: list[str] | None = None, supersedes: str | N
         load(supersedes)
     me = owner(owner_session)
     clash = [d for d in all_drafts() if d["status"] in OPEN and d["to"] == to and d["id"] != supersedes]
+    closed = _close_sent_rivals(clash)
+    if closed:  # #228: a staged draft that already went out is closed, never built on
+        clash = [d for d in clash if d["id"] not in closed]
     if clash and not separate and not supersedes:
         return _join(max(clash, key=lambda d: d.get("updated_at") or ""), me, topic, pages, mentions, new_chat,
                      thread_id)
@@ -782,11 +790,30 @@ def new(to: str, topic: str, pages: list[str] | None = None, supersedes: str | N
     (d / "claims.json").write_text(json.dumps({"claims": [], "stakeholders": [], "docs": []}, indent=2) + "\n")
     out = {"id": draft_id, "path": str(d), "joined": False, "thread_id": m.get("thread_id"),
            "next": "write claims and stakeholders, verify them, then the text"}
+    if closed:
+        out["closed_sent"] = closed
     if clash:
         out["note"] = (f"open draft(s) to {to} already: " + ", ".join(f"{c['id']} [{owner_line(c['owner'])}]" for c in clash)
                        + ". Teams has one compose box per chat: stage refuses both until one is dropped or merged (drafts merge)"
                        + (", or this one supersedes it." if not supersedes else "."))
     return out
+
+
+def _close_sent_rivals(clash: list[dict]) -> list[str]:
+    """Ids of the staged drafts in CLASH that the chat (WHOSAID_WORKSPACE) shows already went out, now marked
+    sent. No workspace or a read problem: none, and new joins as before."""
+    ws = _voice_ws()
+    staged = [d for d in clash if d["status"] == "staged"]
+    if ws is None or not staged:
+        return []
+    closed = []
+    for d in staged:
+        try:
+            if sent_check(ws, d["id"])["sent"]:
+                closed.append(d["id"])
+        except Exception:  # noqa: BLE001 - the check is a bonus here, never a reason new fails
+            continue
+    return closed
 
 
 def check_thread_id(tid: str | None) -> str | None:
@@ -1131,22 +1158,37 @@ def show(draft_id: str, rev: int | None = None) -> dict:
             "edits": m.get("edits") or []}
 
 
-def close(draft_id: str, status: str, reason: str | None = None, force: bool = False) -> dict:
-    """Soft delete: sent or dropped. The folder and its history stay; list --all still shows it."""
+def close(draft_id: str, status: str, reason: str | None = None, force: bool = False,
+          ws: Path | str | None = None) -> dict:
+    """Soft delete: sent or dropped. The folder and its history stay; list --all still shows it.
+    Sent by hand still looks for the message in the chat (WS, else WHOSAID_WORKSPACE) and keeps it (#228)."""
     if status not in ("sent", "dropped"):
         raise DraftsError("status must be sent or dropped")
     m = load(draft_id)
     if m["status"] not in OPEN:
         raise DraftsError(f"{draft_id} is already {m['status']}")
     guard(m, force)
+    out: dict = {"id": draft_id, "status": status}
     if status == "sent":
-        _mark_sent(m, None, "by hand")
+        hit = _find_quietly(_voice_ws(ws), m)
+        _mark_sent(m, hit, "by hand")
         m["history"][-1]["reason"] = reason
+        out["sent_message"] = m.get("sent_message")
     else:
         m["status"] = status
-        _event(m, status, reason=reason)
+        _event(m, status, reason=reason, by=_actor())
     save(m)
-    return {"id": draft_id, "status": status}
+    return out
+
+
+def _find_quietly(ws: Path | None, m: dict) -> dict | None:
+    """find_sent's message, or None with no workspace or any read problem: a lookup never blocks a close."""
+    if ws is None:
+        return None
+    try:
+        return find_sent(ws, m)[0]
+    except Exception:  # noqa: BLE001 - the chat is a bonus here
+        return None
 
 
 def unstage(draft_id: str, reason: str | None = None) -> dict:
@@ -1517,15 +1559,24 @@ def chat_context(ws: Path, m: dict, n: int = 5) -> dict:
             "already_sent": {k: sent[k] for k in ("at", "mid", "folder")} if sent else None}
 
 
-def sent_check(ws: Path, draft_id: str | None = None) -> dict:
+def sent_check(ws: Path, draft_id: str | None = None, backfill: bool = False, by: str | None = None) -> dict:
     """Mark staged drafts sent once the ingested chat shows them as our message after staging, and staged
-    edits saved once the sent message (by id) holds the new text or Teams marks it edited."""
-    todo = [load(draft_id)] if draft_id else [m for m in all_drafts() if m["status"] == "staged" or _edit_open(m)]
+    edits saved once the sent message (by id) holds the new text or Teams marks it edited.
+    backfill: also give sent drafts that have no recorded message (closed by hand) the one the chat holds,
+    changing nothing else (#228). by: who runs the check ("watcher"), else the agent session."""
+    def wanted(m: dict) -> bool:
+        return m["status"] == "staged" or _edit_open(m) or (backfill and _needs_backfill(m))
+    todo = [load(draft_id)] if draft_id else [m for m in all_drafts() if wanted(m)]
     res: dict = {"sent": [], "still_staged": [], "edited": [], "edit_not_seen": [],
                  "note": "a draft stays staged until its chat is ingested again (whosaid teams ingest)"}
+    if backfill:
+        res["backfilled"], res["not_found"] = [], []
     for m in todo:
         if _edit_open(m):
-            _check_edit(ws, m, res)
+            _check_edit(ws, m, res, by)
+            continue
+        if backfill and _needs_backfill(m):
+            _backfill(ws, m, res, by)
             continue
         if m["status"] != "staged":
             res["still_staged"].append({"id": m["id"], "why": f"is {m['status']}, not staged"})
@@ -1537,10 +1588,26 @@ def sent_check(ws: Path, draft_id: str | None = None) -> dict:
             res["still_staged"].append({"id": m["id"], "to": m["to"], "why": f"not in the {len(msgs)} ingested "
                                         f"message(s) of {m['to']} since staging"})
             continue
-        _mark_sent(m, hit, "check")
+        _mark_sent(m, hit, "check", by)
         save(m)
         res["sent"].append({"id": m["id"], "to": m["to"], **m["sent_message"]})
     return res
+
+
+def _needs_backfill(m: dict) -> bool:
+    return m["status"] == "sent" and not (m.get("sent_message") or {}).get("mid")
+
+
+def _backfill(ws: Path, m: dict, res: dict, by: str | None) -> None:
+    """The message a draft closed by hand went out as, recorded; status, text and edit baseline untouched."""
+    hit = _find_quietly(ws, m)
+    if not hit or not hit.get("mid"):
+        res["not_found"].append({"id": m["id"], "to": m["to"]})
+        return
+    m["sent_message"] = {k: hit.get(k) for k in ("at", "mid", "folder")}
+    _event(m, "backfilled", message=m["sent_message"], by=_actor(by))
+    save(m)
+    res["backfilled"].append({"id": m["id"], "to": m["to"], **m["sent_message"]})
 
 
 def _edit_open(m: dict) -> bool:
@@ -1549,7 +1616,7 @@ def _edit_open(m: dict) -> bool:
     return m["status"] == "sent" and bool(e) and not e.get("edited_at")
 
 
-def _check_edit(ws: Path, m: dict, res: dict) -> None:
+def _check_edit(ws: Path, m: dict, res: dict, by: str | None = None) -> None:
     e = m["edits"][-1]
     since = (_ms((m.get("sent_message") or {}).get("at")) or _ms(e.get("staged_at")) or 0) - 300_000
     x = next((x for x in draft_chat_messages(ws, m, since_ms=since) if e.get("mid") and str(x.get("mid")) == str(e["mid"])),
@@ -1577,7 +1644,7 @@ def _check_edit(ws: Path, m: dict, res: dict) -> None:
     e["seen_text"] = x["text"]
     if e.get("hash") == edit_hash(m):  # the outbox still holds what was saved: that is the new baseline
         m["sent_edit_hash"], m["sent_text"] = e["hash"], e["to_text"]
-    _event(m, "edited", n=e["n"], mid=e.get("mid"), edited_at=e["edited_at"])
+    _event(m, "edited", n=e["n"], mid=e.get("mid"), edited_at=e["edited_at"], by=_actor(by))
     save(m)
     res["edited"].append({"id": m["id"], "to": m["to"], "n": e["n"], "mid": e.get("mid"), "edited_at": e["edited_at"]})
 
@@ -2308,6 +2375,8 @@ def build_parser() -> argparse.ArgumentParser:
     a = sub.add_parser("mark-sent")
     a.add_argument("id", nargs="?", help="a draft id, or with --check an optional workspace")
     a.add_argument("--check", action="store_true", help="mark staged drafts sent that show up in the ingested chat")
+    a.add_argument("--backfill", action="store_true",
+                   help="with --check: also record the message for sent drafts closed by hand without one")
     a.add_argument("--ws")
     a.add_argument("--reason")
     a.add_argument("--force", action="store_true", help=force)
@@ -2501,7 +2570,11 @@ def main(argv: list[str] | None = None) -> int:
                 print(r["note"])
             return 1 if r["failed"] else 0
         elif c == "mark-sent" and args.check:
-            r = sent_check(_ws(args.ws or args.id))
+            r = sent_check(_ws(args.ws or args.id), backfill=args.backfill)
+            for s in r.get("backfilled", []):
+                print(f"{s['id']}: backfilled, went out at {s['at']} (found in {s['folder']})")
+            for s in r.get("not_found", []):
+                print(f"{s['id']}: sent, its message not found in the chat")
             for s in r["sent"]:
                 print(f"{s['id']}: sent at {s['at']} (found in {s['folder']})")
             for s in r["still_staged"]:
@@ -2510,7 +2583,7 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"{s['id']}: edit {s['n']} saved in Teams at {s['edited_at']}")
             for s in r["edit_not_seen"]:
                 print(f"{s['id']}: edit staged, not seen saved yet: {s['why']}")
-            if not r["sent"] and not r["still_staged"] and not r["edited"] and not r["edit_not_seen"]:
+            if not any(r.get(k) for k in ("sent", "still_staged", "edited", "edit_not_seen", "backfilled", "not_found")):
                 print("no staged drafts")
             elif r["still_staged"]:
                 print(r["note"])
@@ -2541,8 +2614,12 @@ def main(argv: list[str] | None = None) -> int:
         elif c in ("mark-sent", "drop"):
             if not args.id:
                 raise DraftsError("need a draft id (or mark-sent --check)")
-            r = close(args.id, "sent" if c == "mark-sent" else "dropped", args.reason, force=args.force)
-            print(f"{r['id']}: {r['status']}")
+            if args.backfill:
+                raise DraftsError("--backfill goes with --check")
+            r = close(args.id, "sent" if c == "mark-sent" else "dropped", args.reason, force=args.force,
+                      ws=getattr(args, "ws", None))
+            sm = r.get("sent_message") or {}
+            print(f"{r['id']}: {r['status']}" + (f" (message at {sm['at']})" if sm.get("at") else ""))
     except DraftsError as e:
         print(f"whosaid drafts: {e}", file=sys.stderr)
         return 1

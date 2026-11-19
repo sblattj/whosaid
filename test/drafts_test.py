@@ -976,6 +976,169 @@ class ChatHistoryTest(DraftsBase):
         self.assertEqual(out.returncode, 0, out.stderr)
 
 
+class SentTrackingTest(DraftsBase):
+    """#228: the watcher closes sent drafts, by-hand closes keep the message, backfill, actor on events."""
+
+    chat = ChatHistoryTest.chat
+
+    def setUp(self):
+        super().setUp()
+        self.ws = self.root / "ws"
+        self.ws.mkdir()
+
+    def sent_out(self, text="Hi, can you add the two DNS records?", chat="Test Person"):
+        self.chat([(datetime.now() + timedelta(seconds=5), "Me_Self", text)], chat=chat)
+
+    def staged(self, **kw):
+        did = self.ready(**kw)
+        drafts.stage([did], ws=self.ws)
+        self.assertEqual(drafts.load(did)["status"], "staged")
+        return did
+
+    def test_mark_sent_by_hand_keeps_the_message_the_chat_holds(self):
+        did = self.staged()
+        self.sent_out()
+        r = drafts.close(did, "sent", ws=self.ws)
+        m = drafts.load(did)
+        self.assertEqual(m["sent_message"]["mid"], "m0")
+        self.assertEqual(r["sent_message"]["mid"], "m0")
+        ev = m["history"][-1]
+        self.assertEqual((ev["event"], ev["how"], ev["by"]), ("sent", "by hand", "sess-1111"))
+
+    def test_mark_sent_by_hand_reads_the_default_workspace(self):
+        did = self.staged()
+        self.sent_out()
+        with patch.dict(os.environ, {"WHOSAID_WORKSPACE": str(self.ws)}):
+            drafts.close(did, "sent")
+        self.assertEqual(drafts.load(did)["sent_message"]["mid"], "m0")
+
+    def test_mark_sent_by_hand_without_a_workspace_or_message_closes_as_before(self):
+        did = self.staged()
+        drafts.close(did, "sent")
+        self.assertEqual(drafts.load(did)["status"], "sent")
+        self.assertIsNone(drafts.load(did).get("sent_message"))
+        other = self.staged(to="Second Person")
+        drafts.close(other, "sent", ws=self.ws)  # nothing in that chat
+        self.assertEqual(drafts.load(other)["status"], "sent")
+        self.assertIsNone(drafts.load(other).get("sent_message"))
+
+    def test_backfill_records_the_message_and_changes_nothing_else(self):
+        did = self.staged()
+        drafts.close(did, "sent")  # by hand, before the chat was synced
+        before = drafts.load(did)
+        self.sent_out()
+        self.assertNotIn("backfilled", drafts.sent_check(self.ws), "only with backfill")
+        self.assertIsNone(drafts.load(did).get("sent_message"))
+        r = drafts.sent_check(self.ws, backfill=True)
+        self.assertEqual([x["id"] for x in r["backfilled"]], [did])
+        m = drafts.load(did)
+        self.assertEqual(m["sent_message"]["mid"], "m0")
+        for k in ("status", "sent_edit_hash", "sent_text", "staged_at"):
+            self.assertEqual(m.get(k), before.get(k), k)
+        self.assertEqual(m["history"][:-1], before["history"])
+        self.assertEqual((m["history"][-1]["event"], m["history"][-1]["by"]), ("backfilled", "sess-1111"))
+        self.assertEqual(drafts.sent_check(self.ws, backfill=True)["backfilled"], [], "once")
+
+    def test_backfill_reports_a_message_it_cannot_find(self):
+        did = self.staged()
+        drafts.close(did, "sent")
+        r = drafts.sent_check(self.ws, backfill=True)
+        self.assertEqual(r["backfilled"], [])
+        self.assertEqual([x["id"] for x in r["not_found"]], [did])
+        self.assertEqual(drafts.load(did)["history"][-1]["event"], "sent")
+
+    def test_cli_backfill_and_by_hand_message(self):
+        lib = Path(__file__).resolve().parents[1] / "lib" / "drafts.py"
+        did = self.staged()
+        drafts.close(did, "sent")
+        self.sent_out()
+        out = subprocess.run([sys.executable, str(lib), "mark-sent", "--check", str(self.ws), "--backfill"],
+                             capture_output=True, text=True, env=os.environ)
+        self.assertIn(f"{did}: backfilled", out.stdout, out.stderr)
+        other = self.staged(to="Second Person")
+        self.sent_out(chat="Second Person")
+        out = subprocess.run([sys.executable, str(lib), "mark-sent", other, "--ws", str(self.ws)],
+                             capture_output=True, text=True, env=os.environ)
+        self.assertIn(f"{other}: sent (message at", out.stdout, out.stderr)
+        out = subprocess.run([sys.executable, str(lib), "mark-sent", other, "--backfill"],
+                             capture_output=True, text=True, env=os.environ)
+        self.assertNotEqual(out.returncode, 0)
+
+    def test_new_closes_a_staged_draft_that_already_went_out_instead_of_joining_it(self):
+        did = self.staged()
+        self.sent_out()
+        with patch.dict(os.environ, {"WHOSAID_WORKSPACE": str(self.ws)}):
+            r = drafts.new("Test Person", "follow up", [str(self.page)])
+        self.assertFalse(r["joined"])
+        self.assertNotEqual(r["id"], did)
+        self.assertEqual(r["closed_sent"], [did])
+        self.assertEqual(drafts.load(did)["status"], "sent")
+        self.assertEqual(drafts.load(did)["sent_message"]["mid"], "m0")
+
+    def test_new_still_joins_a_staged_draft_that_has_not_gone_out(self):
+        did = self.staged()
+        with patch.dict(os.environ, {"WHOSAID_WORKSPACE": str(self.ws)}):
+            r = drafts.new("Test Person", "follow up", [str(self.page)])
+        self.assertTrue(r["joined"])
+        self.assertEqual(r["id"], did)
+        self.assertEqual(drafts.load(did)["status"], "staged")
+
+    def test_dropped_events_carry_the_actor(self):
+        did = self.ready()
+        drafts.close(did, "dropped", "answered elsewhere")
+        ev = drafts.load(did)["history"][-1]
+        self.assertEqual((ev["event"], ev["by"]), ("dropped", "sess-1111"))
+
+    def test_watcher_pass_closes_a_sent_draft(self):
+        import watch
+        did = self.staged()
+        self.sent_out()
+        self.assertEqual(watch.drafts_sent_pass(self.ws, {"drafts": {"auto_sent_check": False}}, False), 0)
+        self.assertEqual(watch.drafts_sent_pass(self.ws, {}, True), 0, "dry run writes nothing")
+        self.assertEqual(drafts.load(did)["status"], "staged")
+        src = self.root / "recordings"
+        src.mkdir()
+        logs = []
+        with patch.object(watch, "teams_live_sync", return_value=0), patch.object(watch, "tlog", logs.append):
+            self.assertEqual(watch.watch_pass(self.ws, src, {}, "whosaid", None, False, True, False), 0)
+        m = drafts.load(did)
+        self.assertEqual(m["status"], "sent")
+        self.assertEqual(m["sent_message"]["mid"], "m0")
+        self.assertEqual((m["history"][-1]["how"], m["history"][-1]["by"]), ("check", "watcher"))
+        self.assertTrue(any(f"drafts: {did} sent at" in x for x in logs), logs)
+
+    def test_watcher_check_reads_only_the_workspace_after_a_cache_sync(self):
+        import watch
+        seen = []
+
+        def spy(ws, **kw):
+            seen.append(os.environ.get("WHOSAID_TEAMS_CACHE"))
+            return {"sent": [], "edited": []}
+        with patch.dict(os.environ, {"WHOSAID_TEAMS_CACHE": "auto"}), patch.object(drafts, "sent_check", spy):
+            watch.drafts_sent_pass(self.ws, {"teams": {"live_cache": True}}, False)
+            watch.drafts_sent_pass(self.ws, {}, False)
+            self.assertEqual(os.environ["WHOSAID_TEAMS_CACHE"], "auto", "restored")
+        self.assertEqual(seen, ["off", "auto"])
+
+    def test_watcher_runs_the_check_even_when_the_recordings_pass_raises(self):
+        import watch
+        calls = []
+        with patch.object(watch, "teams_live_sync", return_value=0), \
+                patch.object(watch, "_recordings_pass", side_effect=PermissionError("no access")), \
+                patch.object(watch, "drafts_sent_pass", lambda *a: calls.append(a) or 0):
+            with self.assertRaises(PermissionError):
+                watch.watch_pass(self.ws, self.root, {}, "whosaid", None, False, True, False)
+        self.assertEqual(len(calls), 1)
+
+    def test_watcher_pass_never_raises_on_an_outbox_problem(self):
+        import watch
+        logs = []
+        with patch.object(drafts, "sent_check", side_effect=OSError("disk gone")), \
+                patch.object(watch, "tlog", logs.append):
+            self.assertEqual(watch.drafts_sent_pass(self.ws, {}, False), 0)
+        self.assertTrue(any("sent check skipped" in x for x in logs), logs)
+
+
 class MergeTest(DraftsBase):
     """#188: drafts merge folds rival open drafts to one recipient into one."""
 

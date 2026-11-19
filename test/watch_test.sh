@@ -152,6 +152,8 @@ FAKE
 chmod +x "$TMP/bin/whosaid" "$TMP/bin/shortcuts"
 export PATH="$TMP/bin:$PATH"
 export WHOSAID_WATCH_AGENT_DIR="$TMP/agent-dir"
+# the watcher's drafts sent check (#228) reads the outbox: never the real ~/.drafts or Teams cache
+export WHOSAID_DRAFTS_DIR="$TMP/drafts" WHOSAID_TEAMS_CACHE=off
 unset WHOSAID_WORKSPACE WHOSAID_BIN WHOSAID_ACCURATE WHOSAID_ACTION_ITEMS_HOOK HF_HUB_OFFLINE WHOSAID_PRETEND_NON_ADMIN 2>/dev/null || true
 
 WS="$TMP/ws"; SRC="$TMP/src"

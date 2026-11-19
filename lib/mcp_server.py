@@ -3629,7 +3629,10 @@ _DESC_DRAFT_SENT_CHECK = (
     "A staged edit (whosaid_draft_stage edit=true) counts as saved once the sent message, found by id, "
     "carries Teams' edit time or holds the new text; that sets edited_at on the draft's edit. "
     "Returns {ok, sent: [{id, to, at, mid, folder}], still_staged: [{id, why}], edited: [{id, to, n, mid, "
-    "edited_at}], edit_not_seen: [{id, why}], note}. Changes only "
+    "edited_at}], edit_not_seen: [{id, why}], note}. backfill=true also records the message for sent "
+    "drafts closed by hand without one (adds backfilled: [{id, to, at, mid, folder}], not_found: [{id, to}]; "
+    "status and text unchanged). The whosaid watcher runs this check after every Teams sync "
+    "([drafts] auto_sent_check = false turns it off). Changes only "
     "draft status in ~/.drafts; never reads or drives a chat app."
 )
 
@@ -3704,16 +3707,23 @@ _DESC_DRAFT_CLOSE = (
     "question got answered, it was merged into another draft), status=sent once the user says it went "
     "out. A soft delete: the folder and history stay, whosaid_drafts(all=true) still shows it, and a "
     "closed draft can't be edited or staged. reason is recorded. Another live session's draft is "
-    "refused unless force=true. Returns {ok, id, status}."
+    "refused unless force=true. status=sent also looks the message up in the workspace's ingested chat "
+    "(workspace, else the default) and records it, so a later edit finds it by id; prefer "
+    "whosaid_draft_sent_check when the chat is synced. Returns {ok, id, status, sent_message}."
 )
 
 
 @mcp.tool(name="whosaid_draft_close", description=_DESC_DRAFT_CLOSE, annotations=_DRAFT_WRITE_ANN)
 def whosaid_draft_close(id: str, status: Literal["dropped", "sent"], reason: Optional[str] = None,
-                        force: bool = False) -> dict:
-    """Mark one draft dropped or sent."""
+                        force: bool = False, workspace: Optional[str] = None) -> dict:
+    """Mark one draft dropped or sent. Sent looks the message up in the workspace's chat and keeps it."""
     import drafts
-    return _drafts_call(drafts.close, id, status, reason, force)
+    ws = None
+    if status == "sent":
+        ws, err = _resolve_ws(workspace)
+        if err:
+            ws = None  # no workspace: closed without the message, as before
+    return _drafts_call(drafts.close, id, status, reason, force, ws)
 
 
 _DESC_DRAFT_MERGE = (
@@ -3943,13 +3953,15 @@ async def whosaid_draft_stage(id: Optional[str] = None, all: bool = False, queue
 
 
 @mcp.tool(name="whosaid_draft_sent_check", description=_DESC_DRAFT_SENT_CHECK, annotations=_DRAFT_WRITE_ANN)
-def whosaid_draft_sent_check(id: Optional[str] = None, workspace: Optional[str] = None) -> dict:
-    """Mark staged drafts sent that show up as your message in the ingested chat."""
+def whosaid_draft_sent_check(id: Optional[str] = None, workspace: Optional[str] = None,
+                             backfill: bool = False) -> dict:
+    """Mark staged drafts sent that show up as your message in the ingested chat (backfill: also record
+    the message for sent drafts closed by hand without one)."""
     ws, err = _resolve_ws(workspace)
     if err:
         return err
     import drafts
-    return _drafts_call(drafts.sent_check, ws, id)
+    return _drafts_call(drafts.sent_check, ws, id, backfill)
 
 
 # ---------------------------------------------------------------------------

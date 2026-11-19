@@ -401,6 +401,37 @@ def teams_live_sync(ws: Path, cfg: dict, dry: bool) -> int:
     return 0 if dry else n
 
 
+def drafts_sent_pass(ws: Path, cfg: dict, dry: bool) -> int:
+    """After the Teams sync: mark staged outbox drafts sent once the chat shows them (drafts mark-sent
+    --check), so a draft that went out never sits staged (#228). [drafts] auto_sent_check = false turns
+    it off. Returns how many were closed; never raises."""
+    if dry or (cfg.get("drafts") or {}).get("auto_sent_check", True) is False:
+        return 0
+    # the sync just folded the Teams cache into the workspace: read only the workspace, since decoding
+    # the cache again per staged draft costs seconds each
+    synced = bool((cfg.get("teams") or {}).get("live_cache"))
+    old = os.environ.get("WHOSAID_TEAMS_CACHE")
+    try:
+        if synced:
+            os.environ["WHOSAID_TEAMS_CACHE"] = "off"
+        import drafts
+        res = drafts.sent_check(ws, by="watcher")
+    except Exception as e:  # noqa: BLE001 - an outbox problem must not stop recordings
+        tlog(f"drafts: sent check skipped ({e})")
+        return 0
+    finally:
+        if synced:
+            if old is None:
+                os.environ.pop("WHOSAID_TEAMS_CACHE", None)
+            else:
+                os.environ["WHOSAID_TEAMS_CACHE"] = old
+    for s in res.get("sent") or []:
+        tlog(f"drafts: {s['id']} sent at {s.get('at')} (found in {s.get('folder')})")
+    for s in res.get("edited") or []:
+        tlog(f"drafts: {s['id']} edit {s.get('n')} saved at {s.get('edited_at')}")
+    return len(res.get("sent") or [])
+
+
 def backup_pass(ws: Path, cfg: dict, dry: bool) -> str:
     """[backup] interval + to in whosaid.toml: one scheduled `whosaid backup` pass (#180),
     after ingest and inside the run lock. Never raises: a failed backup is logged and
@@ -420,6 +451,14 @@ def backup_pass(ws: Path, cfg: dict, dry: bool) -> str:
 def watch_pass(ws: Path, source: Path, cfg: dict, whosaid: str, engine: str | None,
                accurate: bool, offline: bool, dry: bool) -> int:
     chats_new = teams_live_sync(ws, cfg, dry)
+    try:
+        return _recordings_pass(ws, source, cfg, whosaid, engine, accurate, offline, dry, chats_new)
+    finally:
+        drafts_sent_pass(ws, cfg, dry)  # after the recordings, so it never delays them; never raises
+
+
+def _recordings_pass(ws: Path, source: Path, cfg: dict, whosaid: str, engine: str | None,
+                     accurate: bool, offline: bool, dry: bool, chats_new: int) -> int:
     wcfg = cfg.get("watch") or {}
     stable_seconds = float(wcfg.get("stable_seconds", 120))
     max_wait = float(wcfg.get("max_wait_seconds", 900))
