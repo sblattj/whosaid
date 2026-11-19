@@ -2587,7 +2587,8 @@ def main(argv: list[str] | None = None) -> int:
             for s in r.get("backfilled", []):
                 print(f"{s['id']}: backfilled, went out at {s['at']} (found in {s['folder']})")
             for s in r.get("not_found", []):
-                print(f"{s['id']}: sent, its message not found in the chat")
+                print(f"{s['id']}: sent, its message not found in the chat"
+                      + (f" (lookup failed: {s['error']})" if s.get("error") else ""))
             for s in r["sent"]:
                 print(f"{s['id']}: sent at {s['at']} (found in {s['folder']})")
             for s in r["still_staged"]:
@@ -2633,6 +2634,9 @@ def main(argv: list[str] | None = None) -> int:
                       ws=getattr(args, "ws", None))
             sm = r.get("sent_message") or {}
             print(f"{r['id']}: {r['status']}" + (f" (message at {sm['at']})" if sm.get("at") else ""))
+            if r.get("lookup_error"):
+                print(f"whosaid drafts: closed, but the chat lookup failed ({r['lookup_error']}); "
+                      "run mark-sent --check --backfill later to record the message", file=sys.stderr)
     except DraftsError as e:
         print(f"whosaid drafts: {e}", file=sys.stderr)
         return 1

@@ -1115,6 +1115,18 @@ class SentTrackingTest(DraftsBase):
         self.assertIn("chat unreadable", r["lookup_error"])
         self.assertIn("chat unreadable", m["history"][-1]["lookup_error"])
 
+    def test_cli_mark_sent_prints_a_failed_lookup(self):
+        # review of #231: the CLI printed a failed lookup like a clean close
+        import contextlib
+        import io
+        did = self.staged()
+        err = io.StringIO()
+        with patch.object(drafts, "find_sent", side_effect=OSError("chat unreadable")), \
+                contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
+            self.assertEqual(drafts.main(["mark-sent", did, "--ws", str(self.ws)]), 0)
+        self.assertIn("chat lookup failed (OSError: chat unreadable)", err.getvalue())
+        self.assertIn("--backfill", err.getvalue())
+
     def test_new_reports_a_failed_sent_check_and_joins(self):
         did = self.staged()
         real = drafts.sent_check
