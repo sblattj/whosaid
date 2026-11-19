@@ -32,6 +32,8 @@ SCRIPT = str(ROOT / "lib" / "drafts_stager.py")
 # The default app port points at a closed one; tests that want a port set it themselves.
 os.environ["WHOSAID_TEAMS_CDP_PORT"] = "9"
 os.environ["WHOSAID_STAGER_NOTIFY"] = "0"  # no macOS notification per test run (#221)
+os.environ["WHOSAID_STAGER_RESTORE_FRONT"] = "0"  # never read or move the real front app from a test
+os.environ.pop("WHOSAID_STAGER_FOCUS", None)
 SEND_XY = (900, 900)
 OP_RE = re.compile(r"^/\*op:(\w+)\*//\*args:(.*?)\*/")
 
@@ -648,6 +650,8 @@ class FakeTeams:
             return args["name"] in self.chips or args["name"] in self.history
         if name == "final":
             return {"len": len(self.compose.strip()), "links": getattr(self, "pasted_html", "").count("<a ")}
+        if name == "visibility":
+            return "hidden" if self.hidden else "visible"
         return None  # editor_focus, caret_end
 
     def handler(self, ws):
@@ -803,7 +807,7 @@ class EndToEnd(unittest.TestCase):
         self.assertGreater(out["chars"], 0)
         self.assertEqual((out["links"], out["attachments"]), (1, 0))
         self.assertIn("<b>Ann</b>", f.pasted_html)
-        self.assertIn(("Target.activateTarget", {"targetId": "T1"}), f.calls)
+        self.assertIn(("Target.attachToTarget", {"targetId": "T1", "flatten": True}), f.calls)
         f.never_sent(self)
 
     def test_chat_found_only_via_search(self):
@@ -1048,8 +1052,8 @@ class EndToEnd(unittest.TestCase):
         f = self.fake(rail=["Ann Lee"], targets=[self.T0, self.T1], browser="Edg/150.0")
         r = self.run_port(app_fake=f)
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertIn(("Target.activateTarget", {"targetId": "T1"}), f.calls)
-        self.assertNotIn(("Target.activateTarget", {"targetId": "T0"}), f.calls)
+        self.assertIn(("Target.attachToTarget", {"targetId": "T1", "flatten": True}), f.calls)
+        self.assertNotIn(("Target.attachToTarget", {"targetId": "T0", "flatten": True}), f.calls)
         self.assertNotIn("Target.createTarget", [m for m, _ in f.calls])
         f.never_sent(self)
 
@@ -1089,7 +1093,7 @@ class EndToEnd(unittest.TestCase):
         f = self.fake(rail=["Ann Lee"], targets=[self.T0, other, mine], browser="Edg/150.0")
         r = self.run_port(app_fake=f)
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertIn(("Target.activateTarget", {"targetId": "T3"}), f.calls)
+        self.assertIn(("Target.attachToTarget", {"targetId": "T3", "flatten": True}), f.calls)
 
     def test_app_mode_with_the_desktop_title_form(self):
         """The real app window title is "Chat | NAME", no "| Microsoft Teams" (checked live 2026-11-10)."""
@@ -1099,7 +1103,7 @@ class EndToEnd(unittest.TestCase):
                       titles={"Ann Lee": "Chat | Ann Lee"})
         r = self.run_port(app_fake=f)
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertIn(("Target.activateTarget", {"targetId": "T3"}), f.calls)
+        self.assertIn(("Target.attachToTarget", {"targetId": "T3", "flatten": True}), f.calls)
         self.assertIn("paste", f.ops)
         f.never_sent(self)
 
@@ -1108,7 +1112,7 @@ class EndToEnd(unittest.TestCase):
         f = self.fake(rail=["Ann Lee"], targets=[self.T0, win], browser="Edg/150.0")
         r = self.run_port(app_fake=f)
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertIn(("Target.activateTarget", {"targetId": "T1"}), f.calls)
+        self.assertIn(("Target.attachToTarget", {"targetId": "T1", "flatten": True}), f.calls)
         detached = [m for m, _ in f.calls if m == "Target.detachFromTarget"]
         self.assertGreaterEqual(len(detached), 2, "probe sessions were left attached")
 
@@ -1130,7 +1134,7 @@ class EndToEnd(unittest.TestCase):
         f = self.fake(rail=["Ann Lee"], targets=[self.T0, self.T1], browser="Edg/150.0")
         r = self.run_stager(f)
         self.assertNotIn("Teams app is up", r.stderr)
-        self.assertIn(("Target.activateTarget", {"targetId": "T0"}), f.calls)
+        self.assertIn(("Target.attachToTarget", {"targetId": "T0", "flatten": True}), f.calls)
         self.assertNotIn("Target.detachFromTarget", [m for m, _ in f.calls])
 
     def test_port_table_app_port_answers_as_edge(self):
@@ -1918,7 +1922,35 @@ class EndToEnd(unittest.TestCase):
         methods = [m for m, _ in f.calls]
         self.assertLess(methods.index("Target.activateTarget"), methods.index("Input.dispatchMouseEvent"))
         self.assertEqual(f.chips, ["page.html"])
+        self.assertEqual(json.loads(r.stdout.strip().splitlines()[-1])["tab"], "raised")
         f.never_sent(self)
+
+    def test_visible_tab_is_never_raised(self):
+        """The Teams app window reports "visible" behind other apps: no activate, no bringToFront, no focus theft."""
+        f = self.fake(rail=["Ann Lee"])
+        r = self.run_stager(f, "--attach", str(self.page))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        methods = [m for m, _ in f.calls]
+        self.assertNotIn("Target.activateTarget", methods)
+        self.assertNotIn("Page.bringToFront", methods)
+        out = json.loads(r.stdout.strip().splitlines()[-1])
+        self.assertEqual((out["focused"], out["tab"]), (False, "visible"))
+        self.assertEqual(f.chips, ["page.html"])
+        f.never_sent(self)
+
+    def test_focus_flag_raises_only_at_the_end(self):
+        for extra, env in ((["--focus"], None), ([], {"WHOSAID_STAGER_FOCUS": "1"})):
+            with self.subTest(extra=extra, env=env):
+                f = self.fake(rail=["Ann Lee"])
+                r = self.run_stager(f, *extra, env_extra=env)
+                self.assertEqual(r.returncode, 0, r.stderr)
+                methods = [m for m, _ in f.calls]
+                self.assertEqual(methods.count("Target.activateTarget"), 1)
+                self.assertGreater(methods.index("Target.activateTarget"),
+                                   max(i for i, m in enumerate(methods) if m == "Input.dispatchMouseEvent"))
+                self.assertIs(json.loads(r.stdout.strip().splitlines()[-1])["focused"], True)
+                f.never_sent(self)
+
 
     # ---- --edit-sent (#176) ----
     OWN = ["morning, the build is green again", "so I'll file a follow-up to run the migration once per env",
@@ -2120,6 +2152,97 @@ class BuiltInStager(unittest.TestCase):
         self.assertTrue(Path(argv[6]).exists())
         with patch.dict(os.environ, {"WHOSAID_DRAFTS_STAGER": "my-stager --flag"}):
             self.assertEqual(drafts.stager(), ["my-stager", "--flag"])
+
+
+
+class FrontAppTest(unittest.TestCase):
+    """front_app_pid / restore_front_app: lsappinfo to read, System Events to restore, never raising."""
+
+    def fake_run(self, front_pids, calls):
+        pids = iter(front_pids)
+
+        def run(argv, **kw):
+            calls.append(argv)
+            out = ""
+            if argv[:2] == ["lsappinfo", "front"]:
+                out = "ASN:0x0-0x1:\n"
+            elif argv[:2] == ["lsappinfo", "info"]:
+                out = f"    pid = {next(pids)} !cgsConnection\n"
+            return subprocess.CompletedProcess(argv, 0, out, "")
+        return run
+
+    def test_reads_the_front_pid(self):
+        calls = []
+        with patch.dict(os.environ, {"WHOSAID_STAGER_RESTORE_FRONT": "1"}), patch.object(ds.sys, "platform", "darwin"), \
+                patch.object(ds.subprocess, "run", self.fake_run([4242], calls)):
+            self.assertEqual(ds.front_app_pid(), 4242)
+
+    def test_off_switch_and_other_platforms_read_nothing(self):
+        for env, plat in (({"WHOSAID_STAGER_RESTORE_FRONT": "0"}, "darwin"), ({"WHOSAID_STAGER_RESTORE_FRONT": "1"}, "linux")):
+            calls = []
+            with patch.dict(os.environ, env), patch.object(ds.sys, "platform", plat), \
+                    patch.object(ds.subprocess, "run", self.fake_run([1], calls)):
+                self.assertIsNone(ds.front_app_pid())
+                self.assertFalse(ds.restore_front_app(7))
+            self.assertEqual(calls, [])
+
+    def test_restores_only_when_the_front_changed(self):
+        for now, want in ((4242, False), (99, True)):
+            calls = []
+            with patch.dict(os.environ, {"WHOSAID_STAGER_RESTORE_FRONT": "1"}), patch.object(ds.sys, "platform", "darwin"), \
+                    patch.object(ds.subprocess, "run", self.fake_run([now], calls)):
+                self.assertIs(ds.restore_front_app(4242), want)
+            osa = [c for c in calls if c[0] == "osascript"]
+            self.assertEqual(len(osa), 1 if want else 0)
+            if want:
+                self.assertIn("unix id is 4242", osa[0][-1])
+
+    def test_a_failing_lsappinfo_never_raises(self):
+        def boom(*a, **k):
+            raise OSError("no lsappinfo")
+        with patch.dict(os.environ, {"WHOSAID_STAGER_RESTORE_FRONT": "1"}), patch.object(ds.sys, "platform", "darwin"), \
+                patch.object(ds.subprocess, "run", boom):
+            self.assertIsNone(ds.front_app_pid())
+
+
+class MakeVisibleTest(unittest.TestCase):
+    """make_visible: visible -> untouched; hidden -> activate + restore, re-raise only if it hid again."""
+
+    class C:
+        def __init__(self, vis):
+            self.vis, self.sent = list(vis), []
+
+        async def ev(self, expr):
+            return self.vis.pop(0)
+
+        async def send(self, method, params=None, session=None):
+            self.sent.append(method)
+            return {}
+
+        async def s(self, method, params=None):
+            self.sent.append(method)
+            return {}
+
+    def go(self, vis, restored):
+        c = self.C(vis)
+        with patch.object(ds, "front_app_pid", lambda: 1), patch.object(ds, "restore_front_app", lambda pid: restored):
+            return ds.asyncio.run(ds.make_visible(c, "T1")), c.sent
+
+    def test_visible_is_left_alone(self):
+        self.assertEqual(self.go(["visible"], True), ("visible", []))
+
+    def test_hidden_is_activated_then_the_front_app_put_back(self):
+        state, sent = self.go(["hidden", "visible"], True)
+        self.assertEqual(state, "activated")
+        self.assertEqual(sent, ["Target.activateTarget", "Page.bringToFront"])
+
+    def test_hidden_again_after_restore_is_raised(self):
+        state, sent = self.go(["hidden", "hidden"], True)
+        self.assertEqual(state, "raised")
+        self.assertEqual(sent.count("Target.activateTarget"), 2)
+
+    def test_nothing_to_restore_stays_raised(self):
+        self.assertEqual(self.go(["hidden"], False)[0], "raised")
 
 
 if __name__ == "__main__":

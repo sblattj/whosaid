@@ -6,6 +6,9 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ## [Unreleased]
 
+### Changed
+- `drafts stage` no longer takes your focus. The stager used to raise the browser or Teams app twice per stage (`Target.activateTarget` plus `Page.bringToFront`): once before the chat-list click (#174) and once at the end ("focusing the tab"). On macOS each one brought the app in front of whatever you were using. Now it reads `document.visibilityState` first. The Teams desktop app's chat window reports `visible` even while other apps are in front (measured), so it is left alone. A hidden browser tab is still activated before the click, then the app that was in front is put back (`lsappinfo` to read it, System Events to restore it, the same approach as cdp-toolkit 3.4.0). If the tab hides again after that, the stager raises it as before. The final raise is opt-in now: `--focus` or `WHOSAID_STAGER_FOCUS=1`. The result JSON gains `focused` and `tab` (`visible`, `activated` or `raised`). `WHOSAID_STAGER_RESTORE_FRONT=0` turns the front-app restore off.
+
 ## [1.46.0] - 2026-11-20
 
 ### Added

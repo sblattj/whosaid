@@ -2,8 +2,8 @@
 """
 drafts_stager.py: the built-in stager for `whosaid drafts stage` (GitHub issue #168).
 
-Opens a chat in the Teams web app, pastes draft.md as rich text, attaches pages and focuses the
-tab, in a Chromium browser started with --remote-debugging-port (the port `whosaid record
+Opens a chat in the Teams web app, pastes draft.md as rich text and attaches pages, without taking the
+user's focus (--focus, or WHOSAID_STAGER_FOCUS=1, brings the tab to the front at the end), in a Chromium browser started with --remote-debugging-port (the port `whosaid record
 --browser` uses). It NEVER sends: no Enter/Return key event is ever dispatched (one choke point,
 CDP.send, raises on it), and no click lands on anything that looks like a send button (click()
 hit-tests the point first). Ported from the proven teams-draft stage.ts.
@@ -87,6 +87,9 @@ so it stays valid JSON). A fake dispatches on NAME. Ops and their return values:
   editor_ready {}                 bool, the compose box exists
   compose_len  {}                 int, trimmed innerText length of the compose box
   editor_focus {}                 null
+  visibility   {}                 document.visibilityState: a "hidden" tab is activated before the rail
+                                  click (#174), then the user's front app is put back
+                                  (WHOSAID_STAGER_RESTORE_FRONT=0 turns that off)
   editor_select {}                null, selects the compose box contents with a range
   paste        {html, plain}      {"len": int, "links": int} after a synthetic paste event
   search_box   {}                 {x,y} of the search box, or null
@@ -514,7 +517,8 @@ JS_PAGE_THREAD_IDS = "return [...new Set([...document.querySelectorAll('[data-tr
 JS_SEARCH_SELECT = ("const b=document.querySelector(A.sel);if(!b)return false;b.focus();"
                     "if(b.select)b.select();else{const r=document.createRange();r.selectNodeContents(b);"
                     "const s=getSelection();s.removeAllRanges();s.addRange(r)}return true")
-JS_FOCUS_IS = "const b=document.querySelector(A.sel);const f=document.activeElement;return !!b&&!!f&&(f===b||b.contains(f))"
+JS_VISIBILITY = "return document.visibilityState"
+JS_FOCUS_IS ="const b=document.querySelector(A.sel);const f=document.activeElement;return !!b&&!!f&&(f===b||b.contains(f))"
 JS_SEARCH_FIND = """const o=[...document.querySelectorAll('[role=option]')];
 const byId=A.id?o.filter(e=>(e.getAttribute('data-tid')||'').includes(A.id)):[];
 const nm=t=>(t||'').replace(/\\s+/g,' ').trim();const alts=new Set((A.alts||[A.name]).map(a=>nm(a).toLowerCase()));
@@ -1330,8 +1334,8 @@ async def stage(a) -> dict:
             step("finding the Teams tab")
             tid = await find_tab(c, a.tab, a.chat, app)
             c.session = (await c.send("Target.attachToTarget", {"targetId": tid, "flatten": True}))["sessionId"]
-            step("bringing the tab to the front")  # a background tab (document.hidden) ignores rail clicks
-            await bring_to_front(c, tid)
+            step("checking the tab is visible")  # a background tab (document.hidden) ignores rail clicks (#174)
+            a.tab_state = await make_visible(c, tid)
             # known: the chat that opened is an existing one, proven by its title or id, so the compose-box
             # checks below apply; a chat started with New message has neither yet (the To chips are its check)
             reused = False
@@ -1416,15 +1420,17 @@ async def stage(a) -> dict:
                     raise StagerError(f"{e} (the draft text is already in the compose box, without the "
                                       f"attachment; rerun the stage to replace it)") from None
 
-            step("focusing the tab")
-            await bring_to_front(c, tid)
+            if a.focus:  # opt-in: raising the browser takes the user's focus
+                step("focusing the tab")
+                await bring_to_front(c, tid)
             await c.ev(op("caret_end", JS_CARET))
             fin = await c.ev(op("final", JS_FINAL))
             measured = len(await chip_names(c) or [])  # chips actually in the compose box, not what was asked
             if known:
                 title = await c.ev(op("title", "return document.title")) or title  # "chat": where the text is now
             out = {"sent": False, "chat": title, "chars": fin["len"], "links": fin["links"],
-                   "attachments": measured, "mentions": len(a.mention)}
+                   "attachments": measured, "mentions": len(a.mention), "focused": bool(a.focus),
+                   "tab": a.tab_state}
             if reused:
                 out["existing_chat"] = True  # a --new-chat draft went into the chat these members already have
             if a.thread_id and known:
@@ -1527,6 +1533,54 @@ async def edit_sent(c: CDP, a, title: str, html: str, plain: str) -> dict:
         raise StagerError("the edit box still looks empty after the paste; check the edit box in Teams: if the "
                           "new text is there, save it, if not, Esc cancels the edit")
     return {"sent": False, "saved": False, "edit": True, "chat": title, "chars": res["len"], "links": res["links"]}
+
+
+def front_app_pid() -> int | None:
+    """The frontmost macOS app's pid, else None (off macOS, or WHOSAID_STAGER_RESTORE_FRONT=0). lsappinfo needs
+    no Automation consent and answers in a few ms. Best effort: never raises."""
+    if sys.platform != "darwin" or os.environ.get("WHOSAID_STAGER_RESTORE_FRONT", "1") == "0":
+        return None
+    try:
+        asn = subprocess.run(["lsappinfo", "front"], capture_output=True, text=True, timeout=2).stdout.strip()
+        if not asn:
+            return None
+        info = subprocess.run(["lsappinfo", "info", "-only", "pid", asn], capture_output=True, text=True,
+                              timeout=2).stdout
+        m = re.search(r'"?pid"?\s*=\s*(\d+)', info)
+        return int(m.group(1)) if m else None
+    except Exception:  # noqa: BLE001 - focus bookkeeping must never stop a stage
+        return None
+
+
+def restore_front_app(pid: int | None) -> bool:
+    """Put the app with this pid back in front if another app took the front. True when it did."""
+    if pid is None or front_app_pid() in (None, pid):
+        return False
+    try:
+        subprocess.run(["osascript", "-e", 'tell application "System Events" to set frontmost of '
+                        f"(first process whose unix id is {int(pid)}) to true"],
+                       capture_output=True, timeout=3)
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
+async def make_visible(c: CDP, tid: str) -> str:
+    """Rail clicks need a visible tab (#174), but raising the browser takes the user's focus. Measured on macOS:
+    the Teams app window reports visibilityState "visible" while other apps are in front, so a visible tab is
+    left alone ("visible"). A hidden one is activated, then the app that was in front is put back
+    ("activated"); if that hides the tab again, it is raised and left in front ("raised")."""
+    if await c.ev(op("visibility", JS_VISIBILITY)) == "visible":
+        return "visible"
+    pid = front_app_pid()
+    await bring_to_front(c, tid)
+    if not restore_front_app(pid):
+        return "raised"
+    await nap(0.3)
+    if await c.ev(op("visibility", JS_VISIBILITY)) == "visible":
+        return "activated"
+    await bring_to_front(c, tid)  # the tab needs the front after all: the old behavior
+    return "raised"
 
 
 async def bring_to_front(c: CDP, tid: str):
@@ -1702,12 +1756,17 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     p.add_argument("--thread-id", help="the chat's Teams thread id; the open chat must carry it")
     p.add_argument("--cdp-port", type=int, default=None)
     p.add_argument("--bypass-outbox", action="store_true")
+    p.add_argument("--focus", action="store_true",
+                   help="bring the Teams tab to the front when done (default: leave the user's front app alone; "
+                        "WHOSAID_STAGER_FOCUS=1 too)")
     p.add_argument("--edit-sent", action="store_true", help="edit your sent message matching --match-file")
     p.add_argument("--match-file", help="text of the sent message to edit (--edit-sent)")
     p.add_argument("--allow-newer", action="store_true",
                    help="--edit-sent: edit even when others posted after the message")
     a = p.parse_args(argv)  # argparse exits 2 on usage errors
     a.app_port = None
+    a.focus = a.focus or os.environ.get("WHOSAID_STAGER_FOCUS") == "1"
+    a.tab_state = None
     if a.cdp_port is None and os.environ.get("WHOSAID_CDP_PORT"):  # only read the env var when the flag is absent
         raw = os.environ["WHOSAID_CDP_PORT"]
         try:
