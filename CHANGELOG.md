@@ -9,6 +9,9 @@ All notable changes to whosaid are documented here. This project adheres to
 ### Changed
 - `drafts stage` no longer takes your focus. The stager used to raise the browser or Teams app twice per stage (`Target.activateTarget` plus `Page.bringToFront`): once before the chat-list click (#174) and once at the end ("focusing the tab"). On macOS each one brought the app in front of whatever you were using. Now it reads `document.visibilityState` first. The Teams desktop app's chat window reports `visible` even while other apps are in front (measured), so it is left alone. A hidden browser tab is still activated before the click, then the app that was in front is put back (`lsappinfo` to read it, System Events to restore it, the same approach as cdp-toolkit 3.4.0). If the tab hides again after that, the stager raises it as before. The final raise is opt-in now: `--focus` or `WHOSAID_STAGER_FOCUS=1`. The result JSON gains `focused` and `tab` (`visible`, `activated` or `raised`). `WHOSAID_STAGER_RESTORE_FRONT=0` turns the front-app restore off.
 
+### Fixed
+- `drafts stage`: no more false "Teams showed the attachment chip ..., then removed it again" for an upload that landed. In the Teams desktop app the stager failed one stage this way, and the page went out with the message anyway. The check failed on the first read that came up short, and it only looked inside the compose root. Now a short read is rechecked in the compose footer (`message-pane-footer`, which never includes the chat history), where a finished upload's card can re-render. Only two short reads in a row count as a removal. A real removal still fails, and the message now says to check the compose box before attaching by hand. `attachments` in the result counts footer cards too.
+
 ## [1.46.0] - 2026-11-20
 
 ### Added

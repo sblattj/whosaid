@@ -104,6 +104,8 @@ so it stays valid JSON). A fake dispatches on NAME. Ops and their return values:
 Wave 2 ops:
   root_chip_removers {}           [{x,y}] remove control of each attachment chip INSIDE the compose root
   root_chip_names {}              [str] one text per attachment chip inside the compose root (null: no root)
+  footer_chip_names {}            [str] the same, in the compose footer (message-pane-footer), for a chip
+                                  that re-renders outside the root once its upload finishes
   in_root      {x, y}             bool, the element at x,y is inside the compose root
   focus_is     {sel}              bool, document.activeElement is (inside) the first match of sel
   chip_removers {}                LEGACY, unused: removers page-wide (the old, over-broad query)
@@ -551,6 +553,12 @@ _CHIPS = (f"const root=ROOT();const chips=root?[...root.querySelectorAll({json.d
 JS_ROOT_CHIP_NAMES = (_CHIPS + "if(!root)return null;return chips.map(c=>[c.innerText,c.getAttribute('aria-label'),"
                       "c.getAttribute('title'),...[...c.querySelectorAll('[aria-label],[title]')]"
                       ".map(e=>(e.getAttribute('aria-label')||'')+' '+(e.getAttribute('title')||''))].filter(Boolean).join(' '))")
+# footer_chip_names: the same chips, looked up in the compose FOOTER, the editor's nearest
+# data-tid="message-pane-footer" ancestor (the compose root and what Teams renders next to it, never the
+# chat history; measured 2026-11-19), else the root. A finished upload's card can re-render outside the root.
+_FOOTER_JS = "const FOOT=()=>{const ed=ED();return (ed&&ed.closest('[data-tid=\"message-pane-footer\"]'))||ROOT()};"
+JS_FOOTER_CHIP_NAMES = _FOOTER_JS + JS_ROOT_CHIP_NAMES.replace("const root=ROOT();", "const root=FOOT();", 1)
+assert "const root=FOOT();" in JS_FOOTER_CHIP_NAMES  # the root lookup really was swapped
 JS_ROOT_CHIP_REMOVERS = (_CHIPS + _XY + f"return chips.map(c=>c.querySelector({json.dumps(CHIP_REMOVE_SEL)}))"
                          ".filter(Boolean).map(xy).filter(Boolean)")
 JS_IN_ROOT = "const r=ROOT();const e=document.elementFromPoint(A.x,A.y);return !!(r&&e&&r.contains(e))"
@@ -1425,7 +1433,9 @@ async def stage(a) -> dict:
                 await bring_to_front(c, tid)
             await c.ev(op("caret_end", JS_CARET))
             fin = await c.ev(op("final", JS_FINAL))
-            measured = len(await chip_names(c) or [])  # chips actually in the compose box, not what was asked
+            measured = max(len(await chip_names(c) or []),  # chips actually in the compose box, not what was asked
+                           len(await c.ev(op("footer_chip_names", JS_FOOTER_CHIP_NAMES)) or [])) if a.attach else \
+                len(await chip_names(c) or [])
             if known:
                 title = await c.ev(op("title", "return document.title")) or title  # "chat": where the text is now
             out = {"sent": False, "chat": title, "chars": fin["len"], "links": fin["links"],
@@ -1691,17 +1701,33 @@ def unmatched(files: list[str], names: list[str]) -> list[str]:
 async def chips_stay(c: CDP, files: list[str], want: int, reads: int = 6, gap: float = 0.5):
     """A chip seen once is not an attachment: the Teams desktop app shows the chip for a moment and then
     removes it when the upload doesn't land (seen 2026-11-11: gone within 0.3s, no message). Every read
-    over ~3s has to still hold WANT chips and one naming each file."""
-    for _ in range(reads):
+    over ~3s has to still hold WANT chips and one naming each file.
+    But a short read is not yet a removal (2026-11-19: the stager said "removed it again" and the page went out
+    with the message): it is rechecked in the compose footer, where a finished upload's card can re-render
+    outside the root, and only two short reads IN A ROW fail, so one re-render mid-upload is not a failure."""
+    def holds(names: list[str] | None) -> bool:
+        return names is not None and len(names) >= want and not unmatched(files, names)
+
+    misses, last = 0, None
+    for i in range(reads + 1):
+        if i == reads and not misses:
+            return  # every read held
         await nap(gap)
         names = await chip_names(c)
         if names is None:
             continue  # the compose root re-rendering, not an answer
-        gone = unmatched(files, names)
-        if gone or len(names) < want:
-            name = os.path.basename((gone or files)[0])
-            raise StagerError(f"Teams showed the attachment chip for {name}, then removed it "
-                              "again: the upload didn't land (attach the page by hand in Teams)")
+        if holds(names) or holds(await c.ev(op("footer_chip_names", JS_FOOTER_CHIP_NAMES))):
+            misses = 0
+            continue
+        misses, last = misses + 1, names
+        if misses >= 2:
+            break
+    if misses:
+        gone = unmatched(files, last or [])
+        name = os.path.basename((gone or files)[0])
+        raise StagerError(f"Teams showed the attachment chip for {name}, then removed it again (two reads in "
+                          "a row, compose root and footer): the upload didn't land. Check the compose box "
+                          "before attaching the page by hand in Teams")
 
 
 async def upload(c: CDP, files: list[str]):

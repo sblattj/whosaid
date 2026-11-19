@@ -594,6 +594,8 @@ class FakeTeams:
                 self.root_gone -= 1
                 return None
             return None if self.no_root else list(self.chips)
+        if name == "footer_chip_names":  # the root's chips plus cards rendered next to it in the footer
+            return None if self.no_root else list(self.chips) + list(getattr(self, "footer_chips", []))
         if name == "in_root":
             return not self.no_root and not self.near_history(args["x"], args["y"])
         if name == "focus_is":
@@ -984,6 +986,47 @@ class EndToEnd(unittest.TestCase):
         r = self.run_stager(f, "--attach", str(self.page))
         self.assertEqual(r.returncode, 1, r.stdout)
         self.assertIn("removed it again", r.stderr)
+        f.never_sent(self)
+
+    def test_finished_upload_card_outside_the_root_is_a_success(self):
+        """2026-11-19 false negative: the chip left the compose root once the upload finished, and the page
+        went out with the message. A card that re-renders in the compose footer still counts."""
+        f = self.fake(rail=["Ann Lee"])
+        orig = f.evaluate
+        seen = {"n": 0}
+
+        def moves(e):
+            out = orig(e)
+            if "op:root_chip_names" in e and "page.html" in f.chips:
+                seen["n"] += 1
+                if seen["n"] == 2:  # the settle loop saw it once in the root: now it moves to the footer
+                    f.chips.remove("page.html")
+                    f.footer_chips = ["page.html"]
+            return out
+        f.evaluate = moves
+        r = self.run_stager(f, "--attach", str(self.page))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("footer_chip_names", f.ops)
+        self.assertEqual(json.loads(r.stdout.strip().splitlines()[-1])["attachments"], 1)
+        f.never_sent(self)
+
+    def test_one_short_read_mid_upload_is_not_a_removal(self):
+        f = self.fake(rail=["Ann Lee"])
+        orig = f.evaluate
+        state = {"reads": 0}
+
+        def blink(e):
+            if "op:root_chip_names" in e and "page.html" in f.chips:
+                state["reads"] += 1
+                if state["reads"] == 3:  # one re-render: the chip is missing for this read only
+                    return []
+            if "op:footer_chip_names" in e and state["reads"] == 3:
+                return []
+            return orig(e)
+        f.evaluate = blink
+        r = self.run_stager(f, "--attach", str(self.page))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(f.chips, ["page.html"])
         f.never_sent(self)
 
     def test_attach_chip_renamed_by_onedrive_still_counts(self):
