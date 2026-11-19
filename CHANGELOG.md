@@ -6,6 +6,22 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ## [Unreleased]
 
+## [1.45.0] - 2026-11-19
+
+### Added
+- `whosaid live export-items <stem> [--format json|csv] [--since <stem>]` and the read-only `whosaid_live_export_items` MCP tool (#227). Each ended explainer becomes one row per ask, question, suggestion, decision or next step, with:
+  - a stable id (`<stem>-<kind>-<12 hex of sha1(normalized text)>`);
+  - section id and time window;
+  - asker, plus an owner when the text names one;
+  - the closest verbatim transcript line (clock and speaker);
+  - every source (`NNN-*.json:asks[i]`, `recap.json:owes[i]`, `<stem>.ai.json:nextSteps[i]`).
+
+  Only top-level arrays are read, never `revisions[]`. An item a correction marked as a mis-hear stays out. Near-duplicates within a call are merged, and each merged row lists all of its sources. Calls whose transcript meta has `ended: false` are skipped. `--since` exports every ended call after the given stem. The MCP tool is listed through `search_tools`; the default listing size is unchanged.
+- `<stem>.explain/items.status.json`: an open/done overlay keyed by row id. `whosaid live mark-item STEM ID --status open|done [--note T]` writes it, and so do the served page's checkboxes (POST `/item-status`, token-checked, same-origin only, at most 4 KB). The page reads it back from `/items.json`, so done state survives outside the browser's localStorage. `export-items` merges the status into each row.
+
+### Fixed
+- An ended explainer always gets a final recap now (#227). Before, one was written only when the model or an agent sent it. When the call ends with no recap, whosaid writes `recap.json` and `recap.html` marked `"derived": true` from the call's own sections, with no model call: open questions, what the user owes, and agreed decisions. This runs after `add`/`correct`, in `serve` (including a watcher when no engine is configured), at the engine's final pass, and when capture ends. A recap from the engine or an agent is never replaced.
+
 ## [1.44.1] - 2026-11-18
 
 ### Fixed
