@@ -54,15 +54,28 @@ merged = backfill.rewrite_transcript(text, names_old, dict(names_old, SPEAKER_01
 check(header(merged, '# speakers') == "# Speakers (2): Alice, Stephen",
       f"N matches the names listed after a merge: {header(merged, '# speakers')!r}")
 
-# An uncounted cluster that the registry now names: its turns get the name, and the name
-# moves off the Uncounted line onto the header (it is a real, named speaker now).
+# An uncounted cluster that the registry now names: a named cluster always counts
+# (diarize_sherpa.uncounted_clusters), so it moves off the Uncounted line onto the header.
 named_unc = backfill.rewrite_transcript(text, names_old, dict(names_old, SPEAKER_03='Carol'), {})
-check(header(named_unc, '# speakers') == "# Speakers (3): Alice, SPEAKER_01, Stephen",
-      f"a named uncounted cluster stays out of the headcount: {header(named_unc, '# speakers')!r}")
+check(header(named_unc, '# speakers') == "# Speakers (4): Alice, Carol, SPEAKER_01, Stephen",
+      f"a named uncounted cluster joins the headcount: {header(named_unc, '# speakers')!r}")
 check("[00:00:03] Carol: uh" in named_unc, "the named uncounted cluster's turn is renamed")
 check(header(named_unc, '# uncounted') ==
-      "# Uncounted (under 1 s of talk, not in the headcount): Carol, SPEAKER_04",
-      f"the Uncounted line follows the rename: {header(named_unc, '# uncounted')!r}")
+      "# Uncounted (under 1 s of talk, not in the headcount): SPEAKER_04",
+      f"the Uncounted line drops the named cluster: {header(named_unc, '# uncounted')!r}")
+both = backfill.rewrite_transcript(text, names_old, dict(names_old, SPEAKER_03='Carol', SPEAKER_04='Dan'), {})
+check(header(both, '# uncounted') is None and header(both, '# speakers') ==
+      "# Speakers (5): Alice, Carol, Dan, SPEAKER_01, Stephen",
+      f"every uncounted cluster named: the Uncounted line goes: {header(both, '# speakers')!r}")
+
+# The diarizer's N counts clusters, so two clusters sharing a name list 6 names under (7).
+# With no rename, backfill leaves that header alone (seen on a real meeting); a rename
+# keeps the cluster count.
+shared = text.replace("# Speakers (3): Alice, SPEAKER_01, Stephen", "# Speakers (4): Alice, SPEAKER_01, Stephen")
+check(backfill.rewrite_transcript(shared, names_old, dict(names_old), {}) == shared,
+      "no rename: a header whose N counts a shared name is left as is")
+check(header(backfill.rewrite_transcript(shared, names_old, names_new, {}), '# speakers') ==
+      "# Speakers (4): Alice, Bob, Stephen", "a rename keeps the cluster count")
 
 # ---- end to end: render_outputs writes the header, `whosaid backfill` rewrites it
 with tempfile.TemporaryDirectory(prefix='whosaid-backfill-hdr-') as tmp:
@@ -87,7 +100,8 @@ with tempfile.TemporaryDirectory(prefix='whosaid-backfill-hdr-') as tmp:
                 whisper_json=str(whisper))
     (folder / 'transcript.diarization.json').write_text(json.dumps(data))
     d.render_outputs(folder, 'transcript', segs, list(names), names,
-                     d.build_turns(segs, str(whisper)), 3, '2 speakers', emb_name='test')
+                     d.build_turns(segs, str(whisper)), 3, '2 speakers', emb_name='test',
+                     uncounted=d.uncounted_clusters(segs, names, list(names)))
     st = folder / 'transcript.speakers.txt'
     before = st.read_text()
     check(header(before, '# speakers') == "# Speakers (2): Alice, SPEAKER_01",

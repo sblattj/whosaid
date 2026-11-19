@@ -2228,6 +2228,8 @@ The client setup and history regressions have focused suites as well:
   active versus stopped PIDs, configured-source permissions, and first-run preferences.
 - `uv run --with numpy python test/backfill_test.py` exercises historical backfill,
   corpus freshness and curation, dry-run behavior, malformed inputs, and rollback.
+- `uv run --with numpy python test/backfill_header_test.py` checks that backfill keeps the
+  `# Speakers (N)` header's membership (renames only, uncounted clusters off it) (#233).
 - `python3 test/speaker_registry_migration_test.py` exercises private registry
   round trips, validation, conflict policies, permissions, and concurrent creation.
 
