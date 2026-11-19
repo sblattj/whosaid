@@ -770,6 +770,8 @@ def new(to: str, topic: str, pages: list[str] | None = None, supersedes: str | N
     if clash and not separate and not supersedes:
         joined = _join(max(clash, key=lambda d: d.get("updated_at") or ""), me, topic, pages, mentions, new_chat,
                        thread_id)
+        if closed:
+            joined["closed_sent"] = closed
         if check_errors:
             joined["sent_check_errors"] = check_errors
         return joined

@@ -1083,6 +1083,19 @@ class SentTrackingTest(DraftsBase):
         self.assertEqual(r["id"], did)
         self.assertEqual(drafts.load(did)["status"], "staged")
 
+    def test_new_reports_a_closed_rival_when_it_joins_another_open_draft(self):
+        # review of #231: the join path dropped closed_sent
+        did = self.staged()
+        other = self.ready(topic="second ask", separate=True)
+        self.assertNotEqual(other, did)
+        self.sent_out()
+        with patch.dict(os.environ, {"WHOSAID_WORKSPACE": str(self.ws)}):
+            r = drafts.new("Test Person", "follow up", [str(self.page)])
+        self.assertTrue(r["joined"])
+        self.assertEqual(r["id"], other)
+        self.assertEqual(r["closed_sent"], [did])
+        self.assertEqual(drafts.load(did)["status"], "sent")
+
     def test_cli_drop_still_works(self):
         # review of #231: the shared mark-sent/drop branch read a flag only mark-sent has
         lib = Path(__file__).resolve().parents[1] / "lib" / "drafts.py"
