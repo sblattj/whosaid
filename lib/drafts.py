@@ -764,12 +764,15 @@ def new(to: str, topic: str, pages: list[str] | None = None, supersedes: str | N
         load(supersedes)
     me = owner(owner_session)
     clash = [d for d in all_drafts() if d["status"] in OPEN and d["to"] == to and d["id"] != supersedes]
-    closed = _close_sent_rivals(clash)
+    closed, check_errors = _close_sent_rivals(clash)
     if closed:  # #228: a staged draft that already went out is closed, never built on
         clash = [d for d in clash if d["id"] not in closed]
     if clash and not separate and not supersedes:
-        return _join(max(clash, key=lambda d: d.get("updated_at") or ""), me, topic, pages, mentions, new_chat,
-                     thread_id)
+        joined = _join(max(clash, key=lambda d: d.get("updated_at") or ""), me, topic, pages, mentions, new_chat,
+                       thread_id)
+        if check_errors:
+            joined["sent_check_errors"] = check_errors
+        return joined
     ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M")
     draft_id = f"{ts}-{slug(to)}-{slug(topic)}"
     d = ddir(draft_id)
@@ -792,6 +795,8 @@ def new(to: str, topic: str, pages: list[str] | None = None, supersedes: str | N
            "next": "write claims and stakeholders, verify them, then the text"}
     if closed:
         out["closed_sent"] = closed
+    if check_errors:
+        out["sent_check_errors"] = check_errors
     if clash:
         out["note"] = (f"open draft(s) to {to} already: " + ", ".join(f"{c['id']} [{owner_line(c['owner'])}]" for c in clash)
                        + ". Teams has one compose box per chat: stage refuses both until one is dropped or merged (drafts merge)"
@@ -799,21 +804,24 @@ def new(to: str, topic: str, pages: list[str] | None = None, supersedes: str | N
     return out
 
 
-def _close_sent_rivals(clash: list[dict]) -> list[str]:
-    """Ids of the staged drafts in CLASH that the chat (WHOSAID_WORKSPACE) shows already went out, now marked
-    sent. No workspace or a read problem: none, and new joins as before."""
+def _close_sent_rivals(clash: list[dict]) -> tuple[list[str], list[dict]]:
+    """(ids of the staged drafts in CLASH that the chat (WHOSAID_WORKSPACE) shows already went out, now marked
+    sent; the checks that failed). No workspace: nothing checked, and new joins as before. A failed check is
+    reported in new's result and on stderr, never raised."""
     ws = _voice_ws()
     staged = [d for d in clash if d["status"] == "staged"]
     if ws is None or not staged:
-        return []
-    closed = []
+        return [], []
+    closed, errors = [], []
     for d in staged:
         try:
             if sent_check(ws, d["id"])["sent"]:
                 closed.append(d["id"])
-        except Exception:  # noqa: BLE001 - the check is a bonus here, never a reason new fails
-            continue
-    return closed
+        except Exception as e:  # noqa: BLE001 - reported below, never a reason new fails
+            errors.append({"id": d["id"], "error": f"{type(e).__name__}: {e}"})
+            print(f"whosaid drafts: sent check of {d['id']} failed ({e}); it may already be sent: "
+                  "run mark-sent --check before staging", file=sys.stderr)
+    return closed, errors
 
 
 def check_thread_id(tid: str | None) -> str | None:
@@ -1170,10 +1178,12 @@ def close(draft_id: str, status: str, reason: str | None = None, force: bool = F
     guard(m, force)
     out: dict = {"id": draft_id, "status": status}
     if status == "sent":
-        hit = _find_quietly(_voice_ws(ws), m)
+        hit, err = _find_quietly(_voice_ws(ws), m)
         _mark_sent(m, hit, "by hand")
         m["history"][-1]["reason"] = reason
         out["sent_message"] = m.get("sent_message")
+        if err:  # closed anyway; the result and history say the lookup failed, so --backfill can fix it
+            out["lookup_error"] = m["history"][-1]["lookup_error"] = err
     else:
         m["status"] = status
         _event(m, status, reason=reason, by=_actor())
@@ -1181,14 +1191,15 @@ def close(draft_id: str, status: str, reason: str | None = None, force: bool = F
     return out
 
 
-def _find_quietly(ws: Path | None, m: dict) -> dict | None:
-    """find_sent's message, or None with no workspace or any read problem: a lookup never blocks a close."""
+def _find_quietly(ws: Path | None, m: dict) -> tuple[dict | None, str | None]:
+    """(find_sent's message or None, the read error or None). No workspace is (None, None). A lookup never
+    blocks a close: the caller reports the error instead of raising it."""
     if ws is None:
-        return None
+        return None, None
     try:
-        return find_sent(ws, m)[0]
-    except Exception:  # noqa: BLE001 - the chat is a bonus here
-        return None
+        return find_sent(ws, m)[0], None
+    except Exception as e:  # noqa: BLE001 - reported to the caller, never raised
+        return None, f"{type(e).__name__}: {e}"
 
 
 def unstage(draft_id: str, reason: str | None = None) -> dict:
@@ -1600,9 +1611,9 @@ def _needs_backfill(m: dict) -> bool:
 
 def _backfill(ws: Path, m: dict, res: dict, by: str | None) -> None:
     """The message a draft closed by hand went out as, recorded; status, text and edit baseline untouched."""
-    hit = _find_quietly(ws, m)
+    hit, err = _find_quietly(ws, m)
     if not hit or not hit.get("mid"):
-        res["not_found"].append({"id": m["id"], "to": m["to"]})
+        res["not_found"].append({"id": m["id"], "to": m["to"], **({"error": err} if err else {})})
         return
     m["sent_message"] = {k: hit.get(k) for k in ("at", "mid", "folder")}
     _event(m, "backfilled", message=m["sent_message"], by=_actor(by))
@@ -2614,7 +2625,7 @@ def main(argv: list[str] | None = None) -> int:
         elif c in ("mark-sent", "drop"):
             if not args.id:
                 raise DraftsError("need a draft id (or mark-sent --check)")
-            if args.backfill:
+            if getattr(args, "backfill", False):  # mark-sent only; drop has no --backfill
                 raise DraftsError("--backfill goes with --check")
             r = close(args.id, "sent" if c == "mark-sent" else "dropped", args.reason, force=args.force,
                       ws=getattr(args, "ws", None))

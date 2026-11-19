@@ -1083,6 +1083,37 @@ class SentTrackingTest(DraftsBase):
         self.assertEqual(r["id"], did)
         self.assertEqual(drafts.load(did)["status"], "staged")
 
+    def test_cli_drop_still_works(self):
+        # review of #231: the shared mark-sent/drop branch read a flag only mark-sent has
+        lib = Path(__file__).resolve().parents[1] / "lib" / "drafts.py"
+        did = self.ready()
+        out = subprocess.run([sys.executable, str(lib), "drop", did, "--reason", "answered"],
+                             capture_output=True, text=True, env=os.environ)
+        self.assertEqual(out.returncode, 0, out.stderr)
+        self.assertIn(f"{did}: dropped", out.stdout)
+        self.assertEqual(drafts.load(did)["status"], "dropped")
+
+    def test_a_failed_lookup_still_closes_and_says_why(self):
+        did = self.staged()
+        with patch.object(drafts, "find_sent", side_effect=OSError("chat unreadable")):
+            r = drafts.close(did, "sent", ws=self.ws)
+        m = drafts.load(did)
+        self.assertEqual(m["status"], "sent")
+        self.assertIn("chat unreadable", r["lookup_error"])
+        self.assertIn("chat unreadable", m["history"][-1]["lookup_error"])
+
+    def test_new_reports_a_failed_sent_check_and_joins(self):
+        did = self.staged()
+        real = drafts.sent_check
+        with patch.dict(os.environ, {"WHOSAID_WORKSPACE": str(self.ws)}), \
+                patch.object(drafts, "sent_check", side_effect=OSError("chat unreadable")):
+            r = drafts.new("Test Person", "follow up", [str(self.page)])
+        self.assertTrue(r["joined"])
+        self.assertEqual(r["id"], did)
+        self.assertEqual(r["sent_check_errors"][0]["id"], did)
+        self.assertIn("chat unreadable", r["sent_check_errors"][0]["error"])
+        self.assertIs(drafts.sent_check, real)
+
     def test_dropped_events_carry_the_actor(self):
         did = self.ready()
         drafts.close(did, "dropped", "answered elsewhere")
