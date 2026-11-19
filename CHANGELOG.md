@@ -6,6 +6,15 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ## [Unreleased]
 
+## [1.45.1] - 2026-11-19
+
+### Fixed
+- `whosaid backfill` no longer rewrites a transcript's `# Speakers (N):` header with every cluster in the diarization sidecar (#233).
+  - **Before:** the tiny uncounted fragments went into the list too, and N stayed at the old value. One real 87-minute meeting went from 7 names to 110.
+  - **Now:** the header keeps its own membership with renames applied. N moves only by the change, since it counts clusters and two clusters can share a name.
+  - **No rename:** with nothing renamed, the line is left untouched.
+  - **Uncounted clusters:** these stay on the `# Uncounted` line, except one the registry has now named. A named cluster always counts, so it moves to the header and the sidecar's `uncounted` and `num_speakers` follow.
+
 ## [1.45.0] - 2026-11-19
 
 ### Added
