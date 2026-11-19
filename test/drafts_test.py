@@ -658,7 +658,8 @@ class ChatHistoryTest(DraftsBase):
         self.chat([(later, "Me_Self", "Hi, can you add the two **DNS records**? thanks"),
                    (later + timedelta(seconds=30), "Test_Person", "sure")])
         r = drafts.stage([did], ws=self.ws)
-        self.assertIn("already in Test Person", r["skipped"][0]["why"])
+        self.assertIn("already sent at", r["failed"][0]["why"])  # refused and marked sent since #228
+        self.assertEqual(drafts.load(did)["status"], "sent")
         self.assertTrue(r["context"][did]["reply_since_ours"])
         self.assertEqual(len(self.stager_calls()), 1, "no second paste of a sent message")
 
@@ -1095,6 +1096,86 @@ class SentTrackingTest(DraftsBase):
         self.assertEqual(r["id"], other)
         self.assertEqual(r["closed_sent"], [did])
         self.assertEqual(drafts.load(did)["status"], "sent")
+
+    EDITED_DRAFT = ("Alex, that link broke because the guide moved, not because of access: it's now "
+                    "[setup guide](https://example.com/docs/setup-guide.md) on main. PDF, HTML and a short video "
+                    "are attached, all checked with fresh clones, including how to stop the approval prompts")
+    # sent edited three ways: the name became a full-name mention, the link rendered as "label (url)",
+    # and a sentence was added at the end
+    EDITED_SENT = ("@Alex Rivera Stone, that link broke because the guide moved, not because of access: it's now "
+                   "setup guide (https://example.com/docs/setup-guide.md) on main. PDF, HTML and a short video "
+                   "are attached, all checked with fresh clones, including how to stop the approval prompts, "
+                   "@Everyone, prefer the html, it is most readable. Watch the video.")
+
+    def test_an_edited_send_still_matches(self):
+        # #229 edited-send case: the old matcher scored this 0.845 and missed it
+        self.assertTrue(drafts.same_message(self.EDITED_DRAFT, self.EDITED_SENT))
+        self.assertTrue(drafts.same_message(self.EDITED_DRAFT, self.EDITED_SENT.replace(
+            "setup guide (https://example.com/docs/setup-guide.md)", "https://example.com/docs/setup-guide.md")))
+
+    def test_a_different_message_in_the_same_chat_does_not_match(self):
+        other = ("Alex, the release notes are up now: the guide covers installing from a fresh clone, the "
+                 "video is short, and the approval prompts section moved to the end of the page")
+        self.assertFalse(drafts.same_message(self.EDITED_DRAFT, other))
+        self.assertFalse(drafts.same_message("Alex, thanks!", "@Alex Rivera Stone, thanks! see you at 3"))
+
+    def _sent_edited(self, did):
+        drafts.write(did, text=self.EDITED_DRAFT, **GOOD_CLAIMS)
+        drafts.verify(did)
+
+    def test_stage_refuses_a_draft_that_already_went_out_and_marks_it_sent(self):
+        did = self.ready()
+        self._sent_edited(did)
+        self.sent_out(text=self.EDITED_SENT)
+        r = drafts.stage([did], ws=self.ws)
+        self.assertEqual(r["staged"], [])
+        self.assertIn("already sent at", r["failed"][0]["why"])
+        m = drafts.load(did)
+        self.assertEqual(m["status"], "sent")
+        self.assertEqual(m["sent_message"]["mid"], "m0")
+        self.assertEqual(m["history"][-1]["how"], "stage guard")
+
+    def test_stage_replace_refuses_when_the_staged_draft_went_out(self):
+        did = self.staged()
+        drafts.write(did, text="Hi, can you add the two DNS records? One more line.", **GOOD_CLAIMS)
+        drafts.verify(did)
+        self.sent_out()  # the staged text went out before the change
+        r = drafts.stage([did], ws=self.ws, replace=True)
+        self.assertEqual(r["staged"], [])
+        self.assertIn("already sent at", r["failed"][0]["why"])
+        self.assertEqual(drafts.load(did)["status"], "sent")
+
+    def test_stage_refuses_when_another_staged_draft_in_the_chat_went_out(self):
+        first = self.staged()
+        second = self.ready(topic="second ask", separate=True)
+        drafts.write(second, text="And one more: the wildcard cert for the same zone, please.", **GOOD_CLAIMS)
+        drafts.verify(second)
+        self.sent_out()
+        r = drafts.stage([second], ws=self.ws)
+        self.assertEqual(r["staged"], [])
+        why = r["failed"][0]["why"]
+        self.assertIn("already sent at", why)
+        self.assertIn(first, why)
+        self.assertEqual(drafts.load(first)["status"], "sent")
+        self.assertEqual(drafts.load(first)["sent_message"]["mid"], "m0")
+        self.assertEqual(drafts.load(second)["status"], "verified")
+
+    def test_stage_syncs_teams_before_the_check(self):
+        import teams_cache
+        did = self.ready()
+        calls = []
+        with patch.dict(os.environ, {"WHOSAID_TEAMS_CACHE": "auto"}), \
+                patch.object(teams_cache, "sync", side_effect=lambda ws, **kw: calls.append(ws) or {}):
+            drafts.stage([did], ws=self.ws, dry_run=True)
+        self.assertEqual([Path(c) for c in calls], [Path(self.ws)])
+
+    def test_stage_dry_run_reports_but_records_nothing(self):
+        did = self.ready()
+        self._sent_edited(did)
+        self.sent_out(text=self.EDITED_SENT)
+        r = drafts.stage([did], ws=self.ws, dry_run=True)
+        self.assertIn("already sent at", r["failed"][0]["why"])
+        self.assertEqual(drafts.load(did)["status"], "verified")
 
     def test_cli_drop_still_works(self):
         # review of #231: the shared mark-sent/drop branch read a flag only mark-sent has

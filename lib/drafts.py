@@ -1363,18 +1363,35 @@ def _plain(s: str) -> str:
     s = re.sub(r"!?\[([^\]]*)\]\([^)]*\)", r"\1", s or "")
     s = re.sub(r"^\s*(?:[-+*]|\d+\.)\s+", "", s, flags=re.M)
     s = re.sub(r"[*_`>#~]", "", s)
+    s = re.sub(r"\(\s*<?https?://[^\s)]*>?\s*\)", "", s)  # Teams renders [label](url) as "label (url)"
     s = re.sub(r"https?://\S+", "", s)
     return re.sub(r"\s+", " ", s).strip().lower()
 
 
+def _body(s: str) -> str:
+    """_plain without mention marks and without a short greeting before the first comma ("Alex," vs
+    "@Alex Rivera Stone,"): what is left is the part the user rarely edits."""
+    return re.sub(r"^[^,.:;!?]{1,40},\s*", "", _plain(s).replace("@", ""))
+
+
 def same_message(draft_text: str, chat_text: str) -> bool:
-    """The chat message is this draft as sent (the user may have fixed a typo or two)."""
+    """The chat message is this draft as sent. The user may have fixed a typo or two, expanded a name into
+    a full-name mention, had a link rendered as "label (url)", or added a sentence before sending (#229):
+    a long draft whose body is nearly all inside the message counts too."""
     a, b = _plain(draft_text), _plain(chat_text)
     if not a or not b:
         return False
     if a == b or (len(a) >= 40 and (a[:80] in b or b[:80] in a)):
         return True
-    return difflib.SequenceMatcher(None, a, b, autojunk=False).ratio() >= 0.85
+    if difflib.SequenceMatcher(None, a, b, autojunk=False).ratio() >= 0.85:
+        return True
+    x, y = _body(draft_text), _body(chat_text)
+    if len(x) < 60 or len(y) > 3 * len(x):
+        return False
+    if x in y:
+        return True
+    sm = difflib.SequenceMatcher(None, x, y, autojunk=False)
+    return sum(bl.size for bl in sm.get_matching_blocks() if bl.size >= 4) / len(x) >= 0.9
 
 
 def _self_speakers(sidecar: dict) -> set[str]:
@@ -1898,6 +1915,42 @@ def _stager_msg(r: subprocess.CompletedProcess) -> str:
     return "\n".join(lines).strip()[:500]
 
 
+def _stage_sync(wsp: Path) -> dict:
+    """Fold new Teams messages into the workspace before the stage-time sent check, so a message sent a
+    minute ago is seen. WHOSAID_TEAMS_CACHE=off skips it; never raises."""
+    if (os.environ.get("WHOSAID_TEAMS_CACHE") or "").strip().lower() in ("off", "0", "none"):
+        return {"skipped": "WHOSAID_TEAMS_CACHE=off"}
+    try:
+        import teams_cache
+        r = teams_cache.sync(wsp, since_ms=teams_cache.parse_since("2d")) or {}
+        return {"new_messages": r.get("new_messages", 0)}
+    except Exception as e:  # noqa: BLE001 - no cache or no app: check what the workspace has
+        return {"skipped": f"{type(e).__name__}: {e}"}
+
+
+def _stage_sent_guard(wsp: Path, m: dict, dry_run: bool) -> dict | None:
+    """Before staging M: M, and every other draft recorded staged in the same chat, checked against the
+    chat. The first that went out is marked sent with its message (unless dry_run) and returned."""
+    rivals = [d for d in all_drafts() if d["id"] != m["id"] and d["status"] == "staged"
+              and (d["to"] == m["to"] or same_chat(d["to"], m["to"]))]
+    for d in [m, *rivals]:
+        since = (_ms(d.get("staged_at")) or _ms(d.get("created_at")) or 0) - 300_000
+        texts = [_draft_text(d)]
+        if d["status"] == "staged":  # the chat may hold an earlier revision: the one that was staged
+            texts += [revision_text(d, r["n"]) for r in revisions(d)]
+        hit = next((x for x in reversed(draft_chat_messages(wsp, d, since_ms=since))
+                    if x["self"] and any(t.strip() and same_message(t, x["text"]) for t in texts)), None)
+        if not hit:
+            continue
+        if not dry_run:
+            _mark_sent(d, hit, "stage guard")
+            if _plain_links(_draft_text(d)) != _plain_links(hit["text"]):  # sent edited, or changed after
+                d["sent_edit_hash"], d["sent_text"] = "unknown", hit["text"]
+            save(d)
+        return {"id": d["id"], **{k: hit.get(k) for k in ("at", "mid", "folder")}}
+    return None
+
+
 def stager() -> list[str]:
     """WHOSAID_DRAFTS_STAGER when set (any chat app), else the built-in Teams web stager."""
     cmd = os.environ.get("WHOSAID_DRAFTS_STAGER", "").strip()
@@ -1995,12 +2048,22 @@ def stage(ids: list[str] | None = None, all_ready: bool = False, dry_run: bool =
                  "stager_info": stager_info()}
     if wsp is None:
         res["history_note"] = "no workspace (WHOSAID_WORKSPACE or --ws): the chat history was not checked"
+    else:
+        res["teams_sync"] = _stage_sync(wsp)
     try:
         for draft_id in ids:
             m = load(draft_id)
             st, errs = state(m), gate(m, wsp, said=wsp is not None)
             if m["status"] not in OPEN:
                 res["failed"].append({"id": draft_id, "why": f"is {m['status']}"})
+                continue
+            gone = _stage_sent_guard(wsp, m, dry_run) if wsp is not None else None
+            if gone:  # never stage over a message that already went out (#228)
+                res["context"][draft_id] = chat_context(wsp, m)
+                who = "it" if gone["id"] == draft_id else f"staged draft {gone['id']} in the same chat"
+                res["failed"].append({"id": draft_id, "sent": gone, "why": f"already sent at {gone['at']}: {who} "
+                                      f"is in {m['to']} as your message"
+                                      + ("" if dry_run else f"; marked {gone['id']} sent")})
                 continue
             if st == "staged":
                 res["skipped"].append({"id": draft_id, "why": "already staged with this content"})
