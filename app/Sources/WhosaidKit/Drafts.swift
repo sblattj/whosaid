@@ -18,6 +18,9 @@ public struct DraftRow: Sendable, Equatable, Identifiable {
   public let text: String?
   /// Gates verify would still refuse, from action=show only.
   public let gate: [String]
+  /// Hours since staging when the draft is staged past [drafts] stale_staged_hours with no message of
+  /// yours in that chat since (list's stale_staged, #229); nil otherwise.
+  public let staleStagedHours: Int?
 
   public init?(_ v: JSONValue) {
     guard let id = v["id"]?.string, let to = v["to"]?.string else { return nil }
@@ -32,6 +35,7 @@ public struct DraftRow: Sendable, Equatable, Identifiable {
     rivals = v["rivals"]?.int ?? 0
     text = v["text"]?.string
     gate = (v["gate"]?.array ?? []).compactMap { $0.string }
+    staleStagedHours = v["stale_staged"]?["hours"]?.int
   }
 
   /// Verified and not staged with this content: the Stage button is live.
@@ -44,6 +48,7 @@ public struct DraftRow: Sendable, Equatable, Identifiable {
     switch state {
     case "verified": "ready to stage"
     case "verified, changed since staged": "ready to stage again"
+    case "staged" where staleStagedHours != nil: "staged \(staleStagedHours ?? 0)h ago, nothing sent since: re-stage or drop"
     case "staged": "staged, send it in Teams"
     case "stale": "edited after verify"
     case "sent, edit drafting": "correction, verify it"

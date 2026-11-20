@@ -125,7 +125,7 @@ struct DraftsView: View {
 
 struct StateChip: View {
   let row: DraftRow
-  var color: Color { row.stageable ? .green : row.staged ? .blue : .orange }
+  var color: Color { row.stageable ? .green : row.staleStagedHours != nil ? .orange : row.staged ? .blue : .orange }
   var body: some View {
     Text(row.rivals > 0 ? "\(row.rivals + 1) drafts to this person, merge first" : row.stateLabel)
       .font(.caption.weight(.semibold)).foregroundStyle(color)

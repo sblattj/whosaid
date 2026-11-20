@@ -54,6 +54,10 @@ Per-workspace config is an optional TOML file, <workspace>/whosaid.toml:
   voice_lint = "warn"            # enforce | warn | off: enforce makes `drafts verify` refuse a
                                  # message with more than one paragraph, a greeting opener or an
                                  # "attached page" / "Thanks!" closer; warn only reports
+  auto_sent_check = true         # the watcher marks staged drafts sent after each Teams sync once
+                                 # the chat shows your message (and fills in sent_message); false: off
+  stale_staged_hours = 48        # `drafts list`, the MCP list and the app flag a draft staged longer
+                                 # than this with no message of yours in that chat since (stale_staged)
   [drafts.voice]                 # optional lib/voice_lint.py profile keys over the default,
   banned_words = ["synergy"]     # e.g. max_words = 60
 
@@ -91,7 +95,7 @@ DEFAULTS: dict = {
     # an open item whose newest meeting is older than this, with no tracking event, reads as
     # stale: old backlog stays visible without crowding today's open items (a view, not a status)
     "tracking": {"stale_after_days": 14},
-    "drafts": {"voice_lint": "warn"},
+    "drafts": {"voice_lint": "warn", "auto_sent_check": True, "stale_staged_hours": 48},
 }
 
 # diarize_sherpa.py renders "[HH:MM:SS] Name: text"; "Name (MM:SS): text" is the

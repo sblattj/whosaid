@@ -743,8 +743,11 @@ def _who(o: dict) -> dict:
 
 def new(to: str, topic: str, pages: list[str] | None = None, supersedes: str | None = None,
         new_chat: bool = False, owner_session: str | None = None, mentions: list[str] | None = None,
-        separate: bool = False, thread_id: str | None = None) -> dict:
+        separate: bool = False, thread_id: str | None = None, ws=None) -> dict:
     """Start a draft, or join the open draft to the same recipient (one compose box per chat).
+
+    ws = the workspace whose chats show what already went out (else WHOSAID_WORKSPACE): staged drafts to
+    this recipient that it shows as sent are closed first, so the new message starts fresh (#228).
 
     separate=True (CLI --new) or supersedes makes a second draft instead of joining. thread_id = the
     chat's Teams thread id; without one (and not new_chat) it is filled from the Teams desktop cache
@@ -764,7 +767,7 @@ def new(to: str, topic: str, pages: list[str] | None = None, supersedes: str | N
         load(supersedes)
     me = owner(owner_session)
     clash = [d for d in all_drafts() if d["status"] in OPEN and d["to"] == to and d["id"] != supersedes]
-    closed, check_errors = _close_sent_rivals(clash)
+    closed, check_errors = _close_sent_rivals(clash, ws)
     if closed:  # #228: a staged draft that already went out is closed, never built on
         clash = [d for d in clash if d["id"] not in closed]
     if clash and not separate and not supersedes:
@@ -806,11 +809,11 @@ def new(to: str, topic: str, pages: list[str] | None = None, supersedes: str | N
     return out
 
 
-def _close_sent_rivals(clash: list[dict]) -> tuple[list[str], list[dict]]:
+def _close_sent_rivals(clash: list[dict], ws=None) -> tuple[list[str], list[dict]]:
     """(ids of the staged drafts in CLASH that the chat (WHOSAID_WORKSPACE) shows already went out, now marked
     sent; the checks that failed). No workspace: nothing checked, and new joins as before. A failed check is
-    reported in new's result and on stderr, never raised."""
-    ws = _voice_ws()
+    reported in new's result and on stderr, never raised. ws: the workspace (else WHOSAID_WORKSPACE)."""
+    ws = _voice_ws(ws)
     staged = [d for d in clash if d["status"] == "staged"]
     if ws is None or not staged:
         return [], []
@@ -1138,7 +1141,51 @@ def summary(m: dict) -> dict:
             "edits": [{k: e.get(k) for k in ("n", "staged_at", "edited_at", "mid", "rev")} for e in m.get("edits") or []]}
 
 
-def listing(include_closed: bool = False, mine: bool = False, session_id: str | None = None) -> list[dict]:
+STALE_STAGED_HOURS = 48
+
+
+def stale_staged_hours(ws=None) -> float:
+    """[drafts] stale_staged_hours of the workspace's whosaid.toml (default 48); a bad value is the default."""
+    wsp = _voice_ws(ws)
+    if wsp is None or not (wsp / "whosaid.toml").is_file():
+        return STALE_STAGED_HOURS
+    try:
+        from wsconfig import load_config
+        v = float((load_config(wsp).get("drafts") or {}).get("stale_staged_hours", STALE_STAGED_HOURS))
+    except Exception:  # noqa: BLE001 - a listing never fails on a config value
+        return STALE_STAGED_HOURS
+    return v if v > 0 else STALE_STAGED_HOURS
+
+
+def stale_staged(m: dict, ws: Path | None, hours: float) -> dict | None:
+    """A staged draft left open: staged more than HOURS ago and, when there is a workspace, no message of
+    yours in its chat since staging (sent or not, anything you posted there counts as you having
+    moved on). {hours, staged_at, chat_checked, hint}, else None. Read-only: nothing is learned or saved.
+    No workspace: age alone, chat_checked false."""
+    staged = _ms(m.get("staged_at"))
+    if m["status"] != "staged" or not staged:
+        return None
+    age_h = (time.time() * 1000 - staged) / 3_600_000
+    if age_h <= hours:
+        return None
+    checked = False
+    if ws is not None and ws.is_dir():
+        try:
+            if any(x["self"] and x["epoch_ms"] >= staged for x in draft_chat_messages(ws, m, since_ms=staged)):
+                return None
+            checked = True
+        except Exception:  # noqa: BLE001 - a chat that can't be read leaves the age alone
+            checked = False
+    where = f"no message of yours in {m['to']} since" if checked else "the chat was not checked (no workspace)"
+    return {"hours": int(age_h), "staged_at": m["staged_at"], "chat_checked": checked,
+            "hint": f"staged {int(age_h)}h ago, {where}; re-stage it (whosaid drafts stage {m['id']}), "
+                    f"or drop it (whosaid drafts drop {m['id']})"}
+
+
+def listing(include_closed: bool = False, mine: bool = False, session_id: str | None = None,
+            ws=None) -> list[dict]:
+    """Outbox rows (summary + rivals + stale_staged). ws (else WHOSAID_WORKSPACE) lets stale_staged look
+    for a message of yours in the chat since staging."""
     sid = session_id or os.environ.get("CLAUDE_CODE_SESSION_ID")
     if mine and not sid:
         raise DraftsError("mine needs a Claude Code session (CLAUDE_CODE_SESSION_ID)")
@@ -1150,10 +1197,13 @@ def listing(include_closed: bool = False, mine: bool = False, session_id: str | 
     for m in all_drafts():
         if m["status"] in OPEN:
             open_to[m["to"]] = open_to.get(m["to"], 0) + 1
+    wsp = _voice_ws(ws)
+    hours = stale_staged_hours(wsp)
     out = []
     for m in rows:
         r = summary(m)
         r["rivals"] = open_to.get(m["to"], 1) - 1 if m["status"] in OPEN else 0
+        r["stale_staged"] = stale_staged(m, wsp, hours)
         out.append(r)
     return out
 
@@ -1180,7 +1230,13 @@ def close(draft_id: str, status: str, reason: str | None = None, force: bool = F
     guard(m, force)
     out: dict = {"id": draft_id, "status": status}
     if status == "sent":
-        hit, err = _find_quietly(_voice_ws(ws), m)
+        wsp = _voice_ws(ws)
+        hit, err = _find_quietly(wsp, m)
+        if hit is None and err is None and wsp is not None:
+            try:  # a rewritten send (#229): closing it by hand is the confirmation
+                hit = probably_sent(wsp, m)
+            except Exception:  # noqa: BLE001 - the lookup is a bonus, never a reason to refuse a close
+                hit = None
         _mark_sent(m, hit, "by hand")
         m["history"][-1]["reason"] = reason
         out["sent_message"] = m.get("sent_message")
@@ -1493,8 +1549,12 @@ def _live_chat_messages(ws: Path, chat: str, floor_ms: int, thread_id: str | Non
 
 
 def draft_chat_messages(ws: Path, m: dict, since_ms: int | None = None) -> list[dict]:
-    """chat_messages for a draft's chat: by its name and, when known, its thread id."""
-    tid = None if m.get("new_chat") else chat_thread_id(m, ws)
+    """chat_messages for a draft's chat: by its name and, when known, its thread id. A new-chat draft
+    has no chat to look up before it is sent: only an id learned after staging (or given) counts (#229)."""
+    if m.get("new_chat"):
+        tid = str(m["thread_id"]) if m.get("thread_id") and m.get("thread_id_source") in ("learned", "given") else None
+    else:
+        tid = chat_thread_id(m, ws)
     return chat_messages(ws, m["to"], since_ms=since_ms, thread_id=tid)
 
 
@@ -1582,11 +1642,81 @@ def chat_context(ws: Path, m: dict, n: int = 5) -> dict:
     sent = next((x for x in reversed(msgs) if x["self"] and x["epoch_ms"] >= created - 300_000
                  and same_message(_draft_text(m), x["text"])), None)
     ours = next((x for x in reversed(msgs) if x["self"]), None)
+    prob = None if sent else probably_sent(ws, m, msgs)
     return {"chat": m["to"], "ingested": len(msgs), "newest_at": msgs[-1]["at"] if msgs else None,
             "recent": [{k: x[k] for k in ("at", "speaker", "self")} | {"text": x["text"][:200]} for x in msgs[-n:]],
             "ours_last_at": ours["at"] if ours else None,
             "reply_since_ours": bool(ours and any(not x["self"] for x in msgs if x["epoch_ms"] > ours["epoch_ms"])),
-            "already_sent": {k: sent[k] for k in ("at", "mid", "folder")} if sent else None}
+            "already_sent": {k: sent[k] for k in ("at", "mid", "folder")} if sent else None,
+            "probably_sent": prob}
+
+
+# A rewritten send (#229): the staged text sits in the compose box, so the first message of yours in
+# that chat soon after staging is most likely it, even when same_message says no. Never closes a
+# draft by itself: sent_check reports it, `mark-sent ID` confirms it. The timing carries the signal;
+# the ratio (same metric as same_message) is shown for whoever confirms and only drops one-word noise.
+PROBABLY_SENT_WINDOW_MS = 10 * 60_000
+PROBABLY_SENT_MIN_RATIO = 0.2
+
+
+def probably_sent(ws: Path | None, m: dict, msgs: list[dict] | None = None) -> dict | None:
+    """{at, mid, folder, ratio, text}: the first own message in the draft's chat at or after staged_at,
+    within PROBABLY_SENT_WINDOW_MS of it, that same_message rejects. None without a workspace, a
+    staged_at, or such a message."""
+    staged = _ms(m.get("staged_at"))
+    if ws is None or not staged:
+        return None
+    if msgs is None:
+        msgs = draft_chat_messages(ws, m, since_ms=staged)
+    first = next((x for x in msgs if x["self"] and x["epoch_ms"] >= staged), None)
+    if first is None or first["epoch_ms"] > staged + PROBABLY_SENT_WINDOW_MS:
+        return None
+    text = _draft_text(m)
+    if same_message(text, first["text"]):
+        return None
+    ratio = difflib.SequenceMatcher(None, _plain(text), _plain(first["text"]), autojunk=False).ratio()
+    if ratio < PROBABLY_SENT_MIN_RATIO:
+        return None
+    return {**{k: first.get(k) for k in ("at", "mid", "folder")}, "ratio": round(ratio, 2),
+            "minutes_after_staging": round((first["epoch_ms"] - staged) / 60_000, 1), "text": first["text"][:200]}
+
+
+def _learn_thread_id(ws: Path, m: dict, res: dict) -> None:
+    """A staged new-chat group draft has no thread id: Teams makes the chat on send, and ingest names an
+    untitled group after a member who posted (or by its id), never "A, B". Learn it from the Teams
+    desktop cache: the one cached chat whose roster fits the recipients (teams_cache.roster_fits) and
+    whose earliest cached message is at or after staged_at (the cache records no creation time).
+    Stored as thread_id_source "learned"; matching is by that id from then on. Several fit: nothing is
+    learned and res["not_learned"] says why. No cache: nothing."""
+    if not m.get("new_chat") or not _is_group(m.get("to") or "") or m.get("thread_id"):
+        return
+    staged = _ms(m.get("staged_at"))
+    if not staged or (os.environ.get("WHOSAID_TEAMS_CACHE") or "").strip().lower() in ("off", "0", "none"):
+        return
+    try:
+        import teams_cache
+        if not teams_cache._leveldb(teams_cache.cache_dir()).is_dir():
+            return
+        data = teams_cache.load()
+    except Exception:  # noqa: BLE001 - the cache is a bonus, never a reason to fail
+        return
+    first: dict[str, int] = {}
+    for x in data.get("messages") or []:
+        cid, ms = x.get("chat_id"), x.get("epoch_ms")
+        if cid and isinstance(ms, int):
+            first[cid] = min(ms, first.get(cid, ms))
+    fits = sorted(cid for cid, r in (data.get("rosters") or {}).items()
+                  if teams_cache.roster_fits(r, m["to"]) and first.get(cid, -1) >= staged)
+    if len(fits) == 1:
+        m["thread_id"], m["thread_id_source"] = fits[0], "learned"
+        _event(m, "thread_learned", thread_id=fits[0], by=_actor())
+        save(m)
+        res["learned"].append({"id": m["id"], "thread_id": fits[0]})
+    elif len(fits) > 1:
+        res["not_learned"].append({"id": m["id"], "to": m["to"], "candidates": fits,
+                                   "why": f"{len(fits)} chats with {m['to']} were created after staging, so "
+                                          "nothing was learned; set the right one with whosaid drafts write "
+                                          f"{m['id']} --thread-id ID"})
 
 
 def sent_check(ws: Path, draft_id: str | None = None, backfill: bool = False, by: str | None = None) -> dict:
@@ -1597,7 +1727,8 @@ def sent_check(ws: Path, draft_id: str | None = None, backfill: bool = False, by
     def wanted(m: dict) -> bool:
         return m["status"] == "staged" or _edit_open(m) or (backfill and _needs_backfill(m))
     todo = [load(draft_id)] if draft_id else [m for m in all_drafts() if wanted(m)]
-    res: dict = {"sent": [], "still_staged": [], "edited": [], "edit_not_seen": [],
+    res: dict = {"sent": [], "still_staged": [], "edited": [], "edit_not_seen": [], "probably_sent": [],
+                 "learned": [], "not_learned": [],
                  "note": "a draft stays staged until its chat is ingested again (whosaid teams ingest)"}
     if backfill:
         res["backfilled"], res["not_found"] = [], []
@@ -1611,9 +1742,15 @@ def sent_check(ws: Path, draft_id: str | None = None, backfill: bool = False, by
         if m["status"] != "staged":
             res["still_staged"].append({"id": m["id"], "why": f"is {m['status']}, not staged"})
             continue
+        _learn_thread_id(ws, m, res)
         since = (_ms(m.get("staged_at")) or _ms(m.get("created_at")) or 0) - 300_000
         msgs = draft_chat_messages(ws, m, since_ms=since)
         hit = next((x for x in msgs if x["self"] and same_message(_draft_text(m), x["text"])), None)
+        prob = None if hit else probably_sent(ws, m, msgs)
+        if prob:  # reported, never closed: `mark-sent ID` confirms it and stores this message
+            res["probably_sent"].append({"id": m["id"], "to": m["to"], **prob,
+                                         "confirm": f"whosaid drafts mark-sent {m['id']}"})
+            continue
         if not hit:
             res["still_staged"].append({"id": m["id"], "to": m["to"], "why": f"not in the {len(msgs)} ingested "
                                         f"message(s) of {m['to']} since staging"})
@@ -2088,6 +2225,12 @@ def stage(ids: list[str] | None = None, all_ready: bool = False, dry_run: bool =
                                            f"{ctx['already_sent']['at']}; run mark-sent --check, or edit "
                                            "that message in the chat instead"})
                     continue
+                p = ctx.get("probably_sent")
+                if p:  # a guess, not proof: warn and stage anyway (the stager never sends)
+                    res.setdefault("warnings", []).append(
+                        f"{draft_id}: probably sent already, rewritten: your message {p['mid']} in {m['to']} at "
+                        f"{p['at']}, {p['minutes_after_staging']} min after the last stage (ratio {p['ratio']}); "
+                        f"if that was this draft, clear the compose box and run whosaid drafts mark-sent {draft_id}")
             sup = load(m["supersedes"]) if m.get("supersedes") else None
             prev = (replace or m["status"] == "staged" or bool(sup and sup["status"] == "staged")
                     or bool(m.get("merged_from_staged")))
@@ -2339,6 +2482,8 @@ def _print_rows(rows: list[dict]) -> None:
             extra += f"   merged_from: {', '.join(r['merged_from'])}"
         print(f"{r['id']}\n   to: {r['to']}   state: {r['state']}   owner: {r['owner_line']}   "
               f"updated: {r['updated_at'][5:16]}{extra}")
+        if r.get("stale_staged"):
+            print(f"   stale: {r['stale_staged']['hint']}")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -2355,6 +2500,8 @@ def build_parser() -> argparse.ArgumentParser:
     a.add_argument("--mention", action="append", default=[], help="a name to @mention when staged")
     a.add_argument("--new", action="store_true", dest="separate",
                    help="a second draft even if the recipient has an open one (default: join it)")
+    a.add_argument("--ws", help="workspace whose chats show staged drafts to this recipient already sent; "
+                   "those are closed first (default WHOSAID_WORKSPACE)")
     force = "change a draft another live session owns"
     a = sub.add_parser("text")
     a.add_argument("id")
@@ -2394,12 +2541,16 @@ def build_parser() -> argparse.ArgumentParser:
     a.add_argument("--ws", help="workspace whose whosaid.toml [drafts] voice_lint applies (default WHOSAID_WORKSPACE)")
     a.add_argument("--json", action="store_true")
     sub.add_parser("path").add_argument("id")
+    stale_ws = ("workspace whose chats show whether a staged draft is stale: staged over [drafts] "
+                "stale_staged_hours (48) ago with no message of yours since (default WHOSAID_WORKSPACE)")
     a = sub.add_parser("list")
     a.add_argument("--all", action="store_true")
     a.add_argument("--mine", action="store_true")
     a.add_argument("--json", action="store_true")
+    a.add_argument("--ws", help=stale_ws)
     a = sub.add_parser("mine")
     a.add_argument("--json", action="store_true")
+    a.add_argument("--ws", help=stale_ws)
     a = sub.add_parser("show")
     a.add_argument("id")
     a.add_argument("--rev", type=int, help="the text of revision N (1 is the oldest)")
@@ -2482,7 +2633,7 @@ def main(argv: list[str] | None = None) -> int:
         c = args.cmd
         if c == "new":
             r = new(args.to, args.topic, args.page, args.supersedes, args.new_chat,
-                    mentions=args.mention, separate=args.separate, thread_id=args.thread_id)
+                    mentions=args.mention, separate=args.separate, thread_id=args.thread_id, ws=args.ws)
             print(json.dumps({k: v for k, v in r.items() if k != "note"}, indent=2))
             if r.get("note"):
                 print(f"note: {r['note']}", file=sys.stderr)
@@ -2536,7 +2687,7 @@ def main(argv: list[str] | None = None) -> int:
         elif c == "path":
             print(ddir(load(args.id)["id"]))
         elif c in ("list", "mine"):
-            rows = listing(include_closed=getattr(args, "all", False), mine=c == "mine" or args.mine)
+            rows = listing(include_closed=getattr(args, "all", False), mine=c == "mine" or args.mine, ws=args.ws)
             print(json.dumps(rows, indent=2)) if args.json else _print_rows(rows)
         elif c == "show":
             s = show(args.id, args.rev)
@@ -2660,7 +2811,16 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"{s['id']}: edit {s['n']} saved in Teams at {s['edited_at']}")
             for s in r["edit_not_seen"]:
                 print(f"{s['id']}: edit staged, not seen saved yet: {s['why']}")
-            if not any(r.get(k) for k in ("sent", "still_staged", "edited", "edit_not_seen", "backfilled", "not_found")):
+            for s in r.get("learned", []):
+                print(f"{s['id']}: learned the new chat's thread id {s['thread_id']}")
+            for s in r.get("not_learned", []):
+                print(f"{s['id']}: {s['why']} ({', '.join(s['candidates'])})")
+            for s in r.get("probably_sent", []):
+                print(f"{s['id']}: probably sent, rewritten: your message {s['mid']} at {s['at']}, "
+                      f"{s['minutes_after_staging']} min after staging (ratio {s['ratio']}); stays staged, "
+                      f"confirm with {s['confirm']}")
+            if not any(r.get(k) for k in ("sent", "still_staged", "edited", "edit_not_seen", "backfilled", "not_found",
+                                          "probably_sent", "learned", "not_learned")):
                 print("no staged drafts")
             elif r["still_staged"]:
                 print(r["note"])

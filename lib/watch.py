@@ -429,6 +429,11 @@ def drafts_sent_pass(ws: Path, cfg: dict, dry: bool) -> int:
         tlog(f"drafts: {s['id']} sent at {s.get('at')} (found in {s.get('folder')})")
     for s in res.get("edited") or []:
         tlog(f"drafts: {s['id']} edit {s.get('n')} saved at {s.get('edited_at')}")
+    for s in res.get("learned") or []:
+        tlog(f"drafts: {s['id']}: learned the new chat's thread id {s['thread_id']}")
+    for s in res.get("probably_sent") or []:  # never closed here: a person confirms it with mark-sent ID
+        tlog(f"drafts: {s['id']} to {s['to']} probably sent, rewritten (message {s.get('mid')}, ratio "
+             f"{s.get('ratio')}); left staged, confirm with {s.get('confirm')}")
     return len(res.get("sent") or [])
 
 

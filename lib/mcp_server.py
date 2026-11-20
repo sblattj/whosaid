@@ -3675,8 +3675,9 @@ def whosaid_draft_new(to: str, topic: str, pages: Optional[list[str]] = None, su
                       thread_id: Optional[str] = None) -> dict:
     """Create ~/.drafts/<id>/ with draft.json and an empty claims.json, or join the recipient's open draft."""
     import drafts
+    ws, err = _resolve_ws(None)  # closes staged drafts the chat shows as sent first (#228); none is no error
     return _drafts_call(drafts.new, to, topic, pages, supersedes, new_chat, owner_session,
-                        mentions=mentions, separate=separate, thread_id=thread_id)
+                        mentions=mentions, separate=separate, thread_id=thread_id, ws=None if err else ws)
 
 
 @mcp.tool(name="whosaid_draft_write", description=_DESC_DRAFT_WRITE, annotations=_DRAFT_WRITE_ANN)
@@ -3764,7 +3765,9 @@ def whosaid_drafts(action: Literal["list", "show", "diff", "lint"] = "list", id:
         if action == "diff":
             return _drafts_call(drafts.diff, id, from_rev, to_rev)
         return _drafts_call(drafts.show, id, rev)
-    return _drafts_call(lambda: {"drafts": drafts.listing(include_closed=all, mine=mine)})
+    ws, err = _resolve_ws(None)  # stale_staged looks in the chat; no workspace is no error here
+    ws = None if err else ws
+    return _drafts_call(lambda: {"drafts": drafts.listing(include_closed=all, mine=mine, ws=ws)})
 
 
 @mcp.tool(name="whosaid_draft_stakeholders", description=_DESC_DRAFT_STAKEHOLDERS,
