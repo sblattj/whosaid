@@ -960,7 +960,8 @@ DRAFTS
   whosaid drafts diff ID [--from N --to M] | html [--out PATH] [--all]
   whosaid drafts stakeholders [WS] --topic T [--topic T2] [--repo DIR --path P] [--exclude NAME] [--json]
   whosaid drafts stale-check [WS] [ID] [--json]
-  whosaid drafts stage ID|--all [--queue] [--dry-run] [--replace] [--tab TARGET] [--ws WS] | stage ID --edit [--allow-newer] [--allow-longer] [--dry-run] | edit-sent ID [--dry-run] [--match-file F] [--allow-longer] [--allow-newer] | mark-sent ID [--ws WS] | mark-sent --check [WS] [--backfill] | drop ID [--reason R]
+  whosaid drafts stage ID|--all [--queue] [--dry-run] [--replace] [--force] [--tab TARGET] [--ws WS] | stage ID --edit [--allow-newer] [--allow-longer] [--dry-run] | edit-sent ID [--dry-run] [--match-file F] [--allow-longer] [--allow-newer] | mark-sent ID [--ws WS] [--message MID] | mark-sent --check [WS] [--backfill] | drop ID [--reason R]
+  whosaid drafts audit [ID|--staged-before 48h] [--ws WS] [--json]
   whosaid drafts merge INTO FROM [FROM ...] [--text-file F] [--dry-run] [--force]
   An offline outbox for chat drafts an agent writes for you, one folder per draft in
   ~/.drafts/<id>/ (WHOSAID_DRAFTS_DIR overrides): draft.md, claims.json, draft.json.
@@ -989,6 +990,11 @@ DRAFTS
   text change is kept: show --rev N, diff --from N --to M. stage reads the ingested
   chat with that person, prints the last messages, and skips a draft already sent;
   mark-sent --check marks staged drafts sent once your message shows up there.
+  audit reads every chat (ingested and the Teams cache) for a staged draft's send that
+  was edited or went to another chat: sent, probably sent, edited, sent elsewhere (who
+  was in that chat) or not sent (chats searched, cache caveat). It never closes a draft;
+  mark-sent ID --message MID records the one you pick. stage refuses a --new-chat draft
+  whose text already went out in some chat unless --force (or --replace).
   stage ID --edit fixes a message already sent (edit-sent ID is an alias): write the
   corrected text (drafts text, plus claims), verify it, then stage --edit finds your
   message in the chat by its id, opens Teams' Edit on it and loads the new text. It

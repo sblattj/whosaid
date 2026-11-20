@@ -6,6 +6,13 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ## [Unreleased]
 
+### Added
+- `drafts audit [ID|--staged-before 48h] [--json]` and the read-only MCP tool `whosaid_draft_audit` (#232). The sent checks only read a draft's own chat, so a send that was reworded, or posted in a different existing chat, left the draft `staged` for days. `audit` reads every chat in the workspace and the Teams desktop cache for your messages since the draft was first staged and scores each one against it: the whole-text ratio, the sentences kept or dropped, and shared links, `#123` refs, commit shas and code spans.
+  - **Verdicts:** `sent` and `probably sent, edited` (in the draft's own chat), `sent elsewhere` (another chat, with the recipients in it and not in it), or `not sent`. A `not sent` lists the chats searched, your last message in the target chat, and a caveat when the cache has no messages in that chat since staging ("can't rule out a send from another device").
+  - **Another draft's send:** a message recorded as another draft's `sent_message` is excluded and named ("matches draft X's send"), never offered as evidence.
+  - **Confirming stays manual:** `audit` never closes a draft. `mark-sent ID --message MID` (MCP `whosaid_draft_close` `message`) records that message and its chat, and refuses another draft's send or a message no chat holds.
+  - **Restage guard:** `stage` on a `--new-chat` draft whose text already went out in some chat refuses, naming the message, unless `--force` (MCP `force=true`) or `--replace`.
+
 ### Changed
 - `drafts stage` no longer takes your focus. The stager used to raise the browser or Teams app twice per stage (`Target.activateTarget` plus `Page.bringToFront`): once before the chat-list click (#174) and once at the end ("focusing the tab"). On macOS each one brought the app in front of whatever you were using. Now it reads `document.visibilityState` first. The Teams desktop app's chat window reports `visible` even while other apps are in front (measured), so it is left alone. A hidden browser tab is still activated before the click, then the app that was in front is put back (`lsappinfo` to read it, System Events to restore it, the same approach as cdp-toolkit 3.4.0). If the tab hides again after that, the stager raises it as before. The final raise is opt-in now: `--focus` or `WHOSAID_STAGER_FOCUS=1`. The result JSON gains `focused` and `tab` (`visible`, `activated` or `raised`). `WHOSAID_STAGER_RESTORE_FRONT=0` turns the front-app restore off.
 

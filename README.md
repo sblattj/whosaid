@@ -375,6 +375,8 @@ whosaid drafts unstage <id> --reason R          # you cleared the compose box by
 whosaid drafts stage <id> --replace             # the compose box already holds text: overwrite it
 whosaid drafts stage --all --queue              # every verified draft, oldest first, each in its chat
 whosaid drafts mark-sent --check ~/meetings     # staged drafts you have since sent (and edits you saved)
+whosaid drafts audit --staged-before 48h        # old staged drafts: sent edited, sent in another chat, or not sent?
+whosaid drafts mark-sent <id> --message <mid>   # it went out as that message (edited, or in another chat)
 whosaid drafts stage <id> --edit                # a sent draft's verified correction into Teams' Edit box
 whosaid drafts html                             # review page of every open draft
 ```
@@ -532,11 +534,23 @@ whosaid drafts html                             # review page of every open draf
   `mark-sent ID` (by hand) still looks the message up in the chat (`--ws`, else
   `WHOSAID_WORKSPACE`) and keeps its id; `mark-sent --check --backfill` records it for older
   drafts closed by hand without one. Sent, dropped and edited events record who did it.
+- **A send that was edited or went elsewhere.** The checks above only read the draft's own chat.
+  `drafts audit [ID | --staged-before 48h] [--json] [--ws WS]` reads every chat (the ingested
+  chats and the Teams desktop cache) for your messages since the draft was first staged and
+  scores each against the draft: the whole-text ratio, which sentences were kept or dropped,
+  and shared links, `#123` refs, commit shas and code spans. One verdict per draft: `sent`,
+  `probably sent, edited`, `sent elsewhere` (with the recipients in that chat and not), or
+  `not sent` (the chats searched, your last message in the target chat, and a caveat when the
+  cache has no messages in that chat since staging, so a send from another device can't be ruled
+  out). A message that is another draft's recorded send is excluded and named. `audit` never
+  closes a draft: `mark-sent ID --message MID` records the one you pick, with its chat, and
+  refuses another draft's send. `stage` on a `--new-chat` draft whose text already went out in
+  some chat refuses unless `--force` (or `--replace`).
 
 Agents use the same outbox over MCP: `whosaid_draft_new`, `whosaid_draft_write`,
 `whosaid_draft_verify`, `whosaid_draft_close`, `whosaid_drafts`, `whosaid_draft_stakeholders`,
-`whosaid_draft_stale`, `whosaid_draft_sent_check`: create, read (with `rev` and `diff`),
-update and close. `whosaid_draft_verify` takes `voice` and `reason` for the override and
+`whosaid_draft_stale`, `whosaid_draft_sent_check`, `whosaid_draft_audit`: create, read (with `rev`
+and `diff`), update and close. `whosaid_draft_close` takes `message` (the `--message` above). `whosaid_draft_verify` takes `voice` and `reason` for the override and
 `recap_days` for a recap reply, and returns `voice_warnings`, `said` (each said claim's resolved
 turns) and `recap` (the per-point turns, also on `ok=false`); `whosaid_drafts(action="lint")` is the read-only lint.
 `whosaid_draft_stage` stages (and with `edit=true` loads a correction into Teams' Edit box); there
@@ -1624,7 +1638,7 @@ claude mcp add --scope user whosaid -e WHOSAID_TOOL_PROFILE=full -- whosaid mcp
 | `whosaid_reprocess` | Re-diarizes older meetings in a workspace (wraps `whosaid reprocess`, reusing the existing ASR). Mutating, but `dry_run` defaults to true: it reports the plan and changes nothing until you pass `dry_run=false`. |
 | `whosaid_record_browser` | Records a browser meeting tab over the DevTools port. `action` is `start`, `stop` or `status`. Not read-only. Needs a browser started with `--remote-debugging-port`; no Screen Recording permission. Auto-stops when the call ends. |
 | `whosaid_draft_new`, `whosaid_draft_write`, `whosaid_draft_verify`, `whosaid_draft_close`, `whosaid_draft_sent_check` | Write a chat draft into the [drafts outbox](#a-drafts-outbox-for-agent-written-chat-messages-whosaid-drafts) with its claims, stakeholders and pages, then check the gates; `new` joins the recipient's open draft; `sent_check` marks staged drafts sent from the ingested chat. Not read-only. Local files only; never stages or sends. |
-| `whosaid_drafts`, `whosaid_draft_stakeholders`, `whosaid_draft_stale` | List, show or diff drafts and their revisions; rank who spoke about a topic; find drafts whose stakeholders said something new since verify. Read-only. |
+| `whosaid_drafts`, `whosaid_draft_stakeholders`, `whosaid_draft_stale`, `whosaid_draft_audit` | List, show or diff drafts and their revisions; rank who spoke about a topic; find drafts whose stakeholders said something new since verify; audit staged drafts across every chat for an edited or elsewhere send (a verdict, never a close). Read-only. |
 | `whosaid_live_explain_add`, `whosaid_live_explain_correct`, `whosaid_live_explain_recap` | Write a section, a correction or the final recap of the [live explainer page](#a-live-explainer-page-whosaid-live-explain) for the newest live call (or `session`). Local files only; not read-only. |
 | `whosaid_live_export_items` | An ended call's explainer as rows (asks, questions, suggestions, decisions, next steps) with stable ids, owner, the verbatim transcript line and every source; `since` for every ended call after a stem; `format="csv"`. See [`export-items`](#a-live-explainer-page-whosaid-live-explain). Read-only. |
 | `whosaid_teams_live` | The newest Teams chat messages (or chats, `action="chats"`) read from the Teams desktop app's local cache: offline, nothing to rate-limit, only what the app has synced. Read-only. See [`whosaid teams live`](#whosaid-teams-live-teams-chats-live-from-the-desktop-apps-cache). |

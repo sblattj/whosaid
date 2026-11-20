@@ -105,6 +105,7 @@ def main() -> None:
         "whosaid_draft_stakeholders",
         "whosaid_draft_stale",
         "whosaid_draft_sent_check",
+        "whosaid_draft_audit",
         "whosaid_draft_stage",
         "whosaid_teams_live",
         "whosaid_teams_calendar",
@@ -382,7 +383,7 @@ def main() -> None:
         check(ann.get("readOnlyHint") is False and ann.get("destructiveHint") is False
               and ann.get("openWorldHint") is False, f"{name} annotations: {ann}")
         check(name in mcp_server._GUIDE, f"guide (moved instructions) names {name}")
-    for name in ("whosaid_drafts", "whosaid_draft_stakeholders", "whosaid_draft_stale"):
+    for name in ("whosaid_drafts", "whosaid_draft_stakeholders", "whosaid_draft_stale", "whosaid_draft_audit"):
         check((dumps[name].get("annotations") or {}).get("readOnlyHint") is True, f"{name} must be read-only")
     check(not any("send" in n for n in by_name), "no send tool over MCP")
     check([n for n in by_name if "stage" in n] == ["whosaid_draft_stage"], "one stage tool over MCP")
