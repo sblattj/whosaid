@@ -6,6 +6,8 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ## [Unreleased]
 
+## [1.46.0] - 2026-11-20
+
 ### Added
 - The watcher closes sent drafts (#228). Each pass runs the drafts sent check after the recordings and logs every draft it marks sent (`drafts: <id> sent at ...`), so a staged draft that went out no longer stays `staged` until someone runs `mark-sent --check`. After a Teams cache sync it reads only the workspace, where the sync just put the messages. `[drafts] auto_sent_check = false` turns it off. It never raises.
 - `mark-sent --check --backfill` (MCP `whosaid_draft_sent_check` `backfill=true`): records the message for sent drafts closed by hand without one, adding a `backfilled` event and changing nothing else.
