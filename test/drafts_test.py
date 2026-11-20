@@ -58,11 +58,15 @@ class DraftsBase(unittest.TestCase):
             "WHOSAID_CDP_PORT": "",
         })
         self.env.start()
+        # the MCP tools fall back to the installed watcher's workspace: never this machine's real one
+        self.agents = patch("watch.installed_agent_workspaces", return_value=[])
+        self.agents.start()
         (self.root / "sessions").mkdir()
         (self.root / "sessions" / "1.json").write_text(json.dumps(
             {"sessionId": "sess-1111", "name": "worker-a", "pid": os.getpid(), "cwd": "/repo/a"}))
 
     def tearDown(self):
+        self.agents.stop()
         self.env.stop()
         self.tmp.cleanup()
 
@@ -1274,6 +1278,239 @@ class SentTrackingTest(DraftsBase):
                 patch.object(watch, "tlog", logs.append):
             self.assertEqual(watch.drafts_sent_pass(self.ws, {}, False), 0)
         self.assertTrue(any("sent check skipped" in x for x in logs), logs)
+
+
+class SentCheckGapsTest(DraftsBase):
+    """#229: a new group chat's id is learned from the Teams cache, a rewritten send is reported as
+    probably_sent (never closed by itself), and old staged drafts with no message of yours are stale."""
+
+    SENT = ChatHistoryTest.SENT
+    chat = ChatHistoryTest.chat
+    GROUP = "Alice Adams, Bob Brown"
+    REWRITE = "hey, would you add both of the DNS entries for staging when you get a sec?"
+
+    def setUp(self):
+        super().setUp()
+        self.ws = self.root / "ws"
+        self.ws.mkdir()
+
+    def staged(self, to="Test Person", topic="dns records", **kw):
+        did = self.ready(to=to, topic=topic, **kw)
+        r = drafts.stage([did], ws=self.ws)
+        self.assertEqual([s["id"] for s in r["staged"]], [did], r)
+        return did, datetime.fromisoformat(drafts.load(did)["staged_at"].replace("Z", "+00:00")).astimezone()
+
+    def backdate(self, did, hours):
+        """staged HOURS ago: staged_at moves back, and so does the returned local datetime."""
+        from datetime import timezone
+        m = drafts.load(did)
+        t = datetime.now(timezone.utc) - timedelta(hours=hours)
+        m["staged_at"] = t.isoformat(timespec="milliseconds").replace("+00:00", "Z")
+        drafts.save(m)
+        return t.astimezone().replace(tzinfo=None)
+
+    def cache(self, rosters, messages):
+        import teams_cache
+        return [patch.dict(os.environ, {"WHOSAID_TEAMS_CACHE": ""}),
+                patch.object(teams_cache, "_leveldb", return_value=self.root),
+                patch.object(teams_cache, "load", return_value={"rosters": rosters, "messages": messages}),
+                patch.object(teams_cache, "name_chats", return_value={}),
+                patch.object(teams_cache, "messages", return_value={"messages": []})]
+
+    def with_cache(self, rosters, messages, fn):
+        ps = self.cache(rosters, messages)
+        for p in ps:
+            p.start()
+        try:
+            return fn()
+        finally:
+            for p in ps:
+                p.stop()
+
+    @staticmethod
+    def ms(t):
+        return int(t.timestamp() * 1000)
+
+    # ---- 1. new group chats: the thread id is learned ----
+    def test_a_sent_new_group_chat_draft_is_closed_through_the_learned_thread_id(self):
+        did, at = self.staged(to=self.GROUP, new_chat=True)
+        members = {"members": ["Alice Adams", "Bob Brown"]}
+        rosters = {"19:old@thread.v2": dict(members), "19:new@thread.v2": dict(members),
+                   "19:dm@unq.gbl.spaces": {"members": ["Bob Brown"], "one_on_one": True}}
+        cached = [{"chat_id": "19:old@thread.v2", "epoch_ms": self.ms(at - timedelta(days=3))},
+                  {"chat_id": "19:new@thread.v2", "epoch_ms": self.ms(at + timedelta(seconds=40))},
+                  {"chat_id": "19:dm@unq.gbl.spaces", "epoch_ms": self.ms(at + timedelta(seconds=50))}]
+        # the cache shows the new chat; ingest has not caught up yet: learned, saved, still staged
+        r = self.with_cache(rosters, cached, lambda: drafts.sent_check(self.ws))
+        m = drafts.load(did)
+        self.assertEqual((m.get("thread_id"), m.get("thread_id_source")), ("19:new@thread.v2", "learned"), r)
+        self.assertEqual(m["status"], "staged")
+        self.assertIn({"id": did, "thread_id": "19:new@thread.v2"}, r.get("learned") or [])
+        # ingest names the untitled group after the member who posted: only the id can match it
+        self.chat([(at + timedelta(seconds=40), "Me_Self", self.SENT)], chat="Bob Brown (chat 1a2b3c)",
+                  chat_id="19:new@thread.v2", when=at + timedelta(minutes=1))
+        self.chat([(at + timedelta(seconds=45), "Me_Self", self.SENT)], chat="Bob Brown",
+                  chat_id="19:other@thread.v2", when=at + timedelta(minutes=2))
+        r = drafts.sent_check(self.ws)  # cache off now: the stored id alone does it
+        self.assertEqual([s["id"] for s in r["sent"]], [did], r)
+        m = drafts.load(did)
+        self.assertEqual((m["status"], m["sent_message"]["mid"]), ("sent", "m0"))
+        self.assertEqual(m["sent_message"]["folder"], (at + timedelta(minutes=1)).strftime("%Y-%m-%d-%H%M"))
+
+    def test_several_new_chats_that_fit_learn_nothing_and_say_why(self):
+        did, at = self.staged(to=self.GROUP, new_chat=True)
+        members = {"members": ["Alice Adams", "Bob Brown"]}
+        rosters = {"19:a@thread.v2": dict(members), "19:b@thread.v2": dict(members)}
+        cached = [{"chat_id": "19:a@thread.v2", "epoch_ms": self.ms(at + timedelta(seconds=30))},
+                  {"chat_id": "19:b@thread.v2", "epoch_ms": self.ms(at + timedelta(seconds=60))}]
+        self.chat([(at + timedelta(seconds=30), "Me_Self", self.SENT)], chat="Bob Brown (chat 1a2b3c)",
+                  chat_id="19:a@thread.v2", when=at + timedelta(minutes=1))
+        r = self.with_cache(rosters, cached, lambda: drafts.sent_check(self.ws))
+        m = drafts.load(did)
+        self.assertNotIn("thread_id", m)
+        self.assertEqual(m["status"], "staged")
+        self.assertEqual(r["sent"], [])
+        refused = [x for x in r.get("not_learned") or [] if x["id"] == did]
+        self.assertEqual(len(refused), 1, r)
+        self.assertEqual(sorted(refused[0]["candidates"]), ["19:a@thread.v2", "19:b@thread.v2"])
+        self.assertIn("2 chats", refused[0]["why"])
+
+    def test_a_group_chat_created_before_staging_is_not_learned(self):
+        did, at = self.staged(to=self.GROUP, new_chat=True)
+        rosters = {"19:old@thread.v2": {"members": ["Alice Adams", "Bob Brown"]}}
+        cached = [{"chat_id": "19:old@thread.v2", "epoch_ms": self.ms(at - timedelta(hours=2))},
+                  {"chat_id": "19:old@thread.v2", "epoch_ms": self.ms(at + timedelta(seconds=30))}]
+        r = self.with_cache(rosters, cached, lambda: drafts.sent_check(self.ws))
+        self.assertNotIn("thread_id", drafts.load(did))
+        self.assertEqual(r.get("learned") or [], [])
+
+    # ---- 2. a rewritten send: probably_sent, never closed by itself ----
+    def test_a_rewritten_send_is_probably_sent_and_stays_staged_until_mark_sent(self):
+        did, at = self.staged()
+        self.chat([(at + timedelta(seconds=90), "Me_Self", self.REWRITE)], when=at + timedelta(minutes=1))
+        r = drafts.sent_check(self.ws)
+        self.assertEqual(r["sent"], [])
+        prob = [x for x in r.get("probably_sent") or [] if x["id"] == did]
+        self.assertEqual(len(prob), 1, r)
+        self.assertEqual(prob[0]["mid"], "m0")
+        self.assertTrue(0 < prob[0]["ratio"] < 0.85, prob[0])
+        self.assertEqual(drafts.load(did)["status"], "staged")
+        self.assertEqual(drafts.sent_check(self.ws)["sent"], [], "a second check closed it on its own")
+        # the watcher only logs it
+        import contextlib
+        import io
+        import watch
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            watch.drafts_sent_pass(self.ws, {}, False)
+        self.assertIn("probably sent", err.getvalue())
+        self.assertEqual(drafts.load(did)["status"], "staged")
+        # mark-sent ID confirms it and keeps that message
+        lib = Path(__file__).resolve().parents[1] / "lib" / "drafts.py"
+        out = subprocess.run([sys.executable, str(lib), "mark-sent", "--check", str(self.ws)],
+                             capture_output=True, text=True, env=os.environ)
+        self.assertIn(f"{did}: probably sent", out.stdout, out.stderr)
+        drafts.close(did, "sent", "rewrote it", ws=self.ws)
+        m = drafts.load(did)
+        self.assertEqual((m["status"], (m.get("sent_message") or {}).get("mid")), ("sent", "m0"))
+
+    def test_probably_sent_needs_the_first_own_message_soon_after_staging(self):
+        late, at = self.staged()
+        self.chat([(at + timedelta(minutes=25), "Me_Self", self.REWRITE)], when=at + timedelta(minutes=1))
+        early, at2 = self.staged(to="Second Person", topic="other")
+        self.chat([(at2 - timedelta(minutes=2), "Me_Self", self.REWRITE)], chat="Second Person",
+                  when=at2 + timedelta(minutes=2))
+        theirs, at3 = self.staged(to="Third Person", topic="third")
+        self.chat([(at3 + timedelta(seconds=30), "Third_Person", self.REWRITE)], chat="Third Person",
+                  when=at3 + timedelta(minutes=3))
+        r = drafts.sent_check(self.ws)
+        self.assertEqual(r.get("probably_sent"), [], r)
+        self.assertEqual({x["id"] for x in r["still_staged"]}, {late, early, theirs})
+
+    def test_restaging_after_a_rewritten_send_warns_and_still_stages(self):
+        did, at = self.staged()
+        self.chat([(at + timedelta(seconds=60), "Me_Self", self.REWRITE)], when=at + timedelta(minutes=1))
+        drafts.write(did, text="Hi, can you add the two DNS records? The staging ones.")
+        drafts.verify(did)
+        r = drafts.stage([did], ws=self.ws)
+        self.assertEqual([s["id"] for s in r["staged"]], [did], r)
+        self.assertTrue(any("probably sent" in w and "m0" in w for w in r.get("warnings") or []), r)
+        self.assertEqual(r["context"][did].get("probably_sent", {}).get("mid"), "m0")
+
+    # ---- 3. stale staged drafts ----
+    def rows(self, **kw):
+        return {r["id"]: r for r in drafts.listing(**kw)}
+
+    def test_list_marks_an_old_staged_draft_without_a_message_of_yours_as_stale(self):
+        quiet, _ = self.staged()
+        self.backdate(quiet, 49)
+        replied, _ = self.staged(to="Second Person", topic="other")
+        t = self.backdate(replied, 49)
+        self.chat([(t + timedelta(hours=1), "Me_Self", "something else entirely, later")], chat="Second Person",
+                  when=t + timedelta(hours=1))
+        young, _ = self.staged(to="Third Person", topic="third")
+        self.backdate(young, 47)
+        os.environ["WHOSAID_WORKSPACE"] = str(self.ws)
+        rows = self.rows()
+        self.assertTrue(rows[quiet].get("stale_staged"), rows[quiet])
+        self.assertGreaterEqual(rows[quiet]["stale_staged"]["hours"], 49)
+        self.assertTrue(rows[quiet]["stale_staged"]["chat_checked"])
+        self.assertFalse(rows[replied].get("stale_staged"), rows[replied])
+        self.assertFalse(rows[young].get("stale_staged"), rows[young])
+        self.assertEqual(rows[quiet]["state"], "staged", "the state itself is unchanged")
+        lib = Path(__file__).resolve().parents[1] / "lib" / "drafts.py"
+        out = subprocess.run([sys.executable, str(lib), "list"], capture_output=True, text=True, env=os.environ)
+        self.assertEqual(out.returncode, 0, out.stderr)
+        block = out.stdout.split(quiet, 1)[1].split("\n2", 1)[0]
+        self.assertIn("stale: staged 49h ago", block)
+        self.assertNotIn("stale: staged", out.stdout.split(replied, 1)[1].split("\n2", 1)[0])
+
+    def test_stale_staged_hours_is_configurable(self):
+        did, _ = self.staged()
+        self.backdate(did, 30)
+        os.environ["WHOSAID_WORKSPACE"] = str(self.ws)
+        self.assertFalse(self.rows()[did].get("stale_staged"))
+        (self.ws / "whosaid.toml").write_text("[drafts]\nstale_staged_hours = 24\n")
+        self.assertTrue(self.rows()[did].get("stale_staged"))
+        import wsconfig
+        self.assertEqual(wsconfig.DEFAULTS["drafts"].get("stale_staged_hours"), 48)
+        self.assertIn("stale_staged_hours", wsconfig.__doc__)
+
+    def test_mcp_list_flags_stale_through_the_watchers_workspace(self):
+        try:
+            import mcp_server
+        except ModuleNotFoundError as e:
+            self.skipTest(f"needs the mcp SDK: {e}")
+        did, _ = self.staged()
+        self.backdate(did, 49)
+        with patch("watch.installed_agent_workspaces", return_value=[("agent", self.ws)]):
+            out = mcp_server.whosaid_drafts(action="list")
+        self.assertTrue(out["ok"], out)
+        row = next(r for r in out["drafts"] if r["id"] == did)
+        self.assertTrue(row.get("stale_staged"), row)
+        self.assertTrue(row["stale_staged"]["chat_checked"], row)
+
+    # ---- drafts new from MCP and the CLI: the #228 close runs there too ----
+    def test_mcp_draft_new_closes_a_sent_staged_draft_through_the_watchers_workspace(self):
+        try:
+            import mcp_server
+        except ModuleNotFoundError as e:
+            self.skipTest(f"needs the mcp SDK: {e}")
+        old, at = self.staged()
+        self.chat([(at + timedelta(seconds=5), "Me_Self", self.SENT)], when=at + timedelta(minutes=1))
+        with patch("watch.installed_agent_workspaces", return_value=[("agent", self.ws)]):
+            r = mcp_server.whosaid_draft_new(to="Test Person", topic="next topic")
+        self.assertTrue(r["ok"], r)
+        self.assertFalse(r["joined"], "joined a draft that already went out")
+        self.assertEqual((drafts.load(old)["status"], drafts.load(old)["sent_message"]["mid"]), ("sent", "m0"))
+
+    def test_cli_new_takes_ws_and_closes_a_sent_staged_draft(self):
+        old, at = self.staged()
+        self.chat([(at + timedelta(seconds=5), "Me_Self", self.SENT)], when=at + timedelta(minutes=1))
+        lib = Path(__file__).resolve().parents[1] / "lib" / "drafts.py"
+        subprocess.run([sys.executable, str(lib), "new", "--to", "Test Person", "--topic", "next", "--ws",
+                        str(self.ws)], capture_output=True, text=True, env=os.environ)
+        self.assertEqual(drafts.load(old)["status"], "sent")
 
 
 class MergeTest(DraftsBase):

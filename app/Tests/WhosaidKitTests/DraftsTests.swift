@@ -26,6 +26,16 @@ import Testing
   #expect(DraftRow(try JSONValue.parse(Data(#"{"to":"B"}"#.utf8))) == nil)
 }
 
+@Test func staleStagedDraftAsksForARestageOrADrop() throws {
+  let old = try #require(DraftRow(try JSONValue.parse(Data(#"""
+  {"id": "a", "to": "B", "state": "staged",
+   "stale_staged": {"hours": 49, "staged_at": "2026-01-01T09:00:00Z", "chat_checked": true}}
+  """#.utf8))))
+  #expect(old.staged && old.stateLabel == "staged 49h ago, nothing sent since: re-stage or drop")
+  let fresh = try #require(DraftRow(try JSONValue.parse(Data(#"{"id":"a","to":"B","state":"staged","stale_staged":null}"#.utf8))))
+  #expect(fresh.stateLabel == "staged, send it in Teams")
+}
+
 @Test func stageOutcomeLines() throws {
   let ok = StageOutcome(try JSONValue.parse(Data(#"""
   {"ok": true, "staged": [{"id": "a", "to": "Quill Example", "stager": "{}"}], "skipped": [], "failed": []}
