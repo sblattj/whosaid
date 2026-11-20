@@ -1513,6 +1513,244 @@ class SentCheckGapsTest(DraftsBase):
         self.assertEqual(drafts.load(old)["status"], "sent")
 
 
+class AuditTest(DraftsBase):
+    """#232: `drafts audit` searches every chat for a send that was edited or went to another chat, with
+    one verdict per draft and its evidence; it never closes a draft. stage refuses a new-chat draft whose
+    text already went out somewhere; mark-sent --message records the chosen message."""
+
+    GROUP = "Alice Adams, Bob Brown"
+    TEXT = ("Hi both, the staging DNS fix is merged in #412, see [the runbook](https://example.com/runbook/dns). "
+            "Can one of you add the two records today? I'll watch the deploy after lunch.")
+    # prefix added, the link rendered as "label (url)", the last sentence dropped
+    REWORDED = ("quick one: the staging DNS fix is merged in #412, see the runbook "
+                "(https://example.com/runbook/dns). Can one of you add the two records today?")
+    LIB = Path(__file__).resolve().parents[1] / "lib" / "drafts.py"
+
+    def setUp(self):
+        super().setUp()
+        self.ws = self.root / "ws"
+        self.ws.mkdir()
+        self.minute = 0
+
+    def chat(self, chat, rows, chat_id=None, when=None):
+        """One ingested chat-day folder: rows of (datetime, speaker, text, mid); every chat its own folder."""
+        self.minute += 1
+        when = when or (datetime.now() + timedelta(minutes=self.minute))
+        folder = self.ws / when.strftime("%Y-%m-%d-%H%M")
+        folder.mkdir()
+        segs = [{"start": 0, "end": 0, "speaker": spk, "epoch_ms": int(t.timestamp() * 1000), "mid": mid,
+                 "text": text} for t, spk, text, mid in rows]
+        (folder / "teams.diarization.json").write_text(json.dumps({
+            "base": "teams", "source": {"kind": "teams-chat", "chat_name": chat, "day": when.strftime("%Y-%m-%d"),
+                                        **({"chat_id": chat_id} if chat_id else {})},
+            "names": {}, "roles": {"Me_Self": "self"}, "segments": segs}))
+
+    def draft(self, to, topic, text=None, **kw):
+        did = drafts.new(to, topic, [str(self.page)], **kw)["id"]
+        drafts.write(did, text=text or self.TEXT, **GOOD_CLAIMS)
+        drafts.verify(did)
+        return did
+
+    def staged(self, to, topic, text=None, **kw):
+        did = self.draft(to, topic, text, **kw)
+        r = drafts.stage([did], ws=self.ws)
+        self.assertEqual([s["id"] for s in r["staged"]], [did], r)
+        return did, datetime.fromisoformat(drafts.load(did)["staged_at"].replace("Z", "+00:00")).astimezone()
+
+    def verdict(self, did, **kw):
+        r = drafts.audit(self.ws, did, **kw)
+        rows = [d for d in r["drafts"] if d["id"] == did]
+        self.assertEqual(len(rows), 1, r)
+        return rows[0]
+
+    # ---- the Done-when cases ----
+    def test_a_reworded_send_in_another_chat_with_some_recipients_is_sent_elsewhere(self):
+        did, at = self.staged(self.GROUP, "dns fix", new_chat=True)
+        self.chat("Bob Brown", [(at - timedelta(days=2), "Bob_Brown", "lunch on friday?", "dm0"),
+                                (at + timedelta(minutes=3), "Me_Self", self.REWORDED, "dm1"),
+                                (at + timedelta(minutes=5), "Bob_Brown", "on it", "dm2")],
+                  chat_id="19:dm@unq.gbl.spaces")
+        before = (drafts.ddir(did) / "draft.json").read_bytes()
+        v = self.verdict(did)
+        self.assertEqual(v["verdict"], "sent elsewhere", v)
+        self.assertEqual(v["message"]["mid"], "dm1")
+        self.assertEqual(v["message"]["chat"], "Bob Brown")
+        self.assertEqual(v["recipients_in"], ["Bob Brown"])
+        self.assertEqual(v["recipients_not_in"], ["Alice Adams"])
+        self.assertTrue(v["edited"])
+        self.assertTrue(any("watch the deploy" in s for s in v["dropped"]), v)
+        self.assertTrue(any("two records today" in s for s in v["kept"]), v)
+        self.assertIn("#412", v["shared_tokens"])
+        self.assertIn("https://example.com/runbook/dns", v["shared_tokens"])
+        self.assertIn(f"mark-sent {did} --message dm1", v["confirm"])
+        self.assertEqual(drafts.load(did)["status"], "staged", "audit closed the draft")
+        self.assertEqual((drafts.ddir(did) / "draft.json").read_bytes(), before, "audit wrote the draft")
+
+    def test_a_look_alike_that_is_another_drafts_send_is_excluded_and_named(self):
+        other, at = self.staged("Carol Chen", "carol dns", text=self.TEXT.replace("Hi both", "Hi Carol"))
+        self.chat("Carol Chen", [(at + timedelta(minutes=1), "Me_Self",
+                                  self.TEXT.replace("Hi both", "Hi Carol"), "c1")])
+        drafts.close(other, "sent", ws=self.ws)
+        self.assertEqual(drafts.load(other)["sent_message"]["mid"], "c1")
+        did, _ = self.staged("Dana Diaz", "dana dns")
+        v = self.verdict(did)
+        self.assertEqual(v["verdict"], "not sent", v)
+        ex = [x for x in v["excluded"] if x["mid"] == "c1"]
+        self.assertEqual(len(ex), 1, v)
+        self.assertEqual(ex[0]["draft"], other)
+        self.assertIn(f"matches draft {other}'s send", ex[0]["why"])
+        self.assertIsNone(v.get("message"))
+        with self.assertRaises(drafts.DraftsError) as cm:  # the hand-close false positive of the issue
+            drafts.close(did, "sent", ws=self.ws, message="c1")
+        self.assertIn(other, str(cm.exception))
+        self.assertEqual(drafts.load(did)["status"], "staged")
+
+    def test_not_sent_lists_the_chats_searched_and_the_cache_caveat(self):
+        old = datetime.now() - timedelta(days=60)
+        self.chat("Test Person", [(old, "Test_Person", "ping", "t0")], when=old)
+        did, at = self.staged("Test Person", "dns fix")
+        self.chat("Other Chat", [(at + timedelta(minutes=2), "Me_Self", "unrelated: lunch at noon works", "o1")],
+                  chat_id="19:other@thread.v2")
+        v = self.verdict(did)
+        self.assertEqual(v["verdict"], "not sent", v)
+        self.assertIn("Other Chat", v["chats_searched"])
+        self.assertIn("Test Person", v["chats_searched"])
+        self.assertIsNone(v["last_own_in_target"])
+        cav = v["coverage"]["caveat"] or ""
+        self.assertIn("no messages in this chat since", cav)
+        self.assertIn(old.strftime("%Y-%m-%d"), cav)
+        self.assertIn("can't rule out a send from another device", cav)
+        self.assertIn("Teams cache", " ".join(v["coverage"].get("notes") or []), "cache off is a caveat too")
+        self.assertEqual(drafts.load(did)["status"], "staged")
+        # an own message in the target chat after staging is the last own message, and lifts the caveat
+        self.chat("Test Person", [(at + timedelta(minutes=4), "Me_Self", "also, see you at 3", "t1")])
+        v = self.verdict(did)
+        self.assertEqual(v["verdict"], "not sent", v)
+        self.assertEqual(v["last_own_in_target"]["mid"], "t1")
+        self.assertIsNone(v["coverage"]["caveat"], v["coverage"])
+
+    def test_sent_and_probably_sent_edited_in_the_target_chat(self):
+        did, at = self.staged("Test Person", "dns fix")
+        self.chat("Test Person", [(at + timedelta(minutes=1), "Me_Self", self.TEXT, "t1")])
+        v = self.verdict(did)
+        self.assertEqual((v["verdict"], v["message"]["mid"]), ("sent", "t1"), v)
+        self.assertEqual(drafts.load(did)["status"], "staged", "audit never closes")
+        did2, at2 = self.staged("Second Person", "dns fix two")
+        self.chat("Second Person", [(at2 + timedelta(minutes=1), "Me_Self", self.REWORDED, "s1")])
+        v = self.verdict(did2)
+        self.assertEqual((v["verdict"], v["message"]["mid"]), ("probably sent, edited", "s1"), v)
+        self.assertTrue(0 < v["ratio"] < 1, v)
+        self.assertTrue(v["dropped"], v)
+
+    def test_cache_messages_are_searched_and_name_the_chat_and_roster(self):
+        import teams_cache
+        did, at = self.staged(self.GROUP, "dns fix", new_chat=True)
+        cached = [{"chat_id": "19:dm@unq.gbl.spaces", "author": "Me Self", "self": True,
+                   "epoch_ms": int((at + timedelta(minutes=3)).timestamp() * 1000), "text": self.REWORDED,
+                   "message_id": "1763650000000"}]
+        rosters = {"19:dm@unq.gbl.spaces": {"members": ["Bob Brown"], "one_on_one": True}}
+        with patch.dict(os.environ, {"WHOSAID_TEAMS_CACHE": ""}), \
+                patch.object(teams_cache, "_leveldb", return_value=self.root), \
+                patch.object(teams_cache, "load", return_value={"rosters": rosters, "messages": cached}), \
+                patch.object(teams_cache, "name_chats", return_value={"19:dm@unq.gbl.spaces": "Bob Brown"}):
+            v = self.verdict(did)
+        self.assertEqual((v["verdict"], v["message"]["mid"]), ("sent elsewhere", "1763650000000"), v)
+        self.assertEqual(v["message"]["chat"], "Bob Brown")
+        self.assertEqual((v["recipients_in"], v["recipients_not_in"]), (["Bob Brown"], ["Alice Adams"]))
+
+    def test_stage_refuses_a_new_chat_draft_whose_text_already_went_out(self):
+        did = self.draft(self.GROUP, "dns fix", new_chat=True)
+        soon = datetime.now() + timedelta(seconds=30)
+        self.chat("Bob Brown (chat 1a2b3c)", [(soon, "Me_Self", self.TEXT, "g1")], chat_id="19:grp@thread.v2")
+        r = drafts.stage([did], ws=self.ws, dry_run=True)
+        self.assertEqual([f["id"] for f in r["failed"]], [did], r)
+        self.assertIn("g1", r["failed"][0]["why"])
+        self.assertIn("--force", r["failed"][0]["why"])
+        r = drafts.stage([did], ws=self.ws)
+        self.assertEqual(r["staged"], [], r)
+        self.assertEqual(self.stager_calls(), [], "staged over a message that already went out")
+        self.assertEqual(drafts.load(did)["status"], "verified", "the guard only refuses, it marks nothing")
+        r = drafts.stage([did], ws=self.ws, dry_run=True, replace=True)
+        self.assertEqual(r["failed"], [], r)
+        r = drafts.stage([did], ws=self.ws, force=True)
+        self.assertEqual([s["id"] for s in r["staged"]], [did], r)
+        out = subprocess.run([sys.executable, str(self.LIB), "stage", did, "--force", "--dry-run", "--ws",
+                              str(self.ws)], capture_output=True, text=True, env=os.environ)
+        self.assertNotIn("unrecognized", out.stderr)
+
+    def test_restage_of_a_new_chat_draft_after_a_send_in_an_existing_chat_refuses(self):
+        did, at = self.staged(self.GROUP, "dns fix", new_chat=True)
+        self.chat("Bob Brown (chat 1a2b3c)", [(at + timedelta(minutes=2), "Me_Self", self.TEXT, "g1")],
+                  chat_id="19:grp@thread.v2")
+        drafts.write(did, text=self.TEXT + " Thanks.")
+        drafts.verify(did)
+        r = drafts.stage([did], ws=self.ws)
+        self.assertEqual([f["id"] for f in r["failed"]], [did], r)
+        self.assertIn("g1", r["failed"][0]["why"])
+        self.assertEqual(len(self.stager_calls()), 1, "a second paste after the send")
+        out = subprocess.run([sys.executable, str(self.LIB), "stage", did, "--ws", str(self.ws)],
+                             capture_output=True, text=True, env=os.environ)
+        self.assertEqual(out.returncode, 1, out)
+        self.assertIn("--force", out.stderr)
+
+    def test_mark_sent_message_stores_that_message(self):
+        did, at = self.staged(self.GROUP, "dns fix", new_chat=True)
+        self.chat("Bob Brown", [(at + timedelta(minutes=3), "Me_Self", self.REWORDED, "dm1")],
+                  chat_id="19:dm@unq.gbl.spaces")
+        with self.assertRaises(drafts.DraftsError):  # a message the workspace doesn't hold
+            drafts.close(did, "sent", ws=self.ws, message="nope")
+        self.assertEqual(drafts.load(did)["status"], "staged")
+        r = drafts.close(did, "sent", "rewrote it, sent to Bob", ws=self.ws, message="dm1")
+        m = drafts.load(did)
+        self.assertEqual((m["status"], m["sent_message"]["mid"]), ("sent", "dm1"), m)
+        self.assertEqual(m["sent_message"]["chat"], "Bob Brown")
+        self.assertEqual(m["sent_message"]["chat_id"], "19:dm@unq.gbl.spaces")
+        self.assertEqual(r["sent_message"]["mid"], "dm1")
+        self.assertEqual(m["sent_text"], self.REWORDED, "the edit baseline is what went out")
+        self.assertEqual(drafts.state(m), "sent")
+        did2, at2 = self.staged("Test Person", "cli")
+        self.chat("Other Chat", [(at2 + timedelta(minutes=1), "Me_Self", self.REWORDED, "o9")])
+        out = subprocess.run([sys.executable, str(self.LIB), "mark-sent", did2, "--message", "o9", "--ws",
+                              str(self.ws)], capture_output=True, text=True, env=os.environ)
+        self.assertEqual(out.returncode, 0, out)
+        self.assertEqual(drafts.load(did2)["sent_message"]["mid"], "o9")
+
+    # ---- selection, CLI and MCP ----
+    def test_audit_selects_staged_drafts_and_staged_before(self):
+        young, _ = self.staged("Test Person", "young")
+        old, _ = self.staged("Second Person", "old")
+        m = drafts.load(old)
+        from datetime import timezone
+        m["staged_at"] = (datetime.now(timezone.utc) - timedelta(hours=72)).isoformat(timespec="seconds")[:19] + "Z"
+        drafts.save(m)
+        self.assertEqual({d["id"] for d in drafts.audit(self.ws)["drafts"]}, {young, old})
+        self.assertEqual([d["id"] for d in drafts.audit(self.ws, staged_before="48h")["drafts"]], [old])
+        out = subprocess.run([sys.executable, str(self.LIB), "audit", "--staged-before", "48h", "--json", "--ws",
+                              str(self.ws)], capture_output=True, text=True, env=os.environ)
+        self.assertEqual(out.returncode, 0, out)
+        self.assertEqual([d["id"] for d in json.loads(out.stdout)["drafts"]], [old])
+        out = subprocess.run([sys.executable, str(self.LIB), "audit", young, "--ws", str(self.ws)],
+                             capture_output=True, text=True, env=os.environ)
+        self.assertEqual(out.returncode, 0, out)
+        self.assertIn(f"{young}: not sent", out.stdout)
+
+    def test_mcp_audit_and_close_with_message(self):
+        try:
+            import mcp_server
+        except ModuleNotFoundError as e:
+            self.skipTest(f"needs the mcp SDK: {e}")
+        did, at = self.staged(self.GROUP, "dns fix", new_chat=True)
+        self.chat("Bob Brown", [(at + timedelta(minutes=3), "Me_Self", self.REWORDED, "dm1")],
+                  chat_id="19:dm@unq.gbl.spaces")
+        out = mcp_server.whosaid_draft_audit(id=did, workspace=str(self.ws))
+        self.assertTrue(out["ok"], out)
+        self.assertEqual(out["drafts"][0]["verdict"], "sent elsewhere")
+        self.assertEqual(drafts.load(did)["status"], "staged")
+        out = mcp_server.whosaid_draft_close(id=did, status="sent", workspace=str(self.ws), message="dm1")
+        self.assertTrue(out["ok"], out)
+        self.assertEqual(drafts.load(did)["sent_message"]["mid"], "dm1")
+
+
 class MergeTest(DraftsBase):
     """#188: drafts merge folds rival open drafts to one recipient into one."""
 
