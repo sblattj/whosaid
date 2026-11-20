@@ -542,7 +542,8 @@ whosaid drafts html                             # review page of every open draf
   `probably sent, edited`, `sent elsewhere` (with the recipients in that chat and not), or
   `not sent` (the chats searched, your last message in the target chat, and a caveat when the
   cache has no messages in that chat since staging, so a send from another device can't be ruled
-  out). A message that is another draft's recorded send is excluded and named. `audit` never
+  out). A message that is another draft's recorded send (or another staged draft's text, word for word, in
+  that draft's chat) is excluded and named. `audit` never
   closes a draft: `mark-sent ID --message MID` records the one you pick, with its chat, and
   refuses another draft's send. `stage` on a `--new-chat` draft whose text already went out in
   some chat refuses unless `--force` (or `--replace`).
@@ -1587,7 +1588,7 @@ Add it to your MCP client config:
 
 ### Tool listing (`WHOSAID_TOOL_PROFILE`)
 
-whosaid registers 43 tools, and their full `tools/list` is about 68 KB (~17k tokens), which a host
+whosaid registers 47 tools, and their full `tools/list` is about 74 KB (~18k tokens), which a host
 that loads tools eagerly pays before doing anything. So by default (issue #222, the same gateway
 shape as cdp-toolkit 3.0) `tools/list` carries only 7: two meta-tools first, then the five tools
 most sessions reduce to.

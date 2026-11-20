@@ -1750,6 +1750,56 @@ class AuditTest(DraftsBase):
         self.assertTrue(out["ok"], out)
         self.assertEqual(drafts.load(did)["sent_message"]["mid"], "dm1")
 
+    def test_mcp_stage_force_bypasses_the_new_chat_guard(self):
+        try:
+            import asyncio
+            import mcp_server
+        except ModuleNotFoundError as e:
+            self.skipTest(f"needs the mcp SDK: {e}")
+        did = self.draft(self.GROUP, "dns fix", new_chat=True)
+        self.chat("Bob Brown (chat 1a2b3c)", [(datetime.now() + timedelta(seconds=30), "Me_Self", self.TEXT, "g1")],
+                  chat_id="19:grp@thread.v2")
+        out = asyncio.run(mcp_server.whosaid_draft_stage(id=did, dry_run=True, workspace=str(self.ws)))
+        self.assertEqual([f["id"] for f in out["failed"]], [did], out)
+        self.assertIn("force=true", out["failed"][0]["why"])
+        out = asyncio.run(mcp_server.whosaid_draft_stage(id=did, dry_run=True, force=True, workspace=str(self.ws)))
+        self.assertEqual(out["failed"], [], out)
+
+    # ---- false positives ----
+    def test_same_topic_messages_with_the_same_link_or_ref_are_not_matches(self):
+        # measured near misses: ratio 0.4 to 0.6 with a shared link or #ref, no draft sentence kept
+        for t in ["Can one of you review #412 when you get a chance? I'll be out after lunch.",
+                  "the staging deploy is done, see https://example.com/runbook/dns for the dns part; records look fine",
+                  "Hi both, the staging cert renewal is merged in #418. Can one of you rotate the keys today?",
+                  "can you two add the dns records today? the fix is in"]:
+            self.assertIsNone(drafts.audit_score([self.TEXT], t)["tier"], t)
+        self.assertEqual(drafts.audit_score([self.TEXT], self.REWORDED)["tier"], "strong")
+        did, at = self.staged(self.GROUP, "dns fix", new_chat=True)
+        self.chat("Ops Room", [(at + timedelta(minutes=2), "Me_Self",
+                                "Can one of you review #412 when you get a chance? I'll be out after lunch.", "n1")],
+                  chat_id="19:ops@thread.v2")
+        self.assertEqual(self.verdict(did)["verdict"], "not sent")
+        r = drafts.stage([did], ws=self.ws, dry_run=True, replace=False)
+        self.assertNotIn("n1", json.dumps(r["failed"]), "the guard took a same-topic message for the send")
+
+    def test_a_sibling_staged_drafts_send_in_its_own_chat_is_excluded_and_named(self):
+        sib, at = self.staged("Carol Chen", "carol dns")  # the same text, not marked sent yet
+        self.chat("Carol Chen", [(at + timedelta(minutes=1), "Me_Self", self.TEXT, "c1")])
+        did, _ = self.staged("Dana Diaz", "dana dns")
+        v = self.verdict(did)
+        self.assertEqual(v["verdict"], "not sent", v)
+        ex = [x for x in v["excluded"] if x["mid"] == "c1"]
+        self.assertEqual([x["draft"] for x in ex], [sib], v)
+        self.assertIn(f"matches draft {sib}'s send", ex[0]["why"])
+        self.assertEqual(self.verdict(sib)["verdict"], "sent", "the sibling still sees its own send")
+
+    def test_a_new_chat_draft_without_a_thread_id_targets_the_chat_by_name(self):
+        did, at = self.staged("Test Person", "dns fix", new_chat=True)
+        self.assertFalse(drafts.load(did).get("thread_id_source"))
+        self.chat("Test Person", [(at + timedelta(minutes=1), "Me_Self", self.TEXT, "t1")])
+        v = self.verdict(did)
+        self.assertEqual((v["verdict"], v["message"]["mid"]), ("sent", "t1"), v)
+
 
 class MergeTest(DraftsBase):
     """#188: drafts merge folds rival open drafts to one recipient into one."""

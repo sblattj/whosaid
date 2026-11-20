@@ -1857,13 +1857,14 @@ def _check_edit(ws: Path, m: dict, res: dict, by: str | None = None) -> None:
 #
 # Score: the whole-text ratio (same metric as same_message), the share of the draft's sentences found
 # nearly whole in the message (kept vs dropped), and the draft's distinctive tokens (links, #123 refs,
-# commit shas, code spans) the message repeats. Tiers:
+# commit shas, code spans) the message repeats. _plain drops links, so the ratio alone is loose: same-topic
+# messages with the same link score 0.4 to 0.6 with no sentence in common (measured), so the tiers lean on
+# the sentences kept:
 #   exact     same_message says yes
-#   strong    ratio >= AUDIT_STRONG, or kept share >= AUDIT_STRONG, or a shared token and either >= AUDIT_MODERATE
-#   moderate  ratio or kept share >= AUDIT_MODERATE; counts only in the target chat or a chat holding a
-#             recipient (no timing signal across chats, so text alone must carry it)
-AUDIT_STRONG = 0.6
-AUDIT_MODERATE = 0.4
+#   strong    kept share >= 0.5, or ratio >= 0.75, or a shared token and kept share >= 0.3
+#   moderate  kept share >= 0.3, or ratio >= 0.5 with a shared token or any sentence kept; counts only in
+#             the target chat or a chat holding a recipient (no timing signal across chats)
+# The restage guard takes exact and strong only.
 AUDIT_KEPT = 0.8  # a draft sentence is kept when this share of it is inside the message
 AUDIT_SLACK_MS = 300_000
 _TIERS = {"exact": 3, "strong": 2, "moderate": 1}
@@ -1917,9 +1918,9 @@ def audit_score(texts: list[str], msg_text: str) -> dict | None:
         top = max(ratio, share)
         if same_message(t, msg_text):
             tier = "exact"
-        elif top >= AUDIT_STRONG or (shared and top >= AUDIT_MODERATE):
+        elif share >= 0.5 or ratio >= 0.75 or (shared and share >= 0.3):
             tier = "strong"
-        elif top >= AUDIT_MODERATE:
+        elif share >= 0.3 or (ratio >= 0.5 and (shared or share > 0)):
             tier = "moderate"
         else:
             tier = None
@@ -2042,12 +2043,10 @@ def _audit_floor(m: dict) -> int:
 
 
 def _target(m: dict, ws: Path):
-    """(thread id or None, predicate chat -> is the draft's own chat). A new-chat draft without a learned
-    or given id has no chat yet: nothing is its target."""
+    """(thread id or None, predicate chat -> is the draft's own chat), the chat draft_chat_messages reads:
+    by thread id when known (a new-chat draft: only a learned or given one), else by name."""
     if m.get("new_chat"):
         tid = str(m["thread_id"]) if m.get("thread_id") and m.get("thread_id_source") in ("learned", "given") else None
-        if not tid:
-            return None, lambda c: False
     else:
         try:
             tid = chat_thread_id(m, ws)
@@ -2080,6 +2079,26 @@ def _claimed(exclude_id: str) -> dict[str, str]:
         if mid and d["id"] != exclude_id:
             out[str(mid)] = d["id"]
     return out
+
+
+def _sibling_send(pool: dict, ws: Path, m: dict, x: dict, c: dict) -> dict | None:
+    """Another staged draft (or one sent without a recorded message) whose own chat is X's chat and which X
+    is, word for word: X is that draft's send, not evidence for M. Targets are memoized on the pool."""
+    memo = pool.setdefault("_sibs", None)
+    if memo is None:
+        memo = pool["_sibs"] = []
+        for d in all_drafts():
+            if d["id"] == m["id"] or not (d["status"] == "staged" or (d["status"] == "sent" and not
+                                                                     (d.get("sent_message") or {}).get("mid"))):
+                continue
+            try:
+                memo.append((d, _target(d, ws)[1], _draft_text(d)))
+            except Exception:  # noqa: BLE001
+                continue
+    for d, is_target, text in memo:
+        if d["id"] != m["id"] and is_target(c) and text.strip() and same_message(text, x["text"]):
+            return d
+    return None
 
 
 def _newest_older(ws: Path, is_target, before_day: str) -> int | None:
@@ -2130,6 +2149,11 @@ def audit_one(ws: Path, m: dict, pool: dict, tiers: tuple[str, ...] = ("exact", 
         if other:  # another draft's recorded send is never evidence for this one
             excluded.append({**msg, "draft": other, "why": f"matches draft {other}'s send"})
             continue
+        sib = None if is_target(c) else _sibling_send(pool, ws, m, x, c)
+        if sib:  # word for word another staged draft, in that draft's own chat: its send, not recorded yet
+            excluded.append({**msg, "draft": sib["id"], "why": f"matches draft {sib['id']}'s send (in its chat, "
+                             f"{sib['status']}; mark-sent --check records it)"})
+            continue
         here = is_target(c)
         rin, rout = _who_is_in(m["to"], c["members"])
         if sc["tier"] == "moderate" and not here and not rin:
@@ -2156,7 +2180,7 @@ def audit_one(ws: Path, m: dict, pool: dict, tiers: tuple[str, ...] = ("exact", 
     searched = {c["name"] for k, c in chats.items()
                 if any(x["chat_key"] == k and x["epoch_ms"] >= floor for x in pool["messages"])}
     targets = [c for c in chats.values() if is_target(c)]
-    has_target = bool(tid) or not m.get("new_chat")
+    has_target = bool(tid) or not m.get("new_chat") or bool(targets)
     if has_target:
         searched.add(m["to"])
     own = [x for x in pool["messages"] if x["self"] and x["epoch_ms"] >= floor
@@ -2638,7 +2662,7 @@ def stage(ids: list[str] | None = None, all_ready: bool = False, dry_run: bool =
                         f"probably already sent: your message {x['mid']} in {x['chat']} at {x['at']} "
                         f"({el['verdict']}, ratio {el['ratio']}); a new chat would send it twice. Check it with "
                         f"whosaid drafts audit {draft_id}; mark-sent {draft_id} --message {x['mid']} if that was "
-                        "it, or stage with --force (or --replace) to stage anyway")})
+                        "it, or stage with --force (MCP force=true) or --replace to stage anyway")})
                     continue
             if wsp is not None:
                 ctx = chat_context(wsp, m)
