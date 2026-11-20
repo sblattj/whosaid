@@ -1010,6 +1010,30 @@ class EndToEnd(unittest.TestCase):
         self.assertEqual(json.loads(r.stdout.strip().splitlines()[-1])["attachments"], 1)
         f.never_sent(self)
 
+    def test_a_short_last_read_with_no_second_answer_is_not_a_removal(self):
+        """prxref on #230: a short read near the end of the window followed by None reads (root
+        re-rendering) used to raise "two reads in a row" on ONE miss. Now it waits for a second answer,
+        and with none it warns instead of failing."""
+        f = self.fake(rail=["Ann Lee"])
+        orig = f.evaluate
+        state = {"reads": 0}
+
+        def tail(e):
+            if "op:root_chip_names" in e and "page.html" in f.chips:
+                state["reads"] += 1
+                if state["reads"] == 7:  # the settle loop's hit + 5 holding reads, then one short read
+                    return []
+                if state["reads"] > 7:
+                    return None  # no second answer: the root is re-rendering
+            if "op:footer_chip_names" in e and state["reads"] == 7:
+                return []
+            return orig(e)
+        f.evaluate = tail
+        r = self.run_stager(f, "--attach", str(self.page))
+        self.assertNotIn("removed it again", r.stderr)
+        self.assertIn("gave no second answer", r.stderr)
+        f.never_sent(self)
+
     def test_one_short_read_mid_upload_is_not_a_removal(self):
         f = self.fake(rail=["Ann Lee"])
         orig = f.evaluate
@@ -2201,7 +2225,7 @@ class BuiltInStager(unittest.TestCase):
 class FrontAppTest(unittest.TestCase):
     """front_app_pid / restore_front_app: lsappinfo to read, System Events to restore, never raising."""
 
-    def fake_run(self, front_pids, calls):
+    def fake_run(self, front_pids, calls, osa_rc=0):
         pids = iter(front_pids)
 
         def run(argv, **kw):
@@ -2211,8 +2235,20 @@ class FrontAppTest(unittest.TestCase):
                 out = "ASN:0x0-0x1:\n"
             elif argv[:2] == ["lsappinfo", "info"]:
                 out = f"    pid = {next(pids)} !cgsConnection\n"
+            elif argv[0] == "osascript":
+                return subprocess.CompletedProcess(argv, osa_rc, "", "not allowed" if osa_rc else "")
             return subprocess.CompletedProcess(argv, 0, out, "")
         return run
+
+    def test_a_denied_or_ineffective_restore_is_not_reported_as_restored(self):
+        """System Events denied (osascript exits 1), or it exits 0 but the browser stays in front: both False,
+        so make_visible says "raised" instead of claiming the user's app is back."""
+        for pids, rc in (([99], 1), ([99, 99], 0)):
+            calls = []
+            with patch.dict(os.environ, {"WHOSAID_STAGER_RESTORE_FRONT": "1"}), patch.object(ds.sys, "platform", "darwin"), \
+                    patch.object(ds.subprocess, "run", self.fake_run(pids, calls, osa_rc=rc)):
+                self.assertFalse(ds.restore_front_app(4242), (pids, rc))
+            self.assertEqual(len([c for c in calls if c[0] == "osascript"]), 1)
 
     def test_reads_the_front_pid(self):
         calls = []
@@ -2233,7 +2269,7 @@ class FrontAppTest(unittest.TestCase):
         for now, want in ((4242, False), (99, True)):
             calls = []
             with patch.dict(os.environ, {"WHOSAID_STAGER_RESTORE_FRONT": "1"}), patch.object(ds.sys, "platform", "darwin"), \
-                    patch.object(ds.subprocess, "run", self.fake_run([now], calls)):
+                    patch.object(ds.subprocess, "run", self.fake_run([now, 4242], calls)):  # 2nd read: after restore
                 self.assertIs(ds.restore_front_app(4242), want)
             osa = [c for c in calls if c[0] == "osascript"]
             self.assertEqual(len(osa), 1 if want else 0)

@@ -1563,16 +1563,18 @@ def front_app_pid() -> int | None:
 
 
 def restore_front_app(pid: int | None) -> bool:
-    """Put the app with this pid back in front if another app took the front. True when it did."""
+    """Put the app with this pid back in front if another app took the front. True only when osascript
+    succeeded AND that app reads as the front again (a System Events denial exits non-zero and changes
+    nothing: reporting it as restored would hide exactly the focus theft this exists to undo)."""
     if pid is None or front_app_pid() in (None, pid):
         return False
     try:
-        subprocess.run(["osascript", "-e", 'tell application "System Events" to set frontmost of '
-                        f"(first process whose unix id is {int(pid)}) to true"],
-                       capture_output=True, timeout=3)
-        return True
+        r = subprocess.run(["osascript", "-e", 'tell application "System Events" to set frontmost of '
+                            f"(first process whose unix id is {int(pid)}) to true"],
+                           capture_output=True, timeout=3)
     except Exception:  # noqa: BLE001
         return False
+    return r.returncode == 0 and front_app_pid() == pid
 
 
 async def make_visible(c: CDP, tid: str) -> str:
@@ -1708,10 +1710,18 @@ async def chips_stay(c: CDP, files: list[str], want: int, reads: int = 6, gap: f
     def holds(names: list[str] | None) -> bool:
         return names is not None and len(names) >= want and not unmatched(files, names)
 
-    misses, last = 0, None
-    for i in range(reads + 1):
-        if i == reads and not misses:
+    # After the window, a pending single miss gets up to READS more reads for its second answer (None reads
+    # don't count either way). Still unanswered then: not proof of a removal, so warn and go on; the
+    # measured "attachments" count in the result says what is really there.
+    misses, last, i = 0, None, 0
+    while misses < 2:
+        if i >= reads and not misses:
             return  # every read held
+        if i >= 2 * reads:
+            print("drafts_stager: warning: one attachment read came up short and the compose box gave no "
+                  "second answer; check the attachment count before sending", file=sys.stderr)
+            return
+        i += 1
         await nap(gap)
         names = await chip_names(c)
         if names is None:
@@ -1720,8 +1730,6 @@ async def chips_stay(c: CDP, files: list[str], want: int, reads: int = 6, gap: f
             misses = 0
             continue
         misses, last = misses + 1, names
-        if misses >= 2:
-            break
     if misses:
         gone = unmatched(files, last or [])
         name = os.path.basename((gone or files)[0])
