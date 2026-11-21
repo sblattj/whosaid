@@ -6,6 +6,8 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ## [Unreleased]
 
+## [1.48.0] - 2026-11-20
+
 ### Added
 - `whosaid live --asr parakeet` (#235): an opt-in NVIDIA Parakeet backend for the live transcript, through `parakeet-mlx` (model `mlx-community/parakeet-tdt-0.6b-v2`). Whisper stays the default for live and batch.
   - **Picking it:** `--asr whisper|parakeet` or `WHOSAID_LIVE_ASR` (the flag wins; a typo is an error, not a silent Whisper run). A live run started by `autorecord --live` inherits the env var from autorecord's environment. `--model` is the chosen backend's model; `WHOSAID_LIVE_MODEL` stays Whisper's and never reaches Parakeet, which reads `WHOSAID_LIVE_PARAKEET_MODEL`.
