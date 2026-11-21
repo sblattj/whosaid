@@ -38,6 +38,10 @@ dependencies = [
   "sherpa-onnx==1.13.8",
 ]
 
+[project.optional-dependencies]
+# `whosaid live --asr parakeet` (#235); the launcher adds it with uv on its own
+parakeet = ["parakeet-mlx>=0.7,<0.8"]
+
 [project.urls]
 Homepage = "https://github.com/sblattj/whosaid"
 Repository = "https://github.com/sblattj/whosaid"

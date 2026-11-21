@@ -116,6 +116,8 @@ DIARIZER="$REPO_DIR/lib/diarize_sherpa.py"
 # whose source upload is older than its wheels (or a uv exclude-newer cooldown that
 # sees only the sdist) silently turns diarization into a failed cmake build.
 SHERPA_SPEC="${WHOSAID_SHERPA_SPEC:-sherpa-onnx==1.13.8}"
+# live --asr parakeet (#235): only added to the live uv env when Parakeet is picked
+PARAKEET_SPEC="${WHOSAID_PARAKEET_SPEC:-parakeet-mlx==0.7.0}"
 VOICE_REFS="${WHOSAID_VOICE_REFS:-$REPO_DIR/voices}"
 RECORDINGS_DIR="$REPO_DIR/recordings"
 LANG_CODE_DEFAULT="${WHOSAID_LANG:-en}"
@@ -842,6 +844,7 @@ AUTORECORD
 
 LIVE
   whosaid live [run] [--into DIR] [--chunk-seconds N] [--once] [--capture DIR] [--model M] [--split-words]
+                     [--asr whisper|parakeet] [--ws WS] [--vocabulary TERM ...] [--no-boost] [--boost-weight W]
   whosaid live show  [--into DIR] [--minutes N]
   whosaid live status [--into DIR] [--json]
   whosaid live follow [--into DIR] [--speaker REGEX ...] [--exclude-self] [--named-only]
@@ -863,6 +866,11 @@ LIVE
   <into>/.live/<start>.md and .jsonl (default --into ~/Recordings). Silent chunks are
   skipped. When the call ends it waits for the next (--once: exits). It only reads
   the recorder's files; the post-call transcript with names is unchanged.
+  --asr parakeet (or WHOSAID_LIVE_ASR=parakeet) uses NVIDIA Parakeet (parakeet-mlx, model
+  WHOSAID_LIVE_PARAKEET_MODEL or parakeet-tdt-0.6b-v2) instead of Whisper: faster per chunk,
+  word times always on, and the workspace's [transcribe] vocabulary (--ws, else
+  $WHOSAID_WORKSPACE) plus --vocabulary terms boosted on every chunk (beam 5, weight 1.0;
+  --no-boost / WHOSAID_LIVE_BOOST=0 for greedy). --model is the chosen backend's model.
   show prints the newest live transcript (or its last N minutes). Agents: the
   whosaid_live MCP tool returns the same. status (--json) describes the newest session
   without its text: path, started, updated, active, ended, lines; exit 0.
@@ -3151,7 +3159,16 @@ cmd_live() {
     exec "$WHOSAID_PY" "$REPO_DIR/lib/live.py" "$@"
   fi
   # sherpa-onnx: live names from the speaker registry (lib/live_voices.py)
-  exec uv run --quiet --with "$SHERPA_SPEC" --with mlx-whisper --with numpy python "$REPO_DIR/lib/live.py" "$@"
+  # --asr parakeet (or WHOSAID_LIVE_ASR=parakeet; the flag wins) adds parakeet-mlx (#235)
+  local asr="${WHOSAID_LIVE_ASR:-whisper}" prev="" arg=""
+  for arg in "$@"; do
+    [[ "$prev" == --asr ]] && asr="$arg"
+    [[ "$arg" == --asr=* ]] && asr="${arg#--asr=}"
+    prev="$arg"
+  done
+  local extra=()
+  [[ "$asr" == parakeet ]] && extra=(--with "$PARAKEET_SPEC")
+  exec uv run --quiet --with "$SHERPA_SPEC" --with mlx-whisper --with numpy ${extra[@]+"${extra[@]}"} python "$REPO_DIR/lib/live.py" "$@"
 }
 
 cmd_watch() {

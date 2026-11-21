@@ -6,6 +6,14 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ## [Unreleased]
 
+### Added
+- `whosaid live --asr parakeet` (#235): an opt-in NVIDIA Parakeet backend for the live transcript, through `parakeet-mlx` (model `mlx-community/parakeet-tdt-0.6b-v2`). Whisper stays the default for live and batch.
+  - **Picking it:** `--asr whisper|parakeet` or `WHOSAID_LIVE_ASR` (the flag wins; a typo is an error, not a silent Whisper run). A live run started by `autorecord --live` inherits the env var from autorecord's environment. `--model` is the chosen backend's model; `WHOSAID_LIVE_MODEL` stays Whisper's and never reaches Parakeet, which reads `WHOSAID_LIVE_PARAKEET_MODEL`.
+  - **Install:** the launcher adds `parakeet-mlx==0.7.0` to the live uv env only when Parakeet is picked (`WHOSAID_PARAKEET_SPEC` overrides the pin). For pip installs there is a `whosaid[parakeet]` extra; without the package, `live run` exits 2 naming it.
+  - **Vocabulary boosting:** the workspace's `[transcribe] vocabulary` (`--ws`, else `$WHOSAID_WORKSPACE`) plus repeatable `--vocabulary TERM` is boosted on every chunk with beam search (beam 5, `--boost-weight`, default 1.0). On by default when there are terms, because the #235 benchmark measured term spelling going from 78% to 96% with 2 false insertions in 267 minutes, and beam search still takes well under a second per chunk. `--no-boost` / `WHOSAID_LIVE_BOOST=0` decodes greedily; with no terms it is greedy anyway.
+  - **Naming:** Parakeet tokens are merged into Whisper-shaped segments with word times (a new segment at a 0.6 s pause, after a sentence end once 2 s long, or at 12 s), so the live naming path is the same and a speaker change splits at a word.
+  - `test/asr_bench/bench_asr.py`: runs Whisper or Parakeet on one recording, writes a whosaid-shaped transcript for `whosaid ab --compare`, scores term spelling and words in silence, and times live-sized chunks.
+
 ## [1.47.0] - 2026-11-20
 
 ### Added

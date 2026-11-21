@@ -6,7 +6,8 @@ live.py: a live transcript of the call being recorded (`whosaid live`, issue #13
          included): every --chunk-seconds read the new audio from its growing
          mic.wav and app.wav (a browser capture's capture.webm is decoded into
          those two legs by an ffmpeg -follow bridge),
-         transcribe it locally with MLX Whisper (the model loads once), and append
+         transcribe it locally with MLX Whisper, or NVIDIA Parakeet with --asr parakeet
+         (#235; the model loads once), and append
          "me:" / "them:" lines with wall-clock times to
          <into>/.live/<start>.md and <start>.jsonl. Keeps following until the
          capture ends, then waits for the next one (--once: exit instead).
@@ -48,6 +49,12 @@ LEGS = (("mic", "me"), ("app", "them"))
 LIVE_DIR = ".live"
 DEFAULT_INTO = Path.home() / "Recordings"
 DEFAULT_MODEL = "mlx-community/whisper-large-v3-turbo"
+ASR_BACKENDS = ("whisper", "parakeet")  # --asr / WHOSAID_LIVE_ASR (#235); whisper stays the default
+DEFAULT_PARAKEET_MODEL = "mlx-community/parakeet-tdt-0.6b-v2"  # v3 (multilingual) is worse on English
+BOOST_BEAM = 5           # word boosting needs beam search; 5 is what the #235 benchmark measured
+BOOST_WEIGHT = 1.0       # #235 bench: 96% term spelling, 2 false insertions in 267 min (2.0: 99%, 11)
+PARAKEET_SEG_GAP = 0.6   # a pause this long starts a new Parakeet segment
+PARAKEET_SEG_MAX = 12.0  # and no segment runs longer than this (Whisper-sized, for naming)
 RMS_FLOOR = 0.004        # about -48 dBFS: below it a chunk is silence, not sent to Whisper
 NO_SPEECH_MAX = 0.6      # segments Whisper itself rates as probably silence are dropped
 LOGPROB_MIN = -1.0       # Whisper's own fallback bar: a lower average log-prob is a guess
@@ -573,6 +580,123 @@ def whisper_transcriber(model: str, words: bool = False):
                                    word_timestamps=words)
         return r.get("segments") or []
     return run
+
+
+class AsrUnavailable(RuntimeError):
+    """The chosen live ASR backend can't load (its package isn't installed)."""
+
+
+def parakeet_words(tokens) -> list[dict]:
+    """Parakeet's SentencePiece tokens merged into Whisper-style words: a token starting
+    with a space opens a word (" Ku" "ber" "netes" -> " Kubernetes"), its times span its
+    tokens, and its probability is its least confident token."""
+    words: list[dict] = []
+    for t in tokens:
+        txt = t.text
+        if not txt:
+            continue
+        if words and not txt.startswith(" "):
+            w = words[-1]
+            w["word"] += txt
+            w["end"] = round(float(t.end), 3)
+            w["probability"] = min(w["probability"], float(t.confidence))
+        else:
+            words.append({"word": txt if txt.startswith(" ") else " " + txt,
+                          "start": round(float(t.start), 3), "end": round(float(t.end), 3),
+                          "probability": float(t.confidence)})
+    return [w for w in words if w["word"].strip()]
+
+
+def parakeet_segments(words: list[dict], gap: float = PARAKEET_SEG_GAP,
+                      max_s: float = PARAKEET_SEG_MAX) -> list[dict]:
+    """Whisper-shaped segments ({start, end, text, words}) from Parakeet words: cut at a
+    pause >= gap, after sentence punctuation once a segment is 2 s long, or at max_s, so
+    the live naming path (voices, speaker-change splits) sees what it sees from Whisper."""
+    segs, cur = [], []
+    for w in words:
+        if cur:
+            long_enough = w["start"] - cur[0]["start"] >= 2.0
+            if (w["start"] - cur[-1]["end"] >= gap
+                    or (long_enough and cur[-1]["word"].rstrip().endswith((".", "?", "!")))
+                    or w["end"] - cur[0]["start"] > max_s):
+                segs.append(cur)
+                cur = []
+        cur.append(w)
+    if cur:
+        segs.append(cur)
+    return [{"start": s[0]["start"], "end": s[-1]["end"],
+             "text": "".join(w["word"] for w in s).strip(), "words": s} for s in segs]
+
+
+def parakeet_transcriber(model: str, terms=(), boost: bool = True, weight: float = BOOST_WEIGHT):
+    """NVIDIA Parakeet (parakeet-mlx) for live chunks (#235). Word times always come with
+    it. With terms and boost on, every chunk decodes with beam search and the terms boosted
+    (Whisper's prompt only reaches its first 30 s window; this reaches every chunk); with
+    no terms, or boost off, it decodes greedily, the fastest path."""
+    try:
+        import mlx.core as mx
+        from parakeet_mlx import Beam, DecodingConfig, Greedy, boost as pboost, from_pretrained
+        from parakeet_mlx.audio import get_logmel
+    except ImportError as err:
+        raise AsrUnavailable(
+            f"--asr parakeet needs parakeet-mlx ({err}): pip install 'whosaid[parakeet]', or run "
+            "the whosaid launcher, which adds it with uv") from err
+    m = from_pretrained(resolve_model(model))
+    terms = list(dict.fromkeys(t for t in terms if t)) if boost else []
+    if terms:
+        booster = pboost.lift(pboost.words({t: weight for t in terms}), m.vocabulary)
+        dec = DecodingConfig(decoding=Beam(beam_size=BOOST_BEAM, booster=booster))
+    else:
+        dec = DecodingConfig(decoding=Greedy())
+    min_len = RATE // 10  # under 0.1 s there is no word to find, and tiny inputs can't be framed
+
+    def run(samples) -> list[dict]:
+        if samples is None or len(samples) < min_len:
+            return []
+        mel = get_logmel(mx.array(samples), m.preprocessor_config)
+        res = m.generate(mel, decoding_config=dec)
+        return parakeet_segments(parakeet_words(res[0].tokens)) if res else []
+    return run
+
+
+def asr_model(a: argparse.Namespace) -> str:
+    """The model for the chosen backend: an explicit --model, else the backend's env var
+    (WHOSAID_LIVE_MODEL is Whisper's, WHOSAID_LIVE_PARAKEET_MODEL Parakeet's), else its
+    default. A Whisper id set in WHOSAID_LIVE_MODEL never reaches Parakeet."""
+    if a.model:
+        return a.model
+    if a.asr == "parakeet":
+        return os.environ.get("WHOSAID_LIVE_PARAKEET_MODEL") or DEFAULT_PARAKEET_MODEL
+    return os.environ.get("WHOSAID_LIVE_MODEL") or DEFAULT_MODEL
+
+
+def live_vocabulary(a: argparse.Namespace) -> list[str]:
+    """Terms to boost: the workspace's [transcribe] vocabulary (--ws, else $WHOSAID_WORKSPACE;
+    never the cwd, live runs from anywhere), then each --vocabulary, deduped in order. A
+    broken [transcribe] table is logged and skipped: the transcript matters more."""
+    terms: list[str] = []
+    ws = (a.ws or "").strip()
+    if ws:
+        try:
+            import wsconfig
+            args, err = wsconfig.workspace_transcribe_args(Path(ws).expanduser())
+            if err:
+                log(f"vocabulary: {err}; ignoring the workspace's [transcribe]")
+            else:
+                terms += [args[i + 1] for i in range(len(args) - 1) if args[i] == "--vocabulary"]
+        except Exception as err:  # noqa: BLE001
+            log(f"vocabulary: {ws}: {err}")
+    terms += [t.strip() for t in (a.vocabulary or []) if t and t.strip()]
+    return list(dict.fromkeys(terms))
+
+
+def make_transcriber(a: argparse.Namespace):
+    """The live transcriber for --asr: Whisper (default) or Parakeet."""
+    model = asr_model(a)
+    if a.asr == "parakeet":
+        terms = live_vocabulary(a)
+        return parakeet_transcriber(model, terms, boost=a.boost, weight=a.boost_weight)
+    return whisper_transcriber(model, words=a.split_words)
 
 
 # ---------------------------------------------------------------- output
@@ -1113,11 +1237,19 @@ def cmd_run(a: argparse.Namespace) -> int:
     signal.signal(signal.SIGINT, on_signal)
     signal.signal(signal.SIGTERM, on_signal)
 
-    transcribe = whisper_transcriber(a.model, words=a.split_words)
+    try:
+        transcribe = make_transcriber(a)
+    except AsrUnavailable as err:
+        log(str(err))
+        return 2
     import live_voices
     deadline = time.monotonic() + a.max_hours * 3600
     done: set[Path] = set()
-    log(f"model {a.model}; waiting for a call being recorded (Ctrl-C to quit)")
+    detail = ""
+    if a.asr == "parakeet":
+        n = len(live_vocabulary(a)) if a.boost else 0
+        detail = f", {n} boosted term(s) at weight {a.boost_weight:g}" if n else ", greedy (no boost)"
+    log(f"asr {a.asr}, model {asr_model(a)}{detail}; waiting for a call being recorded (Ctrl-C to quit)")
     waiting_logged = False
     if a.capture and not Path(a.capture).is_dir():
         log(f"no capture at {a.capture}")
@@ -1199,7 +1331,22 @@ def main(argv: list[str] | None = None) -> int:
     r = sub.add_parser("run")
     for q in (p, r):
         q.add_argument("--into", default=str(DEFAULT_INTO), help="recordings folder (default ~/Recordings)")
-    r.add_argument("--model", default=os.environ.get("WHOSAID_LIVE_MODEL") or DEFAULT_MODEL)
+    r.add_argument("--asr", default=os.environ.get("WHOSAID_LIVE_ASR") or "whisper",
+                   help="speech-to-text backend: whisper (default) or parakeet (needs parakeet-mlx; "
+                   "env WHOSAID_LIVE_ASR)")
+    r.add_argument("--model", default=None,
+                   help=f"model for the chosen --asr (whisper: WHOSAID_LIVE_MODEL or {DEFAULT_MODEL}; "
+                   f"parakeet: WHOSAID_LIVE_PARAKEET_MODEL or {DEFAULT_PARAKEET_MODEL})")
+    r.add_argument("--ws", default=os.environ.get("WHOSAID_WORKSPACE") or None, help="workspace whose whosaid.toml [transcribe] vocabulary parakeet boosts "
+                   "(default $WHOSAID_WORKSPACE)")
+    r.add_argument("--vocabulary", action="append", metavar="TERM",
+                   help="a term parakeet should spell right (repeatable; added to the workspace's)")
+    r.add_argument("--no-boost", dest="boost", action="store_false",
+                   default=os.environ.get("WHOSAID_LIVE_BOOST", "1") != "0",
+                   help="parakeet: greedy decoding, vocabulary ignored (env WHOSAID_LIVE_BOOST=0)")
+    r.add_argument("--boost-weight", default=os.environ.get("WHOSAID_LIVE_BOOST_WEIGHT") or str(BOOST_WEIGHT),
+                   help=f"parakeet: how hard each term is boosted (default {BOOST_WEIGHT:g}; "
+                   "env WHOSAID_LIVE_BOOST_WEIGHT)")
     r.add_argument("--chunk-seconds", type=float, default=20.0)
     r.add_argument("--split-words", action="store_true",
                    default=os.environ.get("WHOSAID_LIVE_SPLIT_WORDS") == "1",
@@ -1258,6 +1405,15 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_status(a)
     if a.chunk_seconds < 5:
         p.error("--chunk-seconds must be >= 5")
+    if a.asr not in ASR_BACKENDS:  # argparse choices skip env defaults: check here
+        p.error(f"--asr / WHOSAID_LIVE_ASR must be one of {', '.join(ASR_BACKENDS)} (got {a.asr!r})")
+    try:
+        a.boost_weight = float(a.boost_weight)
+    except ValueError:
+        p.error(f"--boost-weight / WHOSAID_LIVE_BOOST_WEIGHT must be a number (got {a.boost_weight!r})")
+    if not a.boost_weight > 0:
+        p.error("--boost-weight must be > 0")
+    a.model = asr_model(a)  # resolved now, like the other env defaults
     return cmd_run(a)
 
 
