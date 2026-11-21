@@ -6,6 +6,15 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ## [Unreleased]
 
+## [1.49.1] - 2026-11-20
+
+### Fixed
+- `whosaid drafts audit`: the "cache has no messages in this chat since DAY" caveat named the UTC day, so an evening message in the Americas showed as the next day; it now names the local day, like the chat-day folders (#237).
+- Five test suites that failed on `main` pass again: shell suites no longer lose a `grep -q` match to SIGPIPE under `pipefail` (which could also let `assert_not_contains` pass wrongly), the app network gate recognizes the Drafts page preview's `LocalOnlyNavigation` coordinator, and the audit caveat test no longer depends on the time of day (#237).
+
+### Added
+- `./test/run_all.sh` runs every suite with the dependencies it needs and prints one PASS/FAIL line per file; the test-only dependencies (numpy, `mcp[cli]`, websockets) are declared in a `test` dependency group in `pyproject.toml` (#237).
+
 ## [1.49.0] - 2026-11-20
 
 ### Added
