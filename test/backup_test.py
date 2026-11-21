@@ -314,6 +314,69 @@ class AgeBackupTest(Base):
         self.assertEqual([ln for ln in out.splitlines() if ln.startswith("would upload")], [])
 
 
+def target_blob(tgt: Path) -> bytes:
+    return b"".join(p.read_bytes() for p in tgt.rglob("*") if p.is_file())
+
+
+class PersonalBackupVoiceprintTest(Base):
+    """#234 item 1: a personal backup without the biometric tier must not carry voiceprint vectors.
+    The plaintext variant runs without `age` (CI); the age variants are in AgeVoiceprintTest."""
+
+    def test_text_audio_plaintext_backup_strips_cluster_emb(self):
+        tgt = self.tmp / "t"
+        rc, _, err = run(["backup", str(self.ws), "--to", str(tgt), "--plaintext", "--tier", "text,audio"])
+        self.assertEqual(rc, 0, err)
+        blob = target_blob(tgt)
+        self.assertNotIn(b"cluster_emb", blob, "voiceprint key reached the target without the biometric tier")
+        self.assertNotIn(b"0.4567", blob, "voiceprint value reached the target")
+        self.assertNotIn(b"centroid", blob, "_voice-groups.json centroid reached the target")
+        dest = self.tmp / "r"
+        rc, _, err = run(["backup", "restore", str(tgt), str(dest)])
+        self.assertEqual(rc, 0, err)
+        side = json.loads((dest / "2026-09-14-0900" / "transcript.diarization.json").read_text())
+        self.assertNotIn("cluster_emb", side)
+        self.assertEqual(side["names"]["SPEAKER_00"], "Alice_Example", "the rest of the sidecar survives")
+        self.assertTrue((dest / "2026-09-14-0900" / "meeting.m4a").is_file(), "audio still restored")
+        # restoring over the intact original: the stripped copy is not a conflict, and --force
+        # never destroys the local vectors
+        for extra in ([], ["--force"]):
+            rc, _, err = run(["backup", "restore", str(tgt), str(self.ws), *extra])
+            self.assertEqual(rc, 0, err)
+            self.assertIn("cluster_emb", (self.ws / "2026-09-14-0900" / "transcript.diarization.json").read_text())
+        # incremental: the stripped sidecar is unchanged on the next pass
+        rc, out, _ = run(["backup", str(self.ws), "--to", str(tgt), "--plaintext", "--tier", "text,audio",
+                          "--dry-run"])
+        self.assertEqual([ln for ln in out.splitlines() if ln.startswith("would upload")], [])
+
+
+@unittest.skipUnless(AGE, "age binary not installed (brew install age)")
+class AgeVoiceprintTest(Base):
+    def setUp(self):
+        super().setUp()
+        self.key = self.tmp / "backup.key"
+        subprocess.run(["age-keygen", "-o", str(self.key)], check=True, capture_output=True)
+        self.pub = [ln.split(": ", 1)[1] for ln in self.key.read_text().splitlines()
+                    if ln.startswith("# public key: ")][0]
+
+    def restored_sidecar(self, tiers: str) -> dict:
+        tgt = self.tmp / f"enc-{tiers.replace(',', '-')}"
+        rc, _, err = run(["backup", str(self.ws), "--to", str(tgt), "--recipient", self.pub, "--tier", tiers])
+        self.assertEqual(rc, 0, err)
+        dest = self.tmp / f"r-{tiers.replace(',', '-')}"
+        rc, _, err = run(["backup", "restore", str(tgt), str(dest), "--identity", str(self.key),
+                          "--registry-out", str(self.tmp / f"reg-{tiers.replace(',', '-')}.json")])
+        self.assertEqual(rc, 0, err)
+        return json.loads((dest / "2026-09-14-0900" / "transcript.diarization.json").read_text())
+
+    def test_without_biometric_restores_without_cluster_emb(self):
+        self.assertNotIn("cluster_emb", self.restored_sidecar("text,audio"))
+
+    def test_with_biometric_restores_intact(self):
+        side = self.restored_sidecar("text,audio,biometric")
+        self.assertEqual(side["cluster_emb"]["SPEAKER_00"], VOICEPRINT)
+        self.assertEqual(side, json.loads((self.ws / "2026-09-14-0900" / "transcript.diarization.json").read_text()))
+
+
 class ShareTest(Base):
     def share(self, *extra, yes=True):
         tgt = self.tmp / "team-share"
