@@ -6,6 +6,8 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ## [Unreleased]
 
+## [1.50.0] - 2026-11-20
+
 ### Changed
 - Encrypted backups no longer name objects by their content hash. Names are an HMAC under a random key kept inside the encrypted manifest, so a storage host that already has a copy of one of your files can't confirm it is in the backup. Every recipient can read the key, which leaves room for shared backups (#238).
 - Encrypted objects and manifests are zero-padded to Padme size buckets (at most about 12% larger, 4 KiB minimum) before encryption, so exact file sizes don't show. Restore and verify trim to the recorded size (#238).
