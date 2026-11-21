@@ -450,6 +450,12 @@ class OpaqueObjectNamesTest(Base):
             sha = backup.sha256_file(p)
             backup.age_encrypt(p, tgt / "objects" / f"{sha}.age", [self.pub], None)
             files[rel] = {"sha256": sha, "size": p.stat().st_size, "tier": tier, "object": f"objects/{sha}.age"}
+        gone = self.tmp / "gone.md"                    # backed up once, deleted locally since
+        gone.write_text("- [ ] heron gone locally\n")
+        gsha = backup.sha256_file(gone)
+        backup.age_encrypt(gone, tgt / "objects" / f"{gsha}.age", [self.pub], None)
+        files["2026-09-01-0900/gone.md"] = {"sha256": gsha, "size": gone.stat().st_size, "tier": "text",
+                                            "object": f"objects/{gsha}.age"}
         m = {"schema": backup.SCHEMA, "kind": "backup", "workspace": self.ws.name, "workspace_path": str(self.ws),
              "home": str(Path.home()), "created": "2026-10-01T00:00:00Z", "updated": "2026-10-01T00:00:00Z",
              "encrypted": "age", "layout": "objects", "tiers": ["text"], "files": files}
@@ -474,7 +480,10 @@ class OpaqueObjectNamesTest(Base):
         legacy = {fe["object"] for fe in files.values()}
         self.assertLessEqual(legacy, set(json.loads(out)["delete"]), "gc drops every legacy object")
         stems = {p.stem for p in (tgt / "objects").iterdir()}
-        self.assertFalse(stems & self.content_hashes())
+        self.assertFalse(stems & (self.content_hashes() | {gsha}), "deleted files are re-keyed too")
+        rc, _, err = run(["backup", "restore", str(tgt), str(self.tmp / "new"), "--identity", str(self.key)])
+        self.assertEqual(rc, 0, err)
+        self.assertEqual((self.tmp / "new" / "2026-09-01-0900" / "gone.md").read_text(), "- [ ] heron gone locally\n")
 
 
 def target_blob(tgt: Path) -> bytes:

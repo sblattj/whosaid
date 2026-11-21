@@ -1227,9 +1227,19 @@ def _cmd_backup(args, ws: Path) -> int:
     # additive: keep earlier entries for files no longer on disk
     prev_files = (prev or {}).get("files") or {}
     manifest_files = {}
+    rekey: list[str] = []
     for rel, pe in prev_files.items():
         if rel not in files:
             manifest_files[rel] = pe
+            if encrypted and pe.get("object") != object_key(pe.get("sha256") or "", rel, names):
+                rekey.append(rel)
+    if rekey and not ident:
+        plan.notes.append(f"WARN {len(rekey)} file(s) no longer on disk keep their old object names (and keys): "
+                          "pass --identity to re-encrypt them under the current names key")
+        rekey = []
+    elif rekey:
+        plan.notes.append(f"re-encrypting {len(rekey)} object(s) of files no longer on disk under the current "
+                          "names key (read back from the target)")
     for rel, e in files.items():
         fe = {"sha256": e.sha256, "size": e.size, "tier": e.tier,
               "object": object_key(e.sha256, rel, names)}
@@ -1298,6 +1308,29 @@ def _cmd_backup(args, ws: Path) -> int:
                 target.put_file(key, src)
             if src is not e.path:
                 src.unlink()
+        for rel in rekey:
+            pe = manifest_files[rel]
+            new = object_key(pe["sha256"], rel, names)
+            raw, plain, enc = Path(td) / "rk.age", Path(td) / "rk", Path(td) / "rk.new"
+            try:
+                target.get_to_file(pe["object"], raw)
+                age_decrypt(raw, plain, ident)
+                unpad(plain, pe)
+                if sha256_file(plain) != pe["sha256"]:
+                    raise BackupError("content hash does not match the manifest")
+                if new not in seen:
+                    age_encrypt_padded(plain, plain.stat().st_size, enc, recips, rfile)
+                    csha[new] = sha256_file(enc)
+                    target.put_file(new, enc)
+                    seen.add(new)
+            except BackupError as ex:
+                log(f"WARN {rel}: kept under its old object name ({ex})")
+                continue
+            finally:
+                for f in (raw, plain, enc):
+                    f.unlink(missing_ok=True)
+            manifest_files[rel] = {**{k: v for k, v in pe.items() if k != "csha"}, "object": new, "pad": PAD_ALG,
+                                   "size": pe["size"]}
         for fe in manifest_files.values():
             if fe.get("object") in csha:
                 fe["csha"] = csha[fe["object"]]
