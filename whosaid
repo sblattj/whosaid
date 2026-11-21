@@ -390,11 +390,15 @@ USAGE
                                         (--owner/--source/--status filters).
   whosaid wiki <ws> [--stdout] [-o FILE]
                                         Regenerate the wiki from the graph.
-  whosaid backup <ws> --to TARGET [--tier text,index,audio,biometric] [--dry-run]
+  whosaid backup init <ws> --to TARGET   Set up an encrypted, verified, scheduled backup
+                                        (daily key + printed recovery key, first run, read back).
+  whosaid backup <ws> --to TARGET [--tier text,index,audio,state,biometric] [--dry-run]
                                         Personal backup, age-encrypted and incremental,
                                         to a path, s3://bucket/prefix or rclone:REMOTE:path.
-  whosaid backup restore TARGET <ws> [--identity KEY] [--force] [--dry-run]
+  whosaid backup restore TARGET <ws> [--identity KEY] [--at STAMP] [--force] [--dry-run]
                                         Restore a backup (or pull a share), hash-checked.
+  whosaid backup verify|status|gc <ws>  Read the backup back, show its health, drop
+                                        objects no kept manifest needs.
   whosaid share <ws> --to TARGET [--meetings A,B] [--since DATE] [--exclude-chat] [--yes]
                                         Read-only text export for teammates; never
                                         voiceprints, audio only with --tier text,audio.
@@ -748,19 +752,27 @@ WORKSPACE SEARCH
   search, watch); see the README for the full example.
 
 BACKUP AND SHARE
+  whosaid backup init <ws> --to TARGET [--tier T,...] [--interval daily]
+                 [--identity KEY] [--recovery-recipient AGE_PUBKEY] [--dry-run]
   whosaid backup <ws> --to TARGET [--tier T,...] [--dry-run] [--json]
                  [--recipient AGE_PUBKEY ... | --recipients-file F | --plaintext]
-                 [--identity KEY] [--prune-older-than DUR]
-  whosaid backup restore TARGET <ws> [--identity KEY] [--tier T,...]
+                 [--identity KEY] [--prune-older-than DUR] [--keep N]
+  whosaid backup restore TARGET <ws> [--identity KEY] [--tier T,...] [--at STAMP]
                  [--registry-out FILE] [--force] [--dry-run] [--json]
+  whosaid backup verify <ws> [--to T] [--identity KEY] [--sample N] [--full]
+                 [--query Q] [--json]
+  whosaid backup status <ws> [--to T] [--json]
+  whosaid backup gc <ws> [--to T] --identity KEY [--keep N] [--dry-run] [--json]
   whosaid share <ws> --to TARGET [--meetings A,B] [--since YYYY-MM-DD]
                 [--exclude-chat] [--tier text,index,audio] [--yes] [--dry-run]
                 [--prune-older-than DUR] [--json]
   whosaid share pull TARGET <dir>
   Tiers: text (transcripts, sidecars, roll-ups, chat days; default), index
   (_search.db, rebuildable), audio (recordings, .samples/ clips; opt-in),
-  biometric (the speaker registry's voiceprints; encrypted backup only, never
-  shared). TARGET is a path, file:///path, s3://bucket/prefix (AWS_* env,
+  state (the drafts outbox, .watch_state.json and the watcher's launchd
+  settings; encrypted only), biometric (the speaker registry and the
+  voiceprints inside sidecars; encrypted backup only, never shared; without it
+  backup strips voiceprint keys from every JSON file). TARGET is a path, file:///path, s3://bucket/prefix (AWS_* env,
   WHOSAID_S3_ENDPOINT for MinIO and other S3-compatible stores) or
   rclone:REMOTE:path. backup encrypts every file with age before upload
   (--plaintext opts out) and uploads only what the target lacks; --dry-run
@@ -768,7 +780,15 @@ BACKUP AND SHARE
   file, skips meetings marked _noshare or _retired and [share] never, sends
   roll-ups only when every meeting is shared, deletes what is no longer
   selected, and needs --yes the first time. [backup] interval = "daily" with
-  [backup] to = TARGET makes the watcher run a backup pass on that schedule.
+  [backup] to = TARGET makes the watcher run a backup pass on that schedule;
+  [backup] verify = "weekly" adds a read-back check, and the watcher alarms
+  (notification + log) when the last good backup is older than twice the
+  interval, the last full verify is older than 8 days, or age is missing.
+  Encrypted backups keep dated manifests (manifests/<UTC>.age, newest
+  [backup] keep = 30); restore --at picks one, gc deletes only objects no kept
+  manifest references. restore re-roots watcher settings to the new home,
+  writes private files 0600 and records restored recordings by content hash so
+  the watcher does not transcribe them again.
 
 WATCH
   whosaid watch install --into <ws> [--source DIR] [--seed] [--dry-run]
@@ -3184,12 +3204,12 @@ cmd_watch() {
   exec "$WHOSAID_PY" "$WATCH_PY" "$@"
 }
 
-# whosaid backup <ws> --to T | backup restore T <ws> | share <ws> --to T | share pull T <dir>
-#                                                      -> lib/backup.py backup|restore|share ...
+# whosaid backup <ws> --to T | backup init|verify|status|gc <ws> | backup restore T <ws> | share <ws> --to T
+# | share pull T <dir>                                   -> lib/backup.py backup|restore|share|init|verify|status|gc ...
 cmd_backup_share() {  # cmd_backup_share backup|share ARGS...
   if want_help "${@:2}"; then help_section "BACKUP AND SHARE"; exit 0; fi
   if [[ $# -lt 2 ]]; then
-    log "$1: usage: whosaid backup <ws> --to TARGET [--dry-run] | backup restore TARGET <ws> | share <ws> --to TARGET [--yes] | share pull TARGET <dir>"
+    log "$1: usage: whosaid backup <ws> --to TARGET [--dry-run] | backup init|verify|status|gc <ws> | backup restore TARGET <ws> | share <ws> --to TARGET [--yes] | share pull TARGET <dir>"
     exit 1
   fi
   require_module "$REPO_DIR/lib/backup.py" "$1"

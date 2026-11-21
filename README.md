@@ -1467,8 +1467,9 @@ every voiceprint removed, and only the meetings you allow.
 | Encryption | client-side [age](https://age-encryption.org) by default (`--plaintext` opts out) | none: the receiver has to read it |
 | Default tiers | text | text |
 | Audio | `--tier text,audio` | `--tier text,audio` |
-| Voiceprints | the registry only with `--tier biometric`, and only encrypted | never: stripped and refused |
+| Voiceprints | only with `--tier biometric` (the registry and the vectors in sidecars), and only encrypted; otherwise stripped | never: stripped and refused |
 | Files deleted locally | stay in the backup until `--prune-older-than` | removed from the target on the next run |
+| Point in time | dated manifests, newest 30 kept (`--keep`, `restore --at`) | the current selection only |
 | Restore | `whosaid backup restore TARGET <ws>` | `whosaid share pull TARGET <dir>` |
 
 **Tiers.**
@@ -1478,12 +1479,28 @@ every voiceprint removed, and only the meetings you allow.
 | `text` | everything in the workspace that is not below: transcripts (`*.speakers.txt`, `transcript.*`), sidecars (`*.diarization.json`), per-meeting `action-items.*` and `commitments.*`, the roll-ups (`_ACTION-ITEMS`, `_COMMITMENTS`, `_WIKI`, `_INDEX`, `_WORKLIST-*`, `_tracking.json`), Teams chat-day folders, `whosaid.toml` | included |
 | `index` | `_search.db` (rebuildable: `whosaid index` on the receiving side) | skipped |
 | `audio` | recordings (`.m4a`, `.wav`, `.mp3`, ...) and `<base>.samples/` clips | off, opt-in |
-| `biometric` | the speaker registry (`WHOSAID_SPEAKER_DB`, default `~/.config/whosaid/speakers.json`), which lives outside the workspace | off; encrypted backups only, never shared |
+| `state` | the drafts outbox (`WHOSAID_DRAFTS_DIR`, default `~/.drafts`, minus lock and partial files), the watcher's `.watch_state.json`, and a snapshot of the watcher's launchd settings (label, arguments, environment) for every `com.whosaid.*` agent that names this workspace | off; encrypted backups only, never shared |
+| `biometric` | the speaker registry (`WHOSAID_SPEAKER_DB`, default `~/.config/whosaid/speakers.json`), which lives outside the workspace, and the per-cluster voiceprints (`cluster_emb`, `centroid`, ...) inside sidecars and `_voice-groups.json` | off; encrypted backups only, never shared |
 
-The watcher's working state (`.watch_state.json`, `.watch_staging/`, `.watch.log`, any dotfile) is
-never copied. The `text` tier of a backup keeps sidecars whole, and a sidecar carries that meeting's
-per-cluster voiceprints (`cluster_emb`), so a `--plaintext` backup warns that it holds them
-unencrypted.
+**Voiceprints follow the biometric tier.** Without `--tier biometric`, a backup strips the
+voiceprint keys from every JSON file it sends (the same keys a share strips), so a `text` backup
+holds no voice vectors, encrypted or not; the plan says how many files were stripped. A JSON file
+that names a voiceprint key but cannot be parsed is skipped with a warning rather than sent
+unchecked. Restoring such a backup over a workspace that still has the vectors leaves the local
+files alone (a stripped copy of the same sidecar is not a conflict). With `--tier biometric` the
+sidecars are backed up whole. Objects written by an older whosaid, before stripping, stay on the
+target until no kept manifest names them and `whosaid backup gc` removes them.
+
+The rest of the watcher's working files (`.watch_staging/`, `.watch.log`, other dotfiles) are never
+copied.
+
+**Set it up in one step.** `whosaid backup init <ws> --to TARGET` checks that `age` is installed,
+creates a daily identity (`~/.config/whosaid/backup.key`, mode 0600) and a recovery identity it
+prints once for offline storage (paper, a password manager; it is never written to disk), writes
+`[backup]` to `whosaid.toml` with both public keys as recipients and tiers
+`text,audio,state,biometric`, then runs a dry run, the first backup and a read-back check of every
+object, and only then turns on `interval = "daily"` and `verify = "weekly"`. Pass
+`--recovery-recipient age1...` to use a recovery key you already hold.
 
 ### `whosaid backup`
 
@@ -1508,12 +1525,49 @@ whosaid index ~/meetings-restored
   file, exactly the set a real run sends, plus totals per tier; `--json` gives the same plan as JSON.
 - **Additive.** A meeting deleted locally stays in the backup. `--prune-older-than 1y` (also `90d`,
   `12w`, `6m`) drops meetings dated before the cutoff from the target.
+- **Dated manifests.** Every encrypted run also writes `manifests/<UTC stamp>.age` and keeps the
+  newest 30 (`--keep N` or `[backup] keep`). `whosaid backup restore ... --at 20261101` restores
+  the backup as it was then. A backup run never deletes objects; `whosaid backup gc <ws>
+  --identity KEY` decrypts every kept manifest and deletes only objects none of them names, and
+  refuses (deleting nothing) if any kept manifest cannot be read. With encrypted backups
+  `--prune-older-than` drops the entries from the new manifest and leaves the objects for `gc`
+  (`gc --keep 1` removes them now). A plaintext backup keeps one manifest and prunes in place.
+- **Verify.** `whosaid backup verify <ws>` reads objects back from the target (20 sampled,
+  `--sample 0` for all) and checks their hashes: the ciphertext hash without an identity, the
+  plaintext sha256 with `--identity`. It reports every object the manifest names but the target
+  lacks, and counts per tier: in the backup, local, and waiting for the next pass. `--full` also
+  restores into a temp dir, rebuilds the search index there and runs a search (`--query`,
+  `[backup] verify_query`, or a word from a transcript) that must find a hit. It exits 1 on any
+  problem.
+- **Status.** `whosaid backup status <ws>` prints the last good backup, the last failure, files and
+  bytes per tier, the last verify and the last full verify, the dated manifests on the target, and
+  any alarm.
 - **Restore** verifies every file's sha256 against the manifest. A file in the destination with
-  different content is a conflict: restore lists it and stops unless you pass `--force`. A backed-up
+  different content is a conflict: restore lists it and stops unless you pass `--force`. Files that
+  hold keys or voiceprints (sidecars, `_voice-groups.json`, `whosaid.toml`, the state tier) are
+  written 0600. Every restored recording is recorded by content hash in `.watch_state.json`, so the
+  watcher does not transcribe the same audio again even when the source file has a new name. The
+  state tier puts drafts back in the outbox and saves the watcher settings to
+  `<ws>/.backup/restored-watcher.json`, with the old home and workspace paths mapped to the new
+  ones; restore never loads a launchd job, it prints the `whosaid watch install` command. A backed-up
   registry is written to `WHOSAID_SPEAKER_DB` when none exists there, or to `--registry-out FILE`.
   That file is a raw registry, not an export: use it as is with `WHOSAID_SPEAKER_DB=FILE`, or merge
   it into yours with `WHOSAID_SPEAKER_DB=FILE whosaid speakers export --out X.json` and then
   `whosaid speakers import X.json --merge`.
+
+**Restore drill (a wiped Mac).** Test this once, with only the recovery identity:
+
+```sh
+# a fresh user account (or a new Mac), the recovery identity typed in from paper
+whosaid backup restore s3://my-bucket/whosaid ~/meetings --identity ~/recovery.key
+whosaid index ~/meetings
+whosaid search ~/meetings "a phrase you know was said" --mode exact
+whosaid watch install --into ~/meetings --source "..."   # from .backup/restored-watcher.json
+```
+
+The search must return hits. `test/backup_test.py` runs this drill on a synthetic workspace (a new
+`HOME`, no daily key). Voices: with the biometric tier the registry comes back; without it,
+re-enroll from the restored audio (`whosaid enroll --from MEETING/meeting.m4a ...`).
 
 ### `whosaid share`
 
@@ -1561,14 +1615,23 @@ WHOSAID_WORKSPACE=~/alice-meetings whosaid search "release date"   # and the MCP
 [backup]
 to = "s3://my-bucket/whosaid"
 interval = "daily"            # hourly | daily | weekly | "12h" | "3d"; unset = off
-tier = "text"                 # tiers for the scheduled pass
-recipients = ["age1..."]      # or WHOSAID_BACKUP_AGE_RECIPIENT; plaintext = true opts out
+tier = "text,audio,state,biometric"   # tiers for the scheduled pass
+recipients = ["age1...daily", "age1...recovery"]   # or WHOSAID_BACKUP_AGE_RECIPIENT; plaintext = true opts out
+identity = "~/.config/whosaid/backup.key"   # read by verify and gc
+verify = "weekly"             # a read-back check on that schedule (full restore + search with identity)
+# keep = 30                   # dated manifests kept on the target
+# verify_query = "a phrase"   # what the full verify searches for
+# alarms = false              # turn the alarms off
 # prune_older_than = "1y"
 ```
 
 With `interval` and `to` set, each `whosaid watch run` pass (the launchd agent) runs one backup
 after ingest once the last backup to that target is older than the interval. A failed backup is
-logged to `.watch.log` and retried on the next pass; it never blocks ingest.
+logged to `.watch.log`, recorded for `backup status`, and retried on the next pass; it never blocks
+ingest. The pass raises an alarm (a macOS notification and an `ALARM` line in `.watch.log`) when
+the last good backup is older than twice the interval, when no full verify has passed in 8 days,
+or when `age` is missing. A missing `age` stops the scheduled backup instead of retrying it, and
+is reported once, not on every pass; other alarms repeat at most daily while they last.
 
 ## Use it from an AI agent (MCP)
 
@@ -2167,7 +2230,12 @@ placeholder speakers and `--no-embed` so Ollama is never contacted:
   `roll-up --index`, `doctor`, and a stub `ingest --index` over a two-meeting workspace.
 - `python3 test/backup_test.py` covers `whosaid backup`, `restore` and `share` on a synthetic
   workspace: tier classification, `--dry-run` listing exactly the upload set, incremental passes,
-  byte-identical text-tier round trips (plaintext and age), the `--force` conflict guard, pruning,
+  byte-identical text-tier round trips (plaintext and age), voiceprints stripped without the
+  biometric tier and intact with it, the state tier (drafts, watcher state, re-rooted watcher
+  settings, 0600 modes), the watcher skipping restored audio by content hash, dated manifests,
+  `--at`, `gc` deleting only unreferenced objects, `verify` catching corrupt and missing objects,
+  `status` and the alarms (including a missing `age`), `init`, and the wiped-Mac drill (recovery
+  identity only, restore, index, search), the `--force` conflict guard, pruning,
   every share exclusion (`_noshare`, `_retired`, `[share] never`, `--since`, `--meetings`,
   `--exclude-chat`), that a share never holds voiceprints, the registry or audio unless asked, and
   that a pulled share answers `whosaid_search` after `whosaid index`. SigV4 is checked against

@@ -309,15 +309,35 @@ def scan(source: Path, state: dict, stable_seconds: float):
     (name, seconds until stable)."""
     now = time.time()
     new, pending = [], []
+    hashes = state.get("hashes") or {}
     for key, path, st, name in list_recordings(source):
         if key in state["processed"]:
             continue
         age = now - st.st_mtime
         if age < stable_seconds:
             pending.append((name, stable_seconds - age))
-        else:
-            new.append((key, path, name))
+            continue
+        if hashes:
+            # only a restore writes "hashes" (#234, `whosaid backup restore`): the workspace knows its
+            # recordings by content, so the same bytes under another name or size key are done
+            try:
+                sha = file_sha256(path)
+            except OSError:
+                sha = None
+            if sha and sha in hashes:
+                state["processed"][key] = {"name": name, "at": now_iso(), "by_hash": sha}
+                continue
+        new.append((key, path, name))
     return new, pending
+
+
+def file_sha256(path: Path) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
 
 
 def child_env(offline: bool) -> dict[str, str]:
@@ -448,8 +468,8 @@ def backup_pass(ws: Path, cfg: dict, dry: bool) -> str:
         msg = backup.scheduled_pass(ws, cfg, dry)
     except Exception as e:  # noqa: BLE001
         msg = f"backup: failed ({e}); will retry next pass"
-    if msg:
-        tlog(msg)
+    for line in (msg or "").splitlines():
+        tlog(line)
     return msg
 
 
@@ -473,7 +493,13 @@ def _recordings_pass(ws: Path, source: Path, cfg: dict, whosaid: str, engine: st
     state = load_state(ws)
     deadline = time.time() + max_wait
     while True:
+        known = len(state["processed"])
         new, pending = scan(source, state, stable_seconds)
+        if len(state["processed"]) > known:
+            tlog(f"{len(state['processed']) - known} recording(s) already in the workspace (same content, "
+                 "restored from a backup); marked done")
+            if not dry:
+                save_state(ws, state)
         for name, left in pending:
             tlog(f"still syncing ({int(left)}s until stable): {name}")
         if new or not pending or dry or time.time() >= deadline:

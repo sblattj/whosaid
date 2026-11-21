@@ -6,6 +6,22 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ## [Unreleased]
 
+### Added
+- `whosaid backup init <ws> --to TARGET` sets up a trusted backup in one step: checks `age`, creates a daily identity (0600), prints a recovery identity once for offline storage, writes `[backup]` with both recipients, then runs a dry run, the first backup and a read-back of every object before turning on the daily schedule and a weekly verify (#234).
+- A `state` backup tier: the drafts outbox, `.watch_state.json` and a snapshot of the watcher's launchd settings. Encrypted only (#234).
+- `whosaid backup verify <ws>` reads objects back from the target and checks their hashes, counts files per tier (backed up, local, waiting), and with `--full` restores into a temp dir and runs a search that must find a hit (#234).
+- `whosaid backup status <ws>`: last good backup, last failure, size per tier, last verify and full verify, dated manifests, alarms (#234).
+- Dated manifests (`manifests/<UTC>.age`, newest 30 kept, `--keep`), `backup restore --at STAMP`, and `whosaid backup gc`, which deletes only objects that no kept manifest references and refuses if any kept manifest cannot be read (#234).
+- The watcher alarms (notification and an `ALARM` line in `.watch.log`) when the last good backup is older than twice the interval, when no full verify passed in 8 days, or when `age` is missing (#234).
+
+### Changed
+- A personal backup without the `biometric` tier now strips voiceprint keys (`cluster_emb`, `centroid`, ...) from every JSON file, as a share does, so voice vectors are only backed up when you choose the biometric tier. Restoring a stripped sidecar over a local one that still has its vectors leaves the local file alone (#234).
+- `--prune-older-than` on an encrypted backup drops the entries from the new manifest and leaves the objects for `backup gc`, since older kept manifests still name them (#234).
+- `backup restore` writes files that hold keys or voiceprints with mode 0600, records every restored recording by content hash so the watcher does not transcribe it again under a new name, and re-roots restored watcher settings to the new home and workspace path; it never loads a launchd job (#234).
+
+### Fixed
+- A scheduled backup with `age` missing no longer says "will retry" on every pass: it is recorded as a failure, alarmed once and shown in `backup status` (#234).
+
 ## [1.48.2] - 2026-11-20
 
 ### Changed

@@ -28,6 +28,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 import uuid
 from contextlib import redirect_stderr, redirect_stdout
@@ -113,6 +114,22 @@ def text_tier_files(ws: Path) -> dict[str, str]:
     return {rel: backup.sha256_file(p) for rel, p, tier in backup.walk_workspace(ws) if tier == "text"}
 
 
+def stripped_text_tier(ws: Path) -> dict[str, str]:
+    """What a backup without the biometric tier restores: JSON with voiceprint keys stripped (#234)."""
+    out = {}
+    for rel, p, tier in backup.walk_workspace(ws):
+        if tier != "text":
+            continue
+        body = backup.stripped_body(p)[0] if p.suffix == ".json" else None
+        out[rel] = hashlib.sha256(body).hexdigest() if body is not None else backup.sha256_file(p)
+    return out
+
+
+def encrypted_names_ok(name: str) -> bool:
+    return (name in (backup.BACKUP_MANIFEST + ".age", backup.RECIPIENTS_KEY) or name.startswith("objects/")
+            or (name.startswith(backup.MANIFESTS_DIR + "/") and name.endswith(".age")))
+
+
 def run(argv: list[str]) -> tuple[int, str, str]:
     out, err = io.StringIO(), io.StringIO()
     with redirect_stdout(out), redirect_stderr(err):
@@ -128,7 +145,10 @@ class Base(unittest.TestCase):
         self.reg.parent.mkdir()
         self.reg.write_text(json.dumps({"speakers": [{"name": "Alice_Example", "model": "fixture-emb",
                                                       "embedding": VOICEPRINT}]}))
-        self.env = mock.patch.dict(os.environ, {"WHOSAID_SPEAKER_DB": str(self.reg)})
+        self.env = mock.patch.dict(os.environ, {
+            "WHOSAID_SPEAKER_DB": str(self.reg), "WHOSAID_NO_NOTIFY": "1",
+            "WHOSAID_DRAFTS_DIR": str(self.tmp / "drafts"),
+            "WHOSAID_LAUNCH_AGENTS_DIR": str(self.tmp / "LaunchAgents")})
         self.env.start()
         for k in ("WHOSAID_BACKUP_AGE_RECIPIENT", "WHOSAID_BACKUP_AGE_IDENTITY", "WHOSAID_WORKSPACE"):
             os.environ.pop(k, None)
@@ -197,7 +217,8 @@ class LocalBackupTest(Base):
         rc, _, err = run(["backup", "restore", str(tgt), str(dest)])
         self.assertEqual(rc, 0, err)
         got = {rel: backup.sha256_file(p) for rel, p, tier in backup.walk_workspace(dest) if tier == "text"}
-        self.assertEqual(got, text_tier_files(self.ws), "text tier byte-identical after restore")
+        self.assertEqual(got, stripped_text_tier(self.ws),
+                         "text tier byte-identical after restore, voiceprints stripped (no biometric tier)")
 
     def test_audio_tier_opt_in(self):
         tgt = self.tmp / "t"
@@ -266,8 +287,7 @@ class AgeBackupTest(Base):
         self.assertEqual(rc, 0, err)
         names = {p.relative_to(tgt).as_posix() for p in tgt.rglob("*") if p.is_file()}
         self.assertIn(backup.BACKUP_MANIFEST + ".age", names)
-        self.assertTrue(all(n in (backup.BACKUP_MANIFEST + ".age", backup.RECIPIENTS_KEY)
-                            or n.startswith("objects/") for n in names),
+        self.assertTrue(all(encrypted_names_ok(n) for n in names),
                         "no plaintext file names on the target")
         blob = b"".join(p.read_bytes() for p in tgt.rglob("*") if p.is_file())
         for needle in (b"zebra", b"Alice_Example", b"cluster_emb", b"0.4567"):
@@ -308,7 +328,7 @@ class AgeBackupTest(Base):
         rc, _, err = run(["backup", "restore", str(tgt), str(self.tmp / "rb"), "--identity", str(key_b)])
         self.assertEqual(rc, 0, err)
         got = {rel: backup.sha256_file(p) for rel, p, tier in backup.walk_workspace(self.tmp / "rb")}
-        self.assertEqual(got, text_tier_files(self.ws))
+        self.assertEqual(got, stripped_text_tier(self.ws))
         # same recipients again: nothing to re-upload
         rc, out, _ = run(["backup", str(self.ws), "--to", str(tgt), "--recipient", pub_b, "--dry-run"])
         self.assertEqual([ln for ln in out.splitlines() if ln.startswith("would upload")], [])
@@ -477,7 +497,7 @@ class PulledShareSearchTest(Base):
         self.assertEqual(rc, 0, err)
         env = {**os.environ, "HOME": str(self.tmp), "WHOSAID_OLLAMA": "http://127.0.0.1:9"}
         proc = subprocess.run([str(REPO / "whosaid"), "index", str(pulled), "--no-embed"],
-                              capture_output=True, text=True, env=env, timeout=300)
+                              capture_output=True, text=True, env=env, timeout=300, check=False)
         self.assertEqual(proc.returncode, 0, proc.stderr)
         sys.path.insert(0, str(REPO / "test"))
         import mcp_workspace_tools_test as mt  # installs the MCP SDK stub when needed
@@ -533,7 +553,7 @@ class S3RoundTripTest(Base):
 
     def round_trip(self, extra: list[str], restore_extra: list[str]):
         spec = f"s3://{self.bucket}/whosaid/ws"
-        want = text_tier_files(self.ws)
+        want = stripped_text_tier(self.ws)
         rc, out, err = run(["backup", str(self.ws), "--to", spec, *extra, "--dry-run"])
         self.assertEqual(rc, 0, err)
         self.assertEqual({ln.split()[2] for ln in out.splitlines() if ln.startswith("would upload")}, set(want))
@@ -560,8 +580,7 @@ class S3RoundTripTest(Base):
         pub = [ln.split(": ", 1)[1] for ln in key.read_text().splitlines() if ln.startswith("# public key: ")][0]
         spec = self.round_trip(["--recipient", pub], ["--identity", str(key)])
         keys = backup.open_target(spec).list_keys()
-        self.assertTrue(all(k.startswith("objects/") or k in (backup.BACKUP_MANIFEST + ".age", backup.RECIPIENTS_KEY)
-                            for k in keys))
+        self.assertTrue(all(encrypted_names_ok(k) for k in keys))
 
     def test_share_via_s3(self):
         spec = f"s3://{self.bucket}/share"
@@ -640,6 +659,412 @@ class ScheduledPassTest(Base):
                 redirect_stderr(io.StringIO()):
             watch.backup_pass(self.ws, {"backup": {"interval": "daily"}}, False)
         self.assertIn("[backup] to is not", tl.call_args[0][0])
+
+
+def age_key(path: Path) -> str:
+    subprocess.run(["age-keygen", "-o", str(path)], check=True, capture_output=True)
+    return [ln.split(": ", 1)[1] for ln in path.read_text().splitlines() if ln.startswith("# public key: ")][0]
+
+
+def quiet(fn, *a, **kw):
+    with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+        return fn(*a, **kw)
+
+
+def mode(p: Path) -> int:
+    return p.stat().st_mode & 0o777
+
+
+def write_watch_plist(agents: Path, ws: Path) -> None:
+    import plistlib
+    agents.mkdir(parents=True, exist_ok=True)
+    with open(agents / "com.whosaid.watch.ws.plist", "wb") as fh:
+        plistlib.dump({"Label": "com.whosaid.watch.ws",
+                       "ProgramArguments": ["/usr/bin/python3", "/opt/whosaid/lib/watch.py", "run",
+                                            "--source", "/fixture/Recordings", "--into", str(ws)],
+                       "EnvironmentVariables": {"WHOSAID_ENGINE": "fixture", "WHOSAID_WS": str(ws)},
+                       "WatchPaths": ["/fixture/Recordings"], "RunAtLoad": True}, fh)
+    with open(agents / "com.whosaid.watch.other.plist", "wb") as fh:
+        plistlib.dump({"Label": "com.whosaid.watch.other",
+                       "ProgramArguments": ["/usr/bin/python3", "watch.py", "--into", "/elsewhere"]}, fh)
+
+
+@unittest.skipUnless(AGE, "age binary not installed")
+class StateTierTest(Base):
+    """#234 item 2 and 3: drafts outbox, watcher state and watcher settings come back; private
+    files are 0600; the watcher snapshot is re-rooted to the new workspace and never loaded."""
+
+    def setUp(self):
+        super().setUp()
+        self.key = self.tmp / "k"
+        self.pub = age_key(self.key)
+        drafts = Path(os.environ["WHOSAID_DRAFTS_DIR"])
+        (drafts / "d-001").mkdir(parents=True)
+        (drafts / "d-001" / "message.md").write_text("draft about the zebra agenda\n")
+        (drafts / ".outbox.lock").write_text("")
+        (drafts / "d-001" / "page.html.part").write_text("half written")
+        (self.ws / ".watch_state.json").write_text(json.dumps(
+            {"processed": {"Old Memo.m4a:4012": {"name": "Old Memo.m4a", "at": "2026-09-14T09:00:00Z"}}}))
+        write_watch_plist(Path(os.environ["WHOSAID_LAUNCH_AGENTS_DIR"]), self.ws)
+
+    def test_state_round_trip(self):
+        tgt = self.tmp / "enc-state"
+        rc, out, err = run(["backup", str(self.ws), "--to", str(tgt), "--recipient", self.pub,
+                            "--tier", "text,audio,state"])
+        self.assertEqual(rc, 0, err)
+        self.assertNotIn(b"zebra agenda", target_blob(tgt))
+        new_drafts = self.tmp / "new-drafts"
+        dest = self.tmp / "newhome" / "transcripts"
+        with mock.patch.dict(os.environ, {"WHOSAID_DRAFTS_DIR": str(new_drafts)}):
+            rc, out, err = run(["backup", "restore", str(tgt), str(dest), "--identity", str(self.key)])
+        self.assertEqual(rc, 0, err)
+        self.assertEqual((new_drafts / "d-001" / "message.md").read_text(), "draft about the zebra agenda\n")
+        self.assertFalse((new_drafts / ".outbox.lock").exists(), "lock files are not backed up")
+        self.assertFalse((new_drafts / "d-001" / "page.html.part").exists(), "partial writes are not backed up")
+        st = json.loads((dest / ".watch_state.json").read_text())
+        self.assertIn("Old Memo.m4a:4012", st["processed"], "watcher state restored")
+        self.assertEqual(mode(dest / ".watch_state.json"), 0o600)
+        self.assertEqual(mode(new_drafts / "d-001" / "message.md"), 0o600)
+        self.assertEqual(mode(dest / "2026-09-14-0900" / "transcript.diarization.json"), 0o600)
+        self.assertEqual(mode(dest / "_voice-groups.json"), 0o600)
+        self.assertEqual(mode(dest / "whosaid.toml"), 0o600)
+        snap = json.loads((dest / backup.STATE_DIR / "restored-watcher.json").read_text())
+        self.assertEqual(mode(dest / backup.STATE_DIR / "restored-watcher.json"), 0o600)
+        self.assertEqual([a["Label"] for a in snap["agents"]], ["com.whosaid.watch.ws"],
+                         "only the agent naming this workspace")
+        a = snap["agents"][0]
+        self.assertIn(str(dest.resolve()), a["ProgramArguments"], "workspace path mapped to the new root")
+        self.assertEqual(a["EnvironmentVariables"]["WHOSAID_WS"], str(dest.resolve()))
+        self.assertNotIn(str(self.ws), json.dumps(snap), "old workspace path gone")
+        self.assertNotIn(str(self.ws.resolve()), json.dumps(snap))
+        self.assertEqual(a["EnvironmentVariables"]["WHOSAID_ENGINE"], "fixture")
+        self.assertIn("watch install", err)
+
+    def test_state_refused_plaintext(self):
+        rc, _, err = run(["backup", str(self.ws), "--to", str(self.tmp / "p"), "--plaintext", "--tier", "text,state"])
+        self.assertEqual(rc, 1)
+        self.assertIn("state tier", err)
+
+
+class ReseedTest(Base):
+    """#234 item 3: after a restore the watcher knows the recordings by content, so a source file
+    with the same bytes under another name is not transcribed again."""
+
+    def test_restored_audio_is_not_reingested(self):
+        import watch
+        tgt = self.tmp / "plain"
+        self.assertEqual(run(["backup", str(self.ws), "--to", str(tgt), "--plaintext", "--tier", "text,audio"])[0], 0)
+        dest = self.tmp / "restored"
+        rc, _, err = run(["backup", "restore", str(tgt), str(dest)])
+        self.assertEqual(rc, 0, err)
+        self.assertIn("content hash", err)
+        state = json.loads((dest / ".watch_state.json").read_text())
+        self.assertEqual(len(state["hashes"]), 2, "both meeting recordings recorded by hash")
+        self.assertEqual(mode(dest / ".watch_state.json"), 0o600)
+        src = self.tmp / "Recordings"
+        src.mkdir()
+        shutil.copy(self.ws / "2026-09-14-0900" / "meeting.m4a", src / "20260914 090000-ABCD.m4a")
+        shutil.copy(self.ws / "2026-10-02-1430" / "meeting.wav", src / "renamed later.wav")
+        (src / "brand new.m4a").write_bytes(b"\x00\x00\x00\x20ftypM4A " + os.urandom(2000))
+        old = dt.datetime.now().timestamp() - 3600
+        for f in src.iterdir():
+            os.utime(f, (old, old))
+        st = watch.load_state(dest)
+        new, pending = watch.scan(src, st, 60)
+        self.assertEqual([n for _, _, n in new], ["brand new.m4a"], "only the unseen recording is new")
+        self.assertEqual(pending, [])
+        self.assertEqual(sum(1 for v in st["processed"].values() if v.get("by_hash")), 2)
+        # control: without the restored hashes both old recordings would be re-transcribed
+        new2, _ = watch.scan(src, {"processed": {}}, 60)
+        self.assertEqual(len(new2), 3)
+
+
+@unittest.skipUnless(AGE, "age binary not installed")
+class DatedManifestGcTest(Base):
+    """#234 item 4: dated manifests, keep N, gc deletes only what no kept manifest references."""
+
+    def setUp(self):
+        super().setUp()
+        self.key = self.tmp / "k"
+        self.pub = age_key(self.key)
+        self.tgt = self.tmp / "enc-gc"
+        self.item = self.ws / "2026-10-02-1430" / "action-items.md"
+
+    def backup(self, text: str, *extra: str):
+        self.item.write_text(text)
+        rc, _, err = run(["backup", str(self.ws), "--to", str(self.tgt), "--recipient", self.pub, *extra])
+        self.assertEqual(rc, 0, err)
+        return "objects/" + hashlib.sha256(text.encode()).hexdigest() + ".age"
+
+    def manifests(self) -> list[str]:
+        return backup.dated_manifests(backup.open_target(str(self.tgt)).list_keys())
+
+    def test_keep_gc_and_point_in_time_restore(self):
+        o1 = self.backup("- [ ] v1 heron\n", "--keep", "2")
+        o2 = self.backup("- [ ] v2 heron\n", "--keep", "2")
+        m2 = self.manifests()[-1]
+        o3 = self.backup("- [ ] v3 heron\n", "--keep", "2")
+        self.assertEqual(len(self.manifests()), 2, "keep=2 dated manifests")
+        self.assertTrue(all((self.tgt / o).is_file() for o in (o1, o2, o3)), "backup itself deletes no object")
+        rc, out, err = run(["backup", "gc", str(self.ws), "--to", str(self.tgt), "--keep", "2"])
+        self.assertEqual(rc, 1)
+        self.assertIn("--identity", err)
+        rc, out, err = run(["backup", "gc", str(self.ws), "--to", str(self.tgt), "--keep", "2",
+                            "--identity", str(self.key), "--dry-run"])
+        self.assertEqual(rc, 0, err)
+        self.assertIn(f"would delete {o1}", out)
+        self.assertTrue((self.tgt / o1).is_file(), "dry run deletes nothing")
+        rc, out, err = run(["backup", "gc", str(self.ws), "--to", str(self.tgt), "--keep", "2",
+                            "--identity", str(self.key), "--json"])
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(json.loads(out)["delete"], [o1], "only the object no kept manifest names")
+        self.assertFalse((self.tgt / o1).exists())
+        self.assertTrue((self.tgt / o2).is_file() and (self.tgt / o3).is_file())
+        # point in time: the second backup still restores
+        dest = self.tmp / "at-m2"
+        stamp = PurePosixPath(m2).stem
+        rc, _, err = run(["backup", "restore", str(self.tgt), str(dest), "--identity", str(self.key),
+                          "--at", stamp, "--tier", "text"])
+        self.assertEqual(rc, 0, err)
+        self.assertEqual((dest / "2026-10-02-1430" / "action-items.md").read_text(), "- [ ] v2 heron\n")
+        rc, _, err = run(["backup", "restore", str(self.tgt), str(self.tmp / "nope"), "--identity", str(self.key),
+                          "--at", "19990101"])
+        self.assertEqual(rc, 1)
+        self.assertIn("no manifest matches", err)
+
+    def test_gc_refuses_when_a_kept_manifest_is_unreadable(self):
+        o1 = self.backup("- [ ] v1 heron\n")
+        self.backup("- [ ] v2 heron\n")
+        (self.tgt / self.manifests()[0]).write_bytes(b"not an age file")
+        rc, _, err = run(["backup", "gc", str(self.ws), "--to", str(self.tgt), "--keep", "1",
+                          "--identity", str(self.key)])
+        self.assertEqual(rc, 0, err)   # keep 1: the broken older manifest is out of scope and dropped
+        self.assertFalse((self.tgt / o1).exists())
+        o3 = self.backup("- [ ] v3 heron\n")
+        o4 = self.backup("- [ ] v4 heron\n")
+        (self.tgt / self.manifests()[0]).write_bytes(b"not an age file")
+        before = sorted(p.name for p in (self.tgt / "objects").iterdir())
+        rc, _, err = run(["backup", "gc", str(self.ws), "--to", str(self.tgt), "--identity", str(self.key)])
+        self.assertEqual(rc, 1)
+        self.assertIn("nothing deleted", err)
+        self.assertEqual(sorted(p.name for p in (self.tgt / "objects").iterdir()), before)
+        self.assertTrue((self.tgt / o3).is_file() and (self.tgt / o4).is_file())
+
+    def test_encrypted_prune_leaves_objects_for_gc(self):
+        self.backup("- [ ] v1 heron\n")
+        old = self.ws / "2026-09-14-0900" / "transcript.speakers.txt"
+        obj = "objects/" + backup.sha256_file(old) + ".age"
+        rc, _, err = run(["backup", str(self.ws), "--to", str(self.tgt), "--recipient", self.pub,
+                          "--prune-older-than", "1d"])
+        self.assertEqual(rc, 0, err)
+        self.assertTrue((self.tgt / obj).is_file(), "an older kept manifest still names it")
+        self.assertIn("backup gc", err)
+        rc, _, err = run(["backup", "gc", str(self.ws), "--to", str(self.tgt), "--identity", str(self.key),
+                            "--keep", "1", "--json"])
+        self.assertEqual(rc, 0, err)
+        self.assertFalse((self.tgt / obj).exists(), "gc --keep 1 drops it")
+
+
+@unittest.skipUnless(AGE, "age binary not installed")
+class VerifyTest(Base):
+    """#234 item 5: objects read back and hash-checked, counts per tier, a full restore + search."""
+
+    def setUp(self):
+        super().setUp()
+        self.key = self.tmp / "k"
+        self.pub = age_key(self.key)
+        self.tgt = self.tmp / "enc-verify"
+        rc, _, err = run(["backup", str(self.ws), "--to", str(self.tgt), "--recipient", self.pub,
+                          "--tier", "text,audio"])
+        self.assertEqual(rc, 0, err)
+
+    def verify(self, *extra):
+        rc, out, err = run(["backup", "verify", str(self.ws), "--to", str(self.tgt), "--json", *extra])
+        return rc, json.loads(out), err
+
+    def test_clean_backup_verifies(self):
+        rc, res, _ = self.verify("--identity", str(self.key), "--sample", "0")
+        self.assertEqual(rc, 0, res)
+        self.assertEqual(res["checked"], res["objects"])
+        self.assertEqual(res["missing"], 0)
+        self.assertEqual(res["counts"]["audio"]["pending"], 0)
+        self.assertEqual(res["counts"]["text"]["backup"], res["counts"]["text"]["local"])
+        rc, res, _ = self.verify("--sample", "0")
+        self.assertEqual(rc, 0, res)
+        self.assertEqual(res["checked"], res["objects"], "without an identity: checked by ciphertext hash")
+
+    def test_corrupt_and_missing_objects_fail(self):
+        objs = sorted((self.tgt / "objects").iterdir())
+        objs[0].write_bytes(objs[1].read_bytes())        # valid age, wrong content
+        objs[2].unlink()
+        for extra in ([], ["--identity", str(self.key)]):
+            rc, res, _ = self.verify("--sample", "0", *extra)
+            self.assertEqual(rc, 1, res)
+            self.assertEqual(res["missing"], 1)
+            self.assertTrue(any("hash mismatch" in p for p in res["problems"]), res["problems"])
+
+    def test_pending_files_are_counted(self):
+        (self.ws / "2026-10-02-1430" / "new-notes.md").write_text("fresh\n")
+        rc, res, _ = self.verify("--identity", str(self.key))
+        self.assertEqual(rc, 0, res)
+        self.assertEqual(res["counts"]["text"]["pending"], 1)
+
+    def test_full_restore_and_search(self):
+        rc, res, _ = self.verify("--identity", str(self.key), "--full", "--query", "zebra")
+        self.assertEqual(rc, 0, res)
+        self.assertGreaterEqual(res["full"]["hits"], 1)
+        rc, res, _ = self.verify("--identity", str(self.key), "--full", "--query", "nosuchwordanywhere")
+        self.assertEqual(rc, 1)
+        self.assertTrue(any("found nothing" in p for p in res["problems"]))
+        st = backup.load_local_state(self.ws, backup.open_target(str(self.tgt)))
+        self.assertTrue(st.get("last_full_verify"), "the passing full verify is recorded")
+        self.assertFalse(st["last_verify"]["ok"], "the last (failing) verify is recorded")
+
+
+class StatusAlarmTest(Base):
+    """#234 items 6 and 7: status, stale-backup and stale-verify alarms, a loud missing `age`."""
+
+    def cfg(self, **kw):
+        return {"backup": {"interval": "daily", "to": str(self.tmp / "sched"), "plaintext": True, **kw}}
+
+    def test_status_after_backup(self):
+        tgt = self.tmp / "sched"
+        cfg = self.cfg()
+        (self.ws / "whosaid.toml").write_text(f'[backup]\nto = "{tgt}"\ninterval = "daily"\nplaintext = true\n')
+        quiet(backup.scheduled_pass, self.ws, cfg)
+        rc, out, err = run(["backup", "status", str(self.ws), "--json"])
+        self.assertEqual(rc, 0, err)
+        info = json.loads(out)
+        self.assertTrue(info["last_backup"])
+        self.assertIsNone(info["last_failure"])
+        self.assertGreater(info["by_tier"]["text"]["files"], 0)
+        self.assertIsNone(info["last_verify"])
+        rc, out, err = run(["backup", "status", str(self.ws)])
+        self.assertIn("last backup:", out)
+        self.assertIn("last full verify: never", out)
+
+    def test_stale_backup_and_verify_alarm_once_then_daily(self):
+        tgt = self.tmp / "sched"
+        cfg = self.cfg()
+        quiet(backup.scheduled_pass, self.ws, cfg)
+        t = backup.open_target(str(tgt))
+        st = backup.load_local_state(self.ws, t)
+        now = time.time()
+        st["last_backup"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now - 3 * 86400))
+        st["first_backup"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now - 10 * 86400))
+        backup.save_local_state(self.ws, t, st)
+        keys = {a["key"] for a in backup.compute_alarms(self.ws, cfg, st, now)}
+        self.assertEqual(keys, {"backup-stale", "verify-stale"})
+        self.assertEqual(backup.compute_alarms(self.ws, self.cfg(alarms=False), st, now), [])
+        with mock.patch.object(backup, "notify") as n:
+            lines = backup.raise_alarms(self.ws, t, backup.compute_alarms(self.ws, cfg, st, now), now)
+            self.assertEqual(n.call_count, 2)
+            self.assertTrue(all(ln.startswith("ALARM ") for ln in lines))
+            backup.raise_alarms(self.ws, t, backup.compute_alarms(self.ws, cfg, st, now), now + 3600)
+            self.assertEqual(n.call_count, 2, "not again within a day")
+            backup.raise_alarms(self.ws, t, backup.compute_alarms(self.ws, cfg, st, now), now + 90000)
+            self.assertEqual(n.call_count, 4, "again after a day")
+        fresh = dict(st, last_backup=backup.now_iso(), last_full_verify=backup.now_iso())
+        self.assertEqual(backup.compute_alarms(self.ws, cfg, fresh), [], "control: recent backup and verify")
+
+    def test_missing_age_fails_loudly_once(self):
+        tgt = self.tmp / "enc-sched"
+        cfg = {"backup": {"interval": "daily", "to": str(tgt), "recipients": ["age1fixture"]}}
+        real_which = shutil.which
+        with mock.patch.object(backup.shutil, "which", lambda b: None if b == "age" else real_which(b)), \
+                mock.patch.dict(os.environ, {"WHOSAID_AGE": ""}), mock.patch.object(backup, "notify") as n:
+            m1 = quiet(backup.scheduled_pass, self.ws, cfg)
+            m2 = quiet(backup.scheduled_pass, self.ws, cfg, now=time.time() + 7200)
+            _, out, _ = run(["backup", "status", str(self.ws), "--to", str(tgt)])
+        for m in (m1, m2):
+            self.assertIn("`age` is not installed", m)
+            self.assertNotIn("will retry", m)
+        self.assertEqual(n.call_count, 1, "one notification, not one per pass")
+        self.assertIn("NOT INSTALLED", out)
+        self.assertIn("ALARM", out)
+        self.assertIn("age", backup.load_local_state(self.ws, backup.open_target(str(tgt)))["last_failure"]["error"])
+
+    def test_failure_recorded_and_cleared(self):
+        tgt = self.tmp / "sched"
+        cfg = self.cfg()
+        with mock.patch.object(backup, "cmd_backup", side_effect=backup.BackupError("disk full")):
+            msg = quiet(backup.scheduled_pass, self.ws, cfg)
+        self.assertIn("disk full", msg)
+        t = backup.open_target(str(tgt))
+        self.assertEqual(backup.load_local_state(self.ws, t)["last_failure"]["error"], "disk full")
+        quiet(backup.scheduled_pass, self.ws, cfg)
+        self.assertNotIn("last_failure", backup.load_local_state(self.ws, t))
+
+
+def fresh_user_env(home: Path) -> dict:
+    env = {k: v for k, v in os.environ.items() if not k.startswith("WHOSAID_")}
+    env.update({"HOME": str(home), "WHOSAID_OLLAMA": "http://127.0.0.1:9", "WHOSAID_NO_NOTIFY": "1",
+                "WHOSAID_SPEAKER_DB": str(home / ".config" / "whosaid" / "speakers.json"),
+                "WHOSAID_DRAFTS_DIR": str(home / ".drafts"),
+                "WHOSAID_LAUNCH_AGENTS_DIR": str(home / "Library" / "LaunchAgents")})
+    return env
+
+
+@unittest.skipUnless(AGE, "age binary not installed")
+class InitAndRestoreDrillTest(Base):
+    """#234 item 8 and the restore drill: init writes both recipients and a 0600 daily key, prints
+    the recovery identity once, backs up, reads back, schedules. Then a fresh user with ONLY the
+    recovery identity restores, indexes and finds a known phrase."""
+
+    def test_init_then_wiped_mac_drill(self):
+        tgt = self.tmp / "nas-backup"
+        daily = self.tmp / "config" / "backup.key"
+        rc, out, err = run(["backup", "init", str(self.ws), "--to", str(tgt), "--identity", str(daily)])
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(mode(daily), 0o600)
+        secret = [ln for ln in out.splitlines() if ln.startswith("AGE-SECRET-KEY-")]
+        self.assertEqual(len(secret), 1, "the recovery identity is printed once")
+        on_disk = b"".join(p.read_bytes() for p in self.tmp.rglob("*") if p.is_file())
+        self.assertNotIn(secret[0].encode(), on_disk, "the recovery identity is never written to disk")
+        import tomllib
+        conf = tomllib.loads((self.ws / "whosaid.toml").read_text())
+        self.assertEqual(conf["workspace"]["owner"], "Alice_Example", "other tables kept")
+        b = conf["backup"]
+        self.assertEqual(len(b["recipients"]), 2)
+        self.assertEqual(b["interval"], "daily")
+        self.assertEqual(b["verify"], "weekly")
+        self.assertEqual(b["tier"], "text,audio,state,biometric")
+        self.assertIn("read back", err)
+        self.assertTrue((tgt / (backup.BACKUP_MANIFEST + ".age")).is_file())
+        self.assertNotIn(b"cluster_emb", target_blob(tgt))
+        # the wiped Mac: a new HOME, no daily key, only the recovery identity on paper
+        home = self.tmp / "fresh-user"
+        rkey = home / "recovery.key"
+        rkey.parent.mkdir(parents=True)
+        rkey.write_text(secret[0] + "\n")
+        dest = home / "transcripts"
+        env = fresh_user_env(home)
+        proc = subprocess.run([str(REPO / "whosaid"), "backup", "restore", str(tgt), str(dest),
+                               "--identity", str(rkey)], capture_output=True, text=True, env=env, timeout=300, check=False)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        side = json.loads((dest / "2026-09-14-0900" / "transcript.diarization.json").read_text())
+        self.assertEqual(side["cluster_emb"]["SPEAKER_00"], VOICEPRINT, "biometric tier chosen: vectors intact")
+        self.assertTrue((home / ".config" / "whosaid" / "speakers.json").is_file(), "registry restored")
+        self.assertTrue((dest / "2026-09-14-0900" / "meeting.m4a").is_file())
+        proc = subprocess.run([str(REPO / "whosaid"), "index", str(dest), "--no-embed"],
+                              capture_output=True, text=True, env=env, timeout=300, check=False)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        proc = subprocess.run([str(REPO / "whosaid"), "search", str(dest), "zebra agenda", "--mode", "exact",
+                               "--json"], capture_output=True, text=True, env=env, timeout=300, check=False)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        hits = json.loads(proc.stdout)
+        self.assertGreaterEqual(len(hits), 1)
+        self.assertEqual(hits[0]["meeting"], "2026-09-14-0900")
+
+    def test_init_requires_age_and_target(self):
+        rc, _, err = run(["backup", "init", str(self.ws)])
+        self.assertEqual(rc, 1)
+        self.assertIn("--to", err)
+        with mock.patch.object(backup.shutil, "which", lambda b: None), mock.patch.dict(os.environ, {"WHOSAID_AGE": ""}):
+            rc, _, err = run(["backup", "init", str(self.ws), "--to", str(self.tmp / "t")])
+        self.assertEqual(rc, 1)
+        self.assertIn("age", err)
+        self.assertFalse((self.tmp / "t").exists())
 
 
 if __name__ == "__main__":
