@@ -23,9 +23,10 @@ Commands (the `whosaid` bash CLI execs this module):
          [--prune-older-than DUR] [--keep N] [--json]
       A full personal copy. Encrypted at rest by default: every file is
       encrypted client-side with `age` before it leaves the machine and stored
-      as objects/<sha256>.age; the manifest (file names, hashes, tiers) is
-      encrypted too. --plaintext writes a browsable copy instead (refused for
-      the biometric tier). Incremental: only files whose content hash the
+      as objects/<HMAC of its sha256>.age, zero-padded to a size bucket first; the
+      manifest (file names, hashes, tiers, the names key) is encrypted and
+      padded too, and no plaintext recipients file is written. --plaintext
+      writes a browsable copy instead (refused for the biometric tier). Incremental: only files whose content hash the
       target lacks are uploaded. Additive: a file deleted locally stays in the
       backup until --prune-older-than drops its meeting. Encrypted runs also
       write manifests/<UTC stamp>.age and keep the newest N (default 30); a run
@@ -124,8 +125,19 @@ SCHEMA = "whosaid.backup/1"
 BACKUP_MANIFEST = "_whosaid-backup.json"
 SHARE_MANIFEST = "_whosaid-share.json"
 STATE_DIR = ".backup"
-# plaintext on the target: sha256 of the age recipient set the objects are encrypted to
-RECIPIENTS_KEY = "_whosaid-backup.recipients"                       # dot-dir: never itself backed up
+# legacy: older encrypted backups kept a plaintext sha256 of the recipient set here. The
+# fingerprint now lives inside the encrypted manifest; a run deletes this file when it finds it.
+RECIPIENTS_KEY = "_whosaid-backup.recipients"
+# Encrypted object names are HMAC-SHA256(names key, plaintext sha256). The names key is random,
+# lives inside the encrypted manifest (so every recipient can read it, and a future grant
+# re-wraps it with the manifest) and in the workspace's local state; the storage host sees
+# names it cannot link to content it may already hold.
+NAMES_ALG = "hmac-sha256/1"
+# Plaintext is zero-padded before encryption to a Padme bucket (at most ~12% overhead, a
+# 4 KiB floor), so ciphertext sizes reveal little about the file. `size` in the manifest is
+# the true length; restore truncates to it.
+PAD_ALG = "padme/1"
+PAD_FLOOR = 4096
 NOTICE_ACK = Path.home() / ".config" / "whosaid" / "share-notice-acknowledged"
 
 TIERS = ("text", "index", "audio", "state", "biometric")
@@ -701,6 +713,58 @@ def age_encrypt(src: Path, dest: Path, recipients: list[str], recipients_file: s
         raise BackupError(f"age encrypt failed: {proc.stderr.strip()}")
 
 
+def padded_size(n: int) -> int:
+    """Padme (Nikitin et al., PETS 2019): round n up so only O(log log n) bits of it show."""
+    n = max(n, PAD_FLOOR)
+    e = n.bit_length() - 1
+    s = e.bit_length()
+    mask = (1 << (e - s)) - 1
+    return (n + mask) & ~mask
+
+
+def age_encrypt_padded(src: Path, size: int, dest: Path, recipients: list[str],
+                       recipients_file: str | None) -> None:
+    """Encrypt src plus zero bytes up to padded_size(size), streamed into age's stdin."""
+    argv = [age_bin(), "-e", "-o", str(dest)]
+    for r in recipients:
+        argv += ["-r", r]
+    if recipients_file:
+        argv += ["-R", str(Path(recipients_file).expanduser())]
+    proc = subprocess.Popen(argv, stdin=subprocess.PIPE, stderr=subprocess.PIPE)
+    try:
+        n = 0
+        with open(src, "rb") as fh:
+            while chunk := fh.read(1 << 20):
+                proc.stdin.write(chunk)
+                n += len(chunk)
+        if n != size:
+            proc.stdin.close()
+            proc.wait()
+            raise BackupError(f"{src} changed size while the backup ran; run it again")
+        left = padded_size(size) - size
+        zeros = bytes(min(left, 1 << 20))
+        while left > 0:
+            proc.stdin.write(zeros[:left])
+            left -= min(left, len(zeros))
+        proc.stdin.close()
+    except BrokenPipeError:
+        pass
+    err = proc.stderr.read().decode(errors="replace")
+    if proc.wait() != 0:
+        raise BackupError(f"age encrypt failed: {err.strip()}")
+
+
+def unpad(plain: Path, fe: dict) -> None:
+    """Drop the zero padding of an object written with PAD_ALG (older objects carry none)."""
+    if fe.get("pad") and plain.stat().st_size >= int(fe.get("size") or 0):
+        os.truncate(plain, int(fe["size"]))
+
+
+def names_key_new() -> dict:
+    import secrets
+    return {"alg": NAMES_ALG, "key": secrets.token_hex(32)}
+
+
 def age_decrypt(src: Path, dest: Path, identity: str) -> None:
     proc = subprocess.run([age_bin(), "-d", "-i", str(Path(identity).expanduser()), "-o", str(dest), str(src)],
                           capture_output=True, text=True)
@@ -773,6 +837,8 @@ def save_local_state(ws: Path, target: Target, state: dict) -> None:
     try:
         p.parent.mkdir(parents=True, exist_ok=True)
         tmp = p.with_suffix(".part")
+        tmp.touch(mode=0o600)
+        os.chmod(tmp, 0o600)                       # the cached manifest holds the object names key
         tmp.write_text(json.dumps(state, indent=1))
         tmp.replace(p)
     except OSError as e:
@@ -928,7 +994,8 @@ def state_sources(ws: Path) -> list[tuple[str, Path | None, bytes | None]]:
 
 
 def plan_backup(ws: Path, target: Target, tiers: list[str], encrypted: bool,
-                prev: dict | None, keys: set[str], cache: HashCache) -> tuple[Plan, dict]:
+                prev: dict | None, keys: set[str], cache: HashCache,
+                names: dict | None = None) -> tuple[Plan, dict]:
     plan = Plan("backup", target.describe(), tiers, encrypted)
     files = {}
     strip = "biometric" not in tiers
@@ -975,7 +1042,8 @@ def plan_backup(ws: Path, target: Target, tiers: list[str], encrypted: bool,
     prev_files = (prev or {}).get("files") or {}
     for rel, e in files.items():
         if encrypted:
-            present = f"objects/{e.sha256}.age" in keys
+            key = object_key(e.sha256, rel, names) if names else f"objects/{e.sha256}.age"  # legacy names
+            present = key in keys
         else:
             pe = prev_files.get(rel)
             present = bool(pe) and pe.get("sha256") == e.sha256 and rel in keys
@@ -983,8 +1051,14 @@ def plan_backup(ws: Path, target: Target, tiers: list[str], encrypted: bool,
     return plan, files
 
 
-def object_key(e_sha: str, rel: str, encrypted: bool) -> str:
-    return f"objects/{e_sha}.age" if encrypted else rel
+def object_key(e_sha: str, rel: str, names: dict | None) -> str:
+    """Encrypted: objects/<HMAC(names key, plaintext sha256)>.age. Plaintext: the path itself."""
+    if not names:
+        return rel
+    if names.get("alg") != NAMES_ALG:
+        raise BackupError(f"unknown object naming {names.get('alg')!r}; upgrade whosaid")
+    mac = hmac.new(bytes.fromhex(names["key"]), e_sha.encode(), hashlib.sha256).hexdigest()
+    return f"objects/{mac}.age"
 
 
 class BackupLock:
@@ -1118,19 +1192,33 @@ def _cmd_backup(args, ws: Path) -> int:
             if ident:
                 prev = read_manifest(target, ident)
             else:
-                log("WARN no local record of this encrypted backup (and no --identity): entries for files "
-                    "deleted locally since the last backup will drop out of the new manifest")
+                log("WARN no local record of this encrypted backup (and no --identity): object names are "
+                    "keyed by a secret inside its manifest, so every object is uploaded again, and entries "
+                    "for files deleted locally since the last backup drop out of the new manifest")
     else:
         prev = read_manifest(target) if BACKUP_MANIFEST in keys else None
     reuse = keys
     if encrypted:
         fp = recipients_fingerprint(recips, rfile)
-        old_fp = (target.get_bytes(RECIPIENTS_KEY) or b"").decode().strip()
+        old_fp = (prev or {}).get("recipients_fp")
+        if old_fp is None and RECIPIENTS_KEY in keys:
+            old_fp = (target.get_bytes(RECIPIENTS_KEY) or b"").decode().strip()
+        names = (prev or {}).get("names")
         if any(k.startswith("objects/") for k in keys) and old_fp != fp:
-            # objects on the target were encrypted to other keys: none can be reused
+            # objects on the target were encrypted to other keys: none can be reused, and a fresh
+            # names key keeps a removed recipient from linking the new objects to the old ones
             reuse = {k for k in keys if not k.startswith("objects/")}
+            names = None
+    else:
+        names = None
+    new_names = encrypted and not names
+    if new_names:
+        names = names_key_new()
     cache = HashCache(ws)
-    plan, files = plan_backup(ws, target, tiers, encrypted, prev, reuse, cache)
+    plan, files = plan_backup(ws, target, tiers, encrypted, prev, reuse, cache, names)
+    if new_names and prev and not (prev or {}).get("names"):
+        plan.notes.append("first run with keyed object names: every object is uploaded again under an opaque "
+                          "name; the old ones go with `whosaid backup gc` once no kept manifest names them")
     if reuse is not keys:
         plan.notes.append("age recipients differ from the ones this backup was written with: "
                           "re-encrypting every object (restore needs the new identity)")
@@ -1144,7 +1232,9 @@ def _cmd_backup(args, ws: Path) -> int:
             manifest_files[rel] = pe
     for rel, e in files.items():
         fe = {"sha256": e.sha256, "size": e.size, "tier": e.tier,
-              "object": object_key(e.sha256, rel, encrypted)}
+              "object": object_key(e.sha256, rel, names)}
+        if encrypted:
+            fe["pad"] = PAD_ALG
         if e.stripped:
             fe["stripped"] = True
         pe = prev_files.get(rel) or {}
@@ -1184,7 +1274,7 @@ def _cmd_backup(args, ws: Path) -> int:
     with tempfile.TemporaryDirectory(prefix="whosaid-backup-") as td:
         seen = set()
         for e in plan.upload:
-            key = object_key(e.sha256, e.rel, encrypted)
+            key = object_key(e.sha256, e.rel, names)
             if key in seen:
                 continue
             seen.add(key)
@@ -1200,7 +1290,7 @@ def _cmd_backup(args, ws: Path) -> int:
                 src.write_bytes(body)
             if encrypted:
                 enc = Path(td) / "obj.age"
-                age_encrypt(src, enc, recips, rfile)
+                age_encrypt_padded(src, e.size, enc, recips, rfile)
                 csha[key] = sha256_file(enc)
                 target.put_file(key, enc)
                 enc.unlink()
@@ -1220,7 +1310,12 @@ def _cmd_backup(args, ws: Path) -> int:
             "tiers": sorted(set(tiers) | set((prev or {}).get("tiers") or []), key=TIERS.index),
             "files": dict(sorted(manifest_files.items())),
         }
+        if encrypted:
+            manifest["names"] = names
+            manifest["recipients_fp"] = fp
         body = json.dumps(manifest, indent=1).encode()
+        if encrypted:
+            body += b" " * (padded_size(len(body)) - len(body))   # JSON ignores trailing whitespace
         dropped_manifests: list[str] = []
         if encrypted:
             plain, enc = Path(td) / "m.json", Path(td) / "m.age"
@@ -1229,7 +1324,8 @@ def _cmd_backup(args, ws: Path) -> int:
             stamp_key = f"{MANIFESTS_DIR}/{manifest_stamp()}.age"
             target.put_file(stamp_key, enc)           # the point-in-time copy first, then "latest"
             target.put_file(BACKUP_MANIFEST + ".age", enc)
-            target.put_bytes(RECIPIENTS_KEY, (fp + "\n").encode())
+            if RECIPIENTS_KEY in keys:
+                target.delete(RECIPIENTS_KEY)                # legacy plaintext fingerprint
             dated = dated_manifests(keys | {stamp_key})
             dropped_manifests = dated[:-keep]
             for k in dropped_manifests:
@@ -1479,6 +1575,7 @@ def cmd_restore(args) -> int:
                 age_decrypt(raw, plain, identity)
                 raw.unlink()
                 raw = plain
+                unpad(raw, fe)
             if sha256_file(raw) != fe["sha256"]:
                 raise BackupError(f"{rel}: content hash does not match the manifest (corrupt or tampered object)")
             if rel == STATE_WATCHER:
@@ -1896,6 +1993,7 @@ def cmd_verify(args) -> int:
                         plain = Path(td) / "plain"
                         try:
                             age_decrypt(raw, plain, identity)
+                            unpad(plain, fe)
                             ok = (ok is not False) and sha256_file(plain) == fe["sha256"]
                         except BackupError as e:
                             problems.append(f"{o} ({rel}): {e}")
@@ -1915,7 +2013,8 @@ def cmd_verify(args) -> int:
         # counts per tier: backup vs workspace; files waiting for the next pass are not a problem
         tiers = [t for t in (manifest.get("tiers") or ["text"]) if t in TIERS]
         cache = HashCache(ws)
-        plan, local = plan_backup(ws, target, tiers, encrypted, manifest, keys, cache)
+        plan, local = plan_backup(ws, target, tiers, encrypted, manifest, keys, cache,
+                                  (manifest or {}).get("names") if encrypted else None)
         cache.save()
         counts = {}
         for t in tiers:

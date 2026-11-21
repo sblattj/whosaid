@@ -126,7 +126,7 @@ def stripped_text_tier(ws: Path) -> dict[str, str]:
 
 
 def encrypted_names_ok(name: str) -> bool:
-    return (name in (backup.BACKUP_MANIFEST + ".age", backup.RECIPIENTS_KEY) or name.startswith("objects/")
+    return (name == backup.BACKUP_MANIFEST + ".age" or name.startswith("objects/")
             or (name.startswith(backup.MANIFESTS_DIR + "/") and name.endswith(".age")))
 
 
@@ -332,6 +332,149 @@ class AgeBackupTest(Base):
         # same recipients again: nothing to re-upload
         rc, out, _ = run(["backup", str(self.ws), "--to", str(tgt), "--recipient", pub_b, "--dry-run"])
         self.assertEqual([ln for ln in out.splitlines() if ln.startswith("would upload")], [])
+
+
+@unittest.skipUnless(AGE, "age binary not installed (brew install age)")
+class OpaqueObjectNamesTest(Base):
+    """Refs #238: the storage host sees names and sizes it cannot link to content it may hold."""
+
+    def setUp(self):
+        super().setUp()
+        self.key = self.tmp / "backup.key"
+        self.pub = age_key(self.key)
+
+    def target_files(self, tgt: Path) -> dict[str, Path]:
+        return {p.relative_to(tgt).as_posix(): p for p in tgt.rglob("*") if p.is_file()}
+
+    def manifest(self, tgt: Path) -> dict:
+        return backup.read_manifest(backup.open_target(str(tgt)), str(self.key))
+
+    def content_hashes(self) -> set[str]:
+        out = set()
+        for _rel, p, _tier in backup.walk_workspace(self.ws):
+            out.add(backup.sha256_file(p))
+            if p.suffix == ".json":
+                body = backup.stripped_body(p)[0]
+                if body is not None:
+                    out.add(hashlib.sha256(body).hexdigest())
+        return out
+
+    def test_names_hide_content_hashes_and_no_plaintext_file(self):
+        tgt = self.tmp / "opaque"
+        rc, _, err = run(["backup", str(self.ws), "--to", str(tgt), "--recipient", self.pub,
+                          "--tier", "text,audio"])
+        self.assertEqual(rc, 0, err)
+        files = self.target_files(tgt)
+        self.assertNotIn(backup.RECIPIENTS_KEY, files, "no plaintext recipients fingerprint")
+        for name, path in files.items():
+            self.assertTrue(path.read_bytes().startswith(b"age-encryption.org/v1\n"), f"{name} is not age")
+        stems = {PurePosixPath(n).stem for n in files}
+        self.assertFalse(stems & self.content_hashes(), "an object name is a plaintext sha256")
+        m = self.manifest(tgt)
+        self.assertEqual(m["names"]["alg"], backup.NAMES_ALG)
+        self.assertEqual(m["recipients_fp"], backup.recipients_fingerprint([self.pub], None))
+        for rel, fe in m["files"].items():
+            self.assertEqual(fe["object"], backup.object_key(fe["sha256"], rel, m["names"]))
+            self.assertEqual(fe["pad"], backup.PAD_ALG)
+        st = backup.state_file(self.ws, backup.open_target(str(tgt)))
+        self.assertEqual(st.stat().st_mode & 0o777, 0o600, "local state caches the names key")
+        # incremental: the same names key, nothing to upload
+        rc, out, err = run(["backup", str(self.ws), "--to", str(tgt), "--recipient", self.pub,
+                            "--tier", "text,audio", "--dry-run"])
+        self.assertEqual(rc, 0, err)
+        self.assertEqual([ln for ln in out.splitlines() if ln.startswith("would upload")], [])
+        # a new machine with the identity reads the key back from the manifest: still nothing to upload
+        shutil.rmtree(self.ws / backup.STATE_DIR)
+        rc, out, err = run(["backup", str(self.ws), "--to", str(tgt), "--recipient", self.pub,
+                            "--tier", "text,audio", "--identity", str(self.key)])
+        self.assertEqual(rc, 0, err)
+        self.assertEqual([ln for ln in out.splitlines() if ln.startswith("upload ")], [])
+        self.assertEqual(self.manifest(tgt)["names"], m["names"])
+        # byte-exact restore through the padding
+        rc, _, err = run(["backup", "restore", str(tgt), str(self.tmp / "r"), "--identity", str(self.key)])
+        self.assertEqual(rc, 0, err)
+        got = {rel: backup.sha256_file(p) for rel, p, tier in backup.walk_workspace(self.tmp / "r")
+               if tier == "text"}
+        self.assertEqual(got, stripped_text_tier(self.ws))
+        for rel, p, tier in backup.walk_workspace(self.ws):
+            if tier == "audio":
+                self.assertEqual(backup.sha256_file(self.tmp / "r" / rel), backup.sha256_file(p), rel)
+        rc, out, err = run(["backup", "verify", str(self.ws), "--to", str(tgt), "--identity", str(self.key),
+                            "--sample", "0", "--json"])
+        self.assertEqual(rc, 0, err + out)
+
+    def test_padding_hides_exact_sizes(self):
+        for n in (0, 1, 4096, 4097, 5000, 65_537, 10**6, 3 * 10**8):
+            b = backup.padded_size(n)
+            self.assertGreaterEqual(b, max(n, backup.PAD_FLOOR))
+            self.assertLessEqual(b, max(n, backup.PAD_FLOOR) * 1.12 + 1, n)
+            self.assertEqual(backup.padded_size(b), b, "a bucket is its own bucket")
+        tgt = self.tmp / "pad"
+        notes = self.ws / "2026-10-02-1430" / "notes"
+        notes.mkdir(parents=True, exist_ok=True)
+        (notes / "a.md").write_text("a" * 5000)
+        (notes / "b.md").write_text("b" * 5100)
+        rc, _, err = run(["backup", str(self.ws), "--to", str(tgt), "--recipient", self.pub])
+        self.assertEqual(rc, 0, err)
+        files = self.manifest(tgt)["files"]
+        sa, sb = ((tgt / files[f"2026-10-02-1430/notes/{x}.md"]["object"]).stat().st_size for x in "ab")
+        self.assertEqual(sa, sb, "5000 and 5100 bytes share a bucket")
+        sizes = {p.stat().st_size for n, p in self.target_files(tgt).items() if n.startswith("objects/")}
+        self.assertLess(len(sizes), len(files), "sizes collapse into buckets")
+
+    def test_recipient_change_rotates_the_names_key(self):
+        tgt = self.tmp / "rot"
+        rc, _, err = run(["backup", str(self.ws), "--to", str(tgt), "--recipient", self.pub])
+        self.assertEqual(rc, 0, err)
+        m1 = self.manifest(tgt)
+        pub_b = age_key(self.tmp / "b.key")
+        rc, _, err = run(["backup", str(self.ws), "--to", str(tgt), "--recipient", self.pub,
+                          "--recipient", pub_b])
+        self.assertEqual(rc, 0, err)
+        m2 = self.manifest(tgt)
+        self.assertNotEqual(m1["names"]["key"], m2["names"]["key"])
+        self.assertFalse({f["object"] for f in m1["files"].values()} & {f["object"] for f in m2["files"].values()})
+        # every recipient reads the manifest, and so the names key
+        self.assertEqual(backup.read_manifest(backup.open_target(str(tgt)), str(self.tmp / "b.key"))["names"],
+                         m2["names"])
+
+    def test_legacy_layout_restores_and_migrates(self):
+        # a target as older versions wrote it: objects/<plaintext sha256>.age, unpadded, no names key,
+        # and a plaintext recipients fingerprint
+        tgt = self.tmp / "legacy"
+        (tgt / "objects").mkdir(parents=True)
+        files = {}
+        for rel, p, tier in backup.walk_workspace(self.ws):
+            if tier != "text" or p.suffix == ".json":
+                continue
+            sha = backup.sha256_file(p)
+            backup.age_encrypt(p, tgt / "objects" / f"{sha}.age", [self.pub], None)
+            files[rel] = {"sha256": sha, "size": p.stat().st_size, "tier": tier, "object": f"objects/{sha}.age"}
+        m = {"schema": backup.SCHEMA, "kind": "backup", "workspace": self.ws.name, "workspace_path": str(self.ws),
+             "home": str(Path.home()), "created": "2026-10-01T00:00:00Z", "updated": "2026-10-01T00:00:00Z",
+             "encrypted": "age", "layout": "objects", "tiers": ["text"], "files": files}
+        plain = self.tmp / "m.json"
+        plain.write_text(json.dumps(m))
+        (tgt / backup.MANIFESTS_DIR).mkdir()
+        backup.age_encrypt(plain, tgt / backup.MANIFESTS_DIR / "20261001T000000Z.age", [self.pub], None)
+        shutil.copy(tgt / backup.MANIFESTS_DIR / "20261001T000000Z.age", tgt / (backup.BACKUP_MANIFEST + ".age"))
+        (tgt / backup.RECIPIENTS_KEY).write_text(backup.recipients_fingerprint([self.pub], None) + "\n")
+        rc, _, err = run(["backup", "restore", str(tgt), str(self.tmp / "old"), "--identity", str(self.key)])
+        self.assertEqual(rc, 0, err)
+        for rel, fe in files.items():
+            self.assertEqual(backup.sha256_file(self.tmp / "old" / rel), fe["sha256"], rel)
+        rc, _, err = run(["backup", str(self.ws), "--to", str(tgt), "--recipient", self.pub,
+                          "--identity", str(self.key)])
+        self.assertEqual(rc, 0, err)
+        self.assertIn("keyed object names", err)
+        self.assertFalse((tgt / backup.RECIPIENTS_KEY).exists(), "the legacy fingerprint is deleted")
+        rc, out, err = run(["backup", "gc", str(self.ws), "--to", str(tgt), "--identity", str(self.key),
+                            "--keep", "1", "--json"])
+        self.assertEqual(rc, 0, err)
+        legacy = {fe["object"] for fe in files.values()}
+        self.assertLessEqual(legacy, set(json.loads(out)["delete"]), "gc drops every legacy object")
+        stems = {p.stem for p in (tgt / "objects").iterdir()}
+        self.assertFalse(stems & self.content_hashes())
 
 
 def target_blob(tgt: Path) -> bytes:
@@ -828,7 +971,11 @@ class DatedManifestGcTest(Base):
         self.item.write_text(text)
         rc, _, err = run(["backup", str(self.ws), "--to", str(self.tgt), "--recipient", self.pub, *extra])
         self.assertEqual(rc, 0, err)
-        return "objects/" + hashlib.sha256(text.encode()).hexdigest() + ".age"
+        return self.object_of("2026-10-02-1430/action-items.md")
+
+    def object_of(self, rel: str) -> str:
+        st = backup.load_local_state(self.ws, backup.open_target(str(self.tgt)))
+        return st["manifest"]["files"][rel]["object"]
 
     def manifests(self) -> list[str]:
         return backup.dated_manifests(backup.open_target(str(self.tgt)).list_keys())
@@ -887,7 +1034,7 @@ class DatedManifestGcTest(Base):
     def test_encrypted_prune_leaves_objects_for_gc(self):
         self.backup("- [ ] v1 heron\n")
         old = self.ws / "2026-09-14-0900" / "transcript.speakers.txt"
-        obj = "objects/" + backup.sha256_file(old) + ".age"
+        obj = self.object_of("2026-09-14-0900/transcript.speakers.txt")
         rc, _, err = run(["backup", str(self.ws), "--to", str(self.tgt), "--recipient", self.pub,
                           "--prune-older-than", "1d"])
         self.assertEqual(rc, 0, err)

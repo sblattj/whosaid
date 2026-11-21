@@ -1513,13 +1513,26 @@ whosaid backup restore s3://my-bucket/whosaid ~/meetings-restored --identity ~/.
 whosaid index ~/meetings-restored
 ```
 
-- **Encrypted at rest, client-side.** Each file is encrypted with `age` before upload and stored as
-  `objects/<sha256>.age`; the manifest (file names, sizes, hashes, tiers) is
-  `_whosaid-backup.json.age`. The target sees content hashes and sizes, not names or text. The
-  provider's own encryption is not relied on. `_whosaid-backup.recipients` holds a hash of the
-  public keys the objects were encrypted to; back up with a different key set and every object is
-  re-encrypted to it, so restore always needs the newest identity. `--plaintext` writes a browsable copy instead and is
+- **Encrypted at rest, client-side.** Each file is encrypted with `age` before upload. The
+  provider's own encryption is not relied on. `--plaintext` writes a browsable copy instead and is
   refused with `--tier biometric`.
+- **Opaque on the target.** The storage host should learn as little as possible, even when it
+  already holds a copy of one of your files:
+  - Object names are `objects/<HMAC-SHA256(names key, content hash)>.age`, so someone who has the
+    same file can't hash it and find it in the backup. The random names key lives inside the
+    encrypted manifest (`_whosaid-backup.json.age`, plus the dated copies), which every recipient
+    can decrypt, and in `<ws>/.backup/` (mode 0600).
+  - Each file is zero-padded to a size bucket before encryption (Padme: at most about 12% larger,
+    4 KiB minimum), and so is the manifest, so exact sizes don't show. Restore trims to the
+    recorded size and checks the hash.
+  - No plaintext file sits next to the objects. The recipient fingerprint is inside the manifest;
+    back up with a different key set and every object is re-encrypted under a new names key, so
+    restore always needs the newest identity.
+  - Still visible: how many objects there are, their bucketed sizes, upload times, the
+    `manifests/<UTC stamp>.age` names and the fixed `_whosaid-backup.json.age` name.
+  - Backups written before this change keep working: their objects restore as they are, the next
+    run re-uploads everything under keyed names, and `whosaid backup gc` removes the old objects
+    once no kept manifest names them.
 - **Incremental.** Files are hashed (cached by size and mtime in `<ws>/.backup/`), and only content
   the target lacks is uploaded. `--dry-run` prints one `would upload PATH (tier, size)` line per
   file, exactly the set a real run sends, plus totals per tier; `--json` gives the same plan as JSON.

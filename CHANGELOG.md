@@ -6,6 +6,13 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ## [Unreleased]
 
+### Changed
+- Encrypted backups no longer name objects by their content hash. Names are an HMAC under a random key kept inside the encrypted manifest, so a storage host that already has a copy of one of your files can't confirm it is in the backup. Every recipient can read the key, which leaves room for shared backups (#238).
+- Encrypted objects and manifests are zero-padded to Padme size buckets (at most about 12% larger, 4 KiB minimum) before encryption, so exact file sizes don't show. Restore and verify trim to the recorded size (#238).
+- The plaintext `_whosaid-backup.recipients` file is gone. The recipient fingerprint moved into the encrypted manifest, and a run deletes the old file. Changing recipients now also rotates the names key (#238).
+- Backups written by earlier versions still restore. Their next run re-uploads every object under a keyed name, and `backup gc` removes the old ones. Without local state or `--identity`, a run against an existing encrypted backup now warns that it will upload everything again (#238).
+- `<ws>/.backup/` state files are written 0600, since they cache the manifest and its names key (#238).
+
 ## [1.49.1] - 2026-11-20
 
 ### Fixed
