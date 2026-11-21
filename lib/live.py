@@ -653,10 +653,23 @@ def parakeet_transcriber(model: str, terms=(), boost: bool = True, weight: float
     def run(samples) -> list[dict]:
         if samples is None or len(samples) < min_len:
             return []
-        mel = get_logmel(mx.array(samples), m.preprocessor_config)
+        import numpy as np
+        x = np.asarray(samples, dtype=np.float32)
+        if rms(x) < RMS_FLOOR:
+            return []
+        mel = get_logmel(mx.array(x), m.preprocessor_config)
         res = m.generate(mel, decoding_config=dec)
-        return parakeet_segments(parakeet_words(res[0].tokens)) if res else []
+        return [s for s in parakeet_segments(parakeet_words(res[0].tokens)) if voiced(x, s)] if res else []
     return run
+
+
+def voiced(samples, seg: dict, pad: float = 0.05) -> bool:
+    """Is there sound under this segment? Parakeet invents "Yeah." / "Mm-hmm." over digital
+    silence (the masked mic leg, a re-transcribed sliver): drop a segment whose own span sits
+    below RMS_FLOOR, the same silence floor the chunk gate uses (#236)."""
+    a = max(0, int((seg["start"] - pad) * RATE))
+    b = min(len(samples), int((seg["end"] + pad) * RATE))
+    return b > a and rms(samples[a:b]) >= RMS_FLOOR
 
 
 def asr_model(a: argparse.Namespace) -> str:
