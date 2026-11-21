@@ -214,6 +214,14 @@ try:
     check(run(np.zeros(0, dtype=np.float32)) == [] and len(calls["generate"]) == n, "an empty slice is not decoded")
     check(run(np.zeros(100, dtype=np.float32)) == [], "a slice too short for a frame returns no segments")
 
+    # #236: Parakeet invents "Yeah." over digital silence (the masked mic leg, a re-transcribed sliver)
+    check(run(np.zeros(3 * live.RATE, dtype=np.float32)) == [], "words over pure silence are dropped")
+    half = np.full(3 * live.RATE, 0.1, dtype=np.float32)
+    half[: live.RATE] = 0.0  # "Hello there." (0.10-0.56 s) sits on silence, "Kubernetes rocks" on sound
+    check([s["text"] for s in run(half)] == ["Kubernetes rocks"], "only the segment over silence is dropped")
+    quiet = np.full(3 * live.RATE, 0.01, dtype=np.float32)  # -40 dBFS: quiet speech, above the floor
+    check(len(run(quiet)) == 2, "quiet audio above RMS_FLOOR keeps its words")
+
     live.parakeet_transcriber("org/p", ["Kubernetes"], boost=False)
     run2 = live.parakeet_transcriber("org/p", [])
     run2(np.full(live.RATE, 0.1, dtype=np.float32))
