@@ -98,14 +98,14 @@ check(parsed(["--asr", "parakeet"], WHOSAID_LIVE_BOOST_WEIGHT="2").boost_weight 
 # ---- vocabulary: workspace [transcribe] vocabulary + --vocabulary ----
 with tempfile.TemporaryDirectory() as d:
     (Path(d) / "whosaid.toml").write_text('[transcribe]\nvocabulary = ["Kubernetes", "blob store lib"]\n')
-    a = parsed(["--asr", "parakeet", "--vocabulary", "Camunda", "--vocabulary", "Kubernetes"], WHOSAID_WORKSPACE=d)
-    check(live.live_vocabulary(a) == ["Kubernetes", "blob store lib", "Camunda"],
+    a = parsed(["--asr", "parakeet", "--vocabulary", "Grafana", "--vocabulary", "Kubernetes"], WHOSAID_WORKSPACE=d)
+    check(live.live_vocabulary(a) == ["Kubernetes", "blob store lib", "Grafana"],
           "workspace vocabulary then --vocabulary, deduped, from $WHOSAID_WORKSPACE")
     a = parsed(["--asr", "parakeet", "--ws", d])
     check(live.live_vocabulary(a) == ["Kubernetes", "blob store lib"], "--ws names the workspace")
     (Path(d) / "whosaid.toml").write_text('[transcribe]\nvocabulary = "oops"\n')
-    a = parsed(["--asr", "parakeet", "--ws", d, "--vocabulary", "Camunda"])
-    check(live.live_vocabulary(a) == ["Camunda"], "a broken [transcribe] is logged and skipped, flags still count")
+    a = parsed(["--asr", "parakeet", "--ws", d, "--vocabulary", "Grafana"])
+    check(live.live_vocabulary(a) == ["Grafana"], "a broken [transcribe] is logged and skipped, flags still count")
 check(live.live_vocabulary(parsed(["--asr", "parakeet"])) == [], "no workspace, no flags: no vocabulary")
 
 # ---- backend selection: make_transcriber builds the right one ----
@@ -190,9 +190,9 @@ sys.modules.update({"parakeet_mlx": pm, "parakeet_mlx.audio": audio, "mlx": mlx,
 real_resolve = live.resolve_model
 live.resolve_model = lambda m: f"/cache/{m}"
 try:
-    run = live.parakeet_transcriber("org/p", ["Kubernetes", "Camunda"], boost=True, weight=1.0)
+    run = live.parakeet_transcriber("org/p", ["Kubernetes", "Grafana"], boost=True, weight=1.0)
     check(calls["model"] == "/cache/org/p", "the model comes through resolve_model (cache first)")
-    check(calls["words"] == {"Kubernetes": 1.0, "Camunda": 1.0}, "every term boosted at the weight")
+    check(calls["words"] == {"Kubernetes": 1.0, "Grafana": 1.0}, "every term boosted at the weight")
     check(calls["lift"][1] == ["<vocab>"], "boost lifted onto the model's vocabulary")
     segs = run(np.full(3 * live.RATE, 0.1, dtype=np.float32))
     dec = calls["generate"][-1][1].decoding
