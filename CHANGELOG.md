@@ -6,6 +6,11 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ## [Unreleased]
 
+## [1.48.1] - 2026-11-20
+
+### Fixed
+- `whosaid live --asr parakeet` no longer writes words over digital silence (#236). Parakeet makes up a one-word "Yeah." or "Mm-hmm." on stretches of pure zeros, such as the masked mic leg or a re-transcribed sliver. A segment whose own audio is below the -48 dBFS silence floor is now dropped. On the real model, 20 of 30 silent inputs gave a kept line on 1.48.0 and none do now; real speech keeps every word.
+
 ## [1.48.0] - 2026-11-20
 
 ### Added
