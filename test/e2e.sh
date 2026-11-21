@@ -107,7 +107,7 @@ PREFERRED="Samantha Daniel Karen Moira Rishi Fred Alex"
 VOICE_A=""
 VOICE_B=""
 for v in $PREFERRED; do
-  if echo "$AVAILABLE_VOICES" | grep -qx "$v"; then
+  if grep -qx "$v" <<<"$AVAILABLE_VOICES"; then
     if [ -z "$VOICE_A" ]; then
       VOICE_A="$v"
     elif [ -z "$VOICE_B" ]; then
@@ -537,11 +537,11 @@ DOCTOR_OUT="$("$REPO/whosaid" doctor 2>&1)"
 DOCTOR_RC=$?
 set -e
 
-printf '%s\n' "$DOCTOR_OUT" | grep -q 'speaker-embedding model' \
+grep -q 'speaker-embedding model' <<<"$DOCTOR_OUT" \
   || { printf '%s\n' "$DOCTOR_OUT" >&2; fail "doctor (rc=$DOCTOR_RC) did not report the speaker-embedding model line"; }
-printf '%s\n' "$DOCTOR_OUT" | grep -q 'speaker registry:' \
+grep -q 'speaker registry:' <<<"$DOCTOR_OUT" \
   || { printf '%s\n' "$DOCTOR_OUT" >&2; fail "doctor (rc=$DOCTOR_RC) did not report the speaker-registry line"; }
-printf '%s\n' "$DOCTOR_OUT" | grep -qF "$SPEAKER_DB" \
+grep -qF "$SPEAKER_DB" <<<"$DOCTOR_OUT" \
   || { printf '%s\n' "$DOCTOR_OUT" >&2; fail "doctor (rc=$DOCTOR_RC) registry line did not reflect the temp WHOSAID_SPEAKER_DB ($SPEAKER_DB)"; }
 
 echo "doctor report OK (rc=$DOCTOR_RC)"
@@ -661,7 +661,7 @@ sys.exit(0 if v == want else 1)' "$MF/transcript.diarization.json" "$REPO/lib/__
   || fail "sidecar whosaid_version does not match lib/__init__.py"
 
 DRY_OUT="$("$REPO/whosaid" reprocess "$WS" --dry-run 2>/dev/null)" || fail "reprocess --dry-run exited non-zero"
-printf '%s\n' "$DRY_OUT" | grep -q '(0 likely)' \
+grep -q '(0 likely)' <<<"$DRY_OUT" \
   || { printf '%s\n' "$DRY_OUT" >&2; fail "reprocess --dry-run did not report 0 likely after a reprocess"; }
 
 grep -E "^$MEETING: " "$RP_RUN_LOG" || true  # per-meeting summary (temp dir is deleted on PASS)

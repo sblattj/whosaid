@@ -62,7 +62,7 @@ assert_eq() {  # assert_eq <actual> <expected> <what>
 }
 
 assert_text() {  # assert_text <ERE-pattern> <text> <what>
-  if printf '%s\n' "$2" | grep -qE -- "$1"; then
+  if grep -qE -- "$1" <<<"$2"; then
     PASS=$((PASS + 1))
   else
     fail "$3: pattern [$1] not found in text: [$2]"
@@ -70,7 +70,7 @@ assert_text() {  # assert_text <ERE-pattern> <text> <what>
 }
 
 assert_not_text() {  # assert_not_text <ERE-pattern> <text> <what>
-  if printf '%s\n' "$2" | grep -qE -- "$1"; then
+  if grep -qE -- "$1" <<<"$2"; then
     fail "$3: pattern [$1] unexpectedly found in text: [$2]"
   else
     PASS=$((PASS + 1))

@@ -76,7 +76,7 @@ assert_grep() {  # assert_grep <ERE-pattern> <file> <what>
 }
 
 assert_text() {  # assert_text <ERE-pattern> <text> <what>
-  if printf '%s\n' "$2" | grep -qE -- "$1"; then
+  if grep -qE -- "$1" <<<"$2"; then
     PASS=$((PASS + 1))
   else
     fail "$3 — pattern [$1] not found in text: [$2]"

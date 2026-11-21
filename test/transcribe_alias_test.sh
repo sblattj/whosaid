@@ -45,7 +45,7 @@ assert_eq() {  # assert_eq <actual> <expected> <what>
 }
 
 assert_contains() {  # assert_contains <haystack> <needle> <what>
-  if printf '%s\n' "$1" | grep -qF -- "$2"; then
+  if grep -qF -- "$2" <<<"$1"; then
     PASS=$((PASS + 1))
   else
     fail "$3 — expected to find [$2] in [$1]"
@@ -53,7 +53,7 @@ assert_contains() {  # assert_contains <haystack> <needle> <what>
 }
 
 assert_not_contains() {  # assert_not_contains <haystack> <needle> <what>
-  if printf '%s\n' "$1" | grep -qF -- "$2"; then
+  if grep -qF -- "$2" <<<"$1"; then
     fail "$3 — expected NOT to find [$2] in [$1]"
   else
     PASS=$((PASS + 1))

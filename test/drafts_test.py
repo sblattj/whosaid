@@ -1629,6 +1629,25 @@ class AuditTest(DraftsBase):
         self.assertEqual(v["last_own_in_target"]["mid"], "t1")
         self.assertIsNone(v["coverage"]["caveat"], v["coverage"])
 
+    def test_cache_caveat_day_is_the_local_day_not_utc(self):
+        """#237: 21:00 Pacific is the next day in UTC; the caveat names the local day the chat folder has."""
+        old_tz = os.environ.get("TZ")
+        os.environ["TZ"] = "America/Los_Angeles"
+        time.tzset()
+        try:
+            old = (datetime.now() - timedelta(days=60)).replace(hour=21, minute=0, second=0, microsecond=0)
+            self.chat("Test Person", [(old, "Test_Person", "ping", "t0")], when=old)
+            did, _ = self.staged("Test Person", "dns fix")
+            cav = self.verdict(did)["coverage"]["caveat"] or ""
+            self.assertIn(f"since {old:%Y-%m-%d}:", cav)
+            self.assertNotIn(f"since {old + timedelta(days=1):%Y-%m-%d}:", cav)
+        finally:
+            if old_tz is None:
+                os.environ.pop("TZ", None)
+            else:
+                os.environ["TZ"] = old_tz
+            time.tzset()
+
     def test_sent_and_probably_sent_edited_in_the_target_chat(self):
         did, at = self.staged("Test Person", "dns fix")
         self.chat("Test Person", [(at + timedelta(minutes=1), "Me_Self", self.TEXT, "t1")])

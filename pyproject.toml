@@ -42,6 +42,16 @@ dependencies = [
 # `whosaid live --asr parakeet` (#235); the launcher adds it with uv on its own
 parakeet = ["parakeet-mlx>=0.7,<0.8"]
 
+[dependency-groups]
+# What the offline suites import beyond the runtime deps: test/run_all.sh reads this list and runs
+# every Python suite with it (#237). websockets backs the fake CDP servers in record_browser_test,
+# drafts_stager_test and stager_dom_test (its sync client/server API needs >= 12).
+test = [
+  "numpy>=1.26",
+  "mcp[cli]>=2,<3",
+  "websockets>=12",
+]
+
 [project.urls]
 Homepage = "https://github.com/sblattj/whosaid"
 Repository = "https://github.com/sblattj/whosaid"

@@ -2327,7 +2327,12 @@ The client setup and history regressions have focused suites as well:
 
 ### Running the suites
 
-Each suite is run directly; the runner depends on what it imports:
+`./test/run_all.sh` runs every suite (`test/*_test.{py,sh,js}`) with the dependencies it needs
+and prints one PASS/FAIL line per file and a summary; `./test/run_all.sh drafts backup` runs only
+the files whose names contain those words. Python suites get pyproject.toml's `test` dependency
+group (numpy, `mcp[cli]`, websockets), `bun:test` files run under `bun test`, the rest under node.
+
+Each suite can also be run directly; the runner depends on what it imports:
 
 - `*.sh` suites: `./test/<name>.sh`.
 - Stdlib-only Python suites (`graph_test.py`, `teams_chat_test.py`, ...):
@@ -2339,6 +2344,9 @@ Each suite is run directly; the runner depends on what it imports:
 - MCP suites (`mcp_descriptions_test.py`, `mcp_workspace_tools_test.py`, `mcp_decisions_tool_test.py`,
   `mcp_live_tools_test.py`, and `mcp_gateway_test.py`, which spawns the real server over stdio, import `mcp`):
   `uv run --with "mcp[cli]" python test/<name>.py`.
+- Fake-CDP suites (`record_browser_test.py`, `drafts_stager_test.py`, `stager_dom_test.py`) need
+  websockets: `uv run --quiet --with websockets --with numpy python test/<name>.py`.
+- `explain_assets_test.js` imports `bun:test`: `bun test ./test/explain_assets_test.js`.
 
 Couplings to know before editing code:
 
@@ -2347,6 +2355,10 @@ Couplings to know before editing code:
   `meetings` column means editing those snapshots.
 - A speaker-registry fixture's `model` must be an ONNX basename (`"<name>.onnx"`);
   `_validate_model` in `lib/speaker_registry.py` makes `read_json` reject anything else.
+- Shell suites run under `set -o pipefail`, so never pipe a large output into `grep -q`
+  (`printf '%s\n' "$OUT" | grep -q ...`): `grep -q` exits at the first match, `printf` dies of
+  SIGPIPE and the pipeline fails, so a present needle reads as missing and `assert_not_contains`
+  passes when it should fail. Use a here-string: `grep -qF -- "$needle" <<<"$OUT"` (#237).
 - macOS has no GNU `timeout`. In-script deadlines use `perl -e 'alarm shift; exec @ARGV' <secs> <cmd>`
   (see `test/enroll_from_file_test.sh`).
 

@@ -94,7 +94,7 @@ AVAILABLE_VOICES="$(say -v '?' | awk '{print $1}')"
 PREFERRED="Samantha Daniel Karen Moira Rishi Fred Alex"
 VOICE=""
 for v in $PREFERRED; do
-  if echo "$AVAILABLE_VOICES" | grep -qx "$v"; then
+  if grep -qx "$v" <<<"$AVAILABLE_VOICES"; then
     VOICE="$v"
     break
   fi
@@ -166,7 +166,7 @@ RC_C=$?
 set -e
 [ "$RC_C" -ne 0 ] || fail "(c) enroll --t 5 unexpectedly exited 0"
 PASS=$((PASS + 1))
-assert_true "$(echo "$ERR_C" | grep -q '15' && echo 0 || echo 1)" "(c) stderr missing '15': $ERR_C"
+assert_true "$(grep -q '15' <<<"$ERR_C" && echo 0 || echo 1)" "(c) stderr missing '15': $ERR_C"
 assert_true "$([ ! -e "$WHOSAID_VOICE_REFS/TooShort.wav" ] && echo 0 || echo 1)" "(c) TooShort.wav should not exist"
 
 # ---------------------------------------------------------------------------
@@ -237,7 +237,7 @@ RC_G=$?
 set -e
 [ "$RC_G" -ne 0 ] || fail "(g) silent input unexpectedly exited 0"
 PASS=$((PASS + 1))
-assert_true "$(echo "$ERR_G" | grep -q 'SILENT' && echo 0 || echo 1)" "(g) stderr missing 'SILENT': $ERR_G"
+assert_true "$(grep -q 'SILENT' <<<"$ERR_G" && echo 0 || echo 1)" "(g) stderr missing 'SILENT': $ERR_G"
 assert_true "$([ ! -e "$WHOSAID_VOICE_REFS/Silent.wav" ] && echo 0 || echo 1)" "(g) Silent.wav should not exist"
 
 # ---------------------------------------------------------------------------
@@ -254,7 +254,7 @@ RC_H=$?
 set -e
 [ "$RC_H" -ne 0 ] || fail "(h) --bogus unexpectedly exited 0"
 PASS=$((PASS + 1))
-assert_true "$(echo "$ERR_H" | grep -qi 'unknown option' && echo 0 || echo 1)" "(h) stderr missing 'unknown option': $ERR_H"
+assert_true "$(grep -qi 'unknown option' <<<"$ERR_H" && echo 0 || echo 1)" "(h) stderr missing 'unknown option': $ERR_H"
 
 echo ""
 echo "PASS: $PASS assertions"

@@ -274,7 +274,7 @@ EOF
 
 run_diarize --relabel "$SC" --save-speaker SPEAKER_00=Alice --save-role Alice=self
 assert_eq "$RC" 0 "relabel 1 (save speaker + role) exit code"
-if ! printf '%s\n' "$OUT" | grep -qF '"relabeled": true'; then
+if ! grep -qF '"relabeled": true' <<<"$OUT"; then
   fail "relabel 1 stdout must report relabeled: true — got [$OUT]"
 fi
 PASS=$((PASS + 1))
@@ -372,11 +372,11 @@ HELP_OUT="$("$REPO/whosaid" help 2>/dev/null)"
 HELP_RC=$?
 set -e
 assert_eq "$HELP_RC" 0 "'whosaid help' exit code"
-if ! printf '%s\n' "$HELP_OUT" | grep -qF -- "--role NAME=ROLE"; then
+if ! grep -qF -- "--role NAME=ROLE" <<<"$HELP_OUT"; then
   fail "'whosaid help' must document --role NAME=ROLE"
 fi
 PASS=$((PASS + 1))
-if ! printf '%s\n' "$HELP_OUT" | grep -qF -- "dev-commitments"; then
+if ! grep -qF -- "dev-commitments" <<<"$HELP_OUT"; then
   fail "'whosaid help' must mention dev-commitments"
 fi
 PASS=$((PASS + 1))

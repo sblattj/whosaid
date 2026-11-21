@@ -223,7 +223,11 @@ def fake_cdp(webm_b64, ws_port_box, close_after_drain=False, in_call_forever=Fal
 
     joins_after=N: the standalone --wait-for-call probe answers False N times, then True.
     """
-    from websockets.sync.server import serve
+    try:
+        from websockets.sync.server import serve
+    except ImportError:
+        check(False, "websockets is a test dependency (pyproject.toml [dependency-groups] test); run "
+                     "./test/run_all.sh record_browser or the Run: line in this file's docstring")
     polls = itertools.repeat(True) if in_call_forever else iter([True, True, False, False])
     probes = itertools.chain(itertools.repeat(False, joins_after or 0), itertools.repeat(True))
     sent = {"drain": False}

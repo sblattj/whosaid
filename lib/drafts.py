@@ -2123,7 +2123,8 @@ def _newest_older(ws: Path, is_target, before_day: str) -> int | None:
 
 
 def _day(ms: int) -> str:
-    return datetime.fromtimestamp(ms / 1000, timezone.utc).strftime("%Y-%m-%d")
+    """Local calendar day, like chat-day folders (teams_chat.local_dt) and the audit floor (#237)."""
+    return datetime.fromtimestamp(ms / 1000).strftime("%Y-%m-%d")
 
 
 def audit_one(ws: Path, m: dict, pool: dict, tiers: tuple[str, ...] = ("exact", "strong", "moderate")) -> dict:

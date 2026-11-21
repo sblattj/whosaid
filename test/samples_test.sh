@@ -88,7 +88,7 @@ AVAILABLE_VOICES="$(say -v '?' | awk '{print $1}')"
 PREFERRED="Samantha Daniel Karen Moira Rishi Fred Alex"
 VOICE=""
 for v in $PREFERRED; do
-  if echo "$AVAILABLE_VOICES" | grep -qx "$v"; then
+  if grep -qx "$v" <<<"$AVAILABLE_VOICES"; then
     VOICE="$v"
     break
   fi
@@ -232,7 +232,7 @@ RC_C=$?
 set -e
 [ "$RC_C" -ne 0 ] || fail "(c) samples on a sourceless sidecar unexpectedly exited 0"
 PASS=$((PASS + 1))
-assert_true "$(echo "$ERR_C" | grep -q -- '--audio' && echo 0 || echo 1)" "(c) stderr missing '--audio': $ERR_C"
+assert_true "$(grep -q -- '--audio' <<<"$ERR_C" && echo 0 || echo 1)" "(c) stderr missing '--audio': $ERR_C"
 
 set +e
 OUT_C2="$("$WHOSAID_BIN" samples "$NOSRC_BASE" -o "$TMP" --audio "$AUDIO_ABS" 2>"$TMP/err-c2.log")"
