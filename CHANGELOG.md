@@ -6,6 +6,8 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ## [Unreleased]
 
+## [1.49.0] - 2026-11-20
+
 ### Added
 - `whosaid backup init <ws> --to TARGET` sets up a trusted backup in one step: checks `age`, creates a daily identity (0600), prints a recovery identity once for offline storage, writes `[backup]` with both recipients, then runs a dry run, the first backup and a read-back of every object before turning on the daily schedule and a weekly verify (#234).
 - A `state` backup tier: the drafts outbox, `.watch_state.json` and a snapshot of the watcher's launchd settings. Encrypted only (#234).
