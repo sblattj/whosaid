@@ -1402,7 +1402,7 @@ def same_content(dest: Path, fe: dict) -> bool:
 def cmd_restore(args) -> int:
     ws = Path(args.ws).expanduser().resolve()
     # an existing destination's [backup] table (e.g. s3_endpoint) applies to the read too
-    target = open_target(args.target, load_config(ws).get("backup") or {})
+    target = getattr(args, "target_obj", None) or open_target(args.target, load_config(ws).get("backup") or {})
     if target.local_root() and target.local_root() == ws:
         raise BackupError("restore target and workspace are the same folder")
     identity = args.identity or os.environ.get("WHOSAID_BACKUP_AGE_IDENTITY") or None
@@ -1777,7 +1777,8 @@ def scheduled_pass(ws: Path, cfg: dict, dry: bool = False, now: float | None = N
                 and (lv is None or now - lv >= vevery):
             ident = resolve_identity(argparse.Namespace(identity=None), bcfg)
             vns = argparse.Namespace(ws=str(ws), to=str(bcfg["to"]), identity=ident, sample=None,
-                                     full=bool(ident) or not encrypted, query=None, tier=None, json=False, cfg=cfg)
+                                     full=bool(ident) or not encrypted, query=None, tier="text", json=False,
+                                     cfg=cfg)
             try:
                 with _quiet():
                     rc = cmd_verify(vns)
@@ -1929,8 +1930,7 @@ def cmd_verify(args) -> int:
                 old = {k: os.environ.get(k) for k in ("WHOSAID_DRAFTS_DIR",)}
                 os.environ["WHOSAID_DRAFTS_DIR"] = str(Path(td) / "drafts")
                 try:
-                    ns = argparse.Namespace(target=target.describe() if not isinstance(target, LocalTarget)
-                                            else str(target.root), ws=str(dest), identity=identity,
+                    ns = argparse.Namespace(target=target.describe(), target_obj=target, ws=str(dest), identity=identity,
                                             tier=getattr(args, "tier", None), registry_out=str(Path(td) / "reg.json"),
                                             force=False, dry_run=False, json=False, at=None)
                     with _quiet():
@@ -2152,9 +2152,9 @@ def write_backup_table(ws: Path, values: dict) -> None:
     text = p.read_text() if p.is_file() else ""
     out, skipping = [], False
     for line in text.splitlines():
-        head = re.match(r"^\s*\[([^\[\]]+)\]\s*(#.*)?$", line)
+        head = re.match(r"^\s*\[\[?([^\[\]]+)\]\]?\s*(#.*)?$", line)
         if head:
-            skipping = head.group(1).strip() == "backup"
+            skipping = head.group(1).strip() == "backup" and not line.lstrip().startswith("[[")
             if skipping:
                 continue
         if not skipping:
@@ -2192,6 +2192,8 @@ def cmd_init(args) -> int:
     age_bin()
     keygen_bin()
     table = raw_backup_table(ws)
+    if any(isinstance(v, dict) for v in table.values()):
+        raise BackupError("whosaid.toml has nested [backup.*] tables; set up [backup] by hand (see the README)")
     to = args.to or table.get("to")
     if not to:
         raise BackupError("backup init needs --to TARGET (a path, s3://bucket/prefix or rclone:REMOTE:path)")

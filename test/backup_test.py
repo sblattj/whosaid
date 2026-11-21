@@ -582,6 +582,40 @@ class S3RoundTripTest(Base):
         keys = backup.open_target(spec).list_keys()
         self.assertTrue(all(encrypted_names_ok(k) for k in keys))
 
+    @unittest.skipUnless(AGE, "age binary not installed")
+    def test_verify_full_gc_and_at_via_s3(self):
+        key = self.tmp / "k"
+        subprocess.run(["age-keygen", "-o", str(key)], check=True, capture_output=True)
+        pub = [ln.split(": ", 1)[1] for ln in key.read_text().splitlines() if ln.startswith("# public key: ")][0]
+        spec = f"s3://{self.bucket}/whosaid/ws"
+        # the endpoint comes from [backup] in whosaid.toml only: verify --full must keep it
+        os.environ.pop("WHOSAID_S3_ENDPOINT")
+        (self.ws / "whosaid.toml").write_text(f'[backup]\nto = "{spec}"\ns3_endpoint = "{S3_ENDPOINT}"\n'
+                                              f'recipients = ["{pub}"]\n')
+        rc, _, err = run(["backup", str(self.ws), "--to", spec])
+        self.assertEqual(rc, 0, err)
+        first = [k for k in backup.dated_manifests(
+            backup.open_target(spec, {"s3_endpoint": S3_ENDPOINT}).list_keys())]
+        note = self.ws / "2026-09-14-0900" / "transcript.speakers.txt"
+        note.write_text(note.read_text() + "[00:09:00] Alice: a later line\n")
+        rc, _, err = run(["backup", str(self.ws), "--to", spec, "--keep", "1"])
+        self.assertEqual(rc, 0, err)
+        rc, out, err = run(["backup", "verify", str(self.ws), "--identity", str(key), "--full",
+                            "--query", "zebra agenda", "--json"])
+        self.assertEqual(rc, 0, err + out)
+        self.assertTrue(json.loads(out)["full"]["ok"])
+        rc, out, err = run(["backup", "gc", str(self.ws), "--identity", str(key), "--json"])
+        self.assertEqual(rc, 0, err)
+        self.assertGreaterEqual(len(json.loads(out)["delete"]), 1, "the old speakers.txt object is gone")
+        left = backup.open_target(spec, {"s3_endpoint": S3_ENDPOINT}).list_keys()
+        self.assertFalse(set(first) & set(left), "the first dated manifest was dropped (keep 1)")
+        dest = self.tmp / "at"
+        os.environ["WHOSAID_S3_ENDPOINT"] = S3_ENDPOINT
+        stamp = __import__("pathlib").PurePosixPath(backup.dated_manifests(left)[-1]).name[:8]
+        rc, _, err = run(["backup", "restore", spec, str(dest), "--identity", str(key), "--at", stamp])
+        self.assertEqual(rc, 0, err)
+        self.assertIn("a later line", (dest / "2026-09-14-0900" / "transcript.speakers.txt").read_text())
+
     def test_share_via_s3(self):
         spec = f"s3://{self.bucket}/share"
         rc, _, err = run(["share", str(self.ws), "--to", spec, "--yes"])
@@ -942,6 +976,26 @@ class StatusAlarmTest(Base):
         rc, out, err = run(["backup", "status", str(self.ws)])
         self.assertIn("last backup:", out)
         self.assertIn("last full verify: never", out)
+        # a second pass uploads nothing: the sizes still describe the whole backup, not the upload
+        files = info["by_tier"]["text"]["files"]
+        rc, _, err = run(["backup", str(self.ws), "--to", str(tgt), "--plaintext"])
+        self.assertEqual(rc, 0, err)
+        info2 = json.loads(run(["backup", "status", str(self.ws), "--json"])[1])
+        self.assertEqual(info2["by_tier"]["text"]["files"], files)
+        self.assertGreater(info2["by_tier"]["text"]["bytes"], 0)
+
+    def test_write_backup_table_keeps_other_tables(self):
+        (self.ws / "whosaid.toml").write_text(
+            '# top comment\n[share]\nnever = ["x"]\n\n[backup]\nto = "/old"\ninterval = "daily"\n\n'
+            '[[hooks]]\nname = "a"\n\n[other]\nk = 1\n')
+        backup.write_backup_table(self.ws, {"to": "/new", "keep": 5})
+        import tomllib
+        cfg = tomllib.loads((self.ws / "whosaid.toml").read_text())
+        self.assertEqual(cfg["backup"], {"to": "/new", "keep": 5})
+        self.assertEqual(cfg["share"], {"never": ["x"]})
+        self.assertEqual(cfg["hooks"], [{"name": "a"}])
+        self.assertEqual(cfg["other"], {"k": 1})
+        self.assertIn("# top comment", (self.ws / "whosaid.toml").read_text())
 
     def test_stale_backup_and_verify_alarm_once_then_daily(self):
         tgt = self.tmp / "sched"

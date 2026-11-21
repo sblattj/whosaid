@@ -146,7 +146,7 @@ the models as usual.
 | `whosaid graph <ws> items\|item AI-NNN\|person [Name]\|prs\|meetings\|speakers\|commitments [--json]` | Entity views: action items with filters, one item's history, a person's commitments and asks, PR mentions, meeting coverage, talk share. `commitments` lists the unified CM table (`--owner`, `--source transcript\|action-items`, `--status` filters) — one model behind the worklist, `whosaid commitments`, and the wiki since #23: the roll-up folds self-owned action-items bullets into the same CM-NNN corpus as the spoken clauses (one item, occurrences from both sources, the bullet's timestamp included), and `graph build` loads that corpus instead of re-parsing the bullets. |
 | `whosaid wiki <ws> [--stdout] [-o FILE]` | Regenerate `<ws>/_WIKI.md` from the graph. |
 | `whosaid watch run\|install\|uninstall\|status --into <ws>` | Hands-free ingest of new recordings via a launchd agent. See [Hands-free ingest](#hands-free-ingest-whosaid-watch). |
-| `whosaid backup <ws> --to TARGET [--tier text,index,audio,biometric] [--dry-run]` | Incremental personal backup of a workspace, age-encrypted by default, to a path, `s3://bucket/prefix` or `rclone:REMOTE:path`; `whosaid backup restore TARGET <ws>` brings it back. See [Back up and share a workspace](#back-up-and-share-a-workspace). |
+| `whosaid backup <ws> --to TARGET [--tier text,index,audio,state,biometric] [--dry-run]` | Incremental personal backup of a workspace, age-encrypted by default, to a path, `s3://bucket/prefix` or `rclone:REMOTE:path`; `whosaid backup restore TARGET <ws>` brings it back. `backup init` sets it up, `backup verify` / `status` / `gc` keep it honest. See [Back up and share a workspace](#back-up-and-share-a-workspace). |
 | `whosaid share <ws> --to TARGET [--meetings A,B] [--since DATE] [--exclude-chat] [--yes]` | Read-only text export for teammates, never voiceprints; `whosaid share pull TARGET <dir>` on their side. See [Back up and share a workspace](#back-up-and-share-a-workspace). |
 | `whosaid memos list\|pull\|delete "<title>"\|shortcut-recipe` | Voice Memos helpers that never touch the app's files or database. See [Voice Memos helpers](#voice-memos-helpers-whosaid-memos). |
 | `whosaid doctor` | Read-only environment report, including Ollama reachability and the index status of `$WHOSAID_WORKSPACE`, and the default workspace `whosaid mcp` resolves to with its source. |
@@ -1618,7 +1618,7 @@ interval = "daily"            # hourly | daily | weekly | "12h" | "3d"; unset = 
 tier = "text,audio,state,biometric"   # tiers for the scheduled pass
 recipients = ["age1...daily", "age1...recovery"]   # or WHOSAID_BACKUP_AGE_RECIPIENT; plaintext = true opts out
 identity = "~/.config/whosaid/backup.key"   # read by verify and gc
-verify = "weekly"             # a read-back check on that schedule (full restore + search with identity)
+verify = "weekly"             # a read-back check on that schedule (with identity: a full text-tier restore + search)
 # keep = 30                   # dated manifests kept on the target
 # verify_query = "a phrase"   # what the full verify searches for
 # alarms = false              # turn the alarms off
