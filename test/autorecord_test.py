@@ -53,11 +53,24 @@ i = ar.parse_args(["install", "--app", "com.example.app", "--into", "/r", "--who
 pl = ar.build_plist(i, Path("/Apps/X.app"))
 check(pl["ProgramArguments"][:7] == ["/usr/bin/open", "-W", "-g", "-a", "/Apps/X.app", "--args", "/w"]
       and pl["ProgramArguments"][7:9] == ["autorecord", "run"], f"app plist opens the launcher: {pl['ProgramArguments']}")
-check(pl["KeepAlive"] == {"SuccessfulExit": False} and pl["RunAtLoad"] is True, "restarts after a crash, starts at login")
+check(pl["KeepAlive"] is True and pl["RunAtLoad"] is True,
+      "app mode: open -W exits 0 however the app ends, so KeepAlive is unconditional; starts at login")
+# ---- stale launcher: an instance left over from an older plist blocks the job (open -a error -600) ----
+_prog = pl["ProgramArguments"]
+check(ar.launcher_args(_prog) == _prog[6:] and ar.launcher_args(["/w", "autorecord", "run"]) is None,
+      "launcher_args: what follows --args, none for browser mode")
+_ps = ("  101 /usr/bin/open -W -g -a /Apps/Whosaid Call Recorder.app  -args  w  utorecord\n"
+       "  202 /Apps/Whosaid Call Recorder.app/Contents/MacOS/whosaid-call-recorder " + " ".join(_prog[6:]) + "\n"
+       "  303 /Apps/Whosaid Call Recorder.app/Contents/MacOS/whosaid-call-recorder /old/whosaid autorecord run --into /r\n")
+_l = ar.running_launchers(_ps)
+check([x["pid"] for x in _l] == [202, 303], f"running_launchers: the app instances, not open: {_l}")
+check([x["pid"] for x in ar.stale_launchers(_prog, _l)] == [303], "stale_launchers: only the one on other args")
+check(ar.stale_launchers(["/w", "autorecord", "run"], _l) == [], "browser mode has no launcher to go stale")
 j = ar.parse_args(["install", "--browser", "--into", "/r", "--whosaid", "/w"])
 pl = ar.build_plist(j, None)
 check(pl["ProgramArguments"][:3] == ["/w", "autorecord", "run"] and "--browser" in pl["ProgramArguments"],
       "browser plist runs whosaid directly (no app, no grant)")
+check(pl["KeepAlive"] == {"SuccessfulExit": False}, "browser mode keeps the exit-code KeepAlive")
 # ---- --mic-always (D81): default respects meeting mute; opt-in reaches record and the plist ----
 check("--mic-always" not in ar.record_argv(b) and ar.parse_args(["run", "--browser"]).mic_always is False,
       "browser default: no --mic-always (mute-respecting)")

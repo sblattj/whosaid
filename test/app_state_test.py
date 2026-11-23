@@ -40,6 +40,9 @@ cases = [
     ("warn", {**ar_wait, "state": "error", "last_error": {"kind": "permission", "rc": 5}}, idle_w, no_live),
     ("warn", {**ar_wait, "state": "error", "last_error": {"kind": "failed", "rc": 1}}, idle_w, no_live),
     ("warn", {**ar_wait, "running": False}, idle_w, no_live),
+    # an older launcher instance blocks the installed job (open -a error -600); warn between calls only
+    ("warn", {**ar_wait, "stale_launchers": [{"pid": 2768, "command": "x"}]}, idle_w, no_live),
+    ("recording", {**ar_wait, "state": "recording", "stale_launchers": [{"pid": 2768, "command": "x"}]}, idle_w, no_live),
     ("warn", ar_wait, {**idle_w, "running": False, "last_exit_status": 1}, no_live),
     ("agent-not-loaded", ar_wait, {**idle_w, "loaded": False}, no_live),
     ("agent-not-loaded", {**ar_wait, "loaded": False}, idle_w, no_live),

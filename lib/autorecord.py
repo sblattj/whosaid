@@ -592,17 +592,20 @@ def installed_env() -> dict:
 def build_plist(a: argparse.Namespace, app: Path | None, preserved_env: dict | None = None) -> dict:
     into = Path(a.into).expanduser()
     if app is not None:
-        # open -W keeps this job alive as long as the app runs, so KeepAlive can
-        # restart it after a crash; -g keeps it in the background.
+        # open -W keeps this job alive as long as the app runs; -g keeps it in the
+        # background. open -W exits 0 however the app ended (quit, crash, SIGTERM),
+        # so only an unconditional KeepAlive brings the recorder back.
         program = ["/usr/bin/open", "-W", "-g", "-a", str(app), "--args", a.whosaid, *run_args(a)]
+        keep_alive: dict | bool = True
     else:
         program = [a.whosaid, *run_args(a)]
+        keep_alive = {"SuccessfulExit": False}
     return {
         "Label": LABEL,
         "ProgramArguments": program,
         "EnvironmentVariables": agent_env(a, preserved_env),
         "RunAtLoad": True,
-        "KeepAlive": {"SuccessfulExit": False},
+        "KeepAlive": keep_alive,
         "ThrottleInterval": 60,
         "StandardOutPath": str(into / ".autorecord.launchd.log"),
         "StandardErrorPath": str(into / ".autorecord.launchd.log"),
@@ -617,17 +620,70 @@ def domain() -> str:
     return f"gui/{os.getuid()}"
 
 
+LAUNCHER_MARK = f"{APP_NAME}.app/Contents/MacOS/"
+
+
+def launcher_args(program: list[str]) -> list[str] | None:
+    """What an app-mode job hands the launcher (everything after --args); None otherwise."""
+    if program[:1] != ["/usr/bin/open"] or "--args" not in program:
+        return None
+    return program[program.index("--args") + 1:]
+
+
+def running_launchers(ps_out: str | None = None) -> list[dict]:
+    """Running launcher app instances: [{pid, command}] from `ps` (the app's own argv,
+    which is intact; `open` rewrites its argv, so its ps line looks truncated)."""
+    if ps_out is None:
+        ps_out = subprocess.run(["ps", "-axww", "-o", "pid=,command="], capture_output=True, text=True).stdout or ""
+    out = []
+    for line in ps_out.splitlines():
+        pid, _, cmd = line.strip().partition(" ")
+        if pid.isdigit() and LAUNCHER_MARK in cmd:
+            out.append({"pid": int(pid), "command": cmd.strip()})
+    return out
+
+
+def stale_launchers(program: list[str], launchers: list[dict]) -> list[dict]:
+    """Launcher instances not running the installed job's command.
+
+    `open -a` hands --args only to a new instance: while an older one runs (left
+    over from an upgrade that swapped the plist without stopping it), the job
+    fails with LaunchServices error -600 or attaches to the old instance, and
+    the old version keeps recording."""
+    want = launcher_args(program)
+    if want is None:
+        return []
+    tail = " " + " ".join(want)
+    return [l for l in launchers if not l["command"].endswith(tail)]
+
+
+def installed_program() -> list[str]:
+    try:
+        with open(plist_path(), "rb") as fh:
+            return list(plistlib.load(fh).get("ProgramArguments") or [])
+    except (OSError, plistlib.InvalidFileException, ValueError):
+        return []
+
+
 def stop_running(wait: float = 15.0, sleep=time.sleep) -> None:
     """Stop an installed autorecord (job, launcher app). A call in progress is saved.
 
     bootout returns before launchd has finished removing the job; a bootstrap in
     that window fails with "Bootstrap failed: 5: Input/output error". So wait,
-    up to `wait` seconds, until `launchctl print` no longer finds the service."""
+    up to `wait` seconds, until `launchctl print` no longer finds the service.
+    The launcher outlives its job (LaunchServices started it), and a new job
+    cannot start while it runs, so wait for it to exit too."""
     launchctl("bootout", f"{domain()}/{LABEL}")
-    subprocess.run(["pkill", "-TERM", "-f", f"{APP_NAME}.app/Contents/MacOS/"], capture_output=True)
+    subprocess.run(["pkill", "-TERM", "-f", LAUNCHER_MARK], capture_output=True)
     deadline = time.monotonic() + wait
     while launchctl("print", f"{domain()}/{LABEL}").returncode == 0 and time.monotonic() < deadline:
         sleep(0.25)
+    while running_launchers() and time.monotonic() < deadline:
+        sleep(0.25)
+    left = running_launchers()
+    if left:
+        log(f"autorecord: launcher still running after {wait:g}s (pid {', '.join(str(l['pid']) for l in left)}); "
+            "the new job starts once it exits")
 
 
 def cmd_install(a: argparse.Namespace) -> int:
@@ -906,7 +962,10 @@ def status(into_arg: str | None = None) -> dict:
             elapsed = max(0, int(time.time() - time.mktime(time.strptime(since[:19], "%Y-%m-%dT%H:%M:%S"))))
         except ValueError:
             pass
-    return {"installed": cfg is not None, "loaded": loaded, "running": running,
+    stale = []
+    if cfg is not None and sys.platform == "darwin":
+        stale = stale_launchers(installed_program(), running_launchers())
+    return {"installed": cfg is not None, "loaded": loaded, "running": running, "stale_launchers": stale,
             "controls": live_file, "mode": (cfg or data or {}).get("mode"), "app": (cfg or data or {}).get("app"),
             "live": bool((cfg or data or {}).get("live")), "label": (cfg or data or {}).get("label"),
             "into": str(into), **src, "paused_until": iso(until) if until else src.get("paused_until"),
@@ -980,7 +1039,13 @@ def cmd_status(a: argparse.Namespace) -> int:
     ls = status(str(into))
     if ls.get("live_state") in ("failed", "restarting"):
         print(f"autorecord: live transcript {ls['live_state']} (exit {ls.get('live_exit')}), see {into / LIVE_LOG}")
-    return 0 if running else 3
+    for l in ls.get("stale_launchers") or []:
+        print(f"autorecord: STALE launcher pid {l['pid']} is not the installed job: {l['command']}\n"
+              "  The installed job cannot start while it runs. Between calls, re-run "
+              "`whosaid autorecord install ...` (it stops the old one first).")
+    if not running:
+        return 3
+    return 5 if ls.get("stale_launchers") else 0
 
 
 # ---------------------------------------------------------------- CLI

@@ -160,6 +160,10 @@ def compose(ar: dict, w: dict, lv: dict) -> dict:
         return {"state": "warn", "headline": f"autorecord: the recorder keeps failing (exit {(ar.get('last_error') or {}).get('rc')})"}
     if ar.get("state") in ("recording", "saving") and ar.get("live_state") in ("failed", "restarting"):
         return {"state": "warn", "headline": f"the live transcript died (exit {ar.get('live_exit')}); see autorecord's live.log"}
+    if ar.get("stale_launchers") and ar.get("state") not in ("recording", "saving"):
+        pid = ar["stale_launchers"][0].get("pid")
+        return {"state": "warn", "headline": f"an older recorder (pid {pid}) is running instead of the installed one; "
+                                             "re-run `whosaid autorecord install` between calls"}
     # the watcher runs on demand (WatchPaths + StartInterval): between runs it is loaded,
     # not running and exited 0. Only a failed last run needs a look.
     last = w.get("last_exit_status")
