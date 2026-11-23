@@ -7,7 +7,7 @@ All notable changes to whosaid are documented here. This project adheres to
 ## [Unreleased]
 
 ### Fixed
-- An autorecord upgrade that swapped the LaunchAgent without stopping the running Call Recorder app left the old version recording forever. `open -a` hands `--args` only to a new instance, so the new job failed every minute with LaunchServices error -600, or attached to the old instance and waited. `autorecord status` (exit 5, `--json`: `stale_launchers`) and the menu bar now name the older recorder, and `autorecord install` waits for the old launcher to exit before it bootstraps the new job. Note: `ps` shows the job's `open` line with the first character of each argument missing; that is `open` rewriting its own argv, not a broken plist.
+- An autorecord upgrade that swapped the LaunchAgent without stopping the running Call Recorder app left the old version recording forever. `open -a` hands `--args` only to a new instance, so the new job failed every minute with LaunchServices error -600, or attached to the old instance and waited. `autorecord status` (exit 5, `--json`: `stale_launchers`) and the menu bar now name the older recorder, and `autorecord install` waits for the old launcher to exit before it bootstraps the new job. Note: `ps` shows the job's `open` line with the first character of each argument missing; that is `open` rewriting its own argv, not a broken plist (#240).
 - App mode's LaunchAgent now uses `KeepAlive = true`. `open -W` exits 0 however the recorder app ends (quit, crash, SIGTERM), so `KeepAlive {SuccessfulExit: false}` never restarted it (#240). Re-run `whosaid autorecord install` between calls to pick this up.
 
 ## [1.50.0] - 2026-11-20
