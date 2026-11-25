@@ -1,0 +1,71 @@
+<!doctype html>
+<!-- Synthetic stand-in for a Teams desktop call window (#242). No real meeting, people or transcript text.
+     Served by ../stager-edit-dom/bridge.mjs. Modes (query string): direct=1 a toolbar "Show transcript"
+     button; open=1 the panel already open; drift=1 the allow-listed name sits on a Stop transcription
+     control; pressed=1 the toolbar control reads as on while the panel is not found; nomenu=1 no More menu.
+     window.__fx: clicks (points), hits (names clicked), bad (denied controls that got a click). -->
+<html><head><title>Sync call | Microsoft Teams</title></head>
+<body>
+<div id="toolbar">
+  <button data-tid="toggle-mute" aria-label="Mute" data-rect="10,10,40,30">Mute</button>
+  <button data-tid="toggle-video" aria-label="Turn camera off" data-rect="60,10,40,30">Camera</button>
+  <button data-tid="call-hangup" aria-label="Leave" data-rect="110,10,40,30">Leave</button>
+  <button id="more" aria-label="More" data-rect="160,10,40,30"><span data-rect="165,15,30,20">More</span></button>
+</div>
+<div id="menus"></div>
+<div id="stage"></div>
+<script>
+const Q = new URLSearchParams(location.search);
+window.__fx = { clicks: [], hits: [], bad: [] };
+const DENY = /\b(stop|leave|mute|unmute|end|turn off|hide|start recording)\b/i;
+const el = (tag, attrs, text) => { const e = document.createElement(tag); for (const k in attrs) e.setAttribute(k, attrs[k]); if (text) e.textContent = text; return e; };
+let rowN = 0;
+window.__fx.openPanel = () => {
+  if (document.querySelector('[data-tid="call-transcript-panel"]')) return;
+  const p = el('div', { 'data-tid': 'call-transcript-panel', role: 'region', 'aria-label': 'Transcript' });
+  document.getElementById('stage').appendChild(p);
+  document.getElementById('menus').innerHTML = '';
+};
+window.__fx.closePanel = () => { const p = document.querySelector('[data-tid="call-transcript-panel"]'); if (p) p.remove(); };
+// add(text, author?) appends a row; keep(n) leaves only the newest n rows mounted (the virtualized list)
+window.__fx.add = (text, author) => {
+  const p = document.querySelector('[data-tid="call-transcript-panel"]');
+  rowN += 1;
+  const w = el('div', { 'data-tid': 'transcript-message-wrapper' });
+  const m = el('div', { 'data-tid': 'transcript-chat-message-sess/row-' + rowN });
+  if (author !== undefined) m.appendChild(el('span', { 'data-tid': 'transcript-item-author' }, author));
+  m.appendChild(el('div', { 'data-tid': 'call-transcript-panel-message' }, text));
+  w.appendChild(m); p.appendChild(w);
+  return 'row-' + rowN;
+};
+window.__fx.edit = (id, text) => { document.querySelector('[data-tid="transcript-chat-message-sess/' + id + '"] [data-tid="call-transcript-panel-message"]').textContent = text; };
+window.__fx.keep = n => { const ws = [...document.querySelectorAll('[data-tid="transcript-message-wrapper"]')]; ws.slice(0, Math.max(0, ws.length - n)).forEach(w => w.remove()); };
+function menu(items, y) {
+  const m = el('div', { role: 'menu' });
+  items.forEach(([label, text, act], i) => {
+    const it = el('div', { role: 'menuitem', 'aria-label': label, 'data-rect': `300,${y + i * 30},160,28` }, text || label);
+    it.__act = act; m.appendChild(it);
+  });
+  document.getElementById('menus').appendChild(m);
+}
+const show = () => window.__fx.openPanel();
+const sub = () => menu([['Start recording', '', null], ['Stop transcription', '', null],
+                        Q.get('drift') ? ['Show transcript', 'Stop transcription', show] : ['Show transcript', '', show]], 200);
+document.getElementById('more').__act = () => { if (!Q.get('nomenu')) menu([['Reactions', '', null], ['Record and transcribe', '', sub], ['Settings', '', null]], 100); };
+if (Q.get('direct') || Q.get('pressed')) {
+  const b = el('button', { 'aria-label': 'Show transcript', 'data-rect': '210,10,40,30' }, 'Transcript');
+  if (Q.get('pressed')) b.setAttribute('aria-pressed', 'true');
+  b.__act = show;
+  document.getElementById('toolbar').appendChild(b);
+}
+if (Q.get('open')) window.__fx.openPanel();
+document.addEventListener('click', ev => {
+  const c = ev.target.closest('button,[role=menuitem]');
+  if (!c) return;
+  const name = c.getAttribute('aria-label') || c.textContent;
+  window.__fx.hits.push(name);
+  if (DENY.test(name) || DENY.test(c.textContent)) window.__fx.bad.push(name);
+  if (c.__act) c.__act();
+});
+</script>
+</body></html>

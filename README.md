@@ -520,6 +520,29 @@ whosaid drafts html                             # review page of every open draf
   Teams pages (title `Chat | <name>`, else any `Chat |` window, else the page that has the search box)
   and never opens a tab; with no chat window it exits 1 "Teams app is up but no chat window found".
   In browser mode it takes the first Teams page, else opens one, as before.
+- **The call's live transcript panel as a source (#242).** With live transcription on in a Teams
+  call in the desktop app (started by `whosaid teams launch`), `whosaid teams transcript-live --jsonl`
+  polls the panel rows (`[data-tid^="transcript-chat-message-"]`) every `--interval` seconds (default 2)
+  and prints each row once, deduped by row id: `{"id","at","speaker","text","final"}`. A status change
+  prints once as `{"status","at"}` (`ok`, `panel closed`, `window not found`), and a poll that shares no
+  row with what was already read prints `{"gap","at","after","before"}`: the list is virtualized, so rows
+  that scroll past between polls are lost and the gap says so. The newest row is held until its text
+  stops changing (`--no-settle` turns that off); `--once` prints every row in view and exits. It is
+  read-only: the CDP wrapper it uses refuses everything but `Runtime.evaluate`. Caveats: `speaker` is
+  usually empty (the app shows the author on some rows only), so the recorder's diarization stays the
+  source of truth for who said what; the panel closes on a rejoin (status `panel closed`); page ids
+  change across rejoins, so the call window is found again on every reconnect, by `--title SUBSTRING`
+  or else the page that shows a call, never by a cached id.
+  `whosaid teams open-transcript [--title T] [--dry-run]` (MCP: `whosaid_teams_open_transcript`) is
+  the one action: it clicks only the control that shows the panel, by exact name from an allow-list
+  (`Show transcript`, or the call's `More` menu and its `Record and transcribe` submenu on the way to
+  it). Before every click it hit-tests the point and refuses the control there when any of its labels
+  matches a deny-list (stop, leave, hang up, mute, unmute, end, turn off, hide, close, start recording,
+  camera, share, ...), so Stop transcription, Leave and Mute are never clicked even if a name drifts
+  onto them. It never sends a key, and it is refused (exit 3) when the panel is already open, so it
+  never toggles it shut. Exit codes: 0 opened, 3 already open, 4 refused by the lists, 5 no call window
+  or control, 6 port down. The panel container, the hang-up probe and the control names are unverified
+  against a live call (the row selectors are from one).
 - **One owner at a time.** Changing a draft another live session owns is refused without
   `--force` (or `force=true` over MCP): ask that session instead. A draft whose session is gone
   is adopted by whoever changes it next.
@@ -1686,7 +1709,7 @@ Every other tool is still registered and still callable directly by name (the ma
 never changes during a connection (`listChanged` stays false). Groups: `search` (search, context,
 items, item, person, meetings, prs, speakers, decisions), `live` (live, live_insights, live_ask, the
 three live_explain writers, live_export_items, record_browser), `drafts` (the ten draft tools), `teams` (teams_live,
-teams_calendar, teams_launch), `workspace` (workspace_status, worklist, priorities,
+teams_calendar, teams_launch, teams_open_transcript), `workspace` (workspace_status, worklist, priorities,
 tracking_suggestions, set_status), `voices` (transcribe, relabel, list_speakers, doctor,
 enroll_from_file, samples, voice_groups, name_voice_group, reprocess).
 

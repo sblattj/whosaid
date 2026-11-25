@@ -6,6 +6,10 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ## [Unreleased]
 
+### Added
+- `whosaid teams transcript-live [--jsonl]`: the Teams desktop call's live transcript panel as a read-only live source. It polls the panel rows, prints each row once by row id (`{"id","at","speaker","text","final"}`), reports `ok` / `panel closed` / `window not found` once per change and a gap when rows may have scrolled past unread, and finds the call window again on every reconnect instead of caching its page id (#242).
+- `whosaid teams open-transcript` and the MCP tool `whosaid_teams_open_transcript`: open that panel and nothing else. Only allow-listed control names are clicked, a deny-list (Stop transcription, Leave, Mute, end, hide, camera...) is checked on the control under the pointer before every click, no key is ever sent, and it refuses when the panel is already open (#242).
+
 ## [1.50.1] - 2026-11-23
 
 ### Fixed

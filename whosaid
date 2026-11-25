@@ -19,6 +19,8 @@
 #   whosaid teams live|chats|sync|cache-status  Read Teams chats live from the desktop app's local cache.
 #   whosaid teams calendar [...]   Your Teams calendar from the same local cache.
 #   whosaid teams launch [...]     Start the Teams desktop app with a DevTools port.
+#   whosaid teams transcript-live  Read-only live source: the call's transcript panel as JSONL.
+#   whosaid teams open-transcript  Open the call's transcript panel (allow-listed click only).
 #   whosaid outlook ingest <export.json> --into D  Ingest an Outlook mail export the same way.
 #   whosaid roll-up <dir>           Rebuild the meeting-workspace index and audit.
 #   whosaid reprocess <ws> [M...]   Re-diarize meetings an older diarizer got wrong; keep labels and edits.
@@ -342,6 +344,19 @@ USAGE
                                         Teams only when its mic is idle (--force
                                         skips that). --check only probes the port.
                                         Prints {port, up, action, browser, pages}.
+  whosaid teams transcript-live [--jsonl] [--title T] [--interval S] [--once] [--max-seconds N] [--port N]
+                                        Read-only live source over the same port: polls
+                                        the call's live transcript panel and prints each
+                                        row once (deduped by row id). --jsonl rows are
+                                        {id, at, speaker, text, final}; status changes
+                                        {status: ok|panel closed|window not found} and
+                                        gaps {gap, after, before} print once each.
+                                        Speaker is usually empty. Never clicks or types.
+  whosaid teams open-transcript [--title T] [--dry-run] [--port N]
+                                        Click only the control that shows the transcript
+                                        panel (allow-listed names, deny-list checked
+                                        before every click: never Stop transcription,
+                                        Leave, Mute). Refused when the panel is open.
   whosaid ingest <audio> [<audio> ...] --into DIR [--folder-by created|mtime]
                                         [--tz ZONE] [--action-items] [--commitments]
                                         [--min-words N] [--hook CMD] [flags]
@@ -2586,6 +2601,8 @@ cmd_teams() {
     cache-status) exec "$WHOSAID_PY" "$REPO_DIR/lib/teams_cache.py" status "${@:2}" ;;
     calendar) exec "$WHOSAID_PY" "$REPO_DIR/lib/teams_calendar.py" "${@:2}" ;;
     launch) WHOSAID_BIN="$REPO_DIR/whosaid" exec "$WHOSAID_PY" "$REPO_DIR/lib/teams_launch.py" "${@:2}" ;;
+    transcript-live) exec uv run --quiet --with websockets python "$REPO_DIR/lib/teams_live_transcript.py" source "${@:2}" ;;
+    open-transcript) exec uv run --quiet --with websockets python "$REPO_DIR/lib/teams_live_transcript.py" open-transcript "${@:2}" ;;
     pair-api) cmd_teams_pair_api "${@:2}"; exit $? ;;
     unpair-api)
       local tf="${WHOSAID_TEAMS_API_TOKEN_FILE:-${XDG_CONFIG_HOME:-$HOME/.config}/whosaid/teams-api-token}"
@@ -2600,6 +2617,8 @@ cmd_teams() {
     log "       whosaid teams live|chats|sync|cache-status [...]   (local Teams cache; --help on each)"
     log "       whosaid teams calendar [--from today] [--days 7] [--q TEXT] [--json]   (calendar from the same cache)"
     log "       whosaid teams launch [--port N] [--check] [--force] [--wait S]   (start the Teams app with a DevTools port)"
+    log "       whosaid teams transcript-live [--jsonl] [--title T] [--interval S]   (call transcript panel, read-only)"
+    log "       whosaid teams open-transcript [--title T] [--dry-run]   (open the transcript panel; allow-listed click only)"
     log "       whosaid teams pair-api [--check] [--listen S] | unpair-api   (Teams local API as a mute source, opt-in)"
     exit 1
   fi

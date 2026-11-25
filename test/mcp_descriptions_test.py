@@ -110,6 +110,7 @@ def main() -> None:
         "whosaid_teams_live",
         "whosaid_teams_calendar",
         "whosaid_teams_launch",
+        "whosaid_teams_open_transcript",
         "whosaid_search_tools",
         "whosaid_call_tool",
     } | workspace_tools
