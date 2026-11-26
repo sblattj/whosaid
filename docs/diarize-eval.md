@@ -87,6 +87,95 @@ The rendered pool, the built meetings and the run outputs live in the cache
 `run.py` fingerprints the real registry (`~/.config/whosaid/speakers.json`) and the repo's
 `voices/` directory before and after each call. If either changes, the run aborts.
 
+## Release gate (synthetic fallback)
+
+`test/diarize_eval/release_gate.py` gates one whosaid build on a fixed synthetic corpus and holds
+it to the committed baseline `test/diarize_eval/gate_baseline.json`. It is the fallback for the
+by-ear replay (real meetings plus hand-checked truth labels) on a machine that has no such
+corpus. It needs the rendered voice pool (step 1 above) and never renders new voices.
+
+```sh
+python3 test/diarize_eval/release_gate.py --whosaid ~/.wt/whosaid/v1.52.0/whosaid   # about 20 min
+```
+
+Exit 0 is a pass, 1 is a regression past the baseline's tolerance (each one is printed as
+`GATE FAIL <metric> ...`), and 2 means it cannot run: no pool, a pool or corpus whose fingerprint
+differs from the baseline's, or a failed step. A run that cannot run never reads as a pass.
+Everything runs against a throwaway registry and workspace. The real registry's checksum is
+compared before and after (`real_registry_unchanged`).
+
+What it runs:
+
+| Step | What the by-ear replay checks | Where the synthetic gate checks it |
+|---|---|---|
+| Registry naming | `reprocess --match-threshold 0.7` names clusters from the real speaker registry (replay.sh:31). `run.py`'s `refs` modes only test enrollment clips passed as voice refs, with an empty registry (run.py:87, run.py:102) | Half the pool's voices are taught to a throwaway registry the way a user does it (transcribe the voice's enrollment clip, `relabel SPEAKER_00=Name`). The meetings are transcribed blind, then `reprocess --no-items --match-threshold 0.7` names them (lib/reprocess.py:411 `reprocess_meeting`) |
+| Per-cluster scoring | Each cluster is right, unnamed or wrong by its majority truth (gate.py:38) | `score.score_clusters` (score.py:363): ok, missed, swap (named as another enrolled voice), stranger (an unenrolled voice given a name), blend, wrong |
+| Crosstalk blends | A MIXED cluster must stay unnamed; naming it is wrong minutes (gate.py:38) | The `realistic.py --blends 3` meetings; `reg_blend_named_pct`, `reg_blends_unnamed_pct` |
+| Wrong-name bar | wrong-name minutes as a share of talk (gate.py:55, gate.py:60) | `reg_wrong_pct`, split into `reg_swap_pct`, `reg_stranger_pct` and `reg_blend_named_pct` |
+| Transcript-only labels | `eff()` shows a local label before the registry name (gate.py:17) | One stranger cluster gets `relabel --no-save "Guest Quill"`; after reprocess it must still show (lib/reprocess.py:446 `map_local_labels`); `local_label_carried` |
+| Registry untouched | registry checksum before and after (replay.sh:29, replay.sh:33) | `real_registry_unchanged`; `relabel --no-save` must not reach the throwaway registry either |
+| Against the last release | gain >= lost vs the watcher's release (autopilot.sh) | `score.gate_compare` (score.py:441) against the committed baseline, with a tolerance per metric |
+
+It also runs what the replay never covered:
+
+- the `run.py` modes `hint`, `refs` and `refs-subset` on the mixed batch (DER, count, turn and
+  naming accuracy);
+- `test/live_diarize_eval.py --fast` from the build's own tree (live naming, cassette ASR);
+- a `live serve` / `live pull` round trip of a synthetic session over loopback. A request without
+  a token must get a 401, a pull with the wrong token must exit 2 and write nothing, and a pull
+  with the right token must mirror every line with `source: remote:...`.
+
+Not covered: real voices and real rooms. The registry here learns from clean TTS clips, so its
+absolute numbers say nothing about a real call. Treat the gate as a regression check, not an
+accuracy claim. The by-ear replay stays the gate wherever its corpus exists.
+
+The corpus is fixed in `SETS` (release_gate.py): `build.py` seed 7101 (8 mixed meetings) and seed
+7102 (4 hard), plus `realistic.py` seed 7103 (2 meetings of 6 to 9 minutes with 3 crosstalk
+blends each). That is 14 meetings, about 41 minutes of talk. The meetings are cached under
+`release-gate/corpus/` in the cache, keyed by the pool's fingerprint.
+
+### Noise and tolerances
+
+Two runs of v1.52.0 on the same corpus gave identical numbers on every metric, so the
+tolerances in the baseline's `rules` are margins over a deterministic floor: 0.5 to 2 points
+for wrong- and right-name time, 1.5 points DER, 5 points of clusters right, and 15 points of
+headcount accuracy (one meeting of 8 or 14 is 7 to 12.5 points). The live metrics get 0.5 points.
+The booleans must be true.
+
+Red and green on v1.52.0 (baseline from v1.52.0):
+
+| Run | Verdict | What tripped |
+|---|---|---|
+| v1.52.0, second run | PASS (exit 0) | nothing; all metrics equal |
+| `--extra "--match-threshold 0.3"` (names too freely) | FAIL (exit 1) | `reg_wrong_pct` 6.72 to 30.93, `reg_stranger_pct` 1.3 to 25.43, `reg_clusters_ok_pct` 85.25 to 73.77, `refs_subset_named_wrong_pct` 1.78 to 4.59 |
+| `--extra "--match-threshold 0.95"` (names too rarely) | FAIL (exit 1) | `reg_named_ok_pct` 30.92 to 28.14, `refs_named_right_pct` 92.76 to 75.95, `refs_subset_named_right_pct` 50.26 to 43.56 |
+
+v1.52.0's own numbers (the baseline):
+
+- registry path: 30.9% of talk named right, 6.72% wrong (0 swaps, 1.3% strangers named, 5.42%
+  blends named; 10 of 12 blend clusters stay unnamed), 12.7% of talk an enrolled voice left unnamed, 52 of
+  61 clusters right, DER 13.5%;
+- `refs` naming: 92.8% right, 2.95% wrong; `refs-subset`: 50.3% right, 1.78% wrong; DER 8.7 to
+  8.8%;
+- live naming accuracy: 92.0%, handoff accuracy 97.3%.
+
+"Named right" counts all talk, strangers included. Strangers should stay unnamed, so it can't
+reach 100.
+
+### Refreshing the baseline
+
+Refresh the baseline only from a release that passed (or that you accept as the new reference),
+and in the same commit as any change to `SETS`, the pool or the scoring:
+
+```sh
+python3 test/diarize_eval/release_gate.py --whosaid ~/.wt/whosaid/vX.Y.Z/whosaid \
+    --write-baseline test/diarize_eval/gate_baseline.json
+```
+
+It keeps the old file's `rules` (edit tolerances there) and records the pool and corpus
+fingerprints, so a machine with a different pool exits 2 instead of comparing unlike corpora.
+A different pool needs its own baseline from the last release.
+
 ## Meeting format
 
 `<meetings>/<id>/audio.wav` is 16 kHz mono 16-bit PCM. `<meetings>/<id>/truth.json` looks like

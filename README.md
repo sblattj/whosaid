@@ -2360,6 +2360,12 @@ who it says spoke each turn, blind, with `--speakers N`, and with enrolled voice
 scripted lines go to the TTS vendors, and only while the voice pool is rendered. The voices are
 TTS, not real people. See [docs/diarize-eval.md](docs/diarize-eval.md).
 
+`test/diarize_eval/release_gate.py --whosaid <build>` is the synthetic release gate: 14 fixed
+synthetic meetings named through a throwaway speaker registry and `reprocess`, the `run.py`
+modes, the live naming eval and a `live serve` / `live pull` round trip, held to the committed
+`test/diarize_eval/gate_baseline.json`. Exit 0 pass, 1 regression, 2 cannot run (no voice pool).
+See [docs/diarize-eval.md](docs/diarize-eval.md#release-gate-synthetic-fallback).
+
 `test/live_diarize_eval.py` measures the speaker labels `whosaid live` shows during a call
 against ground truth and against the retroactive pass on the same synthetic calls (fake
 people, clips `test/diarize_eval` already rendered). `--fast` replays recorded Whisper output,
