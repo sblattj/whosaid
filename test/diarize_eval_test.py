@@ -360,5 +360,69 @@ class VoiceSimilarity(unittest.TestCase):
                                                           "per_meeting": per}))
 
 
+class ClusterScoreTest(unittest.TestCase):
+    """score_clusters: the by-ear replay's per-cluster check (gate skill gate.py `rows`), on
+    synthetic truth: a cluster is ok when its name is what its majority speaker should get."""
+
+    TRUTH = T(("Ana", 0, 10), ("Ben", 10, 20), ("Cy", 20, 30), ("Ana", 30, 34), ("Cy", 34, 38))
+
+    def test_enrolled_named_stranger_unnamed_is_all_ok(self):
+        segs = H(("SPEAKER_00", 0, 10), ("SPEAKER_01", 10, 20), ("SPEAKER_02", 20, 30))
+        r = sc.score_clusters(self.TRUTH, segs, {"SPEAKER_00": "Ana", "SPEAKER_01": "Ben"},
+                              enrolled=["Ana", "Ben"])
+        self.assertEqual((r["n_ok"], r["n_clusters"]), (3, 3))
+        self.assertEqual(r["wrong_s"], 0)
+        self.assertEqual(r["ok_named_s"], 20)
+
+    def test_swap_stranger_and_missed_are_told_apart(self):
+        segs = H(("SPEAKER_00", 0, 10), ("SPEAKER_01", 10, 20), ("SPEAKER_02", 20, 30))
+        r = sc.score_clusters(self.TRUTH, segs,
+                              {"SPEAKER_00": "Ben", "SPEAKER_02": "Ana"}, enrolled=["Ana", "Ben"])
+        kinds = {c["cluster"]: c["kind"] for c in r["clusters"]}
+        self.assertEqual(kinds, {"SPEAKER_00": "swap", "SPEAKER_01": "missed", "SPEAKER_02": "stranger"})
+        self.assertEqual((r["swap_s"], r["stranger_s"], r["missed_s"], r["wrong_s"]), (10, 10, 10, 20))
+
+    def test_mixed_cluster_must_stay_unnamed(self):
+        # 4 s Ana + 4 s Cy in one cluster: no 60% majority, so MIXED.
+        segs = H(("SPEAKER_00", 0, 10), ("SPEAKER_03", 30, 38))
+        named = sc.score_clusters(self.TRUTH, segs, {"SPEAKER_03": "Ana"}, enrolled=["Ana"])
+        c = [x for x in named["clusters"] if x["cluster"] == "SPEAKER_03"][0]
+        self.assertEqual((c["truth"], c["kind"]), ("MIXED", "blend"))
+        self.assertEqual((named["n_blend"], named["n_blend_unnamed"], named["blend_s"]), (1, 0, 8))
+        unnamed = sc.score_clusters(self.TRUTH, segs, {}, enrolled=["Ana"])
+        self.assertEqual((unnamed["n_blend_unnamed"], unnamed["blend_s"]), (1, 0))
+
+    def test_local_label_wins_and_sets_the_expectation(self):
+        segs = H(("SPEAKER_00", 0, 10), ("SPEAKER_02", 20, 30))
+        r = sc.score_clusters(self.TRUTH, segs, {"SPEAKER_02": "Ana"}, enrolled=["Ana"],
+                              local={"SPEAKER_02": {"name": "Guest Quill"}},
+                              expect={"SPEAKER_02": "Guest Quill"})
+        c = [x for x in r["clusters"] if x["cluster"] == "SPEAKER_02"][0]
+        self.assertEqual((c["name"], c["kind"]), ("Guest Quill", "ok"))
+
+
+class GateCompareTest(unittest.TestCase):
+    RULES = {"wrong_pct": ["down", 0.5], "named_ok_pct": ["up", 1.0], "carried": ["true", 0]}
+
+    def test_within_tolerance_passes(self):
+        old = {"wrong_pct": 1.0, "named_ok_pct": 80.0, "carried": True}
+        self.assertEqual(sc.gate_compare({"wrong_pct": 1.4, "named_ok_pct": 79.2, "carried": True},
+                                         old, self.RULES), [])
+
+    def test_each_regression_is_named(self):
+        old = {"wrong_pct": 1.0, "named_ok_pct": 80.0, "carried": True}
+        bad = sc.gate_compare({"wrong_pct": 2.0, "named_ok_pct": 70.0, "carried": False}, old, self.RULES)
+        self.assertEqual(len(bad), 3)
+        self.assertTrue(bad[0].startswith("wrong_pct ") and "tolerance 0.5" in bad[0], bad[0])
+        self.assertIn("named_ok_pct", bad[1])
+        self.assertIn("carried", bad[2])
+
+    def test_missing_metric_fails_instead_of_passing(self):
+        bad = sc.gate_compare({"named_ok_pct": 80.0, "carried": True},
+                              {"wrong_pct": 1.0, "named_ok_pct": 80.0, "carried": True}, self.RULES)
+        self.assertEqual(len(bad), 1)
+        self.assertIn("wrong_pct missing", bad[0])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=1)

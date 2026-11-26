@@ -360,6 +360,107 @@ def aggregate(per_meeting):
 # Convenience loaders
 # --------------------------------------------------------------------------
 
+def score_clusters(truth, segments, names=None, enrolled=(), local=None, expect=None, majority=0.6):
+    """The by-ear replay's per-cluster check (release gate skill, gate.py `rows`) on synthetic
+    truth. Each hypothesis cluster (raw SPEAKER_nn label) gets its truth from the time it shares
+    with the truth turns: the majority speaker at >= `majority` of that time, else MIXED (a
+    blend, which must stay unnamed). Its shown name is the transcript-only local label, else the
+    registry name, else the raw label, as the sidecar resolves it.
+
+    expected name: `expect[cluster]` if given, else the truth speaker when enrolled, else none.
+    kind: ok | missed (should be named, is not) | swap (an enrolled person shown as another) |
+          stranger (an unenrolled voice given a name) | blend (a MIXED cluster named) | wrong
+    Seconds are the cluster's own talk time, so *_s sums match the replay's wrong minutes."""
+    names, local, expect = names or {}, local or {}, expect or {}
+    enrolled = set(enrolled or ())
+    turns = [(float(t["start"]), float(t["end"]), t["speaker"]) for t in truth.get("turns", [])]
+    by = {}
+    for s in segments:
+        by.setdefault(str(s["speaker"]), []).append((float(s["start"]), float(s["end"])))
+    tot = dict(n_clusters=0, n_ok=0, n_blend=0, n_blend_unnamed=0, talk_s=0.0, ok_named_s=0.0,
+               wrong_s=0.0, swap_s=0.0, stranger_s=0.0, blend_s=0.0, missed_s=0.0, other_s=0.0)
+    rows = []
+    for c in sorted(by):
+        secs = sum(b - a for a, b in by[c])
+        cov = {}
+        for a, b in by[c]:
+            for ta, tb, who in turns:
+                ov = min(b, tb) - max(a, ta)
+                if ov > 0:
+                    cov[who] = cov.get(who, 0.0) + ov
+        if cov:
+            top = sorted(cov.items(), key=lambda kv: (-kv[1], kv[0]))[0]
+            share = top[1] / sum(cov.values())
+            who = top[0] if share >= majority else "MIXED"
+        else:
+            share, who = 0.0, "NONE"
+        lab = local.get(c)
+        if isinstance(lab, dict):
+            lab = lab.get("name")
+        shown = lab or names.get(c) or c
+        if c in expect:
+            want = expect[c]
+        elif who in enrolled:
+            want = who
+        else:
+            want = None
+        unnamed = bool(_ANON.match(shown))
+        if (want is None and unnamed) or shown == want:
+            kind = "ok"
+        elif unnamed:
+            kind = "missed"
+        elif who == "MIXED":
+            kind = "blend"
+        elif who in enrolled:
+            kind = "swap"
+        elif want is None:
+            kind = "stranger"
+        else:
+            kind = "wrong"
+        rows.append(dict(cluster=c, name=shown, truth=who, share=round(share, 3), secs=round(secs, 2),
+                         expect=want, kind=kind))
+        tot["n_clusters"] += 1
+        tot["talk_s"] += secs
+        if kind == "ok":
+            tot["n_ok"] += 1
+            if not unnamed:
+                tot["ok_named_s"] += secs
+        if who == "MIXED":
+            tot["n_blend"] += 1
+            tot["n_blend_unnamed"] += unnamed
+        if kind == "missed":
+            tot["missed_s"] += secs
+        elif kind != "ok":
+            tot["wrong_s"] += secs
+            tot[{"swap": "swap_s", "stranger": "stranger_s", "blend": "blend_s"}.get(kind, "other_s")] += secs
+    out = {k: (round(v, 2) if isinstance(v, float) else v) for k, v in tot.items()}
+    out["clusters"] = rows
+    return out
+
+
+def gate_compare(new, old, rules):
+    """Reasons `new` fails against the baseline `old` (empty = pass). rules: metric ->
+    [direction, tolerance]: "up" (higher is better), "down" (lower is better), or "true" (must be
+    true). A metric the rules name but `new` lacks fails: a check that did not run never passes."""
+    bad = []
+    for key, (way, tol) in rules.items():
+        if new.get(key) is None:
+            bad.append("%s missing from this run" % key)
+            continue
+        if way == "true":
+            if new[key] is not True:
+                bad.append("%s is %r, must be true" % (key, new[key]))
+            continue
+        if old.get(key) is None:
+            bad.append("%s missing from the baseline" % key)
+            continue
+        worse = (old[key] - new[key]) if way == "up" else (new[key] - old[key])
+        if worse > tol + 1e-9:
+            bad.append("%s %s regressed from the baseline's %s (%.2f worse, tolerance %g)"
+                       % (key, new[key], old[key], worse, tol))
+    return bad
+
+
 def load_truth(path):
     with open(path) as f:
         return json.load(f)
