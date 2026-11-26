@@ -280,6 +280,25 @@ whosaid live mark-item 20261116T100000 <row id> --status done --note "sent it"
 - **Items as rows: `export-items`.** Reads the ended call's sections (top-level arrays only, never `revisions[]`), `recap.json` and `<start>.ai.json`, and prints one row per ask, question, suggestion, decision or next step: a stable id (`<stem>-<kind>-<12 hex of sha1 of the normalized text>`), the section and its time window, the asker, the owner when the text names one (`me` for an ask aimed at you), the closest verbatim line of `<start>.jsonl` with its clock and speaker, and every source it was merged from (near-duplicates within a call become one row). A call still live (`ended: false`) is refused alone and skipped under `--since`. It writes nothing; the MCP tool is `whosaid_live_export_items`.
 - **Status overlay.** `mark-item` and the page's For-you checkboxes (when served) write `<start>.explain/items.status.json` (`{"version": 1, "items": {"<row id>": {status, updated, by, note}}}`); export-items reports each row's `status` from it (`open` by default).
 
+#### The call is on another Mac: `whosaid live serve` and `live pull`
+
+When the call (and its audio) runs on one Mac and the tools that read the live transcript run on another, share the live session over a private network (a WireGuard-style mesh, a VPN or the LAN):
+
+```bash
+# on the Mac with the call audio
+whosaid live token                                  # once: makes ~/.config/whosaid/live-token (mode 600) and prints it
+whosaid live serve --bind 100.64.0.5                # live run + serve .live/ read-only on that address, port 8766
+whosaid live serve --bind 100.64.0.5 --serve-only   # autorecord or another `live run` already writes the session
+
+# on the reading Mac: put the same token line in ~/.config/whosaid/live-token, then
+whosaid live pull --from 100.64.0.5:8766            # mirror into ~/Recordings/.live/; show, follow, MCP and explain just work
+```
+
+- **Read-only.** `GET /sessions` lists the sessions (stem, started, updated, ended, lines); `GET /sessions/<stem>?cursor=C&wait=S` returns the lines after `C` (the same cursors `live follow` uses) and the next cursor, holding the request up to `S` seconds (max 30) until a new line arrives. Anything but GET gets 405. Only transcript text and metadata leave the Mac; audio and voiceprints stay where they are.
+- **Token and address.** Every request needs `Authorization: Bearer <token>`; a missing or wrong one gets 401 and `pull` exits 2. `serve` binds one address (default 127.0.0.1) and refuses a wildcard (`0.0.0.0`, `::`); without a token file it serves loopback only and refuses any other address. `--token-file` or `WHOSAID_LIVE_TOKEN_FILE` moves the file.
+- **The mirror.** `pull` writes `<into>/.live/<stem>.md` and `.jsonl` as an ordinary live session whose meta says `"source": "remote:<url>"` (`live status --json` and the MCP tool report `source`). Line times stay the remote's. After a dropped connection it resumes from its cursor with no repeated line; on each new connection, every `--resync` seconds (default 60) and when the call ends it fetches the whole session again, so a name a voice got later reaches the earlier lines. It then marks the session ended and waits for the next call (`--once` exits; `--session STEM` mirrors just that one).
+- **Names.** Speaker naming still runs after the call on the Mac with the audio; live lines keep `me` / `them` and the live voice guesses.
+
 ### One status feed for apps and scripts: `whosaid app-state`
 
 ```bash

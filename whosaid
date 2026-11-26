@@ -882,6 +882,10 @@ LIVE
                      [--asr whisper|parakeet] [--ws WS] [--vocabulary TERM ...] [--no-boost] [--boost-weight W]
   whosaid live show  [--into DIR] [--minutes N]
   whosaid live status [--into DIR] [--json]
+  whosaid live serve [--bind ADDR] [--port N] [--token-file F] [--serve-only] [run flags ...]
+  whosaid live pull --from HOST:PORT [--into DIR] [--token-file F] [--session STEM] [--once]
+                    [--wait S] [--resync S] [--max-hours N]
+  whosaid live token [--token-file F]
   whosaid live follow [--into DIR] [--speaker REGEX ...] [--exclude-self] [--named-only]
                       [--poll S] [--format text|jsonl] [--once] [--stale-seconds N] [--max-hours N]
                       [--cursor-file F] [--heartbeat S]
@@ -901,6 +905,17 @@ LIVE
   <into>/.live/<start>.md and .jsonl (default --into ~/Recordings). Silent chunks are
   skipped. When the call ends it waits for the next (--once: exits). It only reads
   the recorder's files; the post-call transcript with names is unchanged.
+  serve (#244) runs `run` and also serves this Mac's <into>/.live/ read-only over HTTP to
+  another Mac: GET /sessions and GET /sessions/<stem>?cursor=C&wait=S (the follow
+  cursors, long-polled). It binds one address (--bind, default 127.0.0.1, never a
+  wildcard) and needs `Authorization: Bearer <token>` from the token file (default
+  ~/.config/whosaid/live-token, `live token` makes one); with no token file it serves
+  loopback only. --serve-only skips `run` (another live run or autorecord writes).
+  pull --from HOST:PORT mirrors the remote's newest session into the local .live/ (meta
+  "source": "remote:<url>") so show, follow, the MCP tool and explain read it as usual;
+  it resumes from its cursor after a drop, refetches the whole session every --resync s
+  for later names, marks it ended when the call ends, then waits for the next call.
+  Exit 2: no or wrong token. Only transcript text leaves the Mac; audio and voiceprints stay.
   --asr parakeet (or WHOSAID_LIVE_ASR=parakeet) uses NVIDIA Parakeet (parakeet-mlx, model
   WHOSAID_LIVE_PARAKEET_MODEL or parakeet-tdt-0.6b-v2) instead of Whisper: faster per chunk,
   word times always on, and the workspace's [transcribe] vocabulary (--ws, else
@@ -3196,6 +3211,18 @@ cmd_live() {
   fi
   if [[ "${1:-}" == show || "${1:-}" == status || "${1:-}" == follow ]]; then
     exec "$WHOSAID_PY" "$REPO_DIR/lib/live.py" "$@"
+  fi
+  # pull | token | serve --serve-only (#244): stdlib only, no uv
+  if [[ "${1:-}" == pull || "${1:-}" == token ]]; then
+    require_module "$REPO_DIR/lib/live_remote.py" "live $1"
+    exec "$WHOSAID_PY" "$REPO_DIR/lib/live.py" "$@"
+  fi
+  if [[ "${1:-}" == serve ]]; then
+    require_module "$REPO_DIR/lib/live_remote.py" "live serve"
+    local a2
+    for a2 in "${@:2}"; do
+      [[ "$a2" == --serve-only ]] && exec "$WHOSAID_PY" "$REPO_DIR/lib/live.py" "$@"
+    done
   fi
   # sherpa-onnx: live names from the speaker registry (lib/live_voices.py)
   # --asr parakeet (or WHOSAID_LIVE_ASR=parakeet; the flag wins) adds parakeet-mlx (#235)

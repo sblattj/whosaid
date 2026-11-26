@@ -729,7 +729,8 @@ def fmt_line(e: dict) -> str:
     return f"[{e['clock']}] {speaker(e)}: {e['text']}"
 
 
-def write_session(md: Path, jl: Path, started: float, entries: list[dict], ended: bool) -> None:
+def write_session(md: Path, jl: Path, started: float, entries: list[dict], ended: bool,
+                  extra: dict | None = None) -> None:
     md.parent.mkdir(parents=True, exist_ok=True)
     entries.sort(key=lambda e: e["t"])
     head = (f"# Live transcript, call started {datetime.fromtimestamp(started):%Y-%m-%d %H:%M:%S}\n"
@@ -739,7 +740,7 @@ def write_session(md: Path, jl: Path, started: float, entries: list[dict], ended
     tmp.write_text(head + "\n".join(fmt_line(e) for e in entries) + "\n")
     os.replace(tmp, md)
     tmp = jl.with_suffix(".jsonl.tmp")
-    meta = {"started": started, "ended": ended, "updated": time.time()}
+    meta = {"started": started, "ended": ended, "updated": time.time(), **(extra or {})}
     tmp.write_text(json.dumps({"meta": meta}) + "\n" + "".join(json.dumps(e) + "\n" for e in entries))
     os.replace(tmp, jl)
 
@@ -933,6 +934,7 @@ def latest_session(into: Path, minutes: float | None = None, since: str | float 
         "updated": stamp(meta.get("updated")),
         "jsonl": str(jl),
         "cursor": cursor,
+        "source": meta.get("source") or "local",  # "remote:<url>" for a `live pull` mirror (#244)
     }
     if cur is None and keep is None:
         out["transcript"] = "\n".join(fmt_line(e) for e in picked)
@@ -1342,32 +1344,41 @@ def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="whosaid live")
     sub = p.add_subparsers(dest="cmd")
     r = sub.add_parser("run")
-    for q in (p, r):
+    sv = sub.add_parser("serve", help="run, and serve this Mac's live sessions read-only to another Mac (#244)")
+    for q in (p, r, sv):
         q.add_argument("--into", default=str(DEFAULT_INTO), help="recordings folder (default ~/Recordings)")
-    r.add_argument("--asr", default=os.environ.get("WHOSAID_LIVE_ASR") or "whisper",
-                   help="speech-to-text backend: whisper (default) or parakeet (needs parakeet-mlx; "
-                   "env WHOSAID_LIVE_ASR)")
-    r.add_argument("--model", default=None,
-                   help=f"model for the chosen --asr (whisper: WHOSAID_LIVE_MODEL or {DEFAULT_MODEL}; "
-                   f"parakeet: WHOSAID_LIVE_PARAKEET_MODEL or {DEFAULT_PARAKEET_MODEL})")
-    r.add_argument("--ws", default=os.environ.get("WHOSAID_WORKSPACE") or None, help="workspace whose whosaid.toml [transcribe] vocabulary parakeet boosts "
-                   "(default $WHOSAID_WORKSPACE)")
-    r.add_argument("--vocabulary", action="append", metavar="TERM",
-                   help="a term parakeet should spell right (repeatable; added to the workspace's)")
-    r.add_argument("--no-boost", dest="boost", action="store_false",
-                   default=os.environ.get("WHOSAID_LIVE_BOOST", "1") != "0",
-                   help="parakeet: greedy decoding, vocabulary ignored (env WHOSAID_LIVE_BOOST=0)")
-    r.add_argument("--boost-weight", default=os.environ.get("WHOSAID_LIVE_BOOST_WEIGHT") or str(BOOST_WEIGHT),
-                   help=f"parakeet: how hard each term is boosted (default {BOOST_WEIGHT:g}; "
-                   "env WHOSAID_LIVE_BOOST_WEIGHT)")
-    r.add_argument("--chunk-seconds", type=float, default=20.0)
-    r.add_argument("--split-words", action="store_true",
-                   default=os.environ.get("WHOSAID_LIVE_SPLIT_WORDS") == "1",
-                   help="ask Whisper for word times and split a segment at a speaker change "
-                        "(slower; off: the segment is flagged mixed)")
-    r.add_argument("--capture", help="follow this recorder temp folder instead of finding it")
-    r.add_argument("--once", action="store_true", help="exit after one call")
-    r.add_argument("--max-hours", type=float, default=12.0)
+    for q in (r, sv):
+        q.add_argument("--asr", default=os.environ.get("WHOSAID_LIVE_ASR") or "whisper",
+                       help="speech-to-text backend: whisper (default) or parakeet (needs parakeet-mlx; "
+                       "env WHOSAID_LIVE_ASR)")
+        q.add_argument("--model", default=None,
+                       help=f"model for the chosen --asr (whisper: WHOSAID_LIVE_MODEL or {DEFAULT_MODEL}; "
+                       f"parakeet: WHOSAID_LIVE_PARAKEET_MODEL or {DEFAULT_PARAKEET_MODEL})")
+        q.add_argument("--ws", default=os.environ.get("WHOSAID_WORKSPACE") or None, help="workspace whose whosaid.toml [transcribe] vocabulary parakeet boosts "
+                       "(default $WHOSAID_WORKSPACE)")
+        q.add_argument("--vocabulary", action="append", metavar="TERM",
+                       help="a term parakeet should spell right (repeatable; added to the workspace's)")
+        q.add_argument("--no-boost", dest="boost", action="store_false",
+                       default=os.environ.get("WHOSAID_LIVE_BOOST", "1") != "0",
+                       help="parakeet: greedy decoding, vocabulary ignored (env WHOSAID_LIVE_BOOST=0)")
+        q.add_argument("--boost-weight", default=os.environ.get("WHOSAID_LIVE_BOOST_WEIGHT") or str(BOOST_WEIGHT),
+                       help=f"parakeet: how hard each term is boosted (default {BOOST_WEIGHT:g}; "
+                       "env WHOSAID_LIVE_BOOST_WEIGHT)")
+        q.add_argument("--chunk-seconds", type=float, default=20.0)
+        q.add_argument("--split-words", action="store_true",
+                       default=os.environ.get("WHOSAID_LIVE_SPLIT_WORDS") == "1",
+                       help="ask Whisper for word times and split a segment at a speaker change "
+                            "(slower; off: the segment is flagged mixed)")
+        q.add_argument("--capture", help="follow this recorder temp folder instead of finding it")
+        q.add_argument("--once", action="store_true", help="exit after one call")
+        q.add_argument("--max-hours", type=float, default=12.0)
+    import live_remote  # stdlib; serve / pull / token (#244)
+    live_remote.add_serve_args(sv)
+    pl = sub.add_parser("pull", help="mirror a `live serve` Mac's sessions into this one's .live/ (#244)")
+    pl.add_argument("--into", default=str(DEFAULT_INTO), help="recordings folder (default ~/Recordings)")
+    live_remote.add_pull_args(pl)
+    tk = sub.add_parser("token", help="create (or print) the live serve token file (#244)")
+    tk.add_argument("--token-file")
     s = sub.add_parser("show")
     s.add_argument("--into", default=str(DEFAULT_INTO))
     s.add_argument("--minutes", type=float)
@@ -1401,7 +1412,7 @@ def main(argv: list[str] | None = None) -> int:
     f.add_argument("--flush-seconds", type=float, metavar="S", default=45.0,
                    help="--agent: the file not written for S seconds finishes the last utterance (default 45)")
     argv = list(sys.argv[1:] if argv is None else argv)
-    if not argv or argv[0] not in ("run", "show", "status", "follow", "-h", "--help"):
+    if not argv or argv[0] not in ("run", "serve", "pull", "token", "show", "status", "follow", "-h", "--help"):
         argv.insert(0, "run")  # bare `whosaid live [flags]` means run
     a = p.parse_args(argv)
     if a.cmd == "follow":
@@ -1416,6 +1427,14 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_show(a)
     if a.cmd == "status":
         return cmd_status(a)
+    if a.cmd == "pull":
+        if a.wait < 0 or a.resync <= 0:
+            p.error("--wait must be >= 0 and --resync > 0")
+        return live_remote.cmd_pull(a)
+    if a.cmd == "token":
+        return live_remote.cmd_token(a)
+    if a.cmd == "serve" and a.serve_only:
+        return live_remote.cmd_serve_only(a)
     if a.chunk_seconds < 5:
         p.error("--chunk-seconds must be >= 5")
     if a.asr not in ASR_BACKENDS:  # argparse choices skip env defaults: check here
@@ -1427,6 +1446,8 @@ def main(argv: list[str] | None = None) -> int:
     if not a.boost_weight > 0:
         p.error("--boost-weight must be > 0")
     a.model = asr_model(a)  # resolved now, like the other env defaults
+    if a.cmd == "serve" and live_remote.prepare_server(a) is None:
+        return 2
     return cmd_run(a)
 
 
