@@ -6,6 +6,11 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ## [Unreleased]
 
+## [1.53.0] - 2026-11-26
+
+### Added
+- `test/diarize_eval/release_gate.py`: a synthetic release gate for machines without the by-ear meeting corpus. It builds 14 fixed synthetic meetings from the cached TTS voice pool (seeds 7101 to 7103, crosstalk blends included), teaches half the voices to a throwaway registry, then transcribes blind, sets one transcript-only label, and names the clusters with `reprocess --match-threshold 0.7` as the replay does. Each cluster is scored ok, missed, swap, stranger, blend or wrong (`score.score_clusters`). It also runs the `run.py` modes, `live_diarize_eval.py --fast`, and a `live serve` / `live pull` loopback round trip with a right and a wrong token. Results are compared to the committed `test/diarize_eval/gate_baseline.json` with a tolerance per metric (`score.gate_compare`). Exit 0 pass, 1 regression, 2 cannot run. `--write-baseline` refreshes the baseline. docs/diarize-eval.md lists what it covers of the by-ear replay, the red/green runs and v1.52.0's numbers.
+
 ## [1.52.0] - 2026-11-26
 
 ### Added
