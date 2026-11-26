@@ -6,6 +6,9 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ## [Unreleased]
 
+### Fixed
+- `whosaid app build` builds again on the macOS 27.2 Command Line Tools SDK, which ships no SwiftUI macro plugin (`@State` fails with "plugin for module 'SwiftUIMacros' not found"). It builds on the default SDK (`$SDKROOT`, else xcrun's) and, if that fails, once more on `MacOSX26.5.sdk`, logging which SDK it used; with neither SDK present it says what it looked for. `whosaid app test` does the same and now passes the CLT's swift-testing macro plugin folder, so `@Test` and `#expect` compile under the Command Line Tools (#245).
+
 ## [1.51.0] - 2026-11-24
 
 ### Added

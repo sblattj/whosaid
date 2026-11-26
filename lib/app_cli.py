@@ -3,7 +3,10 @@
 app_cli.py: build and install the native macOS app (`whosaid app`).
 
   build      `swift build -c release` in app/ with the Command Line Tools only,
-             then assemble app/.build/whosaid.app (Info.plist, resources) and
+             on the default macOS SDK ($SDKROOT, else xcrun's), and once more on
+             the 26.5 SDK if that fails (the 27.2 CLT SDK ships no SwiftUI macro
+             plugin, so `@State` does not compile); it logs the SDK it used. Then
+             assemble app/.build/whosaid.app (Info.plist, resources) and
              sign it with the "whosaid local signing" certificate when the
              login keychain has it (else ad hoc). --debug builds debug.
   install    build, then copy whosaid.app into ~/Applications (or
@@ -11,7 +14,8 @@ app_cli.py: build and install the native macOS app (`whosaid app`).
              `whosaid` (WHOSAID_BIN baked into its defaults at install).
   open       open the installed app (or the built one with --built).
   uninstall  quit it and remove the installed copy.
-  test       `swift test` with the flags swift-testing needs under the CLT.
+  test       `swift test` with the flags swift-testing needs under the CLT, on
+             the same SDKs as build.
   sign-setup make the "whosaid local signing" certificate once. An ad hoc
              signature changes on every build, so macOS treats each update as
              a new app and forgets Full Disk Access; a certificate keeps it.
@@ -35,6 +39,9 @@ BUNDLE_ID = "com.whosaid.app"
 APP_NAME = "whosaid.app"
 EXECUTABLE = "WhosaidApp"
 CLT_DEV = Path("/Library/Developer/CommandLineTools/Library/Developer")
+CLT_SDKS = Path("/Library/Developer/CommandLineTools/SDKs")
+CLT_TESTING_PLUGINS = Path("/Library/Developer/CommandLineTools/usr/lib/swift/host/plugins/testing")
+FALLBACK_SDK = "MacOSX26.5.sdk"  # the last CLT SDK whose SwiftUI macros load under the CLT toolchain
 BUILD_TIMEOUT = 900
 SIGN_NAME = "whosaid local signing"
 OPENSSL = "/usr/bin/openssl"  # LibreSSL: its pkcs12 output imports into the keychain as is
@@ -84,6 +91,69 @@ def swift_env() -> dict:
     return env
 
 
+def default_sdk() -> Path | None:
+    """The SDK swift would use: $SDKROOT, else `xcrun --sdk macosx --show-sdk-path`."""
+    env = os.environ.get("SDKROOT", "").strip()
+    if env:
+        return Path(env)
+    try:
+        r = subprocess.run(["xcrun", "--sdk", "macosx", "--show-sdk-path"], capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    out = r.stdout.strip() if r.returncode == 0 else ""
+    return Path(out) if out else None
+
+
+def sdk_label(sdk: Path) -> str:
+    """'macOS 27.2 SDK (path)': the version from the resolved name (MacOSX.sdk -> MacOSX27.2.sdk)."""
+    name = Path(os.path.realpath(sdk)).name
+    ver = name.removeprefix("MacOSX").removesuffix(".sdk")
+    return f"macOS {ver or '?'} SDK ({sdk})"
+
+
+def sdk_candidates(sdk_dir: Path | None = None) -> list[Path]:
+    """The default SDK, then the 26.5 fallback; only ones that exist, each once (by resolved path)."""
+    sdk_dir = sdk_dir or CLT_SDKS
+    seen: set[str] = set()
+    out: list[Path] = []
+    for sdk in (default_sdk(), sdk_dir / FALLBACK_SDK):
+        if sdk is None or not sdk.is_dir():
+            continue
+        real = os.path.realpath(sdk)
+        if real not in seen:
+            seen.add(real)
+            out.append(sdk)
+    return out
+
+
+def run_with_sdk_fallback(what: str, argv: list[str], sdk_dir: Path | None = None,
+                          env: dict | None = None) -> tuple[int, dict]:
+    """Run a swift command on each SDK candidate until one succeeds; log which SDK it used.
+
+    Returns (exit code, the env of the last attempt, SDKROOT set) so later swift calls use the same SDK."""
+    sdk_dir = sdk_dir or CLT_SDKS
+    base = dict(env if env is not None else swift_env())
+    sdks = sdk_candidates(sdk_dir)
+    if not sdks:
+        log(f"{what}: no macOS SDK found: the default SDK ($SDKROOT or `xcrun --sdk macosx --show-sdk-path`) "
+            f"is missing and so is {sdk_dir / FALLBACK_SDK}. Install the Command Line Tools: xcode-select --install")
+        return 1, base
+    rc = 1
+    for i, sdk in enumerate(sdks):
+        run_env = dict(base, SDKROOT=str(sdk))
+        log(f"{what}: using the {sdk_label(sdk)}")
+        rc = subprocess.run(argv, timeout=BUILD_TIMEOUT, env=run_env).returncode
+        if rc == 0:
+            log(f"{what}: succeeded with the {sdk_label(sdk)}")
+            return 0, run_env
+        if i + 1 < len(sdks):
+            log(f"{what}: {argv[0]} {argv[1]} failed with the {sdk_label(sdk)} (exit {rc}); "
+                f"retrying with the {sdk_label(sdks[i + 1])}")
+    tried = ", ".join(sdk_label(s) for s in sdks)
+    log(f"{what}: {argv[0]} {argv[1]} failed (exit {rc}) with every SDK tried: {tried}")
+    return rc, run_env
+
+
 def built_app(config: str) -> Path:
     return APP_SRC / ".build" / f"{APP_NAME}" if config == "release" else APP_SRC / ".build" / f"debug-{APP_NAME}"
 
@@ -106,13 +176,11 @@ def cmd_build(a: argparse.Namespace) -> int:
         log("app build: `swift` not found. Install the Command Line Tools: xcode-select --install")
         return 1
     config = "debug" if a.debug else "release"
-    r = subprocess.run(["swift", "build", "-c", config, "--package-path", str(APP_SRC)],
-                       timeout=BUILD_TIMEOUT, env=swift_env())
-    if r.returncode:
-        log(f"app build: swift build failed (exit {r.returncode})")
-        return r.returncode
+    rc, env = run_with_sdk_fallback("app build", ["swift", "build", "-c", config, "--package-path", str(APP_SRC)])
+    if rc:
+        return rc
     show = subprocess.run(["swift", "build", "-c", config, "--package-path", str(APP_SRC), "--show-bin-path"],
-                          capture_output=True, text=True, timeout=120, env=swift_env())
+                          capture_output=True, text=True, timeout=120, env=env)
     binpath = show.stdout.strip()
     if show.returncode or not (Path(binpath) / EXECUTABLE).is_file():
         log(f"app build: no built binary at {binpath or '(swift build --show-bin-path failed)'}")
@@ -230,13 +298,15 @@ def test_argv() -> list[str]:
     if fw.is_dir():  # Command Line Tools only: point SwiftPM at its swift-testing copy
         argv += ["-Xswiftc", "-F", "-Xswiftc", str(fw), "-Xlinker", "-F", "-Xlinker", str(fw),
                  "-Xlinker", "-rpath", "-Xlinker", str(fw), "-Xlinker", "-rpath", "-Xlinker", str(lib)]
+    if CLT_TESTING_PLUGINS.is_dir():  # the CLT toolchain does not search here for TestingMacros (@Test, #expect)
+        argv += ["-Xswiftc", "-plugin-path", "-Xswiftc", str(CLT_TESTING_PLUGINS)]
     return argv
 
 
 def cmd_test(a: argparse.Namespace) -> int:
     env = swift_env()
     env["WHOSAID_TEST_BIN"] = str(REPO / "whosaid")
-    return subprocess.run(test_argv(), timeout=BUILD_TIMEOUT, env=env).returncode
+    return run_with_sdk_fallback("app test", test_argv(), env=env)[0]
 
 
 def parse_args(argv: list[str] | None) -> argparse.Namespace:
