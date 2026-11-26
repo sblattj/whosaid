@@ -6,6 +6,9 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ## [Unreleased]
 
+### Added
+- `whosaid live serve` and `whosaid live pull --from HOST:PORT`: share a live session with another Mac over a private network. `serve` runs `live run` (or, with `--serve-only`, serves what is already being written) and answers `GET /sessions` and `GET /sessions/<stem>?cursor=C&wait=S` read-only, with the same cursors `live follow` uses and a long-poll of up to 30 s. It binds one address (default 127.0.0.1, never a wildcard) and needs `Authorization: Bearer <token>` from `~/.config/whosaid/live-token` (`whosaid live token` makes it, mode 600); without a token file it serves loopback only. `pull` mirrors the remote's newest session into the local `.live/` with `"source": "remote:<url>"`, keeps the remote's times, resumes from its cursor after a drop, refetches the whole session for names given later, marks it ended and waits for the next call; a missing or wrong token is a 401 and exit 2. `live status --json` and the MCP live tool report `source`. The README documents the protocol for other clients (#244).
+
 ## [1.51.1] - 2026-11-26
 
 ### Fixed
