@@ -299,6 +299,26 @@ whosaid live pull --from 100.64.0.5:8766            # mirror into ~/Recordings/.
 - **The mirror.** `pull` writes `<into>/.live/<stem>.md` and `.jsonl` as an ordinary live session whose meta says `"source": "remote:<url>"` (`live status --json` and the MCP tool report `source`). Line times stay the remote's. After a dropped connection it resumes from its cursor with no repeated line; on each new connection, every `--resync` seconds (default 60) and when the call ends it fetches the whole session again, so a name a voice got later reaches the earlier lines. It then marks the session ended and waits for the next call (`--once` exits; `--session STEM` mirrors just that one).
 - **Names.** Speaker naming still runs after the call on the Mac with the audio; live lines keep `me` / `them` and the live voice guesses.
 
+Protocol (for other clients). Every request sends `Authorization: Bearer <token>` (the one line in the token file); a missing or wrong token gets `401 {"ok": false, "error": ...}`. Only GET is served (405 otherwise). Bodies are JSON.
+
+```text
+GET /sessions
+200 {"ok": true, "sessions": [{"stem": "20261126T101500", "started": 1795694100.0,
+                               "updated": 1795694712.4, "ended": false, "lines": 42}, ...]}
+    (started/updated: epoch seconds on the serving Mac; the newest call has the largest stem)
+
+GET /sessions/<stem>[?cursor=<cursor>][&wait=<seconds>]
+200 {"ok": true, "stem": "...", "meta": {"started": ..., "ended": false, "updated": ...},
+     "entries": [{"n": 42, "t": 611.2, "clock": "10:25:11", "who": "them", "text": "...",
+                  "name": "B", "voice": "v1", ...}, ...],
+     "cursor": "20261126T101500:n42", "reset": false, "full": false}
+404 no such session; 400 a bad stem, cursor or wait
+```
+
+- No `cursor`: the whole session (`"full": true`). With `cursor`: only the lines after it, in time order; pass the returned `cursor` on the next call and no line comes twice, even though the files are rewritten whole. `reset: true` means the cursor was not this session's: `entries` is then the whole session.
+- `wait` (0 to 30 s, default 0) holds the request until a line arrives, the call ends (`meta.ended`) or the time runs out (then `entries` is `[]` and `cursor` is unchanged).
+- Entry keys are those of `<stem>.jsonl`: `n` (the order lines were made in), `t` (seconds since `started`), `clock`, `who` (`me` / `them`) and `text` always; `name`, `role`, `voice`, `confidence` and the rest when the live voice match set them. A later name can land on an earlier line; fetch without a cursor now and then to pick it up.
+
 ### One status feed for apps and scripts: `whosaid app-state`
 
 ```bash
