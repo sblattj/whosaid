@@ -6,6 +6,11 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ## [Unreleased]
 
+## [1.55.0] - 2026-11-27
+
+### Changed
+- Open drafts to the same person always merge into one: `new` joins the open draft to that recipient even with `--new` / `separate=true` (the result says `separate_ignored`), and verify no longer warns about the word limit on a merged draft (`merged_from` or contributors), since the user reviews the one message before sending. `[drafts] always_merge = false` in whosaid.toml restores a second draft on `--new`; `--supersedes` still makes one (#246).
+
 ## [1.54.0] - 2026-11-27
 
 ### Added
