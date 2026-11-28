@@ -754,7 +754,10 @@ def new(to: str, topic: str, pages: list[str] | None = None, supersedes: str | N
     ws = the workspace whose chats show what already went out (else WHOSAID_WORKSPACE): staged drafts to
     this recipient that it shows as sent are closed first, so the new message starts fresh (#228).
 
-    separate=True (CLI --new) or supersedes makes a second draft instead of joining. thread_id = the
+    supersedes makes a second draft instead of joining; so does separate=True (CLI --new), but only when
+    the workspace sets [drafts] always_merge = false: by default (#246) an open draft to the same recipient
+    is always joined, the merged message may run past the word limit, and the user reviews it before
+    sending. thread_id = the
     chat's Teams thread id; without one (and not new_chat) it is filled from the Teams desktop cache
     when exactly one cached chat carries the recipient's name."""
     to, topic = (to or "").strip(), (topic or "").strip()
@@ -775,13 +778,18 @@ def new(to: str, topic: str, pages: list[str] | None = None, supersedes: str | N
     closed, check_errors = _close_sent_rivals(clash, ws)
     if closed:  # #228: a staged draft that already went out is closed, never built on
         clash = [d for d in clash if d["id"] not in closed]
-    if clash and not separate and not supersedes:
+    merge_anyway = bool(clash and separate and not supersedes and always_merge(ws))
+    if clash and (not separate or merge_anyway) and not supersedes:
         joined = _join(max(clash, key=lambda d: d.get("updated_at") or ""), me, topic, pages, mentions, new_chat,
                        thread_id)
         if closed:
             joined["closed_sent"] = closed
         if check_errors:
             joined["sent_check_errors"] = check_errors
+        if merge_anyway:  # #246: one open draft per recipient; the user reviews the one message before sending
+            joined["separate_ignored"] = True
+            joined["note"] = (f"{joined['note']} separate/--new was ignored: [drafts] always_merge keeps one open "
+                              "draft per recipient (set always_merge = false in whosaid.toml for a second one).")
         return joined
     ts = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M")
     draft_id = f"{ts}-{slug(to)}-{slug(topic)}"
@@ -871,7 +879,7 @@ def _join(m: dict, me: dict, topic: str, pages: list[str], mentions: list[str], 
     return {"id": m["id"], "path": str(ddir(m["id"])), "joined": True, "owner_line": owner_line(o),
             "note": (f"{m['to']} already has open draft {m['id']} (owner {owner_line(o)}, topic {m.get('topic')}); "
                      "you joined it. Read it (show), then write: your text becomes a new revision. "
-                     "Pass separate/--new for a second draft instead."),
+                     "Only supersedes (or separate/--new with [drafts] always_merge = false) makes a second draft."),
             "next": "show the draft, merge your points into its text and claims, write, verify"}
 
 
@@ -1057,7 +1065,11 @@ def voice_check(m: dict, ws=None) -> dict:
     r = voice_lint.lint(md.read_text(), cfg["profile"])
     out["hits"] = r["hits"]
     groups = cfg["profile"].get("groups") or {}
+    merged = bool(m.get("merged_from") or m.get("contributors")) and always_merge(ws)
     for rule, hit in r["hits"].items():
+        if rule == "max_words" and merged:  # #246: one merged message per person may run long
+            out.setdefault("skipped", []).append(f"voice max_words: {_hit_text(hit)}, not applied to a merged draft")
+            continue
         g = groups.get(rule) or "A"
         line = r["where"].get(rule)
         what = {"greeting": "opens with a greeting", "closers": f"closer {_hit_text(hit)}"}.get(rule, _hit_text(hit))
@@ -2438,6 +2450,13 @@ def open_ttl_days(ws=None) -> float:
     return v if v > 0 else OPEN_TTL_DAYS
 
 
+def always_merge(ws=None) -> bool:
+    """[drafts] always_merge (default true, #246): new joins the open draft to the same recipient even with
+    separate/--new, and verify skips the word-limit warning on a merged draft."""
+    v = _drafts_cfg(ws).get("always_merge", True)
+    return v if isinstance(v, bool) else str(v).strip().lower() not in ("false", "0", "no", "off")
+
+
 def _drafts_cfg(ws=None) -> dict:
     wsp = _voice_ws(ws)
     if wsp is None or not (wsp / "whosaid.toml").is_file():
@@ -3367,7 +3386,8 @@ def build_parser() -> argparse.ArgumentParser:
                    "Teams cache when exactly one chat has the recipient's name")
     a.add_argument("--mention", action="append", default=[], help="a name to @mention when staged")
     a.add_argument("--new", action="store_true", dest="separate",
-                   help="a second draft even if the recipient has an open one (default: join it)")
+                   help="a second draft even if the recipient has an open one; ignored (joins) unless the workspace "
+                        "sets [drafts] always_merge = false")
     a.add_argument("--ws", help="workspace whose chats show staged drafts to this recipient already sent; "
                    "those are closed first (default WHOSAID_WORKSPACE)")
     force = "change a draft another live session owns"

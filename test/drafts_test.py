@@ -33,6 +33,10 @@ GOOD_CLAIMS = {
 
 
 class DraftsBase(unittest.TestCase):
+    # Most tests build rival drafts with separate=True, which only makes a second draft when
+    # [drafts] always_merge is off (#246 made it default on). AlwaysMergeTest sets None: the real config.
+    ALWAYS_MERGE = False
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(prefix="whosaid-drafts-")
         self.root = Path(self.tmp.name)
@@ -61,11 +65,17 @@ class DraftsBase(unittest.TestCase):
         # the MCP tools fall back to the installed watcher's workspace: never this machine's real one
         self.agents = patch("watch.installed_agent_workspaces", return_value=[])
         self.agents.start()
+        self.merge_pin = patch("drafts.always_merge", return_value=self.ALWAYS_MERGE) \
+            if self.ALWAYS_MERGE is not None else None
+        if self.merge_pin:
+            self.merge_pin.start()
         (self.root / "sessions").mkdir()
         (self.root / "sessions" / "1.json").write_text(json.dumps(
             {"sessionId": "sess-1111", "name": "worker-a", "pid": os.getpid(), "cwd": "/repo/a"}))
 
     def tearDown(self):
+        if self.merge_pin:
+            self.merge_pin.stop()
         self.agents.stop()
         self.env.stop()
         self.tmp.cleanup()
@@ -2938,3 +2948,51 @@ class SweepTest(DraftsBase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AlwaysMergeTest(DraftsBase):
+    """#246: open drafts to the same person always merge into one (the user reviews it before sending)."""
+    ALWAYS_MERGE = None
+
+    def _ws(self, body):
+        ws = self.root / "ws"
+        ws.mkdir(exist_ok=True)
+        (ws / "whosaid.toml").write_text(body)
+        return ws
+
+    def test_separate_joins_by_default_and_says_so(self):
+        a = drafts.new("Test Person", "first ask")["id"]
+        r = drafts.new("Test Person", "second ask", separate=True)
+        self.assertTrue(r["joined"])
+        self.assertEqual(r["id"], a)
+        self.assertTrue(r["separate_ignored"])
+        self.assertIn("always_merge", r["note"])
+        self.assertEqual(len([d for d in drafts.all_drafts() if d["status"] in drafts.OPEN]), 1)
+
+    def test_always_merge_false_restores_a_second_draft(self):
+        ws = self._ws("[drafts]\nalways_merge = false\n")
+        a = drafts.new("Test Person", "first ask")["id"]
+        r = drafts.new("Test Person", "second ask", separate=True, ws=ws)
+        self.assertFalse(r["joined"])
+        self.assertNotEqual(r["id"], a)
+        self.assertFalse(drafts.always_merge(ws))
+        self.assertTrue(drafts.always_merge(None))
+
+    def test_supersedes_still_makes_a_second_draft(self):
+        a = drafts.new("Test Person", "first ask")["id"]
+        r = drafts.new("Test Person", "replacement", supersedes=a, separate=True)
+        self.assertFalse(r["joined"])
+
+    def test_merged_draft_skips_the_word_limit_warning_only(self):
+        a = drafts.new("Test Person", "first ask")["id"]
+        long = " ".join(["word"] * 60) + ", want me to do it?"
+        m = drafts.load(a)
+        (drafts.ddir(a) / "draft.md").write_text(long)
+        self.assertTrue(any("max_words" in w for w in drafts.voice_check(m)["warnings"]))
+        m["merged_from"] = ["20260101-0000-test-person-x"]
+        v = drafts.voice_check(m)
+        self.assertFalse(any("max_words" in w for w in v["warnings"]))
+        self.assertTrue(any("max_words" in x for x in v["skipped"]))
+        self.assertTrue(any("ask_phrases" in w for w in v["warnings"]), v)
+        with patch("drafts.always_merge", return_value=False):
+            self.assertTrue(any("max_words" in w for w in drafts.voice_check(m)["warnings"]))
