@@ -6,6 +6,14 @@ All notable changes to whosaid are documented here. This project adheres to
 
 ## [Unreleased]
 
+## [1.54.0] - 2026-11-27
+
+### Added
+- `whosaid drafts sweep [ID ...] [--to NAME] [--offline] [--json]` and the MCP tool `whosaid_draft_sweep`: a read-only outbox hygiene report. Per open draft it flags `orphaned` (the owner session is gone, or its pid now belongs to another session or was reused), `fact_stale` (the text or a non-dropped claim presumes a PR or ticket is still pending, e.g. "once #N lands", when it already merged or closed, or the reverse; PRs via `gh pr view`, tickets via `[drafts] ticket_state_cmd`; refs it can't look up are `unchecked_facts`, never fresh), `aged_out` (open past `[drafts] open_ttl_days`, default 7) and `rivals` (other open drafts to the same person, why `new` didn't join them, and the `whosaid_draft_merge` call that folds them). It never adopts, drops or saves (#246).
+
+### Changed
+- `new` records why it didn't join an open draft to the same recipient (`join_skipped`: `separate` or `supersedes`, plus the rival ids) on its `new` event. `stage`'s refusal of a draft with rivals now says why they weren't joined (recorded, or inferred from history for older drafts) and returns the `whosaid_draft_merge` call (`merge` in the failed row) next to the CLI line (#246).
+
 ## [1.53.0] - 2026-11-26
 
 ### Added
