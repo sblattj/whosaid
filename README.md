@@ -587,7 +587,10 @@ whosaid drafts html                             # review page of every open draf
   is adopted by whoever changes it next.
 - **One draft per person.** `new` to someone who already has an open draft joins it: same id,
   you become a contributor who may write it, and your text becomes a new revision. Merge your
-  points in instead of starting a rival message. `--new` makes a separate draft anyway.
+  points in instead of starting a rival message. `--new` joins too: one open draft per
+  person, which may run past the word limit (verify skips that warning on a merged draft), since
+  you review it before sending. `[drafts] always_merge = false` in whosaid.toml lets `--new` make a
+  second draft; `--supersedes ID` always does.
   `--mention NAME` records who to @mention; it is passed to the stager as `--mention`.
 - **Every revision kept.** Each text change is saved under `revisions/` with who wrote it.
   `show <id> --rev N` prints one, `diff <id> [--from N --to M]` compares two.
