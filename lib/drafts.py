@@ -17,6 +17,8 @@ when the user stages them.
     whosaid drafts stale-check [WS] [ID] [--json]         new statements since each draft was verified
     whosaid drafts stage ID|--all [--dry-run] [--tab TARGET] [--ws WS] [--force]
     whosaid drafts merge INTO FROM [FROM ...] [--text-file F] [--dry-run] [--force]   fold rival drafts into one
+    whosaid drafts sweep [ID ...] [--to NAME] [--ws WS] [--offline] [--json]
+                                                          read-only hygiene: orphaned, fact-stale, aged out, rivals
     whosaid drafts mark-sent ID [--ws WS] [--message MID] | mark-sent --check [WS] [--backfill] | drop ID [--reason R]
     whosaid drafts audit [ID|--staged-before 48h] [--ws WS] [--json]
                                                           every chat searched for a send that was edited or
@@ -791,6 +793,8 @@ def new(to: str, topic: str, pages: list[str] | None = None, supersedes: str | N
          "pages": pages, "mentions": mentions, "supersedes": supersedes, "owner": me, "contributors": [],
          "revisions": [], "created_at": now(), "updated_at": now(),
          "verified_hash": None, "staged_hash": None, "history": [{"at": now(), "event": "new", "by": me["sessionId"]}]}
+    if clash:  # #246: why this did not join the open rival(s), for stage's refusal and the sweep
+        m["history"][0].update(join_skipped="supersedes" if supersedes else "separate", rivals=[c["id"] for c in clash])
     if thread_id:
         m["thread_id"], m["thread_id_source"] = thread_id, "given"
     elif not new_chat:
@@ -2400,6 +2404,374 @@ def stakeholders(ws: Path, topics: list[str], repo: str | None = None, paths: li
             "next": "add the people who matter to the draft's stakeholders[] with the topics you searched"}
 
 
+# ---- outbox hygiene sweep (#246) -------------------------------------------------------
+# Read-only: never adopts, drops or saves. Per open draft it reports an owner session that is gone
+# (orphaned), claims and text that presume a PR or ticket is still pending (or already done) when its
+# real state says otherwise (fact_stale), drafts open past [drafts] open_ttl_days (aged_out), and the
+# rival group to the same recipient with why `new` did not join them and the merge call that folds them.
+
+OPEN_TTL_DAYS = 7.0
+FACT_TIMEOUT_S = 15
+_PR_URL = re.compile(r"https://github\.com/([\w.-]+/[\w.-]+)/pull/(\d+)")
+_MD_LINK = re.compile(r"\[([^\]\n]{1,80})\]\((\S+?)\)")
+_PR_BARE = re.compile(r"(?<![\w/&#])#(\d{1,6})\b")
+_TICKET_DEFAULT = r"\b[A-Z][A-Z0-9]{1,9}[#-]\d{2,}\b"
+_PENDING_HINT = re.compile(
+    r"\bonce\b|\bwhen\b[^.;]*\b(?:lands?|merges?|goes in)\b|\bafter\b[^.;]*\blands?\b|\bis open\b|\bstill open\b|"
+    r"\bopen with\b|\bapprovals?\b|\bwaiting\b|\bpending\b|\bneeds? (?:a |another )?review|\bready to merge\b|"
+    r"\bto land\b|\blands\b|\bmerges\b|\bnot (?:yet )?merged\b|\bunmerged\b|\bcan go to done\b|\bcan (?:be )?close|\bto close\b|"
+    r"\bin progress\b|\bstill (?:needs|waiting)\b|\bblocked\b", re.I)
+_DONE_HINT = re.compile(r"\balready\b|\bmerged\b|\blanded\b|\bis (?:on|in) (?:develop|main|master|release|prod)\b|"
+                        r"\bis done\b|\bclosed\b|\bresolved\b|\bshipped\b", re.I)
+
+
+def open_ttl_days(ws=None) -> float:
+    """[drafts] open_ttl_days of the workspace's whosaid.toml (default 7); a bad value is the default."""
+    wsp = _voice_ws(ws)
+    if wsp is None or not (wsp / "whosaid.toml").is_file():
+        return OPEN_TTL_DAYS
+    try:
+        from wsconfig import load_config
+        v = float((load_config(wsp).get("drafts") or {}).get("open_ttl_days", OPEN_TTL_DAYS))
+    except Exception:  # noqa: BLE001 - a sweep never fails on a config value
+        return OPEN_TTL_DAYS
+    return v if v > 0 else OPEN_TTL_DAYS
+
+
+def _drafts_cfg(ws=None) -> dict:
+    wsp = _voice_ws(ws)
+    if wsp is None or not (wsp / "whosaid.toml").is_file():
+        return {}
+    try:
+        from wsconfig import load_config
+        return dict(load_config(wsp).get("drafts") or {})
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+def _proc_started(pid: int) -> datetime | None:
+    """When process PID started (ps lstart, local time), else None."""
+    try:
+        out = subprocess.run(["ps", "-o", "lstart=", "-p", str(int(pid))], capture_output=True, text=True,
+                             timeout=5).stdout.strip()
+        return datetime.strptime(" ".join(out.split()), "%a %b %d %H:%M:%S %Y").astimezone() if out else None
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return None
+
+
+def _session_records() -> list[dict]:
+    sd = Path(os.environ.get("WHOSAID_SESSIONS_DIR") or Path.home() / ".claude" / "sessions")
+    out = []
+    for f in sd.glob("*.json") if sd.is_dir() else []:
+        try:
+            r = json.loads(f.read_text())
+        except (OSError, ValueError):
+            continue
+        if isinstance(r, dict):
+            out.append(r)
+    return out
+
+
+def _owner_since(m: dict) -> str | None:
+    """When the current owner was stamped: the last adoption, else creation."""
+    at = [e.get("at") for e in m.get("history") or [] if e.get("event") == "adopted" and e.get("at")]
+    return at[-1] if at else m.get("created_at")
+
+
+def orphaned(m: dict, records: list[dict] | None = None) -> dict | None:
+    """{why, owner_line, live_contributors} when no live session owns M, else None. Gone means: no pid,
+    a pid that is not running, a pid the session registry now gives another session, or a pid whose
+    process started after the owner was stamped (the pid was reused). A draft made at a terminal (no
+    session) is never orphaned."""
+    o = m.get("owner") or {}
+    sid, pid = o.get("sessionId"), o.get("pid")
+    if not sid:
+        return None
+    records = _session_records() if records is None else records
+    why = None
+    if not pid:
+        why = "no pid was recorded for the owner session"
+    elif not alive(pid):
+        why = f"owner pid {pid} is not running"
+    else:
+        other = next((r for r in records if str(r.get("pid")) == str(pid) and r.get("sessionId")
+                      and r.get("sessionId") != sid), None)
+        if other:
+            why = f"pid {pid} now belongs to session {(other.get('sessionId') or '')[:8]} ({other.get('name') or 'unnamed'})"
+        else:
+            started, since = _proc_started(pid), _ms(_owner_since(m))
+            if started and since and started.timestamp() * 1000 > since + 60_000:
+                why = f"pid {pid} was reused: that process started {started.isoformat()[:16]}, after the owner was stamped"
+    if why is None:
+        return None
+    live = [_who(c) for c in m.get("contributors") or [] if alive(c.get("pid"))]
+    return {"why": why, "owner_line": owner_line(o), "resume": o.get("resume"), "live_contributors": live,
+            "hint": "nobody will update it: adopt it by changing it (write/merge), or drop it"}
+
+
+def gh_pr_state(repo: str, n: int) -> dict:
+    """{state: OPEN|MERGED|CLOSED, at} from `gh pr view` (the user's gh login), bounded by FACT_TIMEOUT_S."""
+    p = subprocess.run(["gh", "pr", "view", str(n), "-R", repo, "--json", "state,mergedAt,closedAt"],
+                       capture_output=True, text=True, timeout=FACT_TIMEOUT_S)
+    if p.returncode != 0:
+        raise DraftsError((p.stderr or p.stdout).strip()[:200] or f"gh exited {p.returncode}")
+    r = json.loads(p.stdout)
+    return {"state": r.get("state"), "at": r.get("mergedAt") or r.get("closedAt")}
+
+
+def _ticket_state(cmd: str, tid: str) -> dict:
+    """[drafts] ticket_state_cmd with {id}: prints a state word (or JSON {state}); done/closed/resolved/removed
+    read as done."""
+    p = subprocess.run(shlex.split(cmd.replace("{id}", shlex.quote(tid))), capture_output=True, text=True,
+                       timeout=FACT_TIMEOUT_S)
+    if p.returncode != 0:
+        raise DraftsError((p.stderr or p.stdout).strip()[:200] or f"exited {p.returncode}")
+    out = p.stdout.strip()
+    try:
+        st = str(json.loads(out).get("state") or "")
+    except (ValueError, AttributeError):
+        st = out.splitlines()[0] if out else ""
+    return {"state": st, "done": bool(re.search(r"done|closed|resolved|removed|complete", st, re.I))}
+
+
+def _ref_spans(text: str, ticket_re) -> list[tuple[str, str, int, int]]:
+    """(kind, ref, start, end) of each PR or ticket ref in TEXT, in order. kind pr refs are repo#N or #N."""
+    spans = []
+    for x in _MD_LINK.finditer(text):  # a markdown link is one ref, label and url together
+        u, t, b = _PR_URL.fullmatch(x.group(2)), ticket_re.search(x.group(1)) if ticket_re else None, \
+            _PR_BARE.search(x.group(1))
+        if u:
+            spans.append(("pr", f"{u.group(1)}#{u.group(2)}", x.start(), x.end()))
+        elif t:
+            spans.append(("ticket", t.group(0), x.start(), x.end()))
+        elif b:
+            spans.append(("pr", f"#{b.group(1)}", x.start(), x.end()))
+    taken = [(s, e) for _, _, s, e in spans]
+    for x in _PR_URL.finditer(text):
+        if not any(s <= x.start() < e for s, e in taken):
+            spans.append(("pr", f"{x.group(1)}#{x.group(2)}", x.start(), x.end()))
+            taken.append((x.start(), x.end()))
+    for x in ticket_re.finditer(text) if ticket_re else []:
+        if not any(s <= x.start() < e for s, e in taken):
+            spans.append(("ticket", x.group(0), x.start(), x.end()))
+            taken.append((x.start(), x.end()))
+    for x in _PR_BARE.finditer(text):
+        if not any(s <= x.start() < e for s, e in taken):
+            spans.append(("pr", f"#{x.group(1)}", x.start(), x.end()))
+    return sorted(spans, key=lambda s: s[2])
+
+
+def _hint(win: str) -> str | None:
+    p, d = _PENDING_HINT.search(win), _DONE_HINT.search(win)
+    if p and d:  # both: the first one wins
+        return "pending" if p.start() <= d.start() else "done"
+    return "pending" if p else "done" if d else None
+
+
+def _presumes(text: str, spans: list, i: int) -> str | None:
+    """'pending' or 'done': what the words around ref I presume. First the words after it up to the next
+    ref or the sentence end ("#N is open", "#N is already on develop"), then the words before it back to
+    the previous ref or the sentence start ("once #N lands"), then the whole sentence."""
+    _, _, s, e = spans[i]
+    start = max(text.rfind(". ", 0, s) + 1, text.rfind("\n", 0, s) + 1, 0)
+    ends = [x for x in (text.find(". ", e), text.find("\n", e)) if x >= 0]
+    end = min(ends) if ends else len(text)
+    after = text[e:min(end, spans[i + 1][2] if i + 1 < len(spans) else end)]
+    before = text[max(start, spans[i - 1][3] if i else 0):s]
+    for win in (after, before, text[start:end]):
+        h = _hint(win)
+        if h:
+            return h
+    return None
+
+
+def fact_check(m: dict, pr_state=None, ticket_cmd: str | None = None, ticket_pattern: str | None = None,
+               default_repo: str | None = None, cache: dict | None = None) -> dict:
+    """{stale: [...], unchecked: [...], fresh: [...]} for M's text and its non-dropped claims. Each PR or
+    ticket ref the words presume pending (or done) is looked up; a mismatch with the real state is stale.
+    A bare #N takes the repo of a PR URL with the same number in the draft, else of the only repo its PR
+    URLs name, else default_repo; with none it is unchecked. pr_state(repo, n) -> {state, at}."""
+    pr_state = pr_state or gh_pr_state
+    cache = {} if cache is None else cache
+    ticket_re = re.compile(ticket_pattern or _TICKET_DEFAULT)
+    md = ddir(m["id"]) / "draft.md"
+    sources = [("text", md.read_text() if md.exists() else "")]
+    for k in claims_of(m).get("claims") or []:
+        if not k.get("dropped") and k.get("verdict") != "refuted":
+            sources.append((f"claim {_claim_id(k)}", k.get("text") or ""))
+    all_text = "\n".join(t for _, t in sources)
+    url_repos = {}
+    for x in _PR_URL.finditer(all_text):
+        url_repos.setdefault(x.group(2), x.group(1))
+    repos = set(url_repos.values())
+    out: dict = {"stale": [], "unchecked": [], "fresh": []}
+    seen: set = set()
+    for where, text in sources:
+        spans = _ref_spans(text, ticket_re)
+        for i, (kind, ref, _s, _e) in enumerate(spans):
+            pre = _presumes(text, spans, i)
+            if pre is None:
+                continue
+            row = {"where": where, "ref": ref, "presumes": pre}
+            try:
+                if kind == "pr":
+                    repo, n = ref.split("#")
+                    repo = repo or url_repos.get(n) or (next(iter(repos)) if len(repos) == 1 else default_repo)
+                    if not repo:
+                        if (where, ref) in seen:
+                            continue
+                        seen.add((where, ref))
+                        out["unchecked"].append({**row, "why": "no repo for a bare #N (set [drafts] default_repo)"})
+                        continue
+                    key = f"{repo}#{n}"
+                    if key not in cache:
+                        cache[key] = pr_state(repo, int(n))
+                    real = cache[key]
+                    st = (real.get("state") or "").upper()
+                    row.update(ref=key, state=st, at=real.get("at"))
+                    done = st in ("MERGED", "CLOSED")
+                else:
+                    if not ticket_cmd:
+                        if (where, ref) in seen:
+                            continue
+                        seen.add((where, ref))
+                        out["unchecked"].append({**row, "why": "no [drafts] ticket_state_cmd"})
+                        continue
+                    if ref not in cache:
+                        cache[ref] = _ticket_state(ticket_cmd, ref)
+                    real = cache[ref]
+                    row.update(state=real["state"])
+                    done = real["done"]
+            except Exception as e:  # noqa: BLE001 - a lookup that fails is unchecked, never fresh
+                out["unchecked"].append({**row, "why": f"{type(e).__name__}: {e}"[:200]})
+                continue
+            if (where, row["ref"]) in seen:
+                continue
+            seen.add((where, row["ref"]))
+            if (pre == "pending") == done:
+                row["why"] = (f"{where} presumes {row['ref']} is still pending, but it is {row['state'].lower()}"
+                              + (f" since {row['at'][:10]}" if row.get("at") else "")) if pre == "pending" else \
+                             f"{where} presumes {row['ref']} is done, but it is {row['state'].lower()}"
+                out["stale"].append(row)
+            else:
+                out["fresh"].append(row)
+    return out
+
+
+def aged_out(m: dict, days: float, now_ms: float | None = None) -> dict | None:
+    """{days, updated_at, hint} when open draft M was last changed more than DAYS ago, else None."""
+    if m["status"] not in OPEN:
+        return None
+    up = _ms(m.get("updated_at") or m.get("created_at"))
+    if not up:
+        return None
+    age = ((now_ms or time.time() * 1000) - up) / 86_400_000
+    if age <= days:
+        return None
+    return {"days": round(age, 1), "updated_at": m.get("updated_at"), "ttl_days": days,
+            "hint": f"open {round(age, 1)} days since its last change (ttl {days:g}); re-verify it if it still "
+                    f"holds, or drop it (whosaid drafts drop {m['id']})"}
+
+
+def why_not_joined(m: dict, rivals: list[dict]) -> str:
+    """Why `new` started M instead of joining an open rival to the same recipient (#246)."""
+    ev = next((e for e in m.get("history") or [] if e.get("event") == "new"), {})
+    if ev.get("join_skipped") == "separate":
+        return "it was started with --new (separate=true), which skips the join"
+    if ev.get("join_skipped") == "supersedes" or m.get("supersedes"):
+        return f"it supersedes {m.get('supersedes')}, which skips the join"
+    made = _ms(m.get("created_at"))
+    older = [r for r in rivals if (_ms(r.get("created_at")) or 0) < (made or 0)]
+    if not older:
+        return "it is the oldest of the group: the others should have joined it"
+    for r in older:
+        if r["to"] != m["to"]:
+            return f"the recipient is spelled differently ({m['to']!r} vs {r['to']!r}), so new did not match {r['id']}"
+        sid = (m.get("owner") or {}).get("sessionId")
+        j = [e for e in r.get("history") or [] if e.get("event") == "joined" and e.get("by") == sid
+             and made and _ms(e.get("at")) and 0 <= made - _ms(e.get("at")) <= 600_000]
+        if j:
+            secs = int((made - _ms(j[-1]["at"])) / 1000)
+            return (f"its session joined {r['id']} (topic {j[-1].get('topic')}) and then started a separate draft "
+                    f"{secs}s later, so --new (separate) was passed")
+    return ("an older open draft to the same recipient existed when it was made, so new was passed --new "
+            "(separate) or the draft predates join; not recorded before #246")
+
+
+def rival_groups(drafts_: list[dict] | None = None) -> list[dict]:
+    """Open drafts grouped by recipient (case and punctuation folded), groups of two or more, each with the
+    draft to keep (the newest), why each other one did not join, and the merge call."""
+    by: dict[str, list[dict]] = {}
+    for m in drafts_ if drafts_ is not None else all_drafts():
+        if m["status"] in OPEN:
+            by.setdefault(_norm(m["to"]) or m["to"], []).append(m)
+    out = []
+    for group in by.values():
+        if len(group) < 2:
+            continue
+        group = sorted(group, key=lambda d: d.get("created_at") or "")
+        into = group[-1]
+        froms = [d["id"] for d in group[:-1]]
+        out.append({"to": into["to"], "ids": [d["id"] for d in group], "into": into["id"], "from": froms,
+                    "why_not_joined": {d["id"]: why_not_joined(d, [x for x in group if x is not d]) for d in group[1:]},
+                    "merge": {"tool": "whosaid_draft_merge", "arguments": {"into": into["id"], "from": froms}},
+                    "cli": f"whosaid drafts merge {into['id']} {' '.join(froms)} --text-file merged.md"})
+    return out
+
+
+def rival_hint(m: dict, rival_ids: list[str]) -> str:
+    """The stage refusal's text for rivals: the merge call (MCP and CLI) and why join didn't happen."""
+    group = [m, *[load(i) for i in rival_ids]]
+    g = next((x for x in rival_groups(group) if m["id"] in x["ids"]), None)
+    why = "; ".join(f"{i}: {w}" for i, w in (g or {}).get("why_not_joined", {}).items())
+    froms = [i for i in rival_ids]
+    return (f"other open draft(s) to {m['to']}: {', '.join(rival_ids)}. Teams has one compose box per chat, so fold "
+            f"them into one: whosaid_draft_merge {{\"into\": \"{m['id']}\", \"from\": {json.dumps(froms)}}} "
+            f"(CLI: whosaid drafts merge {m['id']} {' '.join(froms)} --text-file merged.md), then verify"
+            + (f". Why they were not joined: {why}" if why else ""))
+
+
+def sweep(ids: list[str] | None = None, to: str | None = None, ws=None, offline: bool = False,
+          pr_state=None, now_ms: float | None = None) -> dict:
+    """Outbox hygiene, read-only (#246): every open draft (or IDS, or those to TO) with orphaned,
+    fact_stale (and the refs it could not check), aged_out and its rival group. offline skips the PR and
+    ticket lookups (all refs unchecked). Nothing is adopted, dropped or saved."""
+    cfg = _drafts_cfg(ws)
+    ttl = open_ttl_days(ws)
+    every = all_drafts()
+    rows = [m for m in every if m["status"] in OPEN]
+    if ids:
+        want = set(ids)
+        missing = want - {m["id"] for m in every}
+        if missing:
+            raise DraftsError(f"no such draft: {', '.join(sorted(missing))}")
+        rows = [m for m in every if m["id"] in want]
+    if to:
+        rows = [m for m in rows if _norm(m["to"]) == _norm(to)]
+    groups = rival_groups(every)
+    records = _session_records()
+    cache: dict = {}
+    out = []
+    for m in rows:
+        r = {"id": m["id"], "to": m["to"], "topic": m.get("topic"), "state": state(m),
+             "updated_at": m.get("updated_at"), "orphaned": orphaned(m, records), "aged_out": aged_out(m, ttl, now_ms)}
+        if offline:
+            r["fact_stale"], r["unchecked_facts"] = [], [{"why": "offline"}]
+        else:
+            fc = fact_check(m, pr_state, cfg.get("ticket_state_cmd"), cfg.get("ticket_pattern"),
+                            cfg.get("default_repo"), cache)
+            r["fact_stale"], r["unchecked_facts"], r["fresh_facts"] = fc["stale"], fc["unchecked"], fc["fresh"]
+        g = next((x for x in groups if m["id"] in x["ids"]), None)
+        r["rivals"] = {"group": g["ids"], "merge": g["merge"], "why_not_joined": g["why_not_joined"].get(m["id"])} \
+            if g else None
+        r["flags"] = [f for f in ("orphaned", "fact_stale", "aged_out", "rivals") if r.get(f)]
+        out.append(r)
+    keep = {i for r in out for i in ((r["rivals"] or {}).get("group") or [])}
+    return {"drafts": out, "rival_groups": [g for g in groups if set(g["ids"]) & keep or not (ids or to)],
+            "counts": {f: sum(1 for r in out if r.get(f)) for f in ("orphaned", "fact_stale", "aged_out", "rivals")},
+            "ttl_days": ttl, "offline": offline, "read_only": True}
+
+
 def stale_check(ws: Path, draft_id: str | None = None, k: int = 10) -> dict:
     """Open verified drafts with statements, by a stakeholder on a searched topic, newer than the verify."""
     drafts = [load(draft_id)] if draft_id else [m for m in all_drafts() if m["status"] in OPEN]
@@ -2652,8 +3024,9 @@ def stage(ids: list[str] | None = None, all_ready: bool = False, dry_run: bool =
             rivals = [d["id"] for d in all_drafts() if d["id"] != draft_id and d["to"] == m["to"]
                       and d["status"] in OPEN and d["id"] != m.get("supersedes")]
             if rivals:
-                res["failed"].append({"id": draft_id, "why": f"other open draft(s) to {m['to']}: {', '.join(rivals)}; "
-                                       f"fold them into one: whosaid drafts merge {draft_id} {' '.join(rivals)}"})
+                res["failed"].append({"id": draft_id, "rivals": rivals, "why": rival_hint(m, rivals),
+                                      "merge": {"tool": "whosaid_draft_merge",
+                                                "arguments": {"into": draft_id, "from": rivals}}})
                 continue
             if wsp is not None and m.get("new_chat") and not (replace or force):
                 el = _new_chat_sent_guard(wsp, m)
@@ -2960,6 +3333,27 @@ def _print_audit(d: dict) -> None:
         print(f"   excluded {e['mid']} in {e['chat']}: {e['why']}")
 
 
+def _print_sweep(r: dict) -> None:
+    for d in r["drafts"]:
+        print(f"{d['id']}  {d['state']}  to {d['to']}  flags: {', '.join(d['flags']) or 'none'}")
+        if d["orphaned"]:
+            print(f"   orphaned: {d['orphaned']['why']} [{d['orphaned']['owner_line']}]")
+        for f in d["fact_stale"]:
+            print(f"   fact-stale: {f['why']}")
+        for f in d["unchecked_facts"]:
+            print(f"   unchecked: {f.get('ref') or ''} {f['why']}".rstrip())
+        if d["aged_out"]:
+            print(f"   aged out: {d['aged_out']['hint']}")
+        if d["rivals"]:
+            print(f"   rivals: {len(d['rivals']['group']) - 1} other open draft(s) to {d['to']}"
+                  + (f"; not joined because {d['rivals']['why_not_joined']}" if d["rivals"]["why_not_joined"] else ""))
+    for g in r["rival_groups"]:
+        print(f"merge {g['to']}: whosaid_draft_merge {json.dumps(g['merge']['arguments'])}\n   cli: {g['cli']}")
+    c = r["counts"]
+    print(f"{len(r['drafts'])} open draft(s): {c['orphaned']} orphaned, {c['fact_stale']} fact-stale, "
+          f"{c['aged_out']} aged out (ttl {r['ttl_days']:g}d), {c['rivals']} with rivals; read-only, nothing changed")
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="whosaid drafts", description="Offline outbox for verified chat drafts.")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -3097,6 +3491,14 @@ def build_parser() -> argparse.ArgumentParser:
     a.add_argument("--text-file", help="the merged message (markdown, or - for stdin); default: the texts joined")
     a.add_argument("--dry-run", action="store_true", help="print the merged result and clashes, write nothing")
     a.add_argument("--force", action="store_true", help=force)
+    a = sub.add_parser("sweep", help="outbox hygiene, read-only: orphaned owners, fact-stale PR/ticket claims, "
+                       "drafts open past [drafts] open_ttl_days, rival drafts to one recipient and the merge call")
+    a.add_argument("ids", nargs="*", metavar="id")
+    a.add_argument("--to", help="only drafts to this recipient")
+    a.add_argument("--ws", help="workspace whose whosaid.toml [drafts] sets open_ttl_days, default_repo, "
+                   "ticket_pattern and ticket_state_cmd (default WHOSAID_WORKSPACE)")
+    a.add_argument("--offline", action="store_true", help="skip the PR (gh) and ticket lookups")
+    a.add_argument("--json", action="store_true")
     a = sub.add_parser("unstage", help="staged back to verified, after the compose box was cleared by hand")
     a.add_argument("id")
     a.add_argument("--reason")
@@ -3173,6 +3575,9 @@ def main(argv: list[str] | None = None) -> int:
         elif c in ("list", "mine"):
             rows = listing(include_closed=getattr(args, "all", False), mine=c == "mine" or args.mine, ws=args.ws)
             print(json.dumps(rows, indent=2)) if args.json else _print_rows(rows)
+        elif c == "sweep":
+            r = sweep(args.ids, args.to, args.ws, args.offline)
+            print(json.dumps(r, indent=2)) if args.json else _print_sweep(r)
         elif c == "show":
             s = show(args.id, args.rev)
             if args.json:

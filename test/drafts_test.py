@@ -2746,5 +2746,195 @@ class RecapTest(DraftsBase):
         self.assertIn("no claim answers it", out["error"])
 
 
+class SweepTest(DraftsBase):
+    """drafts sweep (#246): orphaned owners, fact-stale PR/ticket claims, age-out, rivals and the merge hint.
+    Read-only throughout; synthetic drafts, a fake session registry and a fake PR-state function."""
+
+    REPO = "example-org/widget"
+
+    def pr_state(self, states):
+        calls = []
+
+        def f(repo, n):
+            calls.append((repo, n))
+            return states[(repo, n)]
+        f.calls = calls
+        return f
+
+    def gone_owner(self, did, pid=999_999_9):
+        m = drafts.load(did)
+        m["owner"] = {**m["owner"], "sessionId": "sess-dead", "name": "old-lane", "pid": pid}
+        drafts.save(m)
+
+    def snapshot(self):
+        return {p.relative_to(self.root): p.read_bytes() for p in (self.root / "drafts").rglob("*") if p.is_file()}
+
+    def test_orphaned_when_the_owner_pid_is_gone(self):
+        did = self.ready()
+        self.assertIsNone(drafts.sweep(offline=True)["drafts"][0]["orphaned"])
+        self.gone_owner(did)
+        o = drafts.sweep(offline=True)["drafts"][0]["orphaned"]
+        self.assertIn("not running", o["why"])
+        self.assertIn("old-lane", o["owner_line"])
+
+    def test_orphaned_when_the_pid_now_belongs_to_another_session(self):
+        did = self.ready()
+        m = drafts.load(did)
+        m["owner"]["sessionId"] = "sess-older"  # same live pid (this test process), another session
+        drafts.save(m)
+        o = drafts.sweep(offline=True)["drafts"][0]["orphaned"]
+        self.assertIn("now belongs to session sess-111", o["why"])
+
+    def test_orphaned_when_the_pid_was_reused_after_the_owner_was_stamped(self):
+        did = self.ready()
+        m = drafts.load(did)
+        m["owner"]["sessionId"] = "sess-elsewhere"
+        drafts.save(m)
+        (self.root / "sessions" / "1.json").unlink()
+        later = datetime.now().astimezone() + timedelta(hours=1)
+        with patch.object(drafts, "_proc_started", return_value=later):
+            self.assertIn("reused", drafts.sweep(offline=True)["drafts"][0]["orphaned"]["why"])
+        with patch.object(drafts, "_proc_started", return_value=later - timedelta(days=2)):
+            self.assertIsNone(drafts.sweep(offline=True)["drafts"][0]["orphaned"])
+
+    def test_fact_stale_once_a_pr_merged_and_dropped_claims_are_skipped(self):
+        did = self.ready()
+        url = f"https://github.com/{self.REPO}/pull"
+        drafts.write(did, text=f"[#12]({url}/12) has two approvals, so once it lands we can close the ticket "
+                               f"since [#11]({url}/11) is already on main\n")
+        c = drafts.claims_of(drafts.load(did))
+        c["claims"] += [{"key": "pr12", "text": "#12 is open with 2 approvals", "kind": "status",
+                         "verdict": "confirmed", "evidence": "gh pr view 12"},
+                        {"key": "old", "text": "#13 is still open", "kind": "status", "verdict": "confirmed",
+                         "evidence": "x", "dropped": True}]
+        drafts.write(did, claims=c["claims"], stakeholders=c["stakeholders"])
+        f = self.pr_state({(self.REPO, 12): {"state": "MERGED", "at": "2026-01-03T00:00:00Z"},
+                           (self.REPO, 11): {"state": "MERGED", "at": "2026-01-01T00:00:00Z"}})
+        r = drafts.sweep(pr_state=f)["drafts"][0]
+        stale = {(x["where"], x["ref"]) for x in r["fact_stale"]}
+        self.assertEqual(stale, {("text", f"{self.REPO}#12"), ("claim pr12", f"{self.REPO}#12")})
+        self.assertIn(("text", f"{self.REPO}#11"), {(x["where"], x["ref"]) for x in r["fresh_facts"]})
+        self.assertNotIn(13, [n for _, n in f.calls])  # the dropped claim is never looked up
+        self.assertEqual(len(f.calls), 2, "one lookup per ref (cached)")
+        self.assertIn("fact_stale", r["flags"])
+
+    def test_still_open_pr_is_fresh_and_a_failed_lookup_is_unchecked(self):
+        did = self.ready()
+        drafts.write(did, text=f"once https://github.com/{self.REPO}/pull/5 lands I'll close it\n")
+        fresh = drafts.sweep(pr_state=self.pr_state({(self.REPO, 5): {"state": "OPEN"}}))["drafts"][0]
+        self.assertEqual(fresh["fact_stale"], [])
+
+        def boom(repo, n):
+            raise drafts.DraftsError("no network")
+        r = drafts.sweep(pr_state=boom)["drafts"][0]
+        self.assertEqual(r["fact_stale"], [])
+        self.assertIn("no network", r["unchecked_facts"][0]["why"])
+        self.assertEqual(drafts.sweep(offline=True)["drafts"][0]["unchecked_facts"], [{"why": "offline"}])
+
+    def test_bare_pr_needs_a_repo_and_tickets_need_a_resolver(self):
+        did = self.ready()
+        drafts.write(did, text="once #7 lands, TKT-4242 can go to done\n")
+        r = drafts.sweep(pr_state=self.pr_state({}))["drafts"][0]
+        whys = {x["ref"]: x["why"] for x in r["unchecked_facts"]}
+        self.assertIn("default_repo", whys["#7"])
+        self.assertIn("ticket_state_cmd", whys["TKT-4242"])
+        ws = self.root / "ws"
+        ws.mkdir()
+        resolver = self.root / "ticket.py"
+        resolver.write_text("import sys; print('Done' if sys.argv[1] == 'TKT-4242' else 'Active')\n")
+        (ws / "whosaid.toml").write_text(f'[drafts]\ndefault_repo = "{self.REPO}"\n'
+                                         f'ticket_state_cmd = "{sys.executable} {resolver} {{id}}"\n')
+        r = drafts.sweep(ws=ws, pr_state=self.pr_state({(self.REPO, 7): {"state": "CLOSED"}}))["drafts"][0]
+        self.assertEqual({x["ref"] for x in r["fact_stale"]}, {f"{self.REPO}#7", "TKT-4242"})
+
+    def test_aged_out_after_the_ttl_and_the_ttl_is_configurable(self):
+        self.ready()
+        later = time.time() * 1000 + 8 * 86_400_000
+        self.assertIsNotNone(drafts.sweep(offline=True, now_ms=later)["drafts"][0]["aged_out"])
+        self.assertIsNone(drafts.sweep(offline=True)["drafts"][0]["aged_out"])
+        ws = self.root / "ws"
+        ws.mkdir()
+        (ws / "whosaid.toml").write_text("[drafts]\nopen_ttl_days = 10\n")
+        self.assertIsNone(drafts.sweep(ws=ws, offline=True, now_ms=later)["drafts"][0]["aged_out"])
+
+    def test_rivals_say_why_join_did_not_happen_and_give_the_merge_call(self):
+        a = self.ready()
+        b = drafts.new("Test Person", "second", separate=True)["id"]
+        self.assertEqual(drafts.load(b)["history"][0]["join_skipped"], "separate")
+        r = drafts.sweep(offline=True)
+        g = r["rival_groups"][0]
+        self.assertEqual((g["into"], g["from"]), (b, [a]))
+        self.assertEqual(g["merge"], {"tool": "whosaid_draft_merge", "arguments": {"into": b, "from": [a]}})
+        self.assertIn("--new", g["why_not_joined"][b])
+        self.assertEqual(r["counts"]["rivals"], 2)
+
+    def test_why_not_joined_is_inferred_for_drafts_made_before_it_was_recorded(self):
+        a = self.ready()
+        drafts.new("Test Person", "joins first")  # joins a: a "joined" event by this session
+        b = drafts.new("Test Person", "then separate", separate=True)["id"]
+        m = drafts.load(b)
+        m["history"][0].pop("join_skipped")
+        drafts.save(m)
+        why = drafts.rival_groups()[0]["why_not_joined"][b]
+        self.assertIn(f"joined {a}", why)
+        self.assertIn("separate", why)
+
+    def test_stage_refusal_offers_the_mcp_merge_and_says_why(self):
+        a = self.ready()
+        b = drafts.new("Test Person", "second", separate=True)["id"]
+        drafts.write(b, text="Can you add the records?", **GOOD_CLAIMS)
+        drafts.write(b, pages=[str(self.page)])
+        drafts.verify(b)
+        f = drafts.stage([b])["failed"][0]
+        self.assertIn("whosaid_draft_merge", f["why"])
+        self.assertIn("--new", f["why"])
+        self.assertEqual(f["merge"], {"tool": "whosaid_draft_merge", "arguments": {"into": b, "from": [a]}})
+        self.assertEqual(self.stager_calls(), [])
+
+    def test_sweep_is_read_only_and_filters(self):
+        a = self.ready()
+        self.gone_owner(a)
+        other = self.ready(to="Someone Else", topic="solo")
+        before = self.snapshot()
+        r = drafts.sweep(to="test person", offline=True)
+        self.assertEqual([d["id"] for d in r["drafts"]], [a])
+        self.assertEqual([d["id"] for d in drafts.sweep([other], offline=True)["drafts"]], [other])
+        with self.assertRaises(drafts.DraftsError):
+            drafts.sweep(["nope"], offline=True)
+        self.assertEqual(self.snapshot(), before, "sweep never writes (no adopt, no save)")
+        self.assertEqual(drafts.load(a)["owner"]["sessionId"], "sess-dead")
+
+    def test_cli_sweep_prints_flags_and_json(self):
+        import io
+        from contextlib import redirect_stdout
+        a = self.ready()
+        self.gone_owner(a)
+        drafts.new("Test Person", "second", separate=True)
+        out = io.StringIO()
+        with redirect_stdout(out):
+            self.assertEqual(drafts.main(["sweep", "--offline"]), 0)
+        self.assertIn("orphaned: owner pid", out.getvalue())
+        self.assertIn("whosaid_draft_merge", out.getvalue())
+        self.assertIn("read-only, nothing changed", out.getvalue())
+        out = io.StringIO()
+        with redirect_stdout(out):
+            drafts.main(["sweep", "--offline", "--json"])
+        self.assertTrue(json.loads(out.getvalue())["read_only"])
+
+    def test_mcp_sweep_tool(self):
+        try:
+            import asyncio
+            import inspect
+            import mcp_server
+        except ModuleNotFoundError as e:
+            self.skipTest(f"needs the mcp SDK: {e}")
+        a = self.ready()
+        self.gone_owner(a)
+        out = mcp_server.whosaid_draft_sweep(offline=True)
+        out = asyncio.run(out) if inspect.isawaitable(out) else out
+        self.assertTrue(out["ok"])
+        self.assertEqual(out["counts"]["orphaned"], 1)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -1051,7 +1051,12 @@ DRAFTS
   audit reads every chat (ingested and the Teams cache) for a staged draft's send that
   was edited or went to another chat: sent, probably sent, edited, sent elsewhere (who
   was in that chat) or not sent (chats searched, cache caveat). It never closes a draft;
-  mark-sent ID --message MID records the one you pick. stage refuses a --new-chat draft
+  mark-sent ID --message MID records the one you pick. sweep [ID ...] [--to NAME] [--offline]
+  is read-only hygiene: orphaned drafts (owner session gone or its pid reused), fact-stale
+  ones (text or a claim presumes "once #N lands" when #N already merged; PRs via gh,
+  tickets via [drafts] ticket_state_cmd), open past [drafts] open_ttl_days (7), and rival
+  drafts to one person with why new didn't join them and the merge call. MCP:
+  whosaid_draft_sweep. stage refuses a --new-chat draft
   whose text already went out in some chat unless --force (or --replace).
   stage ID --edit fixes a message already sent (edit-sent ID is an alias): write the
   corrected text (drafts text, plus claims), verify it, then stage --edit finds your

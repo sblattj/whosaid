@@ -614,9 +614,29 @@ whosaid drafts html                             # review page of every open draf
   refuses another draft's send. `stage` on a `--new-chat` draft whose text already went out in
   some chat refuses unless `--force` (or `--replace`).
 
+`whosaid drafts sweep [ID ...] [--to NAME] [--ws WS] [--offline] [--json]` is the outbox's hygiene
+report, read-only (it never adopts, drops or saves). Per open draft:
+
+- **orphaned**: the owner session is gone: no pid, a pid that isn't running, a pid the session
+  registry now gives another session, or a process that started after the owner was stamped (pid reuse).
+- **fact_stale**: the text or a claim that isn't dropped presumes a PR or ticket is still pending
+  ("once #N lands", "#N is open with 2 approvals") when it already merged or closed, or presumes done
+  when it is open. PRs are looked up with your `gh` (`gh pr view`, 15 s timeout, once per ref per run);
+  a bare `#N` takes the repo of a PR link in the same draft, else `[drafts] default_repo`. Tickets match
+  `[drafts] ticket_pattern` and are looked up with `[drafts] ticket_state_cmd` (`{id}` is replaced; it
+  prints a state). A ref it can't look up is listed under `unchecked_facts`, never as fresh; `--offline`
+  skips every lookup.
+- **aged_out**: open longer than `[drafts] open_ttl_days` (default 7) since its last change.
+- **rivals**: other open drafts to the same person (case and punctuation folded), why `new` didn't join
+  them (`--new`, `--supersedes`, a different spelling, or inferred from history for older drafts), and the
+  `whosaid_draft_merge` call (plus the CLI line) that folds them into the newest one.
+
+`new` now records why it didn't join (`join_skipped` on its `new` event), and `stage`'s refusal of a
+draft with rivals names the reason and the `whosaid_draft_merge` call.
+
 Agents use the same outbox over MCP: `whosaid_draft_new`, `whosaid_draft_write`,
 `whosaid_draft_verify`, `whosaid_draft_close`, `whosaid_drafts`, `whosaid_draft_stakeholders`,
-`whosaid_draft_stale`, `whosaid_draft_sent_check`, `whosaid_draft_audit`: create, read (with `rev`
+`whosaid_draft_stale`, `whosaid_draft_sent_check`, `whosaid_draft_audit`, `whosaid_draft_sweep`: create, read (with `rev`
 and `diff`), update and close. `whosaid_draft_close` takes `message` (the `--message` above). `whosaid_draft_verify` takes `voice` and `reason` for the override and
 `recap_days` for a recap reply, and returns `voice_warnings`, `said` (each said claim's resolved
 turns) and `recap` (the per-point turns, also on `ok=false`); `whosaid_drafts(action="lint")` is the read-only lint.
@@ -1782,6 +1802,7 @@ claude mcp add --scope user whosaid -e WHOSAID_TOOL_PROFILE=full -- whosaid mcp
 | `whosaid_record_browser` | Records a browser meeting tab over the DevTools port. `action` is `start`, `stop` or `status`. Not read-only. Needs a browser started with `--remote-debugging-port`; no Screen Recording permission. Auto-stops when the call ends. |
 | `whosaid_draft_new`, `whosaid_draft_write`, `whosaid_draft_verify`, `whosaid_draft_close`, `whosaid_draft_sent_check` | Write a chat draft into the [drafts outbox](#a-drafts-outbox-for-agent-written-chat-messages-whosaid-drafts) with its claims, stakeholders and pages, then check the gates; `new` joins the recipient's open draft; `sent_check` marks staged drafts sent from the ingested chat. Not read-only. Local files only; never stages or sends. |
 | `whosaid_drafts`, `whosaid_draft_stakeholders`, `whosaid_draft_stale`, `whosaid_draft_audit` | List, show or diff drafts and their revisions; rank who spoke about a topic; find drafts whose stakeholders said something new since verify; audit staged drafts across every chat for an edited or elsewhere send (a verdict, never a close). Read-only. |
+| `whosaid_draft_sweep` | Outbox hygiene: orphaned drafts (owner session gone), fact-stale ones (a claim presumes a PR or ticket is pending when it merged or closed; PRs via your `gh`, `offline=true` skips it), drafts open past `open_ttl_days`, and rival drafts to one person with why they weren't joined and the `whosaid_draft_merge` call. Read-only. |
 | `whosaid_live_explain_add`, `whosaid_live_explain_correct`, `whosaid_live_explain_recap` | Write a section, a correction or the final recap of the [live explainer page](#a-live-explainer-page-whosaid-live-explain) for the newest live call (or `session`). Local files only; not read-only. |
 | `whosaid_live_export_items` | An ended call's explainer as rows (asks, questions, suggestions, decisions, next steps) with stable ids, owner, the verbatim transcript line and every source; `since` for every ended call after a stem; `format="csv"`. See [`export-items`](#a-live-explainer-page-whosaid-live-explain). Read-only. |
 | `whosaid_teams_live` | The newest Teams chat messages (or chats, `action="chats"`) read from the Teams desktop app's local cache: offline, nothing to rate-limit, only what the app has synced. Read-only. See [`whosaid teams live`](#whosaid-teams-live-teams-chats-live-from-the-desktop-apps-cache). |
